@@ -14,4 +14,6 @@ The durable Software Digital Twin is stored in SQLite using normalized entities 
 
 ## Current executable path
 
-The desktop command `discover_project` reads project metadata without executing package scripts or arbitrary repository commands. The result is rendered in the Project Overview foundation screen. The ML sidecar currently exposes protocol health/capability discovery only and deliberately reports no installed inference model.
+The desktop can discover project stack metadata and build a Tree-sitter AST/source index for TypeScript/TSX, JavaScript/JSX, Python, Rust, Go, C, C++, and PHP. The source indexer records SHA-256 content identity, parse state, AST root kind, and definition symbols without executing repository commands. See `SOURCE_INDEXING.md` for the current boundary and incremental contract.
+
+The ML sidecar currently exposes protocol health/capability discovery only and deliberately reports no installed inference model.
