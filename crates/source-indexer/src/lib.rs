@@ -382,9 +382,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{
-        index_project, language_spec, parse_source, sha256_hex, IndexedFile, ParseState,
-    };
+    use super::{index_project, language_spec, parse_source, sha256_hex, IndexedFile, ParseState};
 
     fn parse_fixture(path: &str, source: &str) -> IndexedFile {
         let spec = language_spec(Path::new(path)).expect("language spec");
