@@ -64,7 +64,10 @@ pub struct IndexResult {
 
 impl IndexResult {
     pub fn symbol_count(&self) -> usize {
-        self.indexed_files.iter().map(|file| file.symbols.len()).sum()
+        self.indexed_files
+            .iter()
+            .map(|file| file.symbols.len())
+            .sum()
     }
 
     pub fn parse_error_count(&self) -> usize {
@@ -160,7 +163,13 @@ pub fn index_project(
             }
         };
 
-        match parse_source(relative_path.clone(), &source, spec, content_hash, metadata.len()) {
+        match parse_source(
+            relative_path.clone(),
+            &source,
+            spec,
+            content_hash,
+            metadata.len(),
+        ) {
             Ok(indexed) => result.indexed_files.push(indexed),
             Err(reason) => result.skipped_files.push(SkippedFile {
                 relative_path,
@@ -377,14 +386,34 @@ mod tests {
     #[test]
     fn extracts_definition_symbols_across_initial_languages() {
         let cases = [
-            ("sample.ts", "export function add(a: number, b: number): number { return a + b; }", "add"),
+            (
+                "sample.ts",
+                "export function add(a: number, b: number): number { return a + b; }",
+                "add",
+            ),
             ("sample.js", "function add(a, b) { return a + b; }", "add"),
             ("sample.py", "def add(a, b):\n    return a + b\n", "add"),
-            ("sample.rs", "fn add(a: i32, b: i32) -> i32 { a + b }", "add"),
-            ("sample.go", "package sample\nfunc add(a int, b int) int { return a + b }", "add"),
+            (
+                "sample.rs",
+                "fn add(a: i32, b: i32) -> i32 { a + b }",
+                "add",
+            ),
+            (
+                "sample.go",
+                "package sample\nfunc add(a int, b int) int { return a + b }",
+                "add",
+            ),
             ("sample.c", "int add(int a, int b) { return a + b; }", "add"),
-            ("sample.cpp", "int add(int a, int b) { return a + b; }", "add"),
-            ("sample.php", "<?php function add($a, $b) { return $a + $b; }", "add"),
+            (
+                "sample.cpp",
+                "int add(int a, int b) { return a + b; }",
+                "add",
+            ),
+            (
+                "sample.php",
+                "<?php function add($a, $b) { return $a + $b; }",
+                "add",
+            ),
         ];
 
         for (path, source, expected_name) in cases {
@@ -399,7 +428,10 @@ mod tests {
             .expect("parse source");
             assert_eq!(indexed.parse_state, ParseState::Parsed, "{path}");
             assert!(
-                indexed.symbols.iter().any(|symbol| symbol.name == expected_name),
+                indexed
+                    .symbols
+                    .iter()
+                    .any(|symbol| symbol.name == expected_name),
                 "missing symbol {expected_name} in {path}: {:?}",
                 indexed.symbols
             );
@@ -409,16 +441,16 @@ mod tests {
     #[test]
     fn skips_unchanged_files_by_content_hash() {
         let dir = tempdir().expect("tempdir");
-        fs::write(dir.path().join("sample.ts"), "export function value() { return 1; }")
-            .expect("write fixture");
+        fs::write(
+            dir.path().join("sample.ts"),
+            "export function value() { return 1; }",
+        )
+        .expect("write fixture");
 
         let first = index_project(dir.path(), &BTreeMap::new()).expect("first index");
         assert_eq!(first.indexed_files.len(), 1);
         let indexed = &first.indexed_files[0];
-        let known = BTreeMap::from([(
-            indexed.relative_path.clone(),
-            indexed.content_hash.clone(),
-        )]);
+        let known = BTreeMap::from([(indexed.relative_path.clone(), indexed.content_hash.clone())]);
 
         let second = index_project(dir.path(), &known).expect("second index");
         assert!(second.indexed_files.is_empty());
@@ -430,8 +462,11 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         fs::create_dir_all(dir.path().join("src")).expect("src");
         fs::create_dir_all(dir.path().join("node_modules/pkg")).expect("node_modules");
-        fs::write(dir.path().join("src/main.js"), "function local() { return true; }")
-            .expect("source");
+        fs::write(
+            dir.path().join("src/main.js"),
+            "function local() { return true; }",
+        )
+        .expect("source");
         fs::write(
             dir.path().join("node_modules/pkg/index.js"),
             "function dependency() { return true; }",
