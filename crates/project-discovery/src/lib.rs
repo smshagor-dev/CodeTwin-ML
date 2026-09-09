@@ -155,6 +155,7 @@ fn detect_marker(
                 }
                 for (needle, label) in [
                     ("\"prisma\"", "Prisma"),
+                    ("\"@prisma/client\"", "Prisma"),
                     ("\"drizzle", "Drizzle"),
                     ("\"sequelize\"", "Sequelize"),
                     ("\"typeorm\"", "TypeORM"),
