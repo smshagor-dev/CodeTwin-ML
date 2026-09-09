@@ -15,6 +15,9 @@
 (class_declaration
   name: (_) @name) @definition.class
 
+(class
+  name: (_) @name) @definition.class
+
 (abstract_class_declaration
   name: (_) @name) @definition.class
 
@@ -42,3 +45,15 @@
   (variable_declarator
     name: (identifier) @name
     value: [(arrow_function) (function_expression)]) @definition.function)
+
+(assignment_expression
+  left: [
+    (identifier) @name
+    (member_expression
+      property: (property_identifier) @name)
+  ]
+  right: [(arrow_function) (function_expression)]) @definition.function
+
+(pair
+  key: (property_identifier) @name
+  value: [(arrow_function) (function_expression)]) @definition.function
