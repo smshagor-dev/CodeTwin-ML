@@ -12,6 +12,7 @@ use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator};
 use walkdir::{DirEntry, WalkDir};
 
 const MAX_SOURCE_BYTES: u64 = 5 * 1024 * 1024;
+const TYPESCRIPT_DEFINITIONS_QUERY: &str = include_str!("../queries/typescript.scm");
 
 #[derive(Debug, Error)]
 pub enum IndexError {
@@ -81,7 +82,7 @@ impl IndexResult {
 struct LanguageSpec {
     name: &'static str,
     language: Language,
-    tags_query: &'static str,
+    definitions_query: &'static str,
 }
 
 pub fn index_project(
@@ -207,8 +208,8 @@ fn parse_source(
     } else {
         ParseState::Parsed
     };
-    let query = Query::new(&spec.language, spec.tags_query)
-        .map_err(|error| format!("tag_query_error:{error}"))?;
+    let query = Query::new(&spec.language, spec.definitions_query)
+        .map_err(|error| format!("definition_query_error:{error}"))?;
     let symbols = collect_symbols(source, &tree, &query);
 
     Ok(IndexedFile {
@@ -291,47 +292,47 @@ fn language_spec(path: &Path) -> Option<LanguageSpec> {
         "ts" => Some(LanguageSpec {
             name: "TypeScript",
             language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            tags_query: tree_sitter_typescript::TAGS_QUERY,
+            definitions_query: TYPESCRIPT_DEFINITIONS_QUERY,
         }),
         "tsx" => Some(LanguageSpec {
             name: "TypeScript TSX",
             language: tree_sitter_typescript::LANGUAGE_TSX.into(),
-            tags_query: tree_sitter_typescript::TAGS_QUERY,
+            definitions_query: TYPESCRIPT_DEFINITIONS_QUERY,
         }),
         "js" | "jsx" | "mjs" | "cjs" => Some(LanguageSpec {
             name: "JavaScript",
             language: tree_sitter_javascript::LANGUAGE.into(),
-            tags_query: tree_sitter_javascript::TAGS_QUERY,
+            definitions_query: tree_sitter_javascript::TAGS_QUERY,
         }),
         "py" => Some(LanguageSpec {
             name: "Python",
             language: tree_sitter_python::LANGUAGE.into(),
-            tags_query: tree_sitter_python::TAGS_QUERY,
+            definitions_query: tree_sitter_python::TAGS_QUERY,
         }),
         "rs" => Some(LanguageSpec {
             name: "Rust",
             language: tree_sitter_rust::LANGUAGE.into(),
-            tags_query: tree_sitter_rust::TAGS_QUERY,
+            definitions_query: tree_sitter_rust::TAGS_QUERY,
         }),
         "go" => Some(LanguageSpec {
             name: "Go",
             language: tree_sitter_go::LANGUAGE.into(),
-            tags_query: tree_sitter_go::TAGS_QUERY,
+            definitions_query: tree_sitter_go::TAGS_QUERY,
         }),
         "c" | "h" => Some(LanguageSpec {
             name: "C",
             language: tree_sitter_c::LANGUAGE.into(),
-            tags_query: tree_sitter_c::TAGS_QUERY,
+            definitions_query: tree_sitter_c::TAGS_QUERY,
         }),
         "cc" | "cpp" | "cxx" | "hpp" | "hh" => Some(LanguageSpec {
             name: "C++",
             language: tree_sitter_cpp::LANGUAGE.into(),
-            tags_query: tree_sitter_cpp::TAGS_QUERY,
+            definitions_query: tree_sitter_cpp::TAGS_QUERY,
         }),
         "php" => Some(LanguageSpec {
             name: "PHP",
             language: tree_sitter_php::LANGUAGE_PHP.into(),
-            tags_query: tree_sitter_php::TAGS_QUERY,
+            definitions_query: tree_sitter_php::TAGS_QUERY,
         }),
         _ => None,
     }
@@ -381,7 +382,33 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{index_project, language_spec, parse_source, sha256_hex, ParseState};
+    use super::{
+        index_project, language_spec, parse_source, sha256_hex, IndexedFile, ParseState,
+    };
+
+    fn parse_fixture(path: &str, source: &str) -> IndexedFile {
+        let spec = language_spec(Path::new(path)).expect("language spec");
+        parse_source(
+            path.to_string(),
+            source,
+            spec,
+            sha256_hex(source.as_bytes()),
+            source.len() as u64,
+        )
+        .expect("parse source")
+    }
+
+    fn assert_has_symbol(indexed: &IndexedFile, kind: &str, name: &str) {
+        assert!(
+            indexed
+                .symbols
+                .iter()
+                .any(|symbol| symbol.kind == kind && symbol.name == name),
+            "missing {kind} symbol {name} in {}: {:?}",
+            indexed.relative_path,
+            indexed.symbols
+        );
+    }
 
     #[test]
     fn extracts_definition_symbols_across_initial_languages() {
@@ -417,15 +444,7 @@ mod tests {
         ];
 
         for (path, source, expected_name) in cases {
-            let spec = language_spec(Path::new(path)).expect("language spec");
-            let indexed = parse_source(
-                path.to_string(),
-                source,
-                spec,
-                sha256_hex(source.as_bytes()),
-                source.len() as u64,
-            )
-            .expect("parse source");
+            let indexed = parse_fixture(path, source);
             assert_eq!(indexed.parse_state, ParseState::Parsed, "{path}");
             assert!(
                 indexed
@@ -436,6 +455,66 @@ mod tests {
                 indexed.symbols
             );
         }
+    }
+
+    #[test]
+    fn extracts_common_typescript_and_tsx_definitions() {
+        let typescript = r#"
+export function exportedFunction(): number { return 1; }
+async function asyncFunction(): Promise<number> { return 2; }
+export class Service {
+    run(): void {}
+}
+export interface Config { enabled: boolean; }
+export type Result = { ok: boolean };
+const localArrow = (value: number) => value + 1;
+export const exportedArrow = async () => 3;
+"#;
+        let indexed = parse_fixture("sample.ts", typescript);
+        assert_eq!(indexed.parse_state, ParseState::Parsed);
+        assert_has_symbol(&indexed, "function", "exportedFunction");
+        assert_has_symbol(&indexed, "function", "asyncFunction");
+        assert_has_symbol(&indexed, "class", "Service");
+        assert_has_symbol(&indexed, "method", "run");
+        assert_has_symbol(&indexed, "interface", "Config");
+        assert_has_symbol(&indexed, "type", "Result");
+        assert_has_symbol(&indexed, "function", "localArrow");
+        assert_has_symbol(&indexed, "function", "exportedArrow");
+
+        let tsx = r#"
+export interface Props { label: string; }
+export const Button = (props: Props) => <button>{props.label}</button>;
+export class View {
+    render(): JSX.Element { return <Button label="ok" />; }
+}
+"#;
+        let indexed = parse_fixture("sample.tsx", tsx);
+        assert_eq!(indexed.parse_state, ParseState::Parsed);
+        assert_has_symbol(&indexed, "interface", "Props");
+        assert_has_symbol(&indexed, "function", "Button");
+        assert_has_symbol(&indexed, "class", "View");
+        assert_has_symbol(&indexed, "method", "render");
+    }
+
+    #[test]
+    fn javascript_common_definitions_remain_indexed() {
+        let source = r#"
+export function exportedFunction() { return 1; }
+async function asyncFunction() { return 2; }
+class Service {
+    run() { return true; }
+}
+const localArrow = (value) => value + 1;
+export const exportedArrow = async () => 3;
+"#;
+        let indexed = parse_fixture("sample.js", source);
+        assert_eq!(indexed.parse_state, ParseState::Parsed);
+        assert_has_symbol(&indexed, "function", "exportedFunction");
+        assert_has_symbol(&indexed, "function", "asyncFunction");
+        assert_has_symbol(&indexed, "class", "Service");
+        assert_has_symbol(&indexed, "method", "run");
+        assert_has_symbol(&indexed, "function", "localArrow");
+        assert_has_symbol(&indexed, "function", "exportedArrow");
     }
 
     #[test]
