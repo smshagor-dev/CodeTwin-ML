@@ -1,7 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
     fs,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use serde::{Deserialize, Serialize};
@@ -358,12 +359,16 @@ fn normalized_relative_path(root: &Path, path: &Path) -> String {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
+    use std::{collections::BTreeMap, fs, path::Path};
 
     use tempfile::tempdir;
 
@@ -383,7 +388,7 @@ mod tests {
         ];
 
         for (path, source, expected_name) in cases {
-            let spec = language_spec(PathBuf::from(path).as_path()).expect("language spec");
+            let spec = language_spec(Path::new(path)).expect("language spec");
             let indexed = parse_source(
                 path.to_string(),
                 source,
