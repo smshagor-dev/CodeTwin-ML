@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CodeTwin ML",
+  "version": "0.1.0",
+  "identifier": "dev.smshagor.codetwinml",
+  "build": {
+    "beforeDevCommand": "npm run dev --workspace @codetwin/desktop",
+    "beforeBuildCommand": "npm run build --workspace @codetwin/desktop",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{"title": "CodeTwin ML", "width": 1280, "height": 820, "minWidth": 900, "minHeight": 640}],
+    "security": {"csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; connect-src ipc: http://ipc.localhost"}
+  },
+  "bundle": {"active": true, "targets": "all"}
+}

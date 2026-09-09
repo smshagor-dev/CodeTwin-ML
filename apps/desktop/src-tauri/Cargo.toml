@@ -1,0 +1,13 @@
+[package]
+name = "codetwin-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2" }
+
+[dependencies]
+project-discovery = { path = "../../../crates/project-discovery" }
+serde.workspace = true
+tauri.workspace = true
