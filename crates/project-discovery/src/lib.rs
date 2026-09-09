@@ -42,7 +42,12 @@ pub fn discover_project(root: impl AsRef<Path>) -> Result<ProjectProfile, Discov
     let mut ci_providers = BTreeSet::new();
     let mut project_kinds = BTreeSet::new();
 
-    for entry in WalkDir::new(root).max_depth(5).follow_links(false).into_iter().filter_map(Result::ok) {
+    for entry in WalkDir::new(root)
+        .max_depth(5)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         let path = entry.path();
         if should_skip(path) {
             continue;
@@ -77,12 +82,17 @@ pub fn discover_project(root: impl AsRef<Path>) -> Result<ProjectProfile, Discov
 
 fn should_skip(path: &Path) -> bool {
     path.components().any(|part| {
-        matches!(part.as_os_str().to_str(), Some(".git" | "node_modules" | "target" | ".venv" | "dist" | "build"))
+        matches!(
+            part.as_os_str().to_str(),
+            Some(".git" | "node_modules" | "target" | ".venv" | "dist" | "build")
+        )
     })
 }
 
 fn detect_language(path: &Path, languages: &mut BTreeSet<String>) {
-    let Some(ext) = path.extension().and_then(|v| v.to_str()) else { return; };
+    let Some(ext) = path.extension().and_then(|v| v.to_str()) else {
+        return;
+    };
     let language = match ext.to_ascii_lowercase().as_str() {
         "ts" | "tsx" => "TypeScript",
         "js" | "jsx" | "mjs" | "cjs" => "JavaScript",
@@ -109,48 +119,100 @@ fn detect_marker(
     ci_providers: &mut BTreeSet<String>,
     project_kinds: &mut BTreeSet<String>,
 ) {
-    let file_name = path.file_name().and_then(|v| v.to_str()).unwrap_or_default();
-    let relative = path.strip_prefix(root).unwrap_or(path).to_string_lossy().replace('\\', "/");
+    let file_name = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or_default();
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
 
     match file_name {
         "package.json" => {
             package_managers.insert("npm-compatible".into());
             project_kinds.insert("JavaScript/TypeScript application".into());
             if let Ok(text) = fs::read_to_string(path) {
-                for (needle, label) in [("\"react\"", "React"), ("\"next\"", "Next.js"), ("\"vite\"", "Vite")] {
-                    if text.contains(needle) { frameworks.insert(label.into()); }
+                for (needle, label) in [
+                    ("\"react\"", "React"),
+                    ("\"next\"", "Next.js"),
+                    ("\"vite\"", "Vite"),
+                ] {
+                    if text.contains(needle) {
+                        frameworks.insert(label.into());
+                    }
                 }
-                for (needle, label) in [("\"vitest\"", "Vitest"), ("\"jest\"", "Jest"), ("\"playwright\"", "Playwright"), ("\"cypress\"", "Cypress")] {
-                    if text.contains(needle) { test_frameworks.insert(label.into()); }
+                for (needle, label) in [
+                    ("\"vitest\"", "Vitest"),
+                    ("\"jest\"", "Jest"),
+                    ("\"playwright\"", "Playwright"),
+                    ("\"cypress\"", "Cypress"),
+                ] {
+                    if text.contains(needle) {
+                        test_frameworks.insert(label.into());
+                    }
                 }
-                for (needle, label) in [("\"prisma\"", "Prisma"), ("\"drizzle", "Drizzle"), ("\"sequelize\"", "Sequelize"), ("\"typeorm\"", "TypeORM")] {
-                    if text.contains(needle) { databases.insert(label.into()); }
+                for (needle, label) in [
+                    ("\"prisma\"", "Prisma"),
+                    ("\"drizzle", "Drizzle"),
+                    ("\"sequelize\"", "Sequelize"),
+                    ("\"typeorm\"", "TypeORM"),
+                ] {
+                    if text.contains(needle) {
+                        databases.insert(label.into());
+                    }
                 }
             }
         }
-        "pnpm-lock.yaml" | "pnpm-workspace.yaml" => { package_managers.insert("pnpm".into()); }
-        "yarn.lock" => { package_managers.insert("Yarn".into()); }
-        "Cargo.toml" => { build_systems.insert("Cargo".into()); project_kinds.insert("Rust".into()); }
-        "pyproject.toml" | "requirements.txt" => { project_kinds.insert("Python".into()); }
-        "go.mod" => { build_systems.insert("Go modules".into()); project_kinds.insert("Go".into()); }
-        "composer.json" => { package_managers.insert("Composer".into()); project_kinds.insert("PHP".into()); }
-        "CMakeLists.txt" => { build_systems.insert("CMake".into()); }
-        "Makefile" => { build_systems.insert("Make".into()); }
-        "Dockerfile" | "docker-compose.yml" | "docker-compose.yaml" => { project_kinds.insert("Containerized".into()); }
-        "schema.prisma" => { databases.insert("Prisma".into()); }
+        "pnpm-lock.yaml" | "pnpm-workspace.yaml" => {
+            package_managers.insert("pnpm".into());
+        }
+        "yarn.lock" => {
+            package_managers.insert("Yarn".into());
+        }
+        "Cargo.toml" => {
+            build_systems.insert("Cargo".into());
+            project_kinds.insert("Rust".into());
+        }
+        "pyproject.toml" | "requirements.txt" => {
+            project_kinds.insert("Python".into());
+        }
+        "go.mod" => {
+            build_systems.insert("Go modules".into());
+            project_kinds.insert("Go".into());
+        }
+        "composer.json" => {
+            package_managers.insert("Composer".into());
+            project_kinds.insert("PHP".into());
+        }
+        "CMakeLists.txt" => {
+            build_systems.insert("CMake".into());
+        }
+        "Makefile" => {
+            build_systems.insert("Make".into());
+        }
+        "Dockerfile" | "docker-compose.yml" | "docker-compose.yaml" => {
+            project_kinds.insert("Containerized".into());
+        }
+        "schema.prisma" => {
+            databases.insert("Prisma".into());
+        }
         _ => {}
     }
 
-    if relative.starts_with(".github/workflows/") && (relative.ends_with(".yml") || relative.ends_with(".yaml")) {
+    if relative.starts_with(".github/workflows/")
+        && (relative.ends_with(".yml") || relative.ends_with(".yaml"))
+    {
         ci_providers.insert("GitHub Actions".into());
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::discover_project;
     use std::fs;
     use tempfile::tempdir;
-    use super::discover_project;
 
     #[test]
     fn discovers_stack_from_real_files() {

@@ -81,7 +81,11 @@ mod tests {
         let db = Database::open_in_memory().expect("open db");
         let count: i64 = db
             .connection()
-            .query_row("SELECT COUNT(*) FROM schema_migrations WHERE version=1", [], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=1",
+                [],
+                |row| row.get(0),
+            )
             .expect("query migration");
         assert_eq!(count, 1);
     }
