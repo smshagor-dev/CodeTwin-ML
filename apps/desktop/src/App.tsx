@@ -31,7 +31,9 @@ export function App() {
   return (
     <main className="shell">
       <aside className="rail" aria-label="Primary navigation">
-        <div className="brand">CT</div>
+        <div className="brand" aria-label="CodeTwin ML">
+          <img src="/app-icon.png" alt="" />
+        </div>
         <button className="nav active">Overview</button>
         <button className="nav" disabled>Digital Twin</button>
         <button className="nav" disabled>Findings</button>

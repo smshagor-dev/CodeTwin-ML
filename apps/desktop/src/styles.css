@@ -4,7 +4,8 @@ body { margin: 0; min-width: 900px; min-height: 100vh; }
 button, input { font: inherit; }
 .shell { min-height: 100vh; display: grid; grid-template-columns: 180px 1fr; }
 .rail { padding: 24px 14px; background: #0d131b; border-right: 1px solid #1f2a38; display: flex; flex-direction: column; gap: 8px; }
-.brand { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid #3f82ff; border-radius: 10px; font-weight: 800; margin-bottom: 26px; }
+.brand { width: 48px; height: 48px; display: block; margin-bottom: 26px; }
+.brand img { width: 48px; height: 48px; display: block; object-fit: contain; }
 .nav { background: transparent; color: #93a1b5; border: 0; border-radius: 8px; padding: 10px 12px; text-align: left; }
 .nav.active { background: #162235; color: white; }
 .workspace { padding: 32px; max-width: 1280px; width: 100%; }
