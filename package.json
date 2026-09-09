@@ -1,0 +1,13 @@
+{
+  "name": "codetwin-ml",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["apps/desktop", "packages/*"],
+  "scripts": {
+    "dev": "npm --workspace @codetwin/desktop run dev",
+    "build": "npm --workspace @codetwin/desktop run build",
+    "typecheck": "npm --workspace @codetwin/desktop run typecheck",
+    "test": "npm --workspace @codetwin/desktop run test"
+  },
+  "engines": {"node": ">=22"}
+}
