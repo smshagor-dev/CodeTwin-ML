@@ -23,6 +23,7 @@ ALTER TABLE analysis_runs ADD COLUMN config_fingerprint TEXT;
 CREATE INDEX idx_analysis_runs_project_kind_started
   ON analysis_runs(project_id, run_kind, started_at DESC);
 
+ALTER TABLE files ADD COLUMN relative_path_identity TEXT;
 ALTER TABLE files ADD COLUMN ast_root_kind TEXT;
 ALTER TABLE files ADD COLUMN parse_state TEXT;
 ALTER TABLE files ADD COLUMN analysis_fingerprint TEXT;
@@ -30,6 +31,9 @@ ALTER TABLE files ADD COLUMN last_index_run_id TEXT REFERENCES analysis_runs(id)
 ALTER TABLE files ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
 ALTER TABLE files ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
 ALTER TABLE files ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1));
+CREATE UNIQUE INDEX idx_files_project_path_identity
+  ON files(project_id, relative_path_identity)
+  WHERE relative_path_identity IS NOT NULL;
 CREATE INDEX idx_files_project_active_path
   ON files(project_id, is_active, relative_path);
 CREATE INDEX idx_files_project_hash

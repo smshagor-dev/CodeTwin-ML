@@ -94,6 +94,7 @@ pub struct SourceFileRecord {
     pub id: String,
     pub project_id: String,
     pub relative_path: String,
+    pub relative_path_identity: String,
     pub language: Option<String>,
     pub content_hash: String,
     pub byte_size: u64,

@@ -40,15 +40,17 @@ pub fn normalize_path_text(input: &str) -> String {
         parts.join("/")
     };
 
-    let windows_like = normalized.starts_with("//")
-        || normalized.as_bytes().get(1).is_some_and(|byte| *byte == b':');
-    if windows_like {
+    if is_windows_path_identity(&normalized) {
         normalized = normalized.to_lowercase();
     }
     if normalized.len() > 1 && !is_drive_root(&normalized) {
         normalized = normalized.trim_end_matches('/').to_string();
     }
     normalized
+}
+
+pub fn is_windows_path_identity(value: &str) -> bool {
+    value.starts_with("//") || value.as_bytes().get(1).is_some_and(|byte| *byte == b':')
 }
 
 pub fn normalize_relative_path(input: &str, case_insensitive: bool) -> Option<String> {
