@@ -109,10 +109,19 @@ try {
             $target = Join-Path $InstallRoot $datasetId
             $staged = Join-Path $stagingRoot $datasetId
             $backup = Join-Path $backupRoot $datasetId
-            if (Test-Path $target) {
+            $hadPrevious = Test-Path $target
+            if ($hadPrevious) {
                 Move-Item -Force $target $backup
             }
-            Move-Item -Force $staged $target
+            try {
+                Move-Item -Force $staged $target
+            }
+            catch {
+                if ($hadPrevious -and (Test-Path $backup) -and -not (Test-Path $target)) {
+                    Move-Item -Force $backup $target
+                }
+                throw
+            }
             $replaced += $datasetId
         }
     }
