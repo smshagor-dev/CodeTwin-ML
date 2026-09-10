@@ -133,3 +133,29 @@ BEGIN
   SET state = 'stale', updated_at = CURRENT_TIMESTAMP
   WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id = NEW.id);
 END;
+
+CREATE TRIGGER invalidate_semantics_after_symbol_deactivation
+AFTER UPDATE OF is_active ON symbols
+WHEN OLD.is_active = 1 AND NEW.is_active = 0
+BEGIN
+  UPDATE graph_edges
+  SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+  WHERE id IN (
+    SELECT graph_edge_id
+    FROM semantic_relations
+    WHERE graph_edge_id IS NOT NULL
+      AND (
+        subject_symbol_id = NEW.id OR
+        container_symbol_id = NEW.id OR
+        target_symbol_id = NEW.id
+      )
+  );
+
+  UPDATE semantic_relations
+  SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+  WHERE subject_symbol_id = NEW.id OR container_symbol_id = NEW.id OR target_symbol_id = NEW.id;
+
+  UPDATE semantic_symbol_states
+  SET state = 'stale', updated_at = CURRENT_TIMESTAMP
+  WHERE symbol_id = NEW.id;
+END;
