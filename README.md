@@ -11,14 +11,16 @@ CodeTwin ML is a local-first engineering intelligence desktop application. It co
 | Monorepo + Tauri/React desktop shell | Implemented foundation |
 | Local SQLite schema + migrations | Implemented foundation |
 | Project stack discovery | Implemented |
+| Tree-sitter AST/source indexing | Implemented baseline for TypeScript/TSX, JavaScript/JSX, Python, Rust, Go, C, C++, PHP |
+| Definition symbol extraction + content-hash incremental skip | Implemented baseline |
 | Normalized analysis/finding domain types | Implemented foundation |
 | Secure stdio ML sidecar protocol | Implemented foundation |
-| Source/symbol indexing | Planned next |
+| LSP-enhanced symbol resolution | Planned next |
 | Digital Twin graph materialization | Planned next |
 | QA/security/database/runtime engines | Planned |
 | Verified repair workflow | Planned |
 
-Nothing marked planned is presented as available in the UI.
+Nothing marked planned is presented as available in the UI. The Tree-sitter baseline currently extracts definition tags; richer import/export/call/data-flow indexing will be added as separate tested capabilities.
 
 ## Development
 

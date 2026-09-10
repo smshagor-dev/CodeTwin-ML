@@ -9,5 +9,6 @@ tauri-build = { version = "2" }
 
 [dependencies]
 project-discovery = { path = "../../../crates/project-discovery" }
+source-indexer = { path = "../../../crates/source-indexer" }
 serde.workspace = true
 tauri.workspace = true
