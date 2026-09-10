@@ -67,7 +67,7 @@ CREATE TABLE semantic_symbol_states (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   run_id TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
   provider_kind TEXT NOT NULL CHECK(provider_kind IN ('typescript','pyright','rust_analyzer')),
-  state TEXT NOT NULL CHECK(state IN ('resolved','no_references','unmatched','unsupported','error','stale')),
+  state TEXT NOT NULL CHECK(state IN ('resolved','no_references','unmatched','unresolved','unsupported','error','stale')),
   reference_locations INTEGER NOT NULL DEFAULT 0,
   definitions_resolved INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
@@ -75,6 +75,33 @@ CREATE TABLE semantic_symbol_states (
 );
 CREATE INDEX idx_semantic_symbol_states_project
   ON semantic_symbol_states(project_id, provider_kind, state);
+
+CREATE TABLE semantic_import_resolutions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+  import_reference_id TEXT NOT NULL REFERENCES import_references(id) ON DELETE CASCADE,
+  source_file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  target_file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  provider_kind TEXT NOT NULL CHECK(provider_kind IN ('typescript','pyright','rust_analyzer')),
+  target_start_line INTEGER NOT NULL,
+  target_start_column INTEGER NOT NULL,
+  target_end_line INTEGER NOT NULL,
+  target_end_column INTEGER NOT NULL,
+  source_content_hash TEXT NOT NULL,
+  target_content_hash TEXT NOT NULL,
+  graph_edge_id TEXT REFERENCES graph_edges(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
+  UNIQUE(import_reference_id, target_file_id)
+);
+CREATE INDEX idx_semantic_import_source
+  ON semantic_import_resolutions(source_file_id, is_active);
+CREATE INDEX idx_semantic_import_target
+  ON semantic_import_resolutions(target_file_id, is_active);
+CREATE INDEX idx_semantic_import_project
+  ON semantic_import_resolutions(project_id, is_active, provider_kind);
 
 CREATE TRIGGER invalidate_semantics_after_file_change
 AFTER UPDATE OF content_hash, is_active ON files
@@ -87,11 +114,20 @@ BEGIN
     FROM semantic_relations
     WHERE graph_edge_id IS NOT NULL
       AND (occurrence_file_id = NEW.id OR target_file_id = NEW.id)
+    UNION
+    SELECT graph_edge_id
+    FROM semantic_import_resolutions
+    WHERE graph_edge_id IS NOT NULL
+      AND (source_file_id = NEW.id OR target_file_id = NEW.id)
   );
 
   UPDATE semantic_relations
   SET is_active = 0, updated_at = CURRENT_TIMESTAMP
   WHERE occurrence_file_id = NEW.id OR target_file_id = NEW.id;
+
+  UPDATE semantic_import_resolutions
+  SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+  WHERE source_file_id = NEW.id OR target_file_id = NEW.id;
 
   UPDATE semantic_symbol_states
   SET state = 'stale', updated_at = CURRENT_TIMESTAMP
