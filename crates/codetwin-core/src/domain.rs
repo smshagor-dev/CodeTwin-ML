@@ -22,6 +22,18 @@ impl AnalysisStatus {
             Self::Interrupted => "interrupted",
         }
     }
+
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "queued" => Some(Self::Queued),
+            "running" => Some(Self::Running),
+            "completed" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            "interrupted" => Some(Self::Interrupted),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +54,17 @@ impl ImportResolutionState {
             Self::External => "external",
             Self::Unresolved => "unresolved",
             Self::Unsupported => "unsupported",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "observed" => Some(Self::Observed),
+            "resolved_local" => Some(Self::ResolvedLocal),
+            "external" => Some(Self::External),
+            "unresolved" => Some(Self::Unresolved),
+            "unsupported" => Some(Self::Unsupported),
+            _ => None,
         }
     }
 }
@@ -163,4 +186,74 @@ pub struct IndexSummary {
 pub struct GraphSummary {
     pub node_count: usize,
     pub edge_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphNodeRecord {
+    pub id: String,
+    pub project_id: String,
+    pub node_type: String,
+    pub external_key: String,
+    pub label: String,
+    pub metadata_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphEdgeRecord {
+    pub id: String,
+    pub project_id: String,
+    pub source_node_id: String,
+    pub target_node_id: String,
+    pub relationship: String,
+    pub metadata_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphNeighborhood {
+    pub center: GraphNodeRecord,
+    pub nodes: Vec<GraphNodeRecord>,
+    pub edges: Vec<GraphEdgeRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexRunRecord {
+    pub id: String,
+    pub project_id: String,
+    pub status: AnalysisStatus,
+    pub analyzer_version: String,
+    pub query_version: Option<String>,
+    pub config_fingerprint: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub delta: IndexDelta,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SymbolSearchMode {
+    Exact,
+    Prefix,
+    Substring,
+}
+
+impl SymbolSearchMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Prefix => "prefix",
+            Self::Substring => "substring",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SymbolSearchQuery {
+    pub query: String,
+    pub mode: SymbolSearchMode,
+    pub kind: Option<String>,
+    pub language: Option<String>,
+    pub file: Option<String>,
+    pub qualified_only: bool,
+    pub limit: usize,
 }
