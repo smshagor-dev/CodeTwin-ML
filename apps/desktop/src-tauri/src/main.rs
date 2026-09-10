@@ -1,8 +1,9 @@
 use std::sync::Mutex;
 
 use codetwin_core::{
-    Database, GraphNeighborhood, GraphSummary, ImportReferenceRecord, IndexRunRecord, IndexSummary,
-    ProjectIndexService, ProjectQueryService, SourceFileRecord, SymbolRecord, SymbolSearchQuery,
+    Database, GraphNeighborhood, GraphSummary, ImpactAnalysisService, ImpactReport,
+    ImportReferenceRecord, IndexRunRecord, IndexSummary, ProjectIndexService, ProjectQueryService,
+    SourceFileRecord, SymbolRecord, SymbolSearchQuery,
 };
 use project_discovery::ProjectProfile;
 use tauri::Manager;
@@ -152,6 +153,20 @@ fn list_dependents(
 }
 
 #[tauri::command]
+fn analyze_file_impact(
+    file_id: String,
+    max_depth: usize,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<ImpactReport>, String> {
+    with_database(&state, |database| {
+        ImpactAnalysisService::new(database)
+            .analyze_file(&file_id, max_depth, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
 fn index_history(
     project_id: String,
     limit: usize,
@@ -187,6 +202,7 @@ fn main() {
             get_graph_neighborhood,
             list_dependencies,
             list_dependents,
+            analyze_file_impact,
             index_history,
         ])
         .run(tauri::generate_context!())
