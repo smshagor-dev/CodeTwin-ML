@@ -82,12 +82,12 @@ mod tests {
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','semantic_run_metrics','semantic_relations','semantic_symbol_states')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 10);
+        assert_eq!(count, 11);
     }
 
     #[test]
