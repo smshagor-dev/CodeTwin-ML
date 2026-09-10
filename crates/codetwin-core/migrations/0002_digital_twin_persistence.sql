@@ -28,9 +28,11 @@ ALTER TABLE files ADD COLUMN ast_root_kind TEXT;
 ALTER TABLE files ADD COLUMN parse_state TEXT;
 ALTER TABLE files ADD COLUMN analysis_fingerprint TEXT;
 ALTER TABLE files ADD COLUMN last_index_run_id TEXT REFERENCES analysis_runs(id) ON DELETE SET NULL;
-ALTER TABLE files ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
-ALTER TABLE files ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE files ADD COLUMN created_at TEXT;
+ALTER TABLE files ADD COLUMN updated_at TEXT;
 ALTER TABLE files ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1));
+UPDATE files SET created_at = COALESCE(created_at, indexed_at, CURRENT_TIMESTAMP),
+                 updated_at = COALESCE(updated_at, indexed_at, CURRENT_TIMESTAMP);
 CREATE UNIQUE INDEX idx_files_project_path_identity
   ON files(project_id, relative_path_identity)
   WHERE relative_path_identity IS NOT NULL;
@@ -43,9 +45,14 @@ ALTER TABLE symbols ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE
 ALTER TABLE symbols ADD COLUMN parent_symbol_id TEXT REFERENCES symbols(id) ON DELETE SET NULL;
 ALTER TABLE symbols ADD COLUMN fingerprint TEXT;
 ALTER TABLE symbols ADD COLUMN last_index_run_id TEXT REFERENCES analysis_runs(id) ON DELETE SET NULL;
-ALTER TABLE symbols ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
-ALTER TABLE symbols ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE symbols ADD COLUMN created_at TEXT;
+ALTER TABLE symbols ADD COLUMN updated_at TEXT;
 ALTER TABLE symbols ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1));
+UPDATE symbols
+SET project_id = (SELECT files.project_id FROM files WHERE files.id = symbols.file_id),
+    created_at = COALESCE(created_at, CURRENT_TIMESTAMP),
+    updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)
+WHERE project_id IS NULL OR created_at IS NULL OR updated_at IS NULL;
 CREATE UNIQUE INDEX idx_symbols_project_fingerprint
   ON symbols(project_id, fingerprint)
   WHERE project_id IS NOT NULL AND fingerprint IS NOT NULL;
@@ -57,16 +64,20 @@ CREATE INDEX idx_symbols_file_active
   ON symbols(file_id, is_active, kind);
 
 ALTER TABLE graph_nodes ADD COLUMN last_index_run_id TEXT REFERENCES analysis_runs(id) ON DELETE SET NULL;
-ALTER TABLE graph_nodes ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
-ALTER TABLE graph_nodes ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE graph_nodes ADD COLUMN created_at TEXT;
+ALTER TABLE graph_nodes ADD COLUMN updated_at TEXT;
 ALTER TABLE graph_nodes ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1));
+UPDATE graph_nodes SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP),
+                       updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP);
 CREATE INDEX idx_graph_nodes_project_active_type
   ON graph_nodes(project_id, is_active, node_type);
 
 ALTER TABLE graph_edges ADD COLUMN last_index_run_id TEXT REFERENCES analysis_runs(id) ON DELETE SET NULL;
-ALTER TABLE graph_edges ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
-ALTER TABLE graph_edges ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE graph_edges ADD COLUMN created_at TEXT;
+ALTER TABLE graph_edges ADD COLUMN updated_at TEXT;
 ALTER TABLE graph_edges ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1));
+UPDATE graph_edges SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP),
+                       updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP);
 CREATE INDEX idx_graph_edges_project_active_relationship
   ON graph_edges(project_id, is_active, relationship);
 

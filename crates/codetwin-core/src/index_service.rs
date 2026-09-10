@@ -77,28 +77,33 @@ impl<'a> ProjectIndexService<'a> {
         let result = match source_indexer::index_project(&root, &known_hashes) {
             Ok(result) => result,
             Err(error) => {
-                mark_run_failed(self.database.connection(), &run_id, started.elapsed().as_millis())?;
+                let _ = mark_run_failed(
+                    self.database.connection(),
+                    &run_id,
+                    started.elapsed().as_millis(),
+                );
                 return Err(error.into());
             }
         };
 
-        let persistence = persist_index_result(
+        match persist_index_result(
             self.database.connection(),
             &project,
             &run_id,
             &analysis_fingerprint,
             &result,
             started,
-        );
-        if let Err(error) = persistence {
-            let _ = mark_run_failed(
-                self.database.connection(),
-                &run_id,
-                started.elapsed().as_millis(),
-            );
-            return Err(error);
+        ) {
+            Ok(summary) => Ok(summary),
+            Err(error) => {
+                let _ = mark_run_failed(
+                    self.database.connection(),
+                    &run_id,
+                    started.elapsed().as_millis(),
+                );
+                Err(error)
+            }
         }
-        persistence
     }
 }
 
@@ -130,31 +135,30 @@ fn open_project(connection: &Connection, root: &Path) -> Result<ProjectRecord, I
         "INSERT INTO projects(id, root_path, display_name, path_identity, git_remote, last_opened_at)\
          VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)\
          ON CONFLICT(id) DO UPDATE SET\
-           root_path = excluded.root_path,\
-           display_name = excluded.display_name,\
-           path_identity = excluded.path_identity,\
-           git_remote = excluded.git_remote,\
-           last_opened_at = CURRENT_TIMESTAMP,\
-           updated_at = CURRENT_TIMESTAMP",
+           root_path = excluded.root_path, display_name = excluded.display_name,\
+           path_identity = excluded.path_identity, git_remote = excluded.git_remote,\
+           last_opened_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP",
         params![id, root_path, display_name, path_identity, git_remote],
     )?;
 
-    connection.query_row(
-        "SELECT id, display_name, root_path, path_identity, git_remote, last_opened_at, last_indexed_at\
-         FROM projects WHERE id = ?1",
-        [&id],
-        |row| {
-            Ok(ProjectRecord {
-                id: row.get(0)?,
-                display_name: row.get(1)?,
-                root_path: row.get(2)?,
-                path_identity: row.get(3)?,
-                git_remote: row.get(4)?,
-                last_opened_at: row.get(5)?,
-                last_indexed_at: row.get(6)?,
-            })
-        },
-    ).map_err(Into::into)
+    connection
+        .query_row(
+            "SELECT id, display_name, root_path, path_identity, git_remote, last_opened_at, last_indexed_at\
+             FROM projects WHERE id = ?1",
+            [&id],
+            |row| {
+                Ok(ProjectRecord {
+                    id: row.get(0)?,
+                    display_name: row.get(1)?,
+                    root_path: row.get(2)?,
+                    path_identity: row.get(3)?,
+                    git_remote: row.get(4)?,
+                    last_opened_at: row.get(5)?,
+                    last_indexed_at: row.get(6)?,
+                })
+            },
+        )
+        .map_err(Into::into)
 }
 
 fn load_known_hashes(
@@ -197,7 +201,7 @@ fn persist_index_result(
         ..IndexDelta::default()
     };
 
-    let existing_files = load_active_files(&transaction, &project.id)?;
+    let existing_files = load_active_files(&transaction, &project.id, case_insensitive)?;
     let mut touched_identities = BTreeSet::new();
 
     for indexed in &result.indexed_files {
@@ -208,10 +212,12 @@ fn persist_index_result(
         let stable_file_id = existing
             .map(|record| record.id.clone())
             .unwrap_or_else(|| file_id(&project.id, &relative_identity));
-        if existing.is_some() {
-            delta.files_modified += 1;
-        } else {
-            delta.files_added += 1;
+        match existing {
+            None => delta.files_added += 1,
+            Some(record) if record.content_hash == indexed.content_hash => {
+                delta.files_unchanged += 1;
+            }
+            Some(_) => delta.files_modified += 1,
         }
         persist_file_and_symbols(
             &transaction,
@@ -292,29 +298,42 @@ fn persist_index_result(
 struct ExistingFile {
     id: String,
     relative_path: String,
+    content_hash: String,
 }
 
 fn load_active_files(
     connection: &Connection,
     project_id: &str,
-) -> Result<BTreeMap<String, ExistingFile>, rusqlite::Error> {
+    case_insensitive: bool,
+) -> Result<BTreeMap<String, ExistingFile>, IndexServiceError> {
     let mut statement = connection.prepare(
-        "SELECT id, relative_path, COALESCE(relative_path_identity, relative_path)\
+        "SELECT id, relative_path, relative_path_identity, content_hash\
          FROM files WHERE project_id = ?1 AND is_active = 1",
     )?;
     let rows = statement.query_map([project_id], |row| {
         Ok((
-            row.get::<_, String>(2)?,
-            ExistingFile {
-                id: row.get(0)?,
-                relative_path: row.get(1)?,
-            },
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?,
         ))
     })?;
     let mut files = BTreeMap::new();
     for row in rows {
-        let (identity, record) = row?;
-        files.insert(identity, record);
+        let (id, relative_path, stored_identity, content_hash) = row?;
+        let identity = match stored_identity {
+            Some(identity) => identity,
+            None => normalize_relative_path(&relative_path, case_insensitive)
+                .ok_or_else(|| IndexServiceError::UnsafeRelativePath(relative_path.clone()))?,
+        };
+        files.insert(
+            identity,
+            ExistingFile {
+                id,
+                relative_path,
+                content_hash,
+            },
+        );
     }
     Ok(files)
 }
@@ -332,12 +351,12 @@ fn persist_file_and_symbols(
     connection.execute(
         "INSERT INTO files(\
            id, project_id, relative_path, relative_path_identity, language, content_hash, byte_size, indexed_at,\
-           ast_root_kind, parse_state, analysis_fingerprint, last_index_run_id, is_active\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, ?8, ?9, ?10, ?11, 1)\
-         ON CONFLICT(project_id, relative_path) DO UPDATE SET\
-           relative_path_identity = excluded.relative_path_identity, language = excluded.language,\
-           content_hash = excluded.content_hash, byte_size = excluded.byte_size, indexed_at = CURRENT_TIMESTAMP,\
-           ast_root_kind = excluded.ast_root_kind, parse_state = excluded.parse_state,\
+           ast_root_kind, parse_state, analysis_fingerprint, last_index_run_id, created_at, updated_at, is_active\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, ?8, ?9, ?10, ?11, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
+         ON CONFLICT(id) DO UPDATE SET\
+           relative_path = excluded.relative_path, relative_path_identity = excluded.relative_path_identity,\
+           language = excluded.language, content_hash = excluded.content_hash, byte_size = excluded.byte_size,\
+           indexed_at = CURRENT_TIMESTAMP, ast_root_kind = excluded.ast_root_kind, parse_state = excluded.parse_state,\
            analysis_fingerprint = excluded.analysis_fingerprint, last_index_run_id = excluded.last_index_run_id,\
            updated_at = CURRENT_TIMESTAMP, is_active = 1",
         params![
@@ -382,19 +401,18 @@ fn persist_file_and_symbols(
         current_fingerprints.insert(fingerprint.clone());
 
         match previous.get(&fingerprint) {
-            Some(previous_symbol) => {
-                if previous_symbol.range != symbol_range(symbol) {
-                    delta.symbols_updated += 1;
-                }
+            Some(previous_symbol) if previous_symbol.range != symbol_range(symbol) => {
+                delta.symbols_updated += 1;
             }
+            Some(_) => {}
             None => delta.symbols_added += 1,
         }
 
         connection.execute(
             "INSERT INTO symbols(\
                id, file_id, project_id, kind, name, qualified_name, start_line, start_column, end_line, end_column,\
-               fingerprint, last_index_run_id, is_active\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?1, ?10, 1)\
+               fingerprint, last_index_run_id, created_at, updated_at, is_active\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?1, ?10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
              ON CONFLICT(id) DO UPDATE SET\
                file_id = excluded.file_id, project_id = excluded.project_id, kind = excluded.kind, name = excluded.name,\
                start_line = excluded.start_line, start_column = excluded.start_column, end_line = excluded.end_line,\
@@ -589,8 +607,9 @@ fn upsert_graph_node(
     run_id: &str,
 ) -> Result<(), rusqlite::Error> {
     connection.execute(
-        "INSERT INTO graph_nodes(id, project_id, node_type, external_key, label, metadata_json, last_index_run_id, is_active)\
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)\
+        "INSERT INTO graph_nodes(\
+           id, project_id, node_type, external_key, label, metadata_json, last_index_run_id, created_at, updated_at, is_active\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
          ON CONFLICT(project_id, node_type, external_key) DO UPDATE SET\
            label = excluded.label, metadata_json = excluded.metadata_json, last_index_run_id = excluded.last_index_run_id,\
            updated_at = CURRENT_TIMESTAMP, is_active = 1",
@@ -609,8 +628,9 @@ fn upsert_graph_edge(
 ) -> Result<(), rusqlite::Error> {
     let id = graph_edge_id(project_id, source_node_id, target_node_id, relationship);
     connection.execute(
-        "INSERT INTO graph_edges(id, project_id, source_node_id, target_node_id, relationship, metadata_json, last_index_run_id, is_active)\
-         VALUES (?1, ?2, ?3, ?4, ?5, '{}', ?6, 1)\
+        "INSERT INTO graph_edges(\
+           id, project_id, source_node_id, target_node_id, relationship, metadata_json, last_index_run_id, created_at, updated_at, is_active\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, '{}', ?6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
          ON CONFLICT(project_id, source_node_id, target_node_id, relationship) DO UPDATE SET\
            last_index_run_id = excluded.last_index_run_id, updated_at = CURRENT_TIMESTAMP, is_active = 1",
         params![id, project_id, source_node_id, target_node_id, relationship, run_id],
