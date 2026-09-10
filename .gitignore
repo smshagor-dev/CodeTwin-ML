@@ -27,7 +27,9 @@ playwright-report/
 test-results/
 artifacts/
 models/
-datasets/cache/
+# Dataset source catalog/provenance logic is versioned; downloaded/raw bytes stay local.
+datasets/cache/*
+!datasets/cache/.gitkeep
 datasets/raw/
 logs/
 *.log
