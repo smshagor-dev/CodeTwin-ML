@@ -3,6 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from codetwin_ml.datasets import (
+    DatasetError,
+    dataset_status,
+    list_datasets,
+    prefetch_action,
+    prefetch_all,
+    prefetch_dataset,
+    route_action,
+)
+
 
 class ProtocolError(ValueError):
     """Raised when a sidecar request violates the protocol contract."""
@@ -30,22 +40,72 @@ class Request:
         return cls(request_id=request_id, method=method, params=params)
 
 
+def _ok(request: Request, result: Any) -> dict[str, Any]:
+    return {"id": request.request_id, "ok": True, "result": result}
+
+
+def _error(request: Request, code: str, message: str) -> dict[str, Any]:
+    return {"id": request.request_id, "ok": False, "error": {"code": code, "message": message}}
+
+
+def _string_param(request: Request, key: str, *, required: bool = False) -> str | None:
+    value = request.params.get(key)
+    if value is None and not required:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ProtocolError(f"{key} must be a non-empty string")
+    return value
+
+
+def _accepted_licenses(request: Request) -> list[str]:
+    value = request.params.get("accepted_licenses", [])
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise ProtocolError("accepted_licenses must be an array of non-empty strings")
+    return value
+
+
 def handle_request(request: Request) -> dict[str, Any]:
-    if request.method == "health":
-        return {"id": request.request_id, "ok": True, "result": {"status": "ready", "protocol": 1}}
-    if request.method == "capabilities":
-        return {
-            "id": request.request_id,
-            "ok": True,
-            "result": {
+    try:
+        if request.method == "health":
+            return _ok(request, {"status": "ready", "protocol": 1})
+        if request.method == "capabilities":
+            catalog = list_datasets()
+            return _ok(request, {
                 "protocol": 1,
                 "inference": [],
                 "training": [],
+                "datasets": {
+                    "catalog_version": catalog["schema_version"],
+                    "downloadable": True,
+                    "actions": catalog["actions"],
+                },
                 "note": "No model is reported until an evaluated artifact is installed.",
-            },
-        }
-    return {
-        "id": request.request_id,
-        "ok": False,
-        "error": {"code": "method_not_found", "message": f"unsupported method: {request.method}"},
-    }
+            })
+        if request.method == "datasets.list":
+            return _ok(request, list_datasets())
+        if request.method == "datasets.route":
+            action = _string_param(request, "action", required=True)
+            return _ok(request, route_action(action))
+        if request.method == "datasets.status":
+            dataset_id = _string_param(request, "dataset_id")
+            return _ok(request, dataset_status(dataset_id))
+        if request.method == "datasets.prefetch":
+            accepted = _accepted_licenses(request)
+            action = _string_param(request, "action")
+            dataset_id = _string_param(request, "dataset_id")
+            all_requested = request.params.get("all", False)
+            if not isinstance(all_requested, bool):
+                raise ProtocolError("all must be a boolean")
+            selected = int(action is not None) + int(dataset_id is not None) + int(all_requested)
+            if selected != 1:
+                raise ProtocolError("datasets.prefetch requires exactly one of action, dataset_id, or all=true")
+            if action is not None:
+                return _ok(request, prefetch_action(action, accepted_licenses=accepted))
+            if dataset_id is not None:
+                return _ok(request, prefetch_dataset(dataset_id, accepted_licenses=accepted))
+            return _ok(request, prefetch_all(accepted_licenses=accepted))
+        return _error(request, "method_not_found", f"unsupported method: {request.method}")
+    except ProtocolError:
+        raise
+    except DatasetError as error:
+        return _error(request, "dataset_error", str(error))
