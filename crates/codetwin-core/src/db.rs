@@ -5,6 +5,7 @@ use thiserror::Error;
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_digital_twin_persistence.sql");
+const MIGRATION_0003: &str = include_str!("../migrations/0003_lsp_semantic_enrichment.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -44,6 +45,7 @@ impl Database {
         )?;
         self.apply_migration(1, MIGRATION_0001)?;
         self.apply_migration(2, MIGRATION_0002)?;
+        self.apply_migration(3, MIGRATION_0003)?;
         Ok(())
     }
 
@@ -75,17 +77,17 @@ mod tests {
     use super::Database;
 
     #[test]
-    fn creates_expected_foundation_and_persistence_tables() {
+    fn creates_expected_foundation_persistence_and_semantic_tables() {
         let db = Database::open_in_memory().expect("open db");
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','semantic_run_metrics','semantic_relations','semantic_symbol_states')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 7);
+        assert_eq!(count, 10);
     }
 
     #[test]
@@ -95,7 +97,7 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 2);
+        assert_eq!(count, 3);
     }
 
     #[test]
