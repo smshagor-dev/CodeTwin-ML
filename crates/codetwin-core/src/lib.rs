@@ -1,7 +1,8 @@
 pub mod db;
 pub mod domain;
 pub mod identity;
-pub mod index_service;
+pub mod import_resolver;
+pub mod persistent_index;
 pub mod query_service;
 
 pub use db::{Database, DatabaseError};
@@ -16,5 +17,6 @@ pub use identity::{
     normalize_path_identity, normalize_path_text, normalize_relative_path, project_id,
     symbol_fingerprint,
 };
-pub use index_service::{IndexServiceError, ProjectIndexService};
+pub use import_resolver::{resolve_import, ResolvedImport};
+pub use persistent_index::{IndexServiceError, ProjectIndexService};
 pub use query_service::{ProjectQueryService, QueryServiceError};
