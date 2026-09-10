@@ -72,6 +72,25 @@ type ImportReferenceRecord = {
   resolved_target_file_id: string | null;
 };
 
+type ImpactedFileRecord = {
+  file_id: string;
+  relative_path: string;
+  language: string | null;
+  depth: number;
+  via_import_id: string;
+  via_source_file_id: string;
+  via_raw_specifier: string;
+};
+
+type ImpactReport = {
+  root: SourceFileRecord;
+  affected_files: ImpactedFileRecord[];
+  requested_depth: number;
+  effective_depth: number;
+  limit: number;
+  truncated: boolean;
+};
+
 type GraphSummary = {
   node_count: number;
   edge_count: number;
@@ -103,6 +122,7 @@ export function App() {
   const [fileSymbols, setFileSymbols] = useState<SymbolRecord[]>([]);
   const [dependencies, setDependencies] = useState<ImportReferenceRecord[]>([]);
   const [dependents, setDependents] = useState<ImportReferenceRecord[]>([]);
+  const [impact, setImpact] = useState<ImpactReport | null>(null);
   const [symbolSearch, setSymbolSearch] = useState("");
   const [symbolResults, setSymbolResults] = useState<SymbolRecord[]>([]);
   const [selectedSymbol, setSelectedSymbol] = useState<SymbolRecord | null>(null);
@@ -137,6 +157,7 @@ export function App() {
       setFileSymbols([]);
       setDependencies([]);
       setDependents([]);
+      setImpact(null);
       setSymbolResults([]);
       await loadProject(indexSummary.project_id);
     } catch (value) {
@@ -161,15 +182,22 @@ export function App() {
     setSelectedFile(file);
     setSelectedSymbol(null);
     try {
-      const [symbols, imports, incoming] = await Promise.all([
+      const [symbols, imports, incoming, impactReport] = await Promise.all([
         invoke<SymbolRecord[]>("list_file_symbols", { fileId: file.id, limit: 300 }),
         invoke<ImportReferenceRecord[]>("list_dependencies", { fileId: file.id, limit: 200 }),
         invoke<ImportReferenceRecord[]>("list_dependents", { fileId: file.id, limit: 200 }),
+        invoke<ImpactReport | null>("analyze_file_impact", {
+          fileId: file.id,
+          maxDepth: 6,
+          limit: 200,
+        }),
       ]);
       setFileSymbols(symbols);
       setDependencies(imports);
       setDependents(incoming);
+      setImpact(impactReport);
     } catch (value) {
+      setImpact(null);
       setError(String(value));
     }
   }
@@ -227,7 +255,7 @@ export function App() {
             <p>
               {view === "overview"
                 ? "Engineering intelligence workstation"
-                : "Persisted files, symbols, dependencies, and proven graph relationships"}
+                : "Persisted files, symbols, dependencies, proven relationships, and bounded impact"}
             </p>
           </div>
         </header>
@@ -375,6 +403,33 @@ export function App() {
                   </>
                 ) : (
                   <p className="empty">Select an indexed file to inspect persisted metadata and direct relationships.</p>
+                )}
+              </section>
+
+              <section className="panel compact">
+                <h2>Impact analysis</h2>
+                {impact ? (
+                  <>
+                    <p>
+                      Evidence-backed reverse dependency impact from <strong>{impact.root.relative_path}</strong>.
+                      Depth is capped at {impact.effective_depth}; at most {impact.limit} files are returned.
+                    </p>
+                    <div className="result-list small-list">
+                      {impact.affected_files.map((file) => (
+                        <div key={file.file_id} className="relationship-item">
+                          <strong>{file.relative_path}</strong>
+                          <span>{file.language ?? "Unknown"} · depth {file.depth}</span>
+                          <small className="mono">via {file.via_raw_specifier}</small>
+                        </div>
+                      ))}
+                      {!impact.affected_files.length && (
+                        <p className="empty">No active files are proven to depend on this file through resolved local imports.</p>
+                      )}
+                    </div>
+                    {impact.truncated && <p className="error">Result limit reached; refine the target before relying on the visible set.</p>}
+                  </>
+                ) : (
+                  <p className="empty">Select an indexed file to calculate bounded reverse dependency impact.</p>
                 )}
               </section>
 
