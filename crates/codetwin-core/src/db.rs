@@ -4,6 +4,7 @@ use rusqlite::Connection;
 use thiserror::Error;
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
+const MIGRATION_0002: &str = include_str!("../migrations/0002_digital_twin_persistence.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -41,52 +42,75 @@ impl Database {
         self.connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);",
         )?;
+        self.apply_migration(1, MIGRATION_0001)?;
+        self.apply_migration(2, MIGRATION_0002)?;
+        Ok(())
+    }
 
+    fn apply_migration(&self, version: i64, sql: &str) -> Result<(), DatabaseError> {
         let applied: bool = self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 1)",
-            [],
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+            [version],
             |row| row.get(0),
         )?;
-
-        if !applied {
-            let tx = self.connection.unchecked_transaction()?;
-            tx.execute_batch(MIGRATION_0001)?;
-            tx.execute("INSERT INTO schema_migrations(version) VALUES (1)", [])?;
-            tx.commit()?;
+        if applied {
+            return Ok(());
         }
+
+        let tx = self.connection.unchecked_transaction()?;
+        tx.execute_batch(sql)?;
+        tx.execute(
+            "INSERT INTO schema_migrations(version) VALUES (?1)",
+            [version],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use tempfile::NamedTempFile;
+
     use super::Database;
 
     #[test]
-    fn creates_expected_foundation_tables() {
+    fn creates_expected_foundation_and_persistence_tables() {
         let db = Database::open_in_memory().expect("open db");
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','findings','graph_nodes','graph_edges')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 5);
+        assert_eq!(count, 7);
     }
 
     #[test]
-    fn migration_is_idempotent() {
+    fn migrations_are_idempotent_and_numbered() {
         let db = Database::open_in_memory().expect("open db");
         let count: i64 = db
             .connection()
-            .query_row(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version=1",
-                [],
-                |row| row.get(0),
-            )
-            .expect("query migration");
-        assert_eq!(count, 1);
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .expect("query migrations");
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn file_database_uses_wal_and_foreign_keys() {
+        let file = NamedTempFile::new().expect("temp db");
+        let db = Database::open(file.path()).expect("open file db");
+        let journal_mode: String = db
+            .connection()
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("journal mode");
+        let foreign_keys: i64 = db
+            .connection()
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("foreign keys");
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+        assert_eq!(foreign_keys, 1);
     }
 }
