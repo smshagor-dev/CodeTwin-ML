@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator};
 
+pub const ANALYZER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 const TS_QUERY: &str = r#"
 (call_expression
   function: (identifier) @reference.call)
