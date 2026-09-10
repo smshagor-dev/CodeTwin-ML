@@ -77,6 +77,7 @@ pub struct SemanticServerRun {
     pub relations_persisted: usize,
     pub graph_edges_materialized: usize,
     pub imports_upgraded: usize,
+    pub errors: usize,
     pub error: Option<String>,
     pub server_name: Option<String>,
     pub server_version: Option<String>,
