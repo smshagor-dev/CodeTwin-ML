@@ -144,6 +144,7 @@ try {
     }
     $statePath = Join-Path $InstallRoot "openmindai-dataset-install-state.json"
     $state | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 $statePath
+    [Environment]::SetEnvironmentVariable("CODETWIN_DATASET_CACHE", $InstallRoot, "User")
     Write-Host "OpenMindAI Dataset installation complete: $InstallRoot"
     exit 0
 }
