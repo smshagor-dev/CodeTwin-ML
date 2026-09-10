@@ -80,7 +80,7 @@ fn extract_javascript_like(node: Node<'_>, source: &str, imports: &mut Vec<Index
             let Some(arguments) = node.child_by_field_name("arguments") else {
                 return;
             };
-            if let Some(specifier) = find_descendant(arguments, &["string", "string_fragment"]) {
+            if let Some(specifier) = find_descendant(arguments, &["string"]) {
                 if let Some(raw) = literal_text(specifier, source) {
                     push(imports, "require", raw, specifier);
                 }
