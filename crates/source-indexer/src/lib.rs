@@ -1,3 +1,5 @@
+mod imports;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
@@ -13,6 +15,8 @@ use walkdir::{DirEntry, WalkDir};
 
 const MAX_SOURCE_BYTES: u64 = 5 * 1024 * 1024;
 const TYPESCRIPT_DEFINITIONS_QUERY: &str = include_str!("../queries/typescript.scm");
+pub const INDEXER_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const QUERY_VERSION: &str = "definitions-v2-imports-v1";
 
 #[derive(Debug, Error)]
 pub enum IndexError {
@@ -33,6 +37,19 @@ pub enum ParseState {
 pub struct IndexedSymbol {
     pub kind: String,
     pub name: String,
+    pub qualified_name: Option<String>,
+    pub parent_scope: Option<String>,
+    pub signature: Option<String>,
+    pub start_line: usize,
+    pub start_column: usize,
+    pub end_line: usize,
+    pub end_column: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedImport {
+    pub raw_specifier: String,
+    pub kind: String,
     pub start_line: usize,
     pub start_column: usize,
     pub end_line: usize,
@@ -48,6 +65,7 @@ pub struct IndexedFile {
     pub ast_root_kind: String,
     pub parse_state: ParseState,
     pub symbols: Vec<IndexedSymbol>,
+    pub imports: Vec<IndexedImport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +94,10 @@ impl IndexResult {
             .iter()
             .filter(|file| file.parse_state == ParseState::ParsedWithErrors)
             .count()
+    }
+
+    pub fn import_count(&self) -> usize {
+        self.indexed_files.iter().map(|file| file.imports.len()).sum()
     }
 }
 
@@ -107,13 +129,11 @@ pub fn index_project(
         if !entry.file_type().is_file() {
             continue;
         }
-
         let path = entry.path();
         let Some(spec) = language_spec(path) else {
             continue;
         };
         let relative_path = normalized_relative_path(root, path);
-
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
@@ -124,7 +144,6 @@ pub fn index_project(
                 continue;
             }
         };
-
         if metadata.len() > MAX_SOURCE_BYTES {
             result.skipped_files.push(SkippedFile {
                 relative_path,
@@ -132,7 +151,6 @@ pub fn index_project(
             });
             continue;
         }
-
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -144,7 +162,6 @@ pub fn index_project(
             }
         };
         let content_hash = sha256_hex(&bytes);
-
         if known_hashes
             .get(&relative_path)
             .is_some_and(|known| known == &content_hash)
@@ -152,7 +169,6 @@ pub fn index_project(
             result.unchanged_files.push(relative_path);
             continue;
         }
-
         let source = match String::from_utf8(bytes) {
             Ok(source) => source,
             Err(_) => {
@@ -163,7 +179,6 @@ pub fn index_project(
                 continue;
             }
         };
-
         match parse_source(
             relative_path.clone(),
             &source,
@@ -211,6 +226,7 @@ fn parse_source(
     let query = Query::new(&spec.language, spec.definitions_query)
         .map_err(|error| format!("definition_query_error:{error}"))?;
     let symbols = collect_symbols(source, &tree, &query);
+    let imports = imports::extract_imports(spec.name, source, tree.root_node());
 
     Ok(IndexedFile {
         relative_path,
@@ -220,20 +236,33 @@ fn parse_source(
         ast_root_kind: tree.root_node().kind().to_string(),
         parse_state,
         symbols,
+        imports,
     })
+}
+
+#[derive(Debug)]
+struct CapturedSymbol {
+    kind: String,
+    name: String,
+    signature: Option<String>,
+    start_line: usize,
+    start_column: usize,
+    end_line: usize,
+    end_column: usize,
+    start_byte: usize,
+    end_byte: usize,
 }
 
 fn collect_symbols(source: &str, tree: &tree_sitter::Tree, query: &Query) -> Vec<IndexedSymbol> {
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
-    let mut symbols = Vec::new();
+    let mut captured = Vec::new();
     let mut seen = BTreeSet::new();
 
     while let Some(query_match) = matches.next() {
         let mut name_node = None;
         let mut definition = None;
-
         for capture in query_match.captures {
             let capture_name = capture_names[capture.index as usize];
             if capture_name == "name" {
@@ -242,7 +271,6 @@ fn collect_symbols(source: &str, tree: &tree_sitter::Tree, query: &Query) -> Vec
                 definition = Some((kind, capture.node));
             }
         }
-
         let (Some(name_node), Some((kind, definition_node))) = (name_node, definition) else {
             continue;
         };
@@ -253,9 +281,6 @@ fn collect_symbols(source: &str, tree: &tree_sitter::Tree, query: &Query) -> Vec
         if name.is_empty() {
             continue;
         }
-
-        let start = definition_node.start_position();
-        let end = definition_node.end_position();
         let identity = (
             kind.to_string(),
             name.to_string(),
@@ -265,25 +290,89 @@ fn collect_symbols(source: &str, tree: &tree_sitter::Tree, query: &Query) -> Vec
         if !seen.insert(identity) {
             continue;
         }
-
-        symbols.push(IndexedSymbol {
+        let start = definition_node.start_position();
+        let end = definition_node.end_position();
+        captured.push(CapturedSymbol {
             kind: kind.to_string(),
             name: name.to_string(),
+            signature: declaration_signature(source, definition_node),
             start_line: start.row + 1,
             start_column: start.column,
             end_line: end.row + 1,
             end_column: end.column,
+            start_byte: definition_node.start_byte(),
+            end_byte: definition_node.end_byte(),
         });
     }
 
-    symbols.sort_by(|left, right| {
-        (left.start_line, left.start_column, &left.name).cmp(&(
-            right.start_line,
-            right.start_column,
-            &right.name,
-        ))
+    captured.sort_by(|left, right| {
+        (left.start_byte, left.end_byte, &left.name).cmp(&(right.start_byte, right.end_byte, &right.name))
     });
+    let parents: Vec<Option<usize>> = (0..captured.len())
+        .map(|child_index| structural_parent(&captured, child_index))
+        .collect();
+    let mut qualified_names = Vec::with_capacity(captured.len());
+    for (index, symbol) in captured.iter().enumerate() {
+        let qualified = parents[index]
+            .and_then(|parent| qualified_names.get(parent))
+            .map_or_else(
+                || symbol.name.clone(),
+                |parent: &String| format!("{parent}.{}", symbol.name),
+            );
+        qualified_names.push(qualified);
+    }
+
+    captured
+        .into_iter()
+        .enumerate()
+        .map(|(index, symbol)| IndexedSymbol {
+            kind: symbol.kind,
+            name: symbol.name,
+            qualified_name: Some(qualified_names[index].clone()),
+            parent_scope: parents[index].map(|parent| qualified_names[parent].clone()),
+            signature: symbol.signature,
+            start_line: symbol.start_line,
+            start_column: symbol.start_column,
+            end_line: symbol.end_line,
+            end_column: symbol.end_column,
+        })
+        .collect()
+}
+
+fn structural_parent(symbols: &[CapturedSymbol], child_index: usize) -> Option<usize> {
+    let child = &symbols[child_index];
     symbols
+        .iter()
+        .enumerate()
+        .filter(|(index, candidate)| {
+            *index != child_index
+                && candidate.start_byte <= child.start_byte
+                && candidate.end_byte >= child.end_byte
+                && (candidate.start_byte != child.start_byte || candidate.end_byte != child.end_byte)
+        })
+        .min_by_key(|(_, candidate)| candidate.end_byte.saturating_sub(candidate.start_byte))
+        .map(|(index, _)| index)
+}
+
+fn declaration_signature(source: &str, node: tree_sitter::Node<'_>) -> Option<String> {
+    let text = node.utf8_text(source.as_bytes()).ok()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let first_line = text.lines().next().unwrap_or(text);
+    let head = first_line
+        .split_once('{')
+        .map_or(first_line, |(head, _)| head)
+        .split_once("=>")
+        .map_or(first_line, |(head, _)| head)
+        .trim()
+        .trim_end_matches(';')
+        .trim();
+    if head.is_empty() {
+        None
+    } else {
+        Some(head.split_whitespace().collect::<Vec<_>>().join(" "))
+    }
 }
 
 fn language_spec(path: &Path) -> Option<LanguageSpec> {
@@ -411,47 +500,19 @@ mod tests {
     #[test]
     fn extracts_definition_symbols_across_initial_languages() {
         let cases = [
-            (
-                "sample.ts",
-                "export function add(a: number, b: number): number { return a + b; }",
-                "add",
-            ),
+            ("sample.ts", "export function add(a: number, b: number): number { return a + b; }", "add"),
             ("sample.js", "function add(a, b) { return a + b; }", "add"),
             ("sample.py", "def add(a, b):\n    return a + b\n", "add"),
-            (
-                "sample.rs",
-                "fn add(a: i32, b: i32) -> i32 { a + b }",
-                "add",
-            ),
-            (
-                "sample.go",
-                "package sample\nfunc add(a int, b int) int { return a + b }",
-                "add",
-            ),
+            ("sample.rs", "fn add(a: i32, b: i32) -> i32 { a + b }", "add"),
+            ("sample.go", "package sample\nfunc add(a int, b int) int { return a + b }", "add"),
             ("sample.c", "int add(int a, int b) { return a + b; }", "add"),
-            (
-                "sample.cpp",
-                "int add(int a, int b) { return a + b; }",
-                "add",
-            ),
-            (
-                "sample.php",
-                "<?php function add($a, $b) { return $a + $b; }",
-                "add",
-            ),
+            ("sample.cpp", "int add(int a, int b) { return a + b; }", "add"),
+            ("sample.php", "<?php function add($a, $b) { return $a + $b; }", "add"),
         ];
-
         for (path, source, expected_name) in cases {
             let indexed = parse_fixture(path, source);
             assert_eq!(indexed.parse_state, ParseState::Parsed, "{path}");
-            assert!(
-                indexed
-                    .symbols
-                    .iter()
-                    .any(|symbol| symbol.name == expected_name),
-                "missing symbol {expected_name} in {path}: {:?}",
-                indexed.symbols
-            );
+            assert!(indexed.symbols.iter().any(|symbol| symbol.name == expected_name));
         }
     }
 
@@ -478,6 +539,9 @@ export const exportedArrow = async () => 3;
         assert_has_symbol(&indexed, "type", "Result");
         assert_has_symbol(&indexed, "function", "localArrow");
         assert_has_symbol(&indexed, "function", "exportedArrow");
+        let run = indexed.symbols.iter().find(|symbol| symbol.name == "run").expect("run");
+        assert_eq!(run.parent_scope.as_deref(), Some("Service"));
+        assert_eq!(run.qualified_name.as_deref(), Some("Service.run"));
 
         let tsx = r#"
 export interface Props { label: string; }
@@ -499,9 +563,7 @@ export class View {
         let source = r#"
 export function exportedFunction() { return 1; }
 async function asyncFunction() { return 2; }
-class Service {
-    run() { return true; }
-}
+class Service { run() { return true; } }
 const localArrow = (value) => value + 1;
 export const exportedArrow = async () => 3;
 "#;
@@ -516,19 +578,37 @@ export const exportedArrow = async () => 3;
     }
 
     #[test]
+    fn extracts_import_references_from_supported_syntax() {
+        let ts = parse_fixture(
+            "sample.ts",
+            "import { x } from './x'; export { y } from \"../y\"; const z = require('pkg');",
+        );
+        assert!(ts.imports.iter().any(|item| item.kind == "import" && item.raw_specifier == "./x"));
+        assert!(ts.imports.iter().any(|item| item.kind == "export_from" && item.raw_specifier == "../y"));
+        assert!(ts.imports.iter().any(|item| item.kind == "require" && item.raw_specifier == "pkg"));
+
+        let python = parse_fixture("sample.py", "import os, pkg.mod as mod\nfrom .local import value\n");
+        assert!(python.imports.iter().any(|item| item.raw_specifier == "os"));
+        assert!(python.imports.iter().any(|item| item.raw_specifier == "pkg.mod"));
+        assert!(python.imports.iter().any(|item| item.raw_specifier == ".local"));
+
+        let rust = parse_fixture("sample.rs", "use crate::module::Thing;\nfn main() {}\n");
+        assert!(rust.imports.iter().any(|item| item.raw_specifier == "crate::module::Thing"));
+        let go = parse_fixture("sample.go", "package sample\nimport \"fmt\"\nfunc main() {}\n");
+        assert!(go.imports.iter().any(|item| item.raw_specifier == "fmt"));
+        let c = parse_fixture("sample.c", "#include <stdio.h>\nint main(void) { return 0; }\n");
+        assert!(c.imports.iter().any(|item| item.raw_specifier == "stdio.h"));
+    }
+
+    #[test]
     fn skips_unchanged_files_by_content_hash() {
         let dir = tempdir().expect("tempdir");
-        fs::write(
-            dir.path().join("sample.ts"),
-            "export function value() { return 1; }",
-        )
-        .expect("write fixture");
-
+        fs::write(dir.path().join("sample.ts"), "export function value() { return 1; }")
+            .expect("write fixture");
         let first = index_project(dir.path(), &BTreeMap::new()).expect("first index");
         assert_eq!(first.indexed_files.len(), 1);
         let indexed = &first.indexed_files[0];
         let known = BTreeMap::from([(indexed.relative_path.clone(), indexed.content_hash.clone())]);
-
         let second = index_project(dir.path(), &known).expect("second index");
         assert!(second.indexed_files.is_empty());
         assert_eq!(second.unchanged_files, vec!["sample.ts"]);
@@ -539,17 +619,13 @@ export const exportedArrow = async () => 3;
         let dir = tempdir().expect("tempdir");
         fs::create_dir_all(dir.path().join("src")).expect("src");
         fs::create_dir_all(dir.path().join("node_modules/pkg")).expect("node_modules");
-        fs::write(
-            dir.path().join("src/main.js"),
-            "function local() { return true; }",
-        )
-        .expect("source");
+        fs::write(dir.path().join("src/main.js"), "function local() { return true; }")
+            .expect("source");
         fs::write(
             dir.path().join("node_modules/pkg/index.js"),
             "function dependency() { return true; }",
         )
         .expect("dependency");
-
         let result = index_project(dir.path(), &BTreeMap::new()).expect("index");
         assert_eq!(result.indexed_files.len(), 1);
         assert_eq!(result.indexed_files[0].relative_path, "src/main.js");

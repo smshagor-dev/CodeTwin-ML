@@ -8,7 +8,7 @@ license.workspace = true
 tauri-build = { version = "2" }
 
 [dependencies]
+codetwin-core = { path = "../../../crates/codetwin-core" }
 project-discovery = { path = "../../../crates/project-discovery" }
-source-indexer = { path = "../../../crates/source-indexer" }
 serde.workspace = true
 tauri.workspace = true
