@@ -5,6 +5,7 @@ use thiserror::Error;
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_digital_twin_persistence.sql");
+const MIGRATION_0003: &str = include_str!("../migrations/0003_symbol_reference_observations.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -44,6 +45,7 @@ impl Database {
         )?;
         self.apply_migration(1, MIGRATION_0001)?;
         self.apply_migration(2, MIGRATION_0002)?;
+        self.apply_migration(3, MIGRATION_0003)?;
         Ok(())
     }
 
@@ -80,12 +82,12 @@ mod tests {
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 7);
+        assert_eq!(count, 8);
     }
 
     #[test]
@@ -95,7 +97,7 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 2);
+        assert_eq!(count, 3);
     }
 
     #[test]

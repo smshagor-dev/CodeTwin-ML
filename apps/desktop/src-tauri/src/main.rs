@@ -3,7 +3,8 @@ use std::sync::Mutex;
 use codetwin_core::{
     Database, GraphNeighborhood, GraphSummary, ImpactAnalysisService, ImpactReport,
     ImportReferenceRecord, IndexRunRecord, IndexSummary, ProjectIndexService, ProjectQueryService,
-    SourceFileRecord, SymbolRecord, SymbolSearchQuery,
+    ReferenceRefreshSummary, SourceFileRecord, SymbolRecord, SymbolReferenceObservationRecord,
+    SymbolReferenceService, SymbolSearchQuery,
 };
 use project_discovery::ProjectProfile;
 use tauri::Manager;
@@ -167,6 +168,31 @@ fn analyze_file_impact(
 }
 
 #[tauri::command]
+fn refresh_symbol_references(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<ReferenceRefreshSummary>, String> {
+    with_database(&state, |database| {
+        SymbolReferenceService::new(database)
+            .refresh_project(&project_id)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn list_file_reference_observations(
+    file_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SymbolReferenceObservationRecord>, String> {
+    with_database(&state, |database| {
+        SymbolReferenceService::new(database)
+            .list_file_observations(&file_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
 fn index_history(
     project_id: String,
     limit: usize,
@@ -203,6 +229,8 @@ fn main() {
             list_dependencies,
             list_dependents,
             analyze_file_impact,
+            refresh_symbol_references,
+            list_file_reference_observations,
             index_history,
         ])
         .run(tauri::generate_context!())
