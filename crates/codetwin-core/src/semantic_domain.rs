@@ -76,6 +76,7 @@ pub struct SemanticServerRun {
     pub definitions_resolved: usize,
     pub relations_persisted: usize,
     pub graph_edges_materialized: usize,
+    pub imports_upgraded: usize,
     pub error: Option<String>,
     pub server_name: Option<String>,
     pub server_version: Option<String>,
@@ -93,6 +94,7 @@ pub struct SemanticRunSummary {
     pub definitions_resolved: usize,
     pub relations_persisted: usize,
     pub graph_edges_materialized: usize,
+    pub imports_upgraded: usize,
     pub errors: usize,
     pub duration_ms: u64,
     pub servers: Vec<SemanticServerRun>,
@@ -137,6 +139,7 @@ pub enum SemanticSymbolState {
     Resolved,
     NoReferences,
     Unmatched,
+    Unresolved,
     Unsupported,
     Error,
     Stale,
@@ -148,6 +151,7 @@ impl SemanticSymbolState {
             Self::Resolved => "resolved",
             Self::NoReferences => "no_references",
             Self::Unmatched => "unmatched",
+            Self::Unresolved => "unresolved",
             Self::Unsupported => "unsupported",
             Self::Error => "error",
             Self::Stale => "stale",
@@ -159,6 +163,7 @@ impl SemanticSymbolState {
             "resolved" => Some(Self::Resolved),
             "no_references" => Some(Self::NoReferences),
             "unmatched" => Some(Self::Unmatched),
+            "unresolved" => Some(Self::Unresolved),
             "unsupported" => Some(Self::Unsupported),
             "error" => Some(Self::Error),
             "stale" => Some(Self::Stale),
@@ -180,6 +185,21 @@ pub struct SemanticSymbolStateRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticImportResolutionRecord {
+    pub id: String,
+    pub project_id: String,
+    pub run_id: String,
+    pub import_reference_id: String,
+    pub source_file_id: String,
+    pub target_file_id: String,
+    pub provider_kind: LanguageServerKind,
+    pub target_start_line: usize,
+    pub target_start_column: usize,
+    pub target_end_line: usize,
+    pub target_end_column: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticRunRecord {
     pub run_id: String,
     pub project_id: String,
@@ -194,6 +214,7 @@ pub struct SemanticRunRecord {
     pub definitions_resolved: usize,
     pub relations_persisted: usize,
     pub graph_edges_materialized: usize,
+    pub imports_upgraded: usize,
     pub errors: usize,
 }
 
