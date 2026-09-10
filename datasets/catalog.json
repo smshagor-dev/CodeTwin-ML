@@ -1,10 +1,13 @@
 {
   "schema_version": 1,
+  "brand": "OpenMindAI Dataset",
+  "release_tag": "openmindai-datasets-v1.0.0",
   "estimated_total_download_bytes": 177210655,
   "datasets": [
     {
       "id": "code_x_glue_defect_detection",
-      "name": "CodeXGLUE Defect Detection / Devign",
+      "name": "OpenMindAI Dataset - Defect Detection",
+      "release_asset": "openmindai-dataset-defect-detection-v1.0.0.zip",
       "repository": "google/code_x_glue_cc_defect_detection",
       "revision": "69bd48c03223c2104342acd9a807caf61ac3efb8",
       "license": "c-uda",
@@ -20,7 +23,8 @@
     },
     {
       "id": "code_x_glue_code_refinement",
-      "name": "CodeXGLUE Code Refinement",
+      "name": "OpenMindAI Dataset - Code Refinement",
+      "release_asset": "openmindai-dataset-code-refinement-v1.0.0.zip",
       "repository": "google/code_x_glue_cc_code_refinement",
       "revision": "07ab797a018d0d5c448b56eb26b5e11aa5ad7659",
       "license": "c-uda",
@@ -39,11 +43,13 @@
     },
     {
       "id": "swe_bench_verified",
-      "name": "SWE-bench Verified",
+      "name": "OpenMindAI Dataset - Repair Verification",
+      "release_asset": "openmindai-dataset-repair-verification-v1.0.0.zip",
       "repository": "princeton-nlp/SWE-bench_Verified",
       "revision": "c104f840cc67f8b6eec6f759ebc8b2693d585d4a",
       "license": "upstream-unspecified",
       "license_url": "https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified",
+      "license_note": "The SWE-bench project is MIT licensed, while task material can retain licenses from the source repositories.",
       "license_acceptance_required": true,
       "purpose": ["repair_verification", "regression_repair", "repository_issue_repair"],
       "download_bytes": 2096679,
@@ -53,7 +59,8 @@
     },
     {
       "id": "code_security_vulnerability",
-      "name": "Code Security Vulnerability Dataset",
+      "name": "OpenMindAI Dataset - Security Vulnerability",
+      "release_asset": "openmindai-dataset-security-vulnerability-v1.0.0.zip",
       "repository": "ayshajavd/code-security-vulnerability-dataset",
       "revision": "074abd8",
       "license": "apache-2.0",

@@ -1,0 +1,71 @@
+name: OpenMindAI Dataset Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - datasets/catalog.json
+      - datasets/openmindai-release.json
+      - scripts/build_openmindai_dataset_release.py
+      - services/ml/codetwin_ml/datasets.py
+      - .github/workflows/openmindai-dataset-release.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: openmindai-dataset-release-v1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build OpenMindAI Dataset assets
+        env:
+          PYTHONPATH: services/ml
+        run: python scripts/build_openmindai_dataset_release.py --output dist/openmindai-datasets
+
+      - name: Validate generated manifest
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('dist/openmindai-datasets/openmindai-dataset-manifest-v1.0.0.json').read_text())
+          assert manifest['schema_version'] == 1
+          assert manifest['brand'] == 'OpenMindAI Dataset'
+          assert len(manifest['assets']) == 4
+          for asset in manifest['assets']:
+              path = Path('dist/openmindai-datasets') / asset['asset_name']
+              assert path.is_file() and path.stat().st_size == asset['size_bytes']
+          PY
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: openmindai-datasets-v1.0.0
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/openmindai-datasets/*.zip \
+              dist/openmindai-datasets/openmindai-dataset-manifest-v1.0.0.json \
+              dist/openmindai-datasets/openmindai-dataset-SHA256SUMS.txt --clobber
+            gh release edit "$TAG" \
+              --title "OpenMindAI Dataset v1.0.0" \
+              --notes-file dist/openmindai-datasets/RELEASE_NOTES.md
+          else
+            gh release create "$TAG" \
+              dist/openmindai-datasets/*.zip \
+              dist/openmindai-datasets/openmindai-dataset-manifest-v1.0.0.json \
+              dist/openmindai-datasets/openmindai-dataset-SHA256SUMS.txt \
+              --target "${GITHUB_SHA}" \
+              --title "OpenMindAI Dataset v1.0.0" \
+              --notes-file dist/openmindai-datasets/RELEASE_NOTES.md
+          fi

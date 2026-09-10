@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "release_tag": "openmindai-datasets-v1.0.0",
+  "release_name": "OpenMindAI Dataset v1.0.0",
+  "manifest_asset": "openmindai-dataset-manifest-v1.0.0.json",
+  "install_root_windows": "%LOCALAPPDATA%\\CodeTwinML\\datasets",
+  "assets": [
+    {
+      "dataset_id": "code_x_glue_defect_detection",
+      "display_name": "OpenMindAI Dataset - Defect Detection",
+      "asset_name": "openmindai-dataset-defect-detection-v1.0.0.zip"
+    },
+    {
+      "dataset_id": "code_x_glue_code_refinement",
+      "display_name": "OpenMindAI Dataset - Code Refinement",
+      "asset_name": "openmindai-dataset-code-refinement-v1.0.0.zip"
+    },
+    {
+      "dataset_id": "swe_bench_verified",
+      "display_name": "OpenMindAI Dataset - Repair Verification",
+      "asset_name": "openmindai-dataset-repair-verification-v1.0.0.zip"
+    },
+    {
+      "dataset_id": "code_security_vulnerability",
+      "display_name": "OpenMindAI Dataset - Security Vulnerability",
+      "asset_name": "openmindai-dataset-security-vulnerability-v1.0.0.zip"
+    }
+  ]
+}
