@@ -19,12 +19,13 @@ CodeTwin ML is a local-first engineering intelligence desktop application. It co
 | Source-backed symbol reference observations | Implemented baseline |
 | Conservative same-file semantic symbol resolution | Implemented baseline |
 | Explicit LSP semantic enrichment | Implemented baseline for configured TypeScript/JavaScript, Pyright, and Rust Analyzer servers |
+| Deterministic code-quality findings | Implemented baseline for large definitions, deep declaration nesting, high local fan-out, and resolved-local dependency cycles |
 | OpenMindAI Dataset catalog + action routing | Implemented foundation |
-| QA/security/database/runtime analyzers | Planned |
+| Security/database/runtime analyzers | Planned |
 | ML inference models | Planned |
 | Verified repair workflow | Planned |
 
-Planned capabilities are not presented as available results. Semantic graph relationships are materialized only from persisted evidence; ambiguous or stale observations remain non-authoritative instead of being converted into guessed edges.
+Planned capabilities are not presented as available results. Semantic graph relationships and quality findings are materialized only from persisted evidence; ambiguous, unresolved, external, or stale observations are not converted into guessed local facts.
 
 ## Development
 
@@ -39,8 +40,8 @@ cargo test --workspace
 python -m unittest discover -s services/ml/tests
 ```
 
-See `docs/development/SETUP.md`, `docs/architecture/DIGITAL_TWIN.md`, and `docs/architecture/LSP_SEMANTIC_ENRICHMENT.md`.
+See `docs/development/SETUP.md`, `docs/architecture/DIGITAL_TWIN.md`, `docs/architecture/LSP_SEMANTIC_ENRICHMENT.md`, and `docs/architecture/CODE_QUALITY_ANALYSIS.md`.
 
 ## Privacy and security
 
-Passive source indexing and Digital Twin persistence treat repositories as untrusted data and do not execute repository commands. LSP semantic enrichment is a separate explicit workflow: it requires project trust and a user-configured absolute external language-server executable. CodeTwin does not discover or execute a language server from the analyzed repository.
+Passive source indexing, Digital Twin persistence, and deterministic code-quality analysis treat repositories as untrusted data and do not execute repository commands. LSP semantic enrichment is a separate explicit workflow: it requires project trust and a user-configured absolute external language-server executable. CodeTwin does not discover or execute a language server from the analyzed repository.
