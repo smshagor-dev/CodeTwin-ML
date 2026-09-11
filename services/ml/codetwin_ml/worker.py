@@ -87,7 +87,10 @@ def main() -> int:
 
     try:
         from codetwin_ml.inference import InferenceError, run_inference
+    except Exception as error:  # pragma: no cover - import failure is environment-specific
+        return _write_response(_error("worker_internal_error", type(error).__name__))
 
+    try:
         result = run_inference(
             action,
             text,
