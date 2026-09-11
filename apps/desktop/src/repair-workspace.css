@@ -1,0 +1,77 @@
+.repair-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, .8fr) minmax(560px, 1.2fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.repair-layout.lower {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 16px;
+}
+
+.repair-scroll-list {
+  max-height: 420px;
+  overflow: auto;
+}
+
+.repair-detail-panel {
+  min-height: 220px;
+}
+
+.repair-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.repair-source-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 12px 0;
+  font-size: .86rem;
+  opacity: .82;
+}
+
+.repair-editor {
+  width: 100%;
+  min-height: 420px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: .84rem;
+  line-height: 1.5;
+  tab-size: 2;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.static-item {
+  cursor: default;
+}
+
+.success.banner {
+  border-left: 3px solid currentColor;
+}
+
+.muted {
+  opacity: .7;
+}
+
+@media (max-width: 1180px) {
+  .repair-layout,
+  .repair-layout.lower {
+    grid-template-columns: 1fr;
+  }
+}
