@@ -1,6 +1,6 @@
 # Software Digital Twin
 
-CodeTwin ML persists a local Software Digital Twin in SQLite. The schema stores projects, analysis runs, files, symbols, graph nodes, graph edges, normalized findings, evidence, artifacts, settings, import observations, source-backed symbol-reference observations, conservative semantic-resolution state, and optional LSP semantic evidence. File, symbol, node, and edge identities are deterministic so incremental indexing updates existing entities rather than creating arbitrary duplicates.
+CodeTwin ML persists a local Software Digital Twin in SQLite. The schema stores projects, analysis runs, files, symbols, graph nodes, graph edges, normalized findings, evidence, artifacts, settings, import observations, source-backed symbol-reference observations, conservative semantic-resolution state, optional LSP semantic evidence, and deterministic code-quality run metrics. File, symbol, node, and edge identities are deterministic so incremental indexing updates existing entities rather than creating arbitrary duplicates.
 
 ## Persisted source index
 
@@ -23,7 +23,7 @@ The UI and service layer use bounded queries rather than loading an entire repos
 
 ## Query and navigation services
 
-The core query services support active file lookup, bounded symbol listing/search, graph summary and neighborhoods, direct dependencies/dependents, index history, reverse dependency impact, semantic run history, per-symbol semantic state/relations, and per-file LSP import evidence. Tauri handlers delegate to core services instead of embedding persistence logic in command functions.
+The core query services support active file lookup, bounded symbol listing/search, graph summary and neighborhoods, direct dependencies/dependents, index history, reverse dependency impact, semantic run history, per-symbol semantic state/relations, per-file LSP import evidence, deterministic quality findings/evidence, and quality run history. Tauri handlers delegate to core services instead of embedding persistence logic in command functions.
 
 ## Impact analysis
 
@@ -33,6 +33,10 @@ File-level impact analysis traverses the persisted local-import relation in reve
 
 LSP enrichment is not part of passive indexing. It requires explicit project trust plus a user-configured absolute language-server executable outside the analyzed repository. Persisted semantic evidence carries source/target hashes and is invalidated when those files or symbols become stale. See `LSP_SEMANTIC_ENRICHMENT.md` for the process, evidence, security, and bounded-execution model.
 
+## Deterministic code quality
+
+The first quality layer reads only active persisted symbols and `resolved_local` imports. It currently detects oversized definitions, deep structural declaration nesting, high local dependency fan-out, and resolved-local dependency cycles. Findings have deterministic fingerprints, durable open/resolved lifecycle, bounded run history, and concrete source or dependency evidence. See `CODE_QUALITY_ANALYSIS.md` for rule thresholds and limitations.
+
 ## Current boundary
 
-A complete call graph, control-flow graph, data-flow graph, dynamic dispatch model, runtime trace graph, QA/security finding graph, and repair-verification graph are not yet claimed. Those relationships will be added only when their dedicated analyzers can persist concrete evidence and regression tests.
+A complete call graph, control-flow graph, data-flow graph, dynamic dispatch model, runtime trace graph, AppSec/security finding graph, ML defect prediction layer, and repair-verification graph are not yet claimed. The current quality findings are limited to the documented deterministic rules and are not generalized into unsupported QA conclusions. Additional relationships and findings will be added only when their dedicated analyzers can persist concrete evidence and regression tests.

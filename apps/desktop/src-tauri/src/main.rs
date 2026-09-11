@@ -7,14 +7,16 @@ use std::{
 };
 
 use codetwin_core::{
-    Database, GraphNeighborhood, GraphSummary, ImpactAnalysisService, ImpactReport,
-    ImportReferenceRecord, IndexRunRecord, IndexSummary, LanguageServerConfig,
-    LanguageServerConfigService, LanguageServerKind, ProjectIndexService, ProjectQueryService,
-    ReferenceRefreshSummary, SemanticEnrichmentRequest, SemanticEnrichmentService,
-    SemanticImportResolutionRecord, SemanticQueryService, SemanticReferenceRecord,
-    SemanticRelationDirection, SemanticRelationRecord, SemanticResolutionSummary, SemanticRunRecord,
-    SemanticRunSummary, SemanticSymbolResolver, SemanticSymbolStateRecord, SourceFileRecord,
-    SymbolRecord, SymbolReferenceObservationRecord, SymbolReferenceService, SymbolSearchQuery,
+    CodeQualityService, Database, FindingEvidenceRecord, GraphNeighborhood, GraphSummary,
+    ImpactAnalysisService, ImpactReport, ImportReferenceRecord, IndexRunRecord, IndexSummary,
+    LanguageServerConfig, LanguageServerConfigService, LanguageServerKind, ProjectIndexService,
+    ProjectQueryService, QualityFindingRecord, QualityRuleRecord, QualityRunRecord,
+    QualityRunSummary, ReferenceRefreshSummary, SemanticEnrichmentRequest,
+    SemanticEnrichmentService, SemanticImportResolutionRecord, SemanticQueryService,
+    SemanticReferenceRecord, SemanticRelationDirection, SemanticRelationRecord,
+    SemanticResolutionSummary, SemanticRunRecord, SemanticRunSummary, SemanticSymbolResolver,
+    SemanticSymbolStateRecord, SourceFileRecord, SymbolRecord, SymbolReferenceObservationRecord,
+    SymbolReferenceService, SymbolSearchQuery,
 };
 use project_discovery::ProjectProfile;
 use tauri::Manager;
@@ -24,6 +26,7 @@ struct AppState {
     database_path: PathBuf,
     semantic_cancelled: Arc<AtomicBool>,
     semantic_running: Arc<AtomicBool>,
+    quality_running: Arc<AtomicBool>,
 }
 
 fn with_database<T>(
@@ -364,6 +367,75 @@ fn semantic_history(
     })
 }
 
+#[tauri::command]
+async fn run_code_quality(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<QualityRunSummary, String> {
+    if state.quality_running.swap(true, Ordering::SeqCst) {
+        return Err("code quality analysis is already running".to_string());
+    }
+
+    let database_path = state.database_path.clone();
+    let running = Arc::clone(&state.quality_running);
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let database = Database::open(database_path).map_err(|error| error.to_string())?;
+        CodeQualityService::new(&database)
+            .analyze_project(&project_id)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    running.store(false, Ordering::SeqCst);
+    task.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn list_quality_findings(
+    project_id: String,
+    status: Option<String>,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<QualityFindingRecord>, String> {
+    with_database(&state, |database| {
+        CodeQualityService::new(database)
+            .list_findings(&project_id, status.as_deref(), limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn list_finding_evidence(
+    finding_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<FindingEvidenceRecord>, String> {
+    with_database(&state, |database| {
+        CodeQualityService::new(database)
+            .finding_evidence(&finding_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn quality_history(
+    project_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<QualityRunRecord>, String> {
+    with_database(&state, |database| {
+        CodeQualityService::new(database)
+            .history(&project_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn list_quality_rules(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<QualityRuleRecord>, String> {
+    with_database(&state, |database| Ok(CodeQualityService::new(database).rules()))
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -376,6 +448,7 @@ fn main() {
                 database_path,
                 semantic_cancelled: Arc::new(AtomicBool::new(false)),
                 semantic_running: Arc::new(AtomicBool::new(false)),
+                quality_running: Arc::new(AtomicBool::new(false)),
             });
             Ok(())
         })
@@ -406,6 +479,11 @@ fn main() {
             get_symbol_semantic_state,
             list_file_semantic_imports,
             semantic_history,
+            run_code_quality,
+            list_quality_findings,
+            list_finding_evidence,
+            quality_history,
+            list_quality_rules,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");
