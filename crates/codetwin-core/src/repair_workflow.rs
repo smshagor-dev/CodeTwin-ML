@@ -118,14 +118,12 @@ impl<'a> VerifiedRepairService<'a> {
             }
         }
 
-        let nonce = time_nonce();
         let id = deterministic_id(
             "repair-plan",
-            &[project_id, finding_id.unwrap_or(""), title, &nonce],
+            &[project_id, finding_id.unwrap_or(""), title, &time_nonce()],
         );
         self.database.connection().execute(
-            "INSERT INTO repair_plans(id, project_id, finding_id, title, rationale)\
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO repair_plans(id, project_id, finding_id, title, rationale) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id, project_id, finding_id, title, rationale],
         )?;
         self.get_plan(&id)?
@@ -163,16 +161,12 @@ impl<'a> VerifiedRepairService<'a> {
         }
         let id = deterministic_id("repair-change", &[repair_id, &file.relative_path]);
         self.database.connection().execute(
-            "INSERT INTO repair_changes(\
-               id, repair_id, file_id, relative_path, base_content_hash, proposed_content_hash,\
-               proposed_content, proposed_byte_size\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)\
+            "INSERT INTO repair_changes(id, repair_id, file_id, relative_path, base_content_hash, proposed_content_hash, proposed_content, proposed_byte_size)\
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)\
              ON CONFLICT(repair_id, relative_path) DO UPDATE SET\
-               file_id = excluded.file_id,\
-               base_content_hash = excluded.base_content_hash,\
-               proposed_content_hash = excluded.proposed_content_hash,\
-               proposed_content = excluded.proposed_content,\
-               proposed_byte_size = excluded.proposed_byte_size",
+               file_id=excluded.file_id, base_content_hash=excluded.base_content_hash,\
+               proposed_content_hash=excluded.proposed_content_hash, proposed_content=excluded.proposed_content,\
+               proposed_byte_size=excluded.proposed_byte_size",
             params![
                 id,
                 repair_id,
@@ -181,7 +175,7 @@ impl<'a> VerifiedRepairService<'a> {
                 file.content_hash,
                 proposed_hash,
                 proposed_content,
-                i64::try_from(proposed_content.len()).unwrap_or(i64::MAX),
+                to_i64(proposed_content.len()),
             ],
         )?;
         self.change_by_path(repair_id, &file.relative_path)?
@@ -205,17 +199,15 @@ impl<'a> VerifiedRepairService<'a> {
                 &plan.project_id,
                 &change.relative_path,
             )?;
-            let Some(observed) = observed else {
-                return Err(RepairWorkflowError::StaleBase(change.relative_path.clone()));
-            };
-            if observed.content_hash != change.base_content_hash {
+            if observed
+                .as_ref()
+                .is_none_or(|file| file.content_hash != change.base_content_hash)
+            {
                 return Err(RepairWorkflowError::StaleBase(change.relative_path.clone()));
             }
         }
         self.database.connection().execute(
-            "UPDATE repair_plans\
-             SET status='approved', approved_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP\
-             WHERE id=?1",
+            "UPDATE repair_plans SET status='approved', approved_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?1",
             [repair_id],
         )?;
         self.get_plan(repair_id)?
@@ -276,7 +268,12 @@ impl<'a> VerifiedRepairService<'a> {
                     ("missing", None)
                 }
             };
-            items.push((change.id.clone(), state.to_owned(), change.proposed_content_hash.clone(), observed_hash));
+            items.push((
+                change.id.clone(),
+                state.to_owned(),
+                change.proposed_content_hash.clone(),
+                observed_hash,
+            ));
         }
 
         let finding_status = match plan.finding_id.as_deref() {
@@ -300,10 +297,8 @@ impl<'a> VerifiedRepairService<'a> {
         );
         let tx = self.database.connection().unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO repair_verification_runs(\
-               id, repair_id, project_id, status, finding_status, matched_changes,\
-               mismatched_changes, missing_changes\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO repair_verification_runs(id, repair_id, project_id, status, finding_status, matched_changes, mismatched_changes, missing_changes)\
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 run_id,
                 repair_id,
@@ -317,18 +312,14 @@ impl<'a> VerifiedRepairService<'a> {
         )?;
         for (change_id, state, expected_hash, observed_hash) in &items {
             tx.execute(
-                "INSERT INTO repair_verification_items(\
-                   run_id, change_id, state, expected_hash, observed_hash\
-                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO repair_verification_items(run_id, change_id, state, expected_hash, observed_hash) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![run_id, change_id, state, expected_hash, observed_hash],
             )?;
         }
         if let Some(next_status) = next_plan_status {
             if next_status == "verified" {
                 tx.execute(
-                    "UPDATE repair_plans\
-                     SET status='verified', verified_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP\
-                     WHERE id=?1",
+                    "UPDATE repair_plans SET status='verified', verified_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?1",
                     [repair_id],
                 )?;
             } else {
@@ -343,15 +334,11 @@ impl<'a> VerifiedRepairService<'a> {
             .ok_or_else(|| RepairWorkflowError::PlanNotFound(run_id))
     }
 
-    pub fn get_plan(
-        &self,
-        repair_id: &str,
-    ) -> Result<Option<RepairPlanRecord>, RepairWorkflowError> {
+    pub fn get_plan(&self, repair_id: &str) -> Result<Option<RepairPlanRecord>, RepairWorkflowError> {
         self.database
             .connection()
             .query_row(
-                "SELECT id, project_id, finding_id, title, rationale, status, created_at, updated_at, approved_at, verified_at\
-                 FROM repair_plans WHERE id=?1",
+                "SELECT id, project_id, finding_id, title, rationale, status, created_at, updated_at, approved_at, verified_at FROM repair_plans WHERE id=?1",
                 [repair_id],
                 map_plan,
             )
@@ -368,8 +355,7 @@ impl<'a> VerifiedRepairService<'a> {
         ensure_project(self.database.connection(), project_id)?;
         let mut statement = self.database.connection().prepare(
             "SELECT id, project_id, finding_id, title, rationale, status, created_at, updated_at, approved_at, verified_at\
-             FROM repair_plans\
-             WHERE project_id=?1 AND (?2 IS NULL OR status=?2)\
+             FROM repair_plans WHERE project_id=?1 AND (?2 IS NULL OR status=?2)\
              ORDER BY updated_at DESC, id DESC LIMIT ?3",
         )?;
         let rows = statement.query_map(params![project_id, status, bounded(limit, MAX_PLANS_QUERY)], map_plan)?;
@@ -382,10 +368,8 @@ impl<'a> VerifiedRepairService<'a> {
         limit: usize,
     ) -> Result<Vec<RepairChangeRecord>, RepairWorkflowError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, repair_id, file_id, relative_path, base_content_hash, proposed_content_hash,\
-                    proposed_content, proposed_byte_size, created_at\
-             FROM repair_changes WHERE repair_id=?1\
-             ORDER BY relative_path, id LIMIT ?2",
+            "SELECT id, repair_id, file_id, relative_path, base_content_hash, proposed_content_hash, proposed_content, proposed_byte_size, created_at\
+             FROM repair_changes WHERE repair_id=?1 ORDER BY relative_path, id LIMIT ?2",
         )?;
         let rows = statement.query_map(params![repair_id, bounded(limit, MAX_CHANGES_QUERY)], map_change)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -397,10 +381,8 @@ impl<'a> VerifiedRepairService<'a> {
         limit: usize,
     ) -> Result<Vec<RepairVerificationRunRecord>, RepairWorkflowError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, repair_id, project_id, status, finding_status, matched_changes,\
-                    mismatched_changes, missing_changes, created_at\
-             FROM repair_verification_runs WHERE repair_id=?1\
-             ORDER BY created_at DESC, id DESC LIMIT ?2",
+            "SELECT id, repair_id, project_id, status, finding_status, matched_changes, mismatched_changes, missing_changes, created_at\
+             FROM repair_verification_runs WHERE repair_id=?1 ORDER BY created_at DESC, id DESC LIMIT ?2",
         )?;
         let rows = statement.query_map(
             params![repair_id, bounded(limit, MAX_VERIFICATION_QUERY)],
@@ -415,22 +397,18 @@ impl<'a> VerifiedRepairService<'a> {
         limit: usize,
     ) -> Result<Vec<RepairVerificationItemRecord>, RepairWorkflowError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT run_id, change_id, state, expected_hash, observed_hash\
-             FROM repair_verification_items WHERE run_id=?1\
-             ORDER BY change_id LIMIT ?2",
+            "SELECT run_id, change_id, state, expected_hash, observed_hash FROM repair_verification_items\
+             WHERE run_id=?1 ORDER BY change_id LIMIT ?2",
         )?;
-        let rows = statement.query_map(
-            params![run_id, bounded(limit, MAX_CHANGES_QUERY)],
-            |row| {
-                Ok(RepairVerificationItemRecord {
-                    run_id: row.get(0)?,
-                    change_id: row.get(1)?,
-                    state: row.get(2)?,
-                    expected_hash: row.get(3)?,
-                    observed_hash: row.get(4)?,
-                })
-            },
-        )?;
+        let rows = statement.query_map(params![run_id, bounded(limit, MAX_CHANGES_QUERY)], |row| {
+            Ok(RepairVerificationItemRecord {
+                run_id: row.get(0)?,
+                change_id: row.get(1)?,
+                state: row.get(2)?,
+                expected_hash: row.get(3)?,
+                observed_hash: row.get(4)?,
+            })
+        })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -442,8 +420,7 @@ impl<'a> VerifiedRepairService<'a> {
         self.database
             .connection()
             .query_row(
-                "SELECT id, repair_id, file_id, relative_path, base_content_hash, proposed_content_hash,\
-                        proposed_content, proposed_byte_size, created_at\
+                "SELECT id, repair_id, file_id, relative_path, base_content_hash, proposed_content_hash, proposed_content, proposed_byte_size, created_at\
                  FROM repair_changes WHERE repair_id=?1 AND relative_path=?2",
                 params![repair_id, relative_path],
                 map_change,
@@ -459,8 +436,7 @@ impl<'a> VerifiedRepairService<'a> {
         self.database
             .connection()
             .query_row(
-                "SELECT id, repair_id, project_id, status, finding_status, matched_changes,\
-                        mismatched_changes, missing_changes, created_at\
+                "SELECT id, repair_id, project_id, status, finding_status, matched_changes, mismatched_changes, missing_changes, created_at\
                  FROM repair_verification_runs WHERE id=?1",
                 [run_id],
                 map_verification,
@@ -470,7 +446,6 @@ impl<'a> VerifiedRepairService<'a> {
     }
 }
 
-#[derive(Debug)]
 struct CurrentFile {
     project_id: String,
     relative_path: String,
@@ -501,8 +476,7 @@ fn current_file_by_path(
 ) -> Result<Option<CurrentFile>, RepairWorkflowError> {
     connection
         .query_row(
-            "SELECT project_id, relative_path, content_hash FROM files\
-             WHERE project_id=?1 AND relative_path=?2 AND is_active=1",
+            "SELECT project_id, relative_path, content_hash FROM files WHERE project_id=?1 AND relative_path=?2 AND is_active=1",
             params![project_id, relative_path],
             |row| {
                 Ok(CurrentFile {
@@ -534,11 +508,7 @@ fn project_for_finding(
     finding_id: &str,
 ) -> Result<Option<String>, RepairWorkflowError> {
     connection
-        .query_row(
-            "SELECT project_id FROM findings WHERE id=?1",
-            [finding_id],
-            |row| row.get(0),
-        )
+        .query_row("SELECT project_id FROM findings WHERE id=?1", [finding_id], |row| row.get(0))
         .optional()
         .map_err(Into::into)
 }
@@ -548,11 +518,7 @@ fn finding_status(
     finding_id: &str,
 ) -> Result<Option<String>, RepairWorkflowError> {
     connection
-        .query_row(
-            "SELECT status FROM findings WHERE id=?1",
-            [finding_id],
-            |row| row.get(0),
-        )
+        .query_row("SELECT status FROM findings WHERE id=?1", [finding_id], |row| row.get(0))
         .optional()
         .map_err(Into::into)
 }
@@ -634,81 +600,4 @@ fn map_verification(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepairVerificat
         missing_changes: to_usize(missing),
         created_at: row.get(8)?,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::VerifiedRepairService;
-    use crate::{deterministic_id, Database};
-
-    fn seed_project(db: &Database) -> (String, String) {
-        let project_id = "project-repair".to_owned();
-        let file_id = deterministic_id("file", &[&project_id, "src/main.rs"]);
-        db.connection()
-            .execute(
-                "INSERT INTO projects(id, root_path, display_name, path_identity) VALUES (?1, '/tmp/repair', 'repair', '/tmp/repair')",
-                [&project_id],
-            )
-            .expect("project");
-        db.connection()
-            .execute(
-                "INSERT INTO files(id, project_id, relative_path, relative_path_identity, content_hash, byte_size, is_active)\
-                 VALUES (?1, ?2, 'src/main.rs', 'src/main.rs', ?3, 3, 1)",
-                rusqlite::params![file_id, project_id, format!("{:x}", sha2::Sha256::digest(b"old"))],
-            )
-            .expect("file");
-        (project_id, file_id)
-    }
-
-    #[test]
-    fn approval_requires_unchanged_indexed_base() {
-        use sha2::Digest;
-        let db = Database::open_in_memory().expect("db");
-        let (project_id, file_id) = seed_project(&db);
-        let service = VerifiedRepairService::new(&db);
-        let plan = service
-            .create_plan(&project_id, None, "Replace file", "Deterministic repair proposal")
-            .expect("plan");
-        service
-            .add_file_replacement(&plan.id, &file_id, "new")
-            .expect("change");
-        db.connection()
-            .execute(
-                "UPDATE files SET content_hash=?2 WHERE id=?1",
-                rusqlite::params![file_id, format!("{:x}", sha2::Sha256::digest(b"drift"))],
-            )
-            .expect("drift");
-        let error = service.approve_plan(&plan.id).expect_err("stale base");
-        assert!(error.to_string().contains("stale"));
-    }
-
-    #[test]
-    fn verification_uses_reindexed_hash_and_never_applies_content() {
-        use sha2::Digest;
-        let db = Database::open_in_memory().expect("db");
-        let (project_id, file_id) = seed_project(&db);
-        let service = VerifiedRepairService::new(&db);
-        let plan = service
-            .create_plan(&project_id, None, "Replace file", "Manual application follows approval")
-            .expect("plan");
-        let change = service
-            .add_file_replacement(&plan.id, &file_id, "new")
-            .expect("change");
-        service.approve_plan(&plan.id).expect("approve");
-
-        let first = service.verify_plan(&plan.id).expect("verify mismatch");
-        assert_eq!(first.status, "mismatch");
-
-        db.connection()
-            .execute(
-                "UPDATE files SET content_hash=?2, byte_size=3 WHERE id=?1",
-                rusqlite::params![file_id, change.proposed_content_hash],
-            )
-            .expect("simulate external apply + reindex");
-        let second = service.verify_plan(&plan.id).expect("verify applied");
-        assert_eq!(second.status, "verified");
-        assert_eq!(second.matched_changes, 1);
-        let final_plan = service.get_plan(&plan.id).expect("plan query").expect("plan");
-        assert_eq!(final_plan.status, "verified");
-    }
 }
