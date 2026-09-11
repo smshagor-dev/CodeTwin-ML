@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "apps/desktop/src-tauri",
   "crates/codetwin-core",
+  "crates/database-analyzer",
   "crates/lsp-enrichment",
   "crates/project-discovery",
   "crates/reference-indexer",
