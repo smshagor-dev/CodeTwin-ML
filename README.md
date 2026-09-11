@@ -22,12 +22,13 @@ CodeTwin ML is a local-first engineering intelligence desktop application. It co
 | Deterministic code-quality findings | Implemented baseline for large definitions, deep declaration nesting, high local fan-out, and resolved-local dependency cycles |
 | Deterministic AppSec review findings | Implemented baseline for hard-coded credential literals, dynamic execution primitives, weak hash primitives, and unsafe C/C++ string APIs |
 | Deterministic database artifact analysis | Implemented baseline for SQL/Prisma artifact inventory, destructive migration review, unscoped UPDATE/DELETE, SQLite foreign-key disable, and literal Prisma datasource URLs |
+| Deterministic runtime reliability analysis | Implemented core baseline for Dockerfile/Compose artifact inventory, mutable image references, healthcheck review, and explicit no-restart policies |
 | OpenMindAI Dataset catalog + action routing | Implemented foundation |
-| Runtime analyzer | Planned |
+| Runtime telemetry / live process tracing | Planned |
 | ML inference models | Planned |
 | Verified repair workflow | Planned |
 
-Planned capabilities are not presented as available results. Semantic graph relationships, quality findings, AppSec review findings, and database review findings are materialized only from concrete evidence; ambiguous, unresolved, external, stale, skipped, or unverified runtime/exploitability claims are not converted into guessed facts.
+Planned capabilities are not presented as available results. Semantic graph relationships, quality findings, AppSec review findings, database review findings, and runtime reliability review findings are materialized only from concrete persisted evidence; ambiguous, unresolved, external, stale, skipped, or unverified runtime/exploitability claims are not converted into guessed facts.
 
 ## Development
 
@@ -42,8 +43,8 @@ cargo test --workspace
 python -m unittest discover -s services/ml/tests
 ```
 
-See `docs/development/SETUP.md`, `docs/architecture/DIGITAL_TWIN.md`, `docs/architecture/LSP_SEMANTIC_ENRICHMENT.md`, `docs/architecture/CODE_QUALITY_ANALYSIS.md`, `docs/architecture/SECURITY_ANALYSIS.md`, and `docs/architecture/DATABASE_ANALYSIS.md`.
+See `docs/development/SETUP.md`, `docs/architecture/DIGITAL_TWIN.md`, `docs/architecture/LSP_SEMANTIC_ENRICHMENT.md`, `docs/architecture/CODE_QUALITY_ANALYSIS.md`, `docs/architecture/SECURITY_ANALYSIS.md`, `docs/architecture/DATABASE_ANALYSIS.md`, and `docs/architecture/RUNTIME_RELIABILITY.md`.
 
 ## Privacy and security
 
-Passive source indexing, Digital Twin persistence, deterministic code-quality analysis, deterministic AppSec analysis, and deterministic database analysis treat repositories as untrusted data and do not execute repository commands. Database analysis reads only bounded SQL/Prisma artifacts, never opens the analyzed project's database, and never executes migrations or queries. Literal Prisma datasource values are redacted before persistence. AppSec source reads are restricted to active indexed files whose current bytes still match the persisted content hash; potential credential literals are redacted and are never persisted. LSP semantic enrichment is a separate explicit workflow: it requires project trust and a user-configured absolute external language-server executable. CodeTwin does not discover or execute a language server from the analyzed repository.
+Passive source indexing, Digital Twin persistence, deterministic code-quality analysis, deterministic AppSec analysis, deterministic database analysis, and deterministic runtime reliability analysis treat repositories as untrusted data and do not execute repository commands. Runtime reliability analysis reads only bounded Dockerfile/Compose artifacts and does not start containers, processes, services, health checks, or network probes; its findings describe configuration evidence rather than live availability. Database analysis reads only bounded SQL/Prisma artifacts, never opens the analyzed project's database, and never executes migrations or queries. Literal Prisma datasource values are redacted before persistence. AppSec source reads are restricted to active indexed files whose current bytes still match the persisted content hash; potential credential literals are redacted and are never persisted. LSP semantic enrichment is a separate explicit workflow: it requires project trust and a user-configured absolute external language-server executable. CodeTwin does not discover or execute a language server from the analyzed repository.
