@@ -4,14 +4,15 @@ CodeTwin ML's first executable ML adapter is deliberately narrow. It supports lo
 
 ## Preconditions
 
-A model is execution-ready only when all of the following are true:
+A model can execute only when all of the following are true:
 
 1. the package installed through the verified local model registry;
 2. every current artifact still matches the manifest byte size and SHA-256;
 3. the package backend is `onnx-classification-v1`;
 4. the manifest declares a valid bounded inference contract;
 5. the requested action is explicitly declared by the model;
-6. the model's evaluation provenance includes at least one OpenMindAI Dataset routed for that action.
+6. the model's evaluation provenance includes at least one OpenMindAI Dataset routed for that action;
+7. local `numpy`, `onnx`, and `onnxruntime` dependencies are available.
 
 If multiple execution-ready models match an action, inference refuses to guess and requires an explicit model id and version.
 
@@ -47,7 +48,7 @@ The returned confidence is the model's normalized output for that request. It is
 
 The production adapter imports `onnx`, `numpy`, and `onnxruntime` only when real inference is requested. Unit tests inject a fake session so the normal Python CI suite can test the contract without downloading those optional dependencies.
 
-Before creating an ONNX Runtime session, CodeTwin parses the model with external data disabled and rejects initializers that reference external tensor files. The executable model artifact is limited to 512 MiB. The ONNX Runtime session uses only `CPUExecutionProvider`, sequential execution, one intra-op thread, and one inter-op thread. Input and output sizes are bounded.
+Before creating an ONNX Runtime session, CodeTwin parses the model with external data disabled and rejects external tensor references throughout initializers and nested graph attributes. The executable model artifact is limited to 512 MiB. The ONNX Runtime session uses only `CPUExecutionProvider`, sequential execution, one intra-op thread, and one inter-op thread, with spinning disabled. Input and output sizes are bounded and model I/O descriptors are checked against the manifest contract.
 
 Model packages do not provide custom native libraries, Python callbacks, repository commands, or shell hooks through this contract.
 
@@ -59,8 +60,8 @@ This baseline does not provide a hard process-level memory limit or wall-clock t
 
 The sidecar exposes:
 
-- `inference.plan` to report routing/readiness without running a model;
+- `inference.plan` to report routing/readiness without running a model, including a distinct `runtime_unavailable` state when optional runtime dependencies are missing;
 - `inference.run` to execute a ready classifier with `action`, `text`, and optional `model_id` / `model_version` selectors;
-- `capabilities` to advertise only actions backed by currently installed execution-ready models.
+- `capabilities` to advertise only actions backed by an installed execution-ready model **and** available local runtime dependencies.
 
 Missing models, ambiguous model selection, invalid input contracts, model I/O mismatch, dependency absence, and runtime failures return structured errors rather than fabricated predictions.
