@@ -1,4 +1,5 @@
 mod database_commands;
+mod ml_commands;
 mod runtime_commands;
 
 use std::{
@@ -26,6 +27,10 @@ use database_commands::{
     database_history, list_database_artifacts, list_database_evidence, list_database_findings,
     list_database_rules, run_database_analysis,
 };
+use ml_commands::{
+    link_ml_finding, list_ml_finding_links, ml_inference_history, ml_inference_plan, ml_models,
+    ml_sidecar_capabilities, ml_sidecar_health, run_ml_file_inference,
+};
 use project_discovery::ProjectProfile;
 use runtime_commands::{
     list_runtime_artifacts, list_runtime_evidence, list_runtime_findings, list_runtime_rules,
@@ -40,6 +45,7 @@ struct AppState {
     semantic_running: Arc<AtomicBool>,
     quality_running: Arc<AtomicBool>,
     security_running: Arc<AtomicBool>,
+    ml_running: Arc<AtomicBool>,
 }
 
 fn with_database<T>(
@@ -530,6 +536,7 @@ fn main() {
                 semantic_running: Arc::new(AtomicBool::new(false)),
                 quality_running: Arc::new(AtomicBool::new(false)),
                 security_running: Arc::new(AtomicBool::new(false)),
+                ml_running: Arc::new(AtomicBool::new(false)),
             });
             Ok(())
         })
@@ -582,6 +589,14 @@ fn main() {
             list_runtime_evidence,
             runtime_history,
             list_runtime_rules,
+            ml_sidecar_health,
+            ml_sidecar_capabilities,
+            ml_models,
+            ml_inference_plan,
+            run_ml_file_inference,
+            ml_inference_history,
+            link_ml_finding,
+            list_ml_finding_links,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");
