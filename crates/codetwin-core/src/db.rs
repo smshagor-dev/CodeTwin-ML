@@ -12,6 +12,7 @@ const MIGRATION_0006: &str = include_str!("../migrations/0006_code_quality_analy
 const MIGRATION_0007: &str = include_str!("../migrations/0007_security_analysis.sql");
 const MIGRATION_0008: &str = include_str!("../migrations/0008_database_analysis.sql");
 const MIGRATION_0009: &str = include_str!("../migrations/0009_runtime_reliability.sql");
+const MIGRATION_0011: &str = include_str!("../migrations/0011_verified_repair_workflow.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -58,6 +59,8 @@ impl Database {
         self.apply_migration(7, MIGRATION_0007)?;
         self.apply_migration(8, MIGRATION_0008)?;
         self.apply_migration(9, MIGRATION_0009)?;
+        // Version 10 is intentionally reserved by the open ML-provenance work.
+        self.apply_migration(11, MIGRATION_0011)?;
         Ok(())
     }
 
@@ -94,12 +97,12 @@ mod tests {
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','repair_plans','repair_changes','repair_verification_runs','repair_verification_items')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 18);
+        assert_eq!(count, 22);
     }
 
     #[test]
@@ -109,7 +112,16 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 9);
+        assert_eq!(count, 10);
+        let repair_version: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=11",
+                [],
+                |row| row.get(0),
+            )
+            .expect("repair migration");
+        assert_eq!(repair_version, 1);
     }
 
     #[test]
@@ -161,6 +173,20 @@ mod tests {
                 .expect("artifact schema");
             assert!(sql.contains("UNIQUE(project_id, path_identity)"));
         }
+    }
+
+    #[test]
+    fn repair_change_identity_is_plan_scoped() {
+        let db = Database::open_in_memory().expect("open db");
+        let sql: String = db
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='repair_changes'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("repair schema");
+        assert!(sql.contains("UNIQUE(repair_id, relative_path)"));
     }
 
     #[test]
