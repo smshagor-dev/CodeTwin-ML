@@ -9,6 +9,7 @@ const MIGRATION_0003: &str = include_str!("../migrations/0003_symbol_reference_o
 const MIGRATION_0004: &str = include_str!("../migrations/0004_semantic_symbol_resolution.sql");
 const MIGRATION_0005: &str = include_str!("../migrations/0005_lsp_semantic_enrichment.sql");
 const MIGRATION_0006: &str = include_str!("../migrations/0006_code_quality_analysis.sql");
+const MIGRATION_0007: &str = include_str!("../migrations/0007_security_analysis.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -52,6 +53,7 @@ impl Database {
         self.apply_migration(4, MIGRATION_0004)?;
         self.apply_migration(5, MIGRATION_0005)?;
         self.apply_migration(6, MIGRATION_0006)?;
+        self.apply_migration(7, MIGRATION_0007)?;
         Ok(())
     }
 
@@ -83,17 +85,17 @@ mod tests {
     use super::Database;
 
     #[test]
-    fn creates_expected_foundation_reference_semantic_and_quality_tables() {
+    fn creates_expected_foundation_reference_semantic_quality_and_security_tables() {
         let db = Database::open_in_memory().expect("open db");
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 13);
+        assert_eq!(count, 14);
     }
 
     #[test]
@@ -103,7 +105,7 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 6);
+        assert_eq!(count, 7);
     }
 
     #[test]
@@ -125,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn quality_finding_lifecycle_columns_exist() {
+    fn finding_lifecycle_columns_exist() {
         let db = Database::open_in_memory().expect("open db");
         let mut statement = db
             .connection()
