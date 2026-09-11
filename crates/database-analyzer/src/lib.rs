@@ -52,7 +52,7 @@ pub fn analyze_sql(source: &str) -> Vec<DatabaseObservation> {
                 description: "A destructive DDL statement is present. This is not automatically incorrect, but production rollout should verify backup, compatibility, rollback, and data-retention expectations before execution.".into(),
                 start_line: statement.start_line,
                 end_line: statement.end_line,
-                anchor: normalized.clone(),
+                anchor: normalized,
                 evidence_summary: format!("Destructive SQL operation `{}` is present in this database artifact.", destructive_label(&tokens)),
                 metadata_json: json!({
                     "statement_kind": destructive_label(&tokens),
@@ -71,7 +71,7 @@ pub fn analyze_sql(source: &str) -> Vec<DatabaseObservation> {
                 description: "A DELETE or UPDATE statement has no WHERE token in the parsed statement. This can be intentional for full-table maintenance, but it can also affect every row. Review the migration intent and rollback plan before execution.".into(),
                 start_line: statement.start_line,
                 end_line: statement.end_line,
-                anchor: normalized.clone(),
+                anchor: tokens.join(" "),
                 evidence_summary: format!("{first} statement contains no WHERE token; full-table modification is possible."),
                 metadata_json: json!({
                     "statement_kind": first,
@@ -91,7 +91,7 @@ pub fn analyze_sql(source: &str) -> Vec<DatabaseObservation> {
                 description: "The SQL artifact explicitly disables SQLite foreign-key enforcement. If this statement runs on a live connection, referential-integrity checks will not be enforced until re-enabled on that connection.".into(),
                 start_line: statement.start_line,
                 end_line: statement.end_line,
-                anchor: normalized.clone(),
+                anchor: tokens.join(" "),
                 evidence_summary: "`PRAGMA foreign_keys` is explicitly set to OFF/0 in this SQL artifact.".into(),
                 metadata_json: json!({
                     "dialect": "sqlite",
@@ -102,7 +102,6 @@ pub fn analyze_sql(source: &str) -> Vec<DatabaseObservation> {
             });
         }
     }
-
     sort_and_dedup(&mut observations);
     observations
 }
@@ -110,11 +109,12 @@ pub fn analyze_sql(source: &str) -> Vec<DatabaseObservation> {
 pub fn analyze_prisma(source: &str) -> Vec<DatabaseObservation> {
     let mut observations = Vec::new();
     let mut in_datasource = false;
-    let mut brace_depth = 0usize;
+    let mut brace_depth = 0isize;
 
     for (index, raw_line) in source.lines().enumerate() {
         let line_number = index + 1;
-        let line = strip_line_comment(raw_line).trim();
+        let cleaned = strip_prisma_comment(raw_line);
+        let line = cleaned.trim();
         if line.is_empty() {
             continue;
         }
@@ -122,40 +122,46 @@ pub fn analyze_prisma(source: &str) -> Vec<DatabaseObservation> {
         if !in_datasource && line.starts_with("datasource ") && line.contains('{') {
             in_datasource = true;
             brace_depth = brace_delta(line);
+            if brace_depth <= 0 {
+                in_datasource = false;
+            }
             continue;
         }
 
-        if in_datasource {
-            if let Some((name, value)) = split_assignment(line) {
-                if matches!(name, "url" | "directUrl" | "shadowDatabaseUrl") {
-                    let trimmed = value.trim();
-                    if let Some(literal) = quoted_literal(trimmed) {
-                        if !literal_is_placeholder(literal) {
-                            observations.push(DatabaseObservation {
-                                rule_id: "database.literal_datasource_url".into(),
-                                severity: "high".into(),
-                                confidence: 0.95,
-                                title: "Literal Prisma datasource URL requires review".into(),
-                                description: "A Prisma datasource connection URL is stored as a string literal instead of an environment-backed expression. Connection strings can contain credentials or deployment-specific endpoints, so the literal value is intentionally redacted from persisted evidence.".into(),
-                                start_line: line_number,
-                                end_line: line_number,
-                                anchor: format!("prisma-datasource:{name}"),
-                                evidence_summary: format!("Prisma datasource field `{name}` is assigned a literal connection string (value redacted; {} characters).", literal.chars().count()),
-                                metadata_json: json!({
-                                    "field": name,
-                                    "literal_length": literal.chars().count(),
-                                    "literal_redacted": true,
-                                    "environment_expression": false
-                                }).to_string(),
-                            });
-                        }
+        if !in_datasource {
+            continue;
+        }
+
+        if let Some((name, value)) = split_assignment(line) {
+            if matches!(name, "url" | "directUrl" | "shadowDatabaseUrl") {
+                if let Some(literal) = quoted_literal(value.trim()) {
+                    if !literal_is_placeholder(literal) {
+                        observations.push(DatabaseObservation {
+                            rule_id: "database.literal_datasource_url".into(),
+                            severity: "high".into(),
+                            confidence: 0.95,
+                            title: "Literal Prisma datasource URL requires review".into(),
+                            description: "A Prisma datasource connection URL is stored as a string literal instead of an environment-backed expression. Connection strings can contain credentials or deployment-specific endpoints, so the literal value is intentionally redacted from persisted evidence.".into(),
+                            start_line: line_number,
+                            end_line: line_number,
+                            anchor: format!("prisma-datasource:{name}"),
+                            evidence_summary: format!("Prisma datasource field `{name}` is assigned a literal connection string (value redacted; {} characters).", literal.chars().count()),
+                            metadata_json: json!({
+                                "field": name,
+                                "literal_length": literal.chars().count(),
+                                "literal_redacted": true,
+                                "environment_expression": false
+                            }).to_string(),
+                        });
                     }
                 }
             }
-            brace_depth = brace_depth.saturating_add(brace_delta(line));
-            if line.contains('}') && brace_depth == 0 {
-                in_datasource = false;
-            }
+        }
+
+        brace_depth += brace_delta(line);
+        if brace_depth <= 0 {
+            brace_depth = 0;
+            in_datasource = false;
         }
     }
 
@@ -172,7 +178,7 @@ struct SqlStatement {
 
 fn split_sql_statements(source: &str) -> Vec<SqlStatement> {
     let bytes = source.as_bytes();
-    let mut statements = Vec::new();
+    let mut output = Vec::new();
     let mut current = String::new();
     let mut line = 1usize;
     let mut start_line = 1usize;
@@ -184,9 +190,8 @@ fn split_sql_statements(source: &str) -> Vec<SqlStatement> {
     let mut index = 0usize;
 
     while index < bytes.len() {
-        let ch = bytes[index] as char;
+        let ch = char::from(bytes[index]);
         let next = bytes.get(index + 1).copied().map(char::from);
-
         if in_line_comment {
             if ch == '\n' {
                 in_line_comment = false;
@@ -208,7 +213,6 @@ fn split_sql_statements(source: &str) -> Vec<SqlStatement> {
             index += 1;
             continue;
         }
-
         if !in_single && !in_double && !in_backtick {
             if ch == '-' && next == Some('-') {
                 in_line_comment = true;
@@ -221,11 +225,9 @@ fn split_sql_statements(source: &str) -> Vec<SqlStatement> {
                 continue;
             }
         }
-
         if ch == '\'' && !in_double && !in_backtick {
             if in_single && next == Some('\'') {
-                current.push(ch);
-                current.push('\'');
+                current.push_str("''");
                 index += 2;
                 continue;
             }
@@ -246,14 +248,12 @@ fn split_sql_statements(source: &str) -> Vec<SqlStatement> {
             index += 1;
             continue;
         }
-
         if ch == ';' && !in_single && !in_double && !in_backtick {
-            push_statement(&mut statements, &mut current, start_line, line);
+            push_statement(&mut output, &mut current, start_line, line);
             start_line = line;
             index += 1;
             continue;
         }
-
         current.push(ch);
         if ch == '\n' {
             line += 1;
@@ -263,8 +263,8 @@ fn split_sql_statements(source: &str) -> Vec<SqlStatement> {
         }
         index += 1;
     }
-    push_statement(&mut statements, &mut current, start_line, line);
-    statements
+    push_statement(&mut output, &mut current, start_line, line);
+    output
 }
 
 fn push_statement(output: &mut Vec<SqlStatement>, current: &mut String, start_line: usize, end_line: usize) {
@@ -282,7 +282,6 @@ fn sql_tokens(statement: &str) -> Vec<String> {
     let mut in_double = false;
     let mut in_backtick = false;
     let mut chars = statement.chars().peekable();
-
     while let Some(ch) = chars.next() {
         if ch == '\'' && !in_double && !in_backtick {
             if in_single && chars.peek() == Some(&'\'') {
@@ -345,10 +344,8 @@ fn destructive_label(tokens: &[String]) -> &'static str {
 }
 
 fn pragma_foreign_keys_disabled(tokens: &[String]) -> bool {
-    if !starts_with_tokens(tokens, &["PRAGMA", "FOREIGN_KEYS"]) {
-        return false;
-    }
-    tokens.iter().any(|token| matches!(token.as_str(), "OFF" | "0"))
+    starts_with_tokens(tokens, &["PRAGMA", "FOREIGN_KEYS"])
+        && tokens.iter().any(|token| matches!(token.as_str(), "OFF" | "0"))
 }
 
 fn starts_with_tokens(tokens: &[String], expected: &[&str]) -> bool {
@@ -362,18 +359,32 @@ fn contains_sequence(tokens: &[String], expected: &[&str]) -> bool {
     })
 }
 
-fn strip_line_comment(line: &str) -> &str {
-    line.split_once("//").map_or(line, |(prefix, _)| prefix)
+fn strip_prisma_comment(line: &str) -> String {
+    let mut output = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if matches!(ch, '\'' | '"') {
+            if quote == Some(ch) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(ch);
+            }
+            output.push(ch);
+            continue;
+        }
+        if ch == '/' && quote.is_none() && chars.peek() == Some(&'/') {
+            break;
+        }
+        output.push(ch);
+    }
+    output
 }
 
 fn split_assignment(line: &str) -> Option<(&str, &str)> {
     let (left, right) = line.split_once('=')?;
     let name = left.trim();
-    if name.is_empty() {
-        None
-    } else {
-        Some((name, right.trim()))
-    }
+    (!name.is_empty()).then_some((name, right.trim()))
 }
 
 fn quoted_literal(value: &str) -> Option<&str> {
@@ -398,10 +409,10 @@ fn literal_is_placeholder(value: &str) -> bool {
         || normalized.contains("${")
 }
 
-fn brace_delta(line: &str) -> usize {
-    let opens = line.chars().filter(|ch| *ch == '{').count();
-    let closes = line.chars().filter(|ch| *ch == '}').count();
-    opens.saturating_sub(closes)
+fn brace_delta(line: &str) -> isize {
+    let opens = line.chars().filter(|ch| *ch == '{').count() as isize;
+    let closes = line.chars().filter(|ch| *ch == '}').count() as isize;
+    opens - closes
 }
 
 fn sort_and_dedup(observations: &mut Vec<DatabaseObservation>) {
@@ -422,35 +433,37 @@ mod tests {
     use super::{analyze_prisma, analyze_sql};
 
     #[test]
-    fn detects_destructive_and_unscoped_sql_without_reading_literals() {
-        let findings = analyze_sql(
-            "-- release migration\nDELETE FROM audit_log;\nALTER TABLE users DROP COLUMN legacy_token;\nUPDATE users SET active = 1 WHERE id = 7;\n",
-        );
-        assert!(findings.iter().any(|item| item.rule_id == "database.unscoped_data_write"));
-        assert!(findings.iter().any(|item| item.rule_id == "database.destructive_migration"));
+    fn detects_destructive_and_unscoped_sql() {
+        let findings = analyze_sql("-- release\nDELETE FROM audit_log;\nALTER TABLE users DROP COLUMN legacy_token;\nUPDATE users SET active = 1 WHERE id = 7;\n");
         assert_eq!(findings.iter().filter(|item| item.rule_id == "database.unscoped_data_write").count(), 1);
+        assert!(findings.iter().any(|item| item.rule_id == "database.destructive_migration"));
     }
 
     #[test]
-    fn does_not_treat_where_inside_string_as_scope() {
+    fn where_inside_literal_does_not_scope_update() {
         let findings = analyze_sql("UPDATE jobs SET note = 'WHERE id = 1';");
         assert!(findings.iter().any(|item| item.rule_id == "database.unscoped_data_write"));
     }
 
     #[test]
-    fn detects_foreign_key_disable() {
+    fn detects_sqlite_foreign_key_disable() {
         let findings = analyze_sql("PRAGMA foreign_keys = OFF;");
         assert!(findings.iter().any(|item| item.rule_id == "database.sqlite_foreign_keys_disabled"));
     }
 
     #[test]
-    fn prisma_literal_is_redacted_but_env_expression_is_not_flagged() {
-        let findings = analyze_prisma(
-            "datasource db {\n  provider = \"postgresql\"\n  url = \"postgresql://user:secret@db.internal/app\"\n}\n\ndatasource reporting {\n  provider = \"postgresql\"\n  url = env(\"REPORTING_URL\")\n}\n",
-        );
-        let finding = findings.iter().find(|item| item.rule_id == "database.literal_datasource_url").expect("literal datasource finding");
+    fn prisma_url_is_redacted_and_env_expression_is_not_flagged() {
+        let findings = analyze_prisma("datasource db {\n provider = \"postgresql\"\n url = \"postgresql://user:secret@db.internal/app\" // deployment\n}\n\ndatasource reporting {\n provider = \"postgresql\"\n url = env(\"REPORTING_URL\")\n}\n");
+        assert_eq!(findings.len(), 1);
+        let finding = &findings[0];
+        assert_eq!(finding.rule_id, "database.literal_datasource_url");
         assert!(!finding.evidence_summary.contains("secret"));
         assert!(!finding.metadata_json.contains("secret"));
-        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn datasource_scope_ends_at_closing_brace() {
+        let findings = analyze_prisma("datasource db {\n url = env(\"DATABASE_URL\")\n}\nmodel User {\n url String @default(\"postgresql://not-a-datasource\")\n}\n");
+        assert!(findings.is_empty());
     }
 }
