@@ -23,6 +23,10 @@ impl AnalysisStatus {
         }
     }
 
+    pub const fn as_db(self) -> &'static str {
+        self.as_str()
+    }
+
     pub fn from_db(value: &str) -> Option<Self> {
         match value {
             "queued" => Some(Self::Queued),
