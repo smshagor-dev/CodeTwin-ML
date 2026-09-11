@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import math
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from codetwin_ml.models import ModelError, resolve_model_for_inference
+from codetwin_ml.models import (
+    ModelError,
+    inference_plan as registry_inference_plan,
+    resolve_model_for_inference,
+)
 
 MAX_TEXT_BYTES = 65_536
 MAX_OUTPUT_ELEMENTS = 256
+RUNTIME_MODULES = ("numpy", "onnx", "onnxruntime")
 
 
 class InferenceError(RuntimeError):
@@ -26,6 +32,24 @@ class InferenceRuntimeError(InferenceError):
 SessionFactory = Callable[[Path], Any]
 ArrayFactory = Callable[[list[list[int]]], Any]
 ModelValidator = Callable[[Path], None]
+
+
+def runtime_dependency_status() -> dict[str, Any]:
+    missing = [name for name in RUNTIME_MODULES if importlib.util.find_spec(name) is None]
+    return {"available": not missing, "required": list(RUNTIME_MODULES), "missing": missing}
+
+
+def plan_inference(action: str, *, model_root: Path | str | None = None) -> dict[str, Any]:
+    plan = registry_inference_plan(action, model_root=model_root)
+    dependencies = runtime_dependency_status()
+    plan["runtime_dependencies"] = dependencies
+    if plan["status"] == "ready" and not dependencies["available"]:
+        plan["status"] = "runtime_unavailable"
+        plan["note"] = (
+            "An execution-ready model is installed, but numpy, onnx, and onnxruntime must all be "
+            "installed before local inference can run."
+        )
+    return plan
 
 
 def _iter_graph_tensors(graph: Any, onnx: Any) -> Iterator[Any]:
