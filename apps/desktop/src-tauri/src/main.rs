@@ -1,3 +1,5 @@
+mod database_commands;
+
 use std::{
     path::PathBuf,
     sync::{
@@ -18,6 +20,10 @@ use codetwin_core::{
     SemanticResolutionSummary, SemanticRunRecord, SemanticRunSummary, SemanticSymbolResolver,
     SemanticSymbolStateRecord, SourceFileRecord, SymbolRecord, SymbolReferenceObservationRecord,
     SymbolReferenceService, SymbolSearchQuery,
+};
+use database_commands::{
+    database_history, list_database_artifacts, list_database_evidence, list_database_findings,
+    list_database_rules, run_database_analysis,
 };
 use project_discovery::ProjectProfile;
 use tauri::Manager;
@@ -559,6 +565,12 @@ fn main() {
             list_security_evidence,
             security_history,
             list_security_rules,
+            run_database_analysis,
+            list_database_artifacts,
+            list_database_findings,
+            list_database_evidence,
+            database_history,
+            list_database_rules,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");
