@@ -52,6 +52,7 @@ struct IndexedSource {
     byte_size: u64,
 }
 
+#[tauri::command]
 pub(crate) async fn ml_sidecar_health(
     config: MlSidecarConfig,
 ) -> Result<MlSidecarStatus, String> {
@@ -69,6 +70,7 @@ pub(crate) async fn ml_sidecar_health(
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
 pub(crate) async fn ml_sidecar_capabilities(config: MlSidecarConfig) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let validated = validate_sidecar(&config)?;
@@ -78,6 +80,7 @@ pub(crate) async fn ml_sidecar_capabilities(config: MlSidecarConfig) -> Result<V
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
 pub(crate) async fn ml_models(config: MlSidecarConfig) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let validated = validate_sidecar(&config)?;
@@ -87,6 +90,7 @@ pub(crate) async fn ml_models(config: MlSidecarConfig) -> Result<Value, String> 
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
 pub(crate) async fn ml_inference_plan(
     action: String,
     config: MlSidecarConfig,
@@ -99,6 +103,7 @@ pub(crate) async fn ml_inference_plan(
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
 pub(crate) async fn run_ml_file_inference(
     project_id: String,
     file_id: String,
@@ -122,14 +127,17 @@ pub(crate) async fn run_ml_file_inference(
             &validated,
             "inference.run",
             json!({
-                "action": action,
+                "action": action.clone(),
                 "text": source.text,
-                "model_id": model_id,
-                "model_version": model_version,
+                "model_id": model_id.clone(),
+                "model_version": model_version.clone(),
             }),
         )?;
         let observation = observation_from_result(
             &result,
+            &action,
+            model_id.as_deref(),
+            model_version.as_deref(),
             &file_id,
             &source.content_hash,
             source.byte_size,
@@ -143,6 +151,7 @@ pub(crate) async fn run_ml_file_inference(
     task.map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
 pub(crate) fn ml_inference_history(
     project_id: String,
     action: Option<String>,
@@ -156,6 +165,7 @@ pub(crate) fn ml_inference_history(
     })
 }
 
+#[tauri::command]
 pub(crate) fn link_ml_finding(
     project_id: String,
     inference_record_id: String,
@@ -175,6 +185,7 @@ pub(crate) fn link_ml_finding(
     })
 }
 
+#[tauri::command]
 pub(crate) fn list_ml_finding_links(
     finding_id: String,
     limit: usize,
@@ -442,10 +453,30 @@ fn load_indexed_source(
 
 fn observation_from_result(
     result: &Value,
+    expected_action: &str,
+    expected_model_id: Option<&str>,
+    expected_model_version: Option<&str>,
     file_id: &str,
     source_hash: &str,
     source_byte_size: u64,
 ) -> Result<MlInferenceObservation, String> {
+    let result_action = required_str(result, "/action")?;
+    if result_action != expected_action {
+        return Err("ML sidecar returned a different action than requested".to_string());
+    }
+    let result_model_id = required_str(result, "/model/id")?;
+    if let Some(expected) = expected_model_id {
+        if result_model_id != expected {
+            return Err("ML sidecar returned a different model id than requested".to_string());
+        }
+    }
+    let result_model_version = required_str(result, "/model/version")?;
+    if let Some(expected) = expected_model_version {
+        if result_model_version != expected {
+            return Err("ML sidecar returned a different model version than requested".to_string());
+        }
+    }
+
     let input_hash = required_str(result, "/input/sha256")?;
     let input_bytes = required_u64(result, "/input/utf8_bytes")?;
     if input_hash != source_hash {
@@ -471,14 +502,14 @@ fn observation_from_result(
     }
 
     Ok(MlInferenceObservation {
-        action: required_str(result, "/action")?.to_string(),
+        action: result_action.to_string(),
         source_file_id: Some(file_id.to_string()),
         source_content_hash: Some(source_hash.to_string()),
         input_sha256: input_hash.to_string(),
         input_utf8_bytes: input_bytes,
         preprocessing: required_str(result, "/input/preprocessing")?.to_string(),
-        model_id: required_str(result, "/model/id")?.to_string(),
-        model_version: required_str(result, "/model/version")?.to_string(),
+        model_id: result_model_id.to_string(),
+        model_version: result_model_version.to_string(),
         backend: required_str(result, "/model/backend")?.to_string(),
         package_digest: required_str(result, "/model/package_digest")?.to_string(),
         prediction_label: required_str(result, "/prediction/label")?.to_string(),
