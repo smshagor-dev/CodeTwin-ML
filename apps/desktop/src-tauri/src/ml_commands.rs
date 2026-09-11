@@ -1,0 +1,526 @@
+use std::{
+    fs,
+    io::{Read, Write},
+    path::{Component, Path, PathBuf},
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+use codetwin_core::{
+    Database, MlFindingLinkRecord, MlInferenceObservation, MlInferenceRecord, MlInferenceStore,
+    MlScore,
+};
+use rusqlite::OptionalExtension;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+use super::AppState;
+
+const MAX_SOURCE_BYTES: u64 = 65_536;
+const MAX_REQUEST_BYTES: usize = 131_072;
+const MAX_RESPONSE_BYTES: u64 = 1_048_576;
+const SIDECAR_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MlSidecarConfig {
+    pub python_executable: String,
+    pub sidecar_root: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MlSidecarStatus {
+    pub configured: bool,
+    pub python_executable: String,
+    pub sidecar_root: String,
+    pub health: Value,
+}
+
+#[derive(Debug)]
+struct ValidatedSidecar {
+    python_executable: PathBuf,
+    sidecar_root: PathBuf,
+}
+
+#[derive(Debug)]
+struct IndexedSource {
+    text: String,
+    content_hash: String,
+    byte_size: u64,
+}
+
+pub(crate) async fn ml_sidecar_health(
+    config: MlSidecarConfig,
+) -> Result<MlSidecarStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let validated = validate_sidecar(&config)?;
+        let health = sidecar_request(&validated, "health", json!({}))?;
+        Ok(MlSidecarStatus {
+            configured: true,
+            python_executable: validated.python_executable.display().to_string(),
+            sidecar_root: validated.sidecar_root.display().to_string(),
+            health,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+pub(crate) async fn ml_sidecar_capabilities(config: MlSidecarConfig) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let validated = validate_sidecar(&config)?;
+        sidecar_request(&validated, "capabilities", json!({}))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+pub(crate) async fn ml_models(config: MlSidecarConfig) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let validated = validate_sidecar(&config)?;
+        sidecar_request(&validated, "models.list", json!({}))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+pub(crate) async fn ml_inference_plan(
+    action: String,
+    config: MlSidecarConfig,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let validated = validate_sidecar(&config)?;
+        sidecar_request(&validated, "inference.plan", json!({ "action": action }))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+pub(crate) async fn run_ml_file_inference(
+    project_id: String,
+    file_id: String,
+    action: String,
+    model_id: Option<String>,
+    model_version: Option<String>,
+    config: MlSidecarConfig,
+    state: tauri::State<'_, AppState>,
+) -> Result<MlInferenceRecord, String> {
+    if state.ml_running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("ML inference is already running".to_string());
+    }
+
+    let database_path = state.database_path.clone();
+    let running = std::sync::Arc::clone(&state.ml_running);
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let database = Database::open(database_path).map_err(|error| error.to_string())?;
+        let source = load_indexed_source(&database, &project_id, &file_id)?;
+        let validated = validate_sidecar(&config)?;
+        let result = sidecar_request(
+            &validated,
+            "inference.run",
+            json!({
+                "action": action,
+                "text": source.text,
+                "model_id": model_id,
+                "model_version": model_version,
+            }),
+        )?;
+        let observation = observation_from_result(
+            &result,
+            &file_id,
+            &source.content_hash,
+            source.byte_size,
+        )?;
+        MlInferenceStore::new(&database)
+            .record(&project_id, &observation)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    running.store(false, std::sync::atomic::Ordering::SeqCst);
+    task.map_err(|error| error.to_string())?
+}
+
+pub(crate) fn ml_inference_history(
+    project_id: String,
+    action: Option<String>,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<MlInferenceRecord>, String> {
+    super::with_database(&state, |database| {
+        MlInferenceStore::new(database)
+            .history(&project_id, action.as_deref(), limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+pub(crate) fn link_ml_finding(
+    project_id: String,
+    inference_record_id: String,
+    finding_id: String,
+    relationship: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<MlFindingLinkRecord, String> {
+    super::with_database(&state, |database| {
+        MlInferenceStore::new(database)
+            .link_to_finding(
+                &project_id,
+                &inference_record_id,
+                &finding_id,
+                &relationship,
+            )
+            .map_err(|error| error.to_string())
+    })
+}
+
+pub(crate) fn list_ml_finding_links(
+    finding_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<MlFindingLinkRecord>, String> {
+    super::with_database(&state, |database| {
+        MlInferenceStore::new(database)
+            .links_for_finding(&finding_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+fn validate_sidecar(config: &MlSidecarConfig) -> Result<ValidatedSidecar, String> {
+    let python = validate_absolute_regular_file(&config.python_executable, "Python executable")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&python)
+            .map_err(|error| format!("cannot inspect Python executable: {error}"))?
+            .permissions()
+            .mode();
+        if mode & 0o111 == 0 {
+            return Err("Python executable is not marked executable".to_string());
+        }
+    }
+
+    let root_input = Path::new(&config.sidecar_root);
+    if !root_input.is_absolute() {
+        return Err("ML sidecar root must be an absolute path".to_string());
+    }
+    let metadata = fs::symlink_metadata(root_input)
+        .map_err(|error| format!("cannot inspect ML sidecar root: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("ML sidecar root must be a real directory, not a symlink".to_string());
+    }
+    let root = root_input
+        .canonicalize()
+        .map_err(|error| format!("cannot canonicalize ML sidecar root: {error}"))?;
+    for required in ["codetwin_ml/main.py", "codetwin_ml/protocol.py"] {
+        let path = root.join(required);
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|_| format!("ML sidecar root is missing {required}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!("ML sidecar file must be a regular file: {required}"));
+        }
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("cannot canonicalize {required}: {error}"))?;
+        if !canonical.starts_with(&root) {
+            return Err(format!("ML sidecar file escapes configured root: {required}"));
+        }
+    }
+
+    Ok(ValidatedSidecar {
+        python_executable: python,
+        sidecar_root: root,
+    })
+}
+
+fn validate_absolute_regular_file(value: &str, label: &str) -> Result<PathBuf, String> {
+    let input = Path::new(value);
+    if !input.is_absolute() {
+        return Err(format!("{label} must be an absolute path"));
+    }
+    let metadata = fs::symlink_metadata(input)
+        .map_err(|error| format!("cannot inspect {label}: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!("{label} must be a regular file, not a symlink"));
+    }
+    input
+        .canonicalize()
+        .map_err(|error| format!("cannot canonicalize {label}: {error}"))
+}
+
+fn sidecar_request(
+    sidecar: &ValidatedSidecar,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    let request_id = format!("desktop-{}", time_nonce());
+    let mut request = serde_json::to_vec(&json!({
+        "id": request_id,
+        "method": method,
+        "params": params,
+    }))
+    .map_err(|error| error.to_string())?;
+    request.push(b'\n');
+    if request.len() > MAX_REQUEST_BYTES {
+        return Err(format!("ML sidecar request exceeds {MAX_REQUEST_BYTES} bytes"));
+    }
+
+    let mut command = Command::new(&sidecar.python_executable);
+    command
+        .arg("-m")
+        .arg("codetwin_ml.main")
+        .current_dir(&sidecar.sidecar_root)
+        .env("PYTHONPATH", &sidecar.sidecar_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("cannot start ML sidecar: {error}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "ML sidecar stdin was not available".to_string())?;
+    stdin
+        .write_all(&request)
+        .and_then(|_| stdin.flush())
+        .map_err(|error| format!("cannot write ML sidecar request: {error}"))?;
+    drop(stdin);
+
+    let started = Instant::now();
+    let status = loop {
+        match child
+            .try_wait()
+            .map_err(|error| format!("cannot wait for ML sidecar: {error}"))?
+        {
+            Some(status) => break status,
+            None if started.elapsed() >= SIDECAR_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "ML sidecar exceeded the {} second request timeout",
+                    SIDECAR_TIMEOUT.as_secs()
+                ));
+            }
+            None => thread::sleep(Duration::from_millis(20)),
+        }
+    };
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "ML sidecar stdout was not available".to_string())?;
+    let mut bytes = Vec::new();
+    stdout
+        .take(MAX_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read ML sidecar response: {error}"))?;
+    if bytes.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(format!(
+            "ML sidecar response exceeds {MAX_RESPONSE_BYTES} bytes"
+        ));
+    }
+    if !status.success() {
+        return Err(format!("ML sidecar exited with status {status}"));
+    }
+
+    let response: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("invalid ML sidecar JSON response: {error}"))?;
+    if response.get("id").and_then(Value::as_str) != Some(request_id.as_str()) {
+        return Err("ML sidecar response id does not match the request".to_string());
+    }
+    match response.get("ok").and_then(Value::as_bool) {
+        Some(true) => response
+            .get("result")
+            .cloned()
+            .ok_or_else(|| "ML sidecar success response is missing result".to_string()),
+        Some(false) => {
+            let code = response
+                .pointer("/error/code")
+                .and_then(Value::as_str)
+                .unwrap_or("sidecar_error");
+            let message = response
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("ML sidecar request failed");
+            Err(format!("{code}: {message}"))
+        }
+        None => Err("ML sidecar response is missing boolean ok".to_string()),
+    }
+}
+
+fn load_indexed_source(
+    database: &Database,
+    project_id: &str,
+    file_id: &str,
+) -> Result<IndexedSource, String> {
+    let row = database
+        .connection()
+        .query_row(
+            "SELECT p.root_path, f.relative_path, f.content_hash, f.project_id, f.byte_size\
+             FROM files f JOIN projects p ON p.id = f.project_id\
+             WHERE f.id = ?1 AND f.is_active = 1",
+            [file_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("active indexed file not found: {file_id}"))?;
+    let (root_text, relative_text, expected_hash, source_project, stored_size) = row;
+    if source_project != project_id {
+        return Err("indexed file does not belong to the requested project".to_string());
+    }
+    if stored_size < 0 || stored_size as u64 > MAX_SOURCE_BYTES {
+        return Err(format!(
+            "indexed file exceeds the {MAX_SOURCE_BYTES}-byte ML input limit"
+        ));
+    }
+
+    let relative = Path::new(&relative_text);
+    if relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err("indexed file path is not a safe project-relative path".to_string());
+    }
+    let root = Path::new(&root_text)
+        .canonicalize()
+        .map_err(|error| format!("cannot canonicalize indexed project root: {error}"))?;
+    let candidate = root.join(relative);
+    let metadata = fs::symlink_metadata(&candidate)
+        .map_err(|error| format!("cannot inspect indexed source file: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("indexed ML source must be a regular file, not a symlink".to_string());
+    }
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|error| format!("cannot canonicalize indexed source file: {error}"))?;
+    if !canonical.starts_with(&root) {
+        return Err("indexed source file escapes the project root".to_string());
+    }
+    let bytes = fs::read(&canonical)
+        .map_err(|error| format!("cannot read indexed source file: {error}"))?;
+    if bytes.len() as u64 > MAX_SOURCE_BYTES {
+        return Err(format!(
+            "current source file exceeds the {MAX_SOURCE_BYTES}-byte ML input limit"
+        ));
+    }
+    if bytes.len() as i64 != stored_size {
+        return Err("current source size no longer matches the persisted index".to_string());
+    }
+    let actual_hash = sha256_hex(&bytes);
+    if actual_hash != expected_hash {
+        return Err("current source bytes no longer match the persisted index hash".to_string());
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|_| "ML file inference requires UTF-8 source text".to_string())?;
+    Ok(IndexedSource {
+        byte_size: text.len() as u64,
+        text,
+        content_hash: actual_hash,
+    })
+}
+
+fn observation_from_result(
+    result: &Value,
+    file_id: &str,
+    source_hash: &str,
+    source_byte_size: u64,
+) -> Result<MlInferenceObservation, String> {
+    let input_hash = required_str(result, "/input/sha256")?;
+    let input_bytes = required_u64(result, "/input/utf8_bytes")?;
+    if input_hash != source_hash {
+        return Err("ML sidecar input hash does not match the indexed source hash".to_string());
+    }
+    if input_bytes != source_byte_size {
+        return Err("ML sidecar input size does not match the indexed source size".to_string());
+    }
+
+    let score_values = result
+        .pointer("/prediction/scores")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "ML sidecar prediction scores are missing".to_string())?;
+    let mut scores = Vec::with_capacity(score_values.len());
+    for value in score_values {
+        scores.push(MlScore {
+            label: required_str(value, "/label")?.to_string(),
+            score: value
+                .pointer("/score")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| "ML sidecar score is not numeric".to_string())?,
+        });
+    }
+
+    Ok(MlInferenceObservation {
+        action: required_str(result, "/action")?.to_string(),
+        source_file_id: Some(file_id.to_string()),
+        source_content_hash: Some(source_hash.to_string()),
+        input_sha256: input_hash.to_string(),
+        input_utf8_bytes: input_bytes,
+        preprocessing: required_str(result, "/input/preprocessing")?.to_string(),
+        model_id: required_str(result, "/model/id")?.to_string(),
+        model_version: required_str(result, "/model/version")?.to_string(),
+        backend: required_str(result, "/model/backend")?.to_string(),
+        package_digest: required_str(result, "/model/package_digest")?.to_string(),
+        prediction_label: required_str(result, "/prediction/label")?.to_string(),
+        prediction_confidence: result
+            .pointer("/prediction/confidence")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| "ML sidecar prediction confidence is not numeric".to_string())?,
+        scores,
+        runtime: result
+            .get("runtime")
+            .cloned()
+            .ok_or_else(|| "ML sidecar runtime provenance is missing".to_string())?,
+        evaluation_provenance: result
+            .get("evaluation_provenance")
+            .cloned()
+            .ok_or_else(|| "ML sidecar evaluation provenance is missing".to_string())?,
+    })
+}
+
+fn required_str<'a>(value: &'a Value, pointer: &str) -> Result<&'a str, String> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("ML sidecar response is missing {pointer}"))
+}
+
+fn required_u64(value: &Value, pointer: &str) -> Result<u64, String> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("ML sidecar response is missing {pointer}"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn time_nonce() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
