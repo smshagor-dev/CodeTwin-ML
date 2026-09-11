@@ -11,6 +11,7 @@ const MIGRATION_0005: &str = include_str!("../migrations/0005_lsp_semantic_enric
 const MIGRATION_0006: &str = include_str!("../migrations/0006_code_quality_analysis.sql");
 const MIGRATION_0007: &str = include_str!("../migrations/0007_security_analysis.sql");
 const MIGRATION_0008: &str = include_str!("../migrations/0008_database_analysis.sql");
+const MIGRATION_0009: &str = include_str!("../migrations/0009_runtime_reliability.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -56,6 +57,7 @@ impl Database {
         self.apply_migration(6, MIGRATION_0006)?;
         self.apply_migration(7, MIGRATION_0007)?;
         self.apply_migration(8, MIGRATION_0008)?;
+        self.apply_migration(9, MIGRATION_0009)?;
         Ok(())
     }
 
@@ -87,17 +89,17 @@ mod tests {
     use super::Database;
 
     #[test]
-    fn creates_expected_foundation_reference_semantic_quality_security_and_database_tables() {
+    fn creates_expected_foundation_and_analysis_tables() {
         let db = Database::open_in_memory().expect("open db");
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 16);
+        assert_eq!(count, 18);
     }
 
     #[test]
@@ -107,7 +109,7 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 8);
+        assert_eq!(count, 9);
     }
 
     #[test]
@@ -146,17 +148,19 @@ mod tests {
     }
 
     #[test]
-    fn database_artifact_identity_is_project_scoped() {
+    fn artifact_identity_is_project_scoped() {
         let db = Database::open_in_memory().expect("open db");
-        let sql: String = db
-            .connection()
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name='database_artifacts'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("database artifacts schema");
-        assert!(sql.contains("UNIQUE(project_id, path_identity)"));
+        for table in ["database_artifacts", "runtime_artifacts"] {
+            let sql: String = db
+                .connection()
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("artifact schema");
+            assert!(sql.contains("UNIQUE(project_id, path_identity)"));
+        }
     }
 
     #[test]

@@ -8,6 +8,7 @@ license.workspace = true
 database-analyzer = { path = "../database-analyzer" }
 lsp-enrichment = { path = "../lsp-enrichment" }
 rusqlite.workspace = true
+runtime-analyzer = { path = "../runtime-analyzer" }
 security-analyzer = { path = "../security-analyzer" }
 serde.workspace = true
 serde_json.workspace = true
