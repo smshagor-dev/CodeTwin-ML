@@ -4,6 +4,7 @@ pub mod identity;
 pub mod impact_analysis;
 pub mod import_resolver;
 pub mod persistent_index;
+pub mod quality_analysis;
 pub mod query_service;
 pub mod semantic_config;
 pub mod semantic_domain;
@@ -30,6 +31,10 @@ pub use impact_analysis::{
 pub use import_resolver::{resolve_import, ResolvedImport};
 pub use lsp_enrichment::{LanguageServerConfig, LanguageServerKind};
 pub use persistent_index::{IndexServiceError, ProjectIndexService};
+pub use quality_analysis::{
+    CodeQualityService, FindingEvidenceRecord, QualityAnalysisError, QualityFindingRecord,
+    QualityRuleRecord, QualityRunRecord, QualityRunSummary,
+};
 pub use query_service::{ProjectQueryService, QueryServiceError};
 pub use semantic_config::{LanguageServerConfigService, SemanticConfigError};
 pub use semantic_domain::{
