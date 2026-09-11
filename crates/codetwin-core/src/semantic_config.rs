@@ -26,7 +26,9 @@ impl<'a> LanguageServerConfigService<'a> {
 
     pub fn set(&self, config: &LanguageServerConfig) -> Result<(), SemanticConfigError> {
         let key = config_key(config.kind);
-        let value = serde_json::to_string(config)?;
+        let mut persisted = config.clone();
+        persisted.initialization_options = None;
+        let value = serde_json::to_string(&persisted)?;
         self.database.connection().execute(
             "INSERT INTO settings(scope, key, value_json, updated_at)\
              VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP)\
@@ -88,6 +90,7 @@ fn config_key(kind: LanguageServerKind) -> String {
 #[cfg(test)]
 mod tests {
     use lsp_enrichment::{LanguageServerConfig, LanguageServerKind};
+    use serde_json::json;
 
     use crate::Database;
 
@@ -116,5 +119,27 @@ mod tests {
         assert!(service
             .remove(LanguageServerKind::TypeScript)
             .expect("remove"));
+    }
+
+    #[test]
+    fn strips_caller_supplied_initialization_options() {
+        let database = Database::open_in_memory().expect("database");
+        let service = LanguageServerConfigService::new(&database);
+        let config = LanguageServerConfig {
+            kind: LanguageServerKind::RustAnalyzer,
+            executable_path: "/opt/tools/rust-analyzer".into(),
+            arguments: Vec::new(),
+            initialization_options: Some(json!({
+                "cargo": {"buildScripts": {"enable": true}},
+                "procMacro": {"enable": true}
+            })),
+            enabled: true,
+        };
+        service.set(&config).expect("set");
+        let persisted = service
+            .get(LanguageServerKind::RustAnalyzer)
+            .expect("get")
+            .expect("config");
+        assert!(persisted.initialization_options.is_none());
     }
 }
