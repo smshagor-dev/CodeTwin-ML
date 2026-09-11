@@ -1,0 +1,25 @@
+.runtime-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, .7fr) minmax(520px, 1.3fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.runtime-scroll-list {
+  max-height: 420px;
+  overflow: auto;
+}
+
+.runtime-metrics {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+@media (max-width: 1100px) {
+  .runtime-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
