@@ -12,6 +12,7 @@ from codetwin_ml.datasets import (
     prefetch_dataset,
     route_action,
 )
+from codetwin_ml.inference import InferenceError, run_inference
 from codetwin_ml.models import (
     ModelError,
     inference_plan,
@@ -65,6 +66,13 @@ def _string_param(request: Request, key: str, *, required: bool = False) -> str 
     return value
 
 
+def _text_param(request: Request, key: str) -> str:
+    value = request.params.get(key)
+    if not isinstance(value, str):
+        raise ProtocolError(f"{key} must be a string")
+    return value
+
+
 def _accepted_licenses(request: Request) -> list[str]:
     value = request.params.get("accepted_licenses", [])
     if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
@@ -79,14 +87,23 @@ def handle_request(request: Request) -> dict[str, Any]:
         if request.method == "capabilities":
             catalog = list_datasets()
             models = list_models()
+            execution_models = [
+                item
+                for item in models["models"]
+                if item.get("ready") and item.get("execution_supported")
+            ]
+            inference_actions = sorted(
+                {action for item in execution_models for action in item.get("actions", [])}
+            )
             return _ok(request, {
                 "protocol": 1,
-                "inference": [],
+                "inference": inference_actions,
                 "training": [],
                 "models": {
                     "registry": True,
                     "installed": len(models["models"]),
                     "ready": sum(1 for item in models["models"] if item.get("ready")),
+                    "execution_ready": len(execution_models),
                     "execution_implemented": models["execution_implemented"],
                     "backends": models["execution_backends"],
                 },
@@ -96,8 +113,8 @@ def handle_request(request: Request) -> dict[str, Any]:
                     "actions": catalog["actions"],
                 },
                 "note": (
-                    "Model registry readiness is reported separately from inference execution. "
-                    "No prediction capability is reported until a reviewed runtime adapter is implemented."
+                    "Inference actions are reported only when an integrity-checked installed model "
+                    "declares the bounded local execution contract."
                 ),
             })
         if request.method == "datasets.list":
@@ -140,6 +157,17 @@ def handle_request(request: Request) -> dict[str, Any]:
         if request.method == "inference.plan":
             action = _string_param(request, "action", required=True)
             return _ok(request, inference_plan(action))
+        if request.method == "inference.run":
+            action = _string_param(request, "action", required=True)
+            return _ok(
+                request,
+                run_inference(
+                    action,
+                    _text_param(request, "text"),
+                    model_id=_string_param(request, "model_id"),
+                    model_version=_string_param(request, "model_version"),
+                ),
+            )
         return _error(request, "method_not_found", f"unsupported method: {request.method}")
     except ProtocolError:
         raise
@@ -147,3 +175,5 @@ def handle_request(request: Request) -> dict[str, Any]:
         return _error(request, "dataset_error", str(error))
     except ModelError as error:
         return _error(request, "model_error", str(error))
+    except InferenceError as error:
+        return _error(request, "inference_error", str(error))
