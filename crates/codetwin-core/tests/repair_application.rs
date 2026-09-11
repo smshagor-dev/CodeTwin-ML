@@ -29,17 +29,18 @@ fn fixture() -> Fixture {
     let db = Database::open_in_memory().expect("db");
     let project_id = "repair-application-project".to_owned();
     let file_id = deterministic_id("file", &[&project_id, "src/main.rs"]);
+    let root = repository.path().to_string_lossy().to_string();
     db.connection()
         .execute(
             "INSERT INTO projects(id, root_path, display_name, path_identity) VALUES (?1, ?2, 'repair', ?2)",
-            rusqlite::params![project_id, repository.path().to_string_lossy()],
+            rusqlite::params![&project_id, &root],
         )
         .expect("project");
     db.connection()
         .execute(
             "INSERT INTO files(id, project_id, relative_path, relative_path_identity, content_hash, byte_size, is_active)\
              VALUES (?1, ?2, 'src/main.rs', 'src/main.rs', ?3, 4, 1)",
-            rusqlite::params![file_id, project_id, hash(b"old\n")],
+            rusqlite::params![&file_id, &project_id, hash(b"old\n")],
         )
         .expect("file");
 
@@ -114,7 +115,7 @@ fn approved_plan_applies_and_rolls_back_without_commands() {
         .get_plan(&fixture.repair_id)
         .expect("plan query")
         .expect("plan");
-    assert_eq!(plan.status, "approved");
+    assert_eq!(plan.status, "draft");
 }
 
 #[test]
@@ -155,6 +156,10 @@ fn rollback_refuses_to_overwrite_a_post_apply_manual_edit() {
     assert_eq!(
         fs::read(&target).expect("preserved manual edit"),
         b"after-apply-user-edit\n"
+    );
+    assert_eq!(
+        service.get_run(&applied.id).expect("run").expect("run").status,
+        "applied"
     );
 }
 
