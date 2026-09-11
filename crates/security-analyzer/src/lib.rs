@@ -40,12 +40,6 @@ pub struct SourceSecurityResult {
     pub observations: Vec<SecurityObservation>,
 }
 
-struct LanguageSpec {
-    name: &'static str,
-    language: Language,
-    family: LanguageFamily,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LanguageFamily {
     TypeScript,
@@ -62,23 +56,18 @@ pub fn analyze_source(
     language_name: &str,
     source: &str,
 ) -> Result<SourceSecurityResult, SecurityAnalyzerError> {
-    let spec = language_spec(language_name)
+    let (language, family) = language_spec(language_name)
         .ok_or_else(|| SecurityAnalyzerError::UnsupportedLanguage(language_name.to_string()))?;
     let mut parser = Parser::new();
     parser
-        .set_language(&spec.language)
+        .set_language(&language)
         .map_err(|error| SecurityAnalyzerError::ParserLanguage(error.to_string()))?;
     let tree = parser
         .parse(source, None)
         .ok_or(SecurityAnalyzerError::ParserCancelled)?;
 
     let mut observations = Vec::new();
-    visit(
-        tree.root_node(),
-        source,
-        spec.family,
-        &mut observations,
-    );
+    visit(tree.root_node(), source, family, &mut observations);
     observations.sort_by(|left, right| {
         (
             left.start_line,
@@ -427,60 +416,42 @@ fn normalize_callee(value: &str) -> String {
 
 fn callee_basename(value: &str) -> String {
     value
-        .rsplit(['.', ':', '\\'])
+        .rsplit(|character| matches!(character, '.' | ':' | '\\'))
         .find(|part| !part.is_empty())
         .unwrap_or(value)
         .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '_')
         .to_string()
 }
 
-fn language_spec(name: &str) -> Option<LanguageSpec> {
+fn language_spec(name: &str) -> Option<(Language, LanguageFamily)> {
     match name {
-        "TypeScript" => Some(LanguageSpec {
-            name: "TypeScript",
-            language: tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            family: LanguageFamily::TypeScript,
-        }),
-        "TypeScript TSX" => Some(LanguageSpec {
-            name: "TypeScript TSX",
-            language: tree_sitter_typescript::LANGUAGE_TSX.into(),
-            family: LanguageFamily::TypeScript,
-        }),
-        "JavaScript" => Some(LanguageSpec {
-            name: "JavaScript",
-            language: tree_sitter_javascript::LANGUAGE.into(),
-            family: LanguageFamily::JavaScript,
-        }),
-        "Python" => Some(LanguageSpec {
-            name: "Python",
-            language: tree_sitter_python::LANGUAGE.into(),
-            family: LanguageFamily::Python,
-        }),
-        "Rust" => Some(LanguageSpec {
-            name: "Rust",
-            language: tree_sitter_rust::LANGUAGE.into(),
-            family: LanguageFamily::Rust,
-        }),
-        "Go" => Some(LanguageSpec {
-            name: "Go",
-            language: tree_sitter_go::LANGUAGE.into(),
-            family: LanguageFamily::Go,
-        }),
-        "C" => Some(LanguageSpec {
-            name: "C",
-            language: tree_sitter_c::LANGUAGE.into(),
-            family: LanguageFamily::C,
-        }),
-        "C++" => Some(LanguageSpec {
-            name: "C++",
-            language: tree_sitter_cpp::LANGUAGE.into(),
-            family: LanguageFamily::Cpp,
-        }),
-        "PHP" => Some(LanguageSpec {
-            name: "PHP",
-            language: tree_sitter_php::LANGUAGE_PHP.into(),
-            family: LanguageFamily::Php,
-        }),
+        "TypeScript" => Some((
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            LanguageFamily::TypeScript,
+        )),
+        "TypeScript TSX" => Some((
+            tree_sitter_typescript::LANGUAGE_TSX.into(),
+            LanguageFamily::TypeScript,
+        )),
+        "JavaScript" => Some((
+            tree_sitter_javascript::LANGUAGE.into(),
+            LanguageFamily::JavaScript,
+        )),
+        "Python" => Some((
+            tree_sitter_python::LANGUAGE.into(),
+            LanguageFamily::Python,
+        )),
+        "Rust" => Some((
+            tree_sitter_rust::LANGUAGE.into(),
+            LanguageFamily::Rust,
+        )),
+        "Go" => Some((tree_sitter_go::LANGUAGE.into(), LanguageFamily::Go)),
+        "C" => Some((tree_sitter_c::LANGUAGE.into(), LanguageFamily::C)),
+        "C++" => Some((tree_sitter_cpp::LANGUAGE.into(), LanguageFamily::Cpp)),
+        "PHP" => Some((
+            tree_sitter_php::LANGUAGE_PHP.into(),
+            LanguageFamily::Php,
+        )),
         _ => None,
     }
 }
