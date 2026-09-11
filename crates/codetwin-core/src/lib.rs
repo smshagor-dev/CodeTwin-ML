@@ -6,6 +6,7 @@ pub mod import_resolver;
 pub mod persistent_index;
 pub mod quality_analysis;
 pub mod query_service;
+pub mod security_analysis;
 pub mod semantic_config;
 pub mod semantic_domain;
 pub mod semantic_query;
@@ -36,6 +37,10 @@ pub use quality_analysis::{
     QualityRuleRecord, QualityRunRecord, QualityRunSummary,
 };
 pub use query_service::{ProjectQueryService, QueryServiceError};
+pub use security_analysis::{
+    CodeSecurityService, SecurityAnalysisError, SecurityFindingRecord, SecurityRuleRecord,
+    SecurityRunRecord, SecurityRunSummary,
+};
 pub use semantic_config::{LanguageServerConfigService, SemanticConfigError};
 pub use semantic_domain::{
     LanguageServerConfigRecord, SemanticEnrichmentRequest, SemanticImportResolutionRecord,

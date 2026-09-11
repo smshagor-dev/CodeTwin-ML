@@ -2,7 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 type AnalysisStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
-type View = "overview" | "digital-twin" | "semantics" | "findings";
+type View = "overview" | "digital-twin" | "semantics" | "findings" | "security";
 type LanguageServerKind = "typescript" | "pyright" | "rust_analyzer";
 type FindingFilter = "open" | "resolved" | "all";
 
@@ -233,6 +233,63 @@ type QualityRuleRecord = {
   threshold: string;
 };
 
+type SecurityRunSummary = {
+  project_id: string;
+  run_id: string;
+  status: AnalysisStatus;
+  coverage_complete: boolean;
+  files_considered: number;
+  files_analyzed: number;
+  files_stale: number;
+  files_skipped: number;
+  observations: number;
+  findings_opened: number;
+  findings_refreshed: number;
+  findings_resolved: number;
+  hardcoded_credentials: number;
+  dynamic_execution: number;
+  weak_crypto: number;
+  unsafe_c_apis: number;
+  duration_ms: number;
+};
+
+type SecurityRunRecord = Omit<SecurityRunSummary, "duration_ms"> & {
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+};
+
+type SecurityFindingRecord = {
+  id: string;
+  project_id: string;
+  run_id: string;
+  rule_id: string;
+  severity: string;
+  confidence: number | null;
+  title: string;
+  description: string;
+  file_id: string | null;
+  symbol_id: string | null;
+  source_start_line: number | null;
+  source_end_line: number | null;
+  cwe: string | null;
+  owasp: string | null;
+  status: string;
+  fingerprint: string;
+  first_seen: string;
+  last_seen: string;
+  resolved_at: string | null;
+};
+
+type SecurityRuleRecord = {
+  id: string;
+  title: string;
+  description: string;
+  cwe: string;
+  owasp: string | null;
+  confidence: number;
+};
+
 const SERVER_KINDS: LanguageServerKind[] = ["typescript", "pyright", "rust_analyzer"];
 const SERVER_LABELS: Record<LanguageServerKind, string> = {
   typescript: "TypeScript / JavaScript",
@@ -280,6 +337,15 @@ export function App() {
   const [findingFilter, setFindingFilter] = useState<FindingFilter>("open");
   const [selectedFinding, setSelectedFinding] = useState<QualityFindingRecord | null>(null);
   const [findingEvidence, setFindingEvidence] = useState<FindingEvidenceRecord[]>([]);
+
+  const [securityBusy, setSecurityBusy] = useState(false);
+  const [securitySummary, setSecuritySummary] = useState<SecurityRunSummary | null>(null);
+  const [securityHistory, setSecurityHistory] = useState<SecurityRunRecord[]>([]);
+  const [securityFindings, setSecurityFindings] = useState<SecurityFindingRecord[]>([]);
+  const [securityRules, setSecurityRules] = useState<SecurityRuleRecord[]>([]);
+  const [securityFilter, setSecurityFilter] = useState<FindingFilter>("open");
+  const [selectedSecurityFinding, setSelectedSecurityFinding] = useState<SecurityFindingRecord | null>(null);
+  const [securityEvidence, setSecurityEvidence] = useState<FindingEvidenceRecord[]>([]);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -332,6 +398,22 @@ export function App() {
     }
   }
 
+  async function loadSecurityWorkspace(projectId: string, filter: FindingFilter = securityFilter) {
+    const status = filter === "all" ? null : filter;
+    const [findings, runs, rules] = await Promise.all([
+      invoke<SecurityFindingRecord[]>("list_security_findings", { projectId, status, limit: 300 }),
+      invoke<SecurityRunRecord[]>("security_history", { projectId, limit: 30 }),
+      invoke<SecurityRuleRecord[]>("list_security_rules"),
+    ]);
+    setSecurityFindings(findings);
+    setSecurityHistory(runs);
+    setSecurityRules(rules);
+    if (selectedSecurityFinding && !findings.some((finding) => finding.id === selectedSecurityFinding.id)) {
+      setSelectedSecurityFinding(null);
+      setSecurityEvidence([]);
+    }
+  }
+
   async function analyze() {
     setError(null);
     setBusy(true);
@@ -343,6 +425,7 @@ export function App() {
       setSelectedFile(null);
       setSelectedSymbol(null);
       setSelectedFinding(null);
+      setSelectedSecurityFinding(null);
       setFileSymbols([]);
       setDependencies([]);
       setDependents([]);
@@ -353,11 +436,14 @@ export function App() {
       setSemanticImports([]);
       setSemanticSummary(null);
       setQualitySummary(null);
+      setSecuritySummary(null);
       setFindingEvidence([]);
+      setSecurityEvidence([]);
       await Promise.all([
         loadProject(indexSummary.project_id),
         loadSemanticWorkspace(indexSummary.project_id),
         loadQualityWorkspace(indexSummary.project_id),
+        loadSecurityWorkspace(indexSummary.project_id),
       ]);
     } catch (value) {
       setError(String(value));
@@ -537,9 +623,7 @@ export function App() {
     setQualityBusy(true);
     setError(null);
     try {
-      const result = await invoke<QualityRunSummary>("run_code_quality", {
-        projectId: summary.project_id,
-      });
+      const result = await invoke<QualityRunSummary>("run_code_quality", { projectId: summary.project_id });
       setQualitySummary(result);
       await loadQualityWorkspace(summary.project_id);
     } catch (value) {
@@ -577,6 +661,51 @@ export function App() {
     }
   }
 
+  async function runSecurityAnalysis() {
+    if (!summary) return;
+    setSecurityBusy(true);
+    setError(null);
+    try {
+      const result = await invoke<SecurityRunSummary>("run_security_analysis", {
+        projectId: summary.project_id,
+      });
+      setSecuritySummary(result);
+      await loadSecurityWorkspace(summary.project_id);
+    } catch (value) {
+      setError(String(value));
+    } finally {
+      setSecurityBusy(false);
+    }
+  }
+
+  async function selectSecurityFinding(finding: SecurityFindingRecord) {
+    setSelectedSecurityFinding(finding);
+    setError(null);
+    try {
+      const evidence = await invoke<FindingEvidenceRecord[]>("list_security_evidence", {
+        findingId: finding.id,
+        limit: 200,
+      });
+      setSecurityEvidence(evidence);
+    } catch (value) {
+      setSecurityEvidence([]);
+      setError(String(value));
+    }
+  }
+
+  async function changeSecurityFilter(filter: FindingFilter) {
+    setSecurityFilter(filter);
+    if (!summary) return;
+    setSelectedSecurityFinding(null);
+    setSecurityEvidence([]);
+    setError(null);
+    try {
+      await loadSecurityWorkspace(summary.project_id, filter);
+    } catch (value) {
+      setError(String(value));
+    }
+  }
+
   async function openView(next: View) {
     if (next !== "overview" && !summary) return;
     setView(next);
@@ -584,6 +713,7 @@ export function App() {
     try {
       if (next === "semantics" && summary) await loadSemanticWorkspace(summary.project_id);
       if (next === "findings" && summary) await loadQualityWorkspace(summary.project_id);
+      if (next === "security" && summary) await loadSecurityWorkspace(summary.project_id);
     } catch (value) {
       setError(String(value));
     }
@@ -596,7 +726,9 @@ export function App() {
         ? "Software Digital Twin"
         : view === "semantics"
           ? "Semantic Navigation"
-          : "Code Quality Findings";
+          : view === "findings"
+            ? "Code Quality Findings"
+            : "AppSec Review";
 
   const subtitle =
     view === "overview"
@@ -605,7 +737,9 @@ export function App() {
         ? "Persisted files, symbols, dependencies, proven relationships, and bounded impact"
         : view === "semantics"
           ? "Explicitly trusted language servers enriching persisted source evidence"
-          : "Deterministic findings derived only from persisted source structure and resolved local dependencies";
+          : view === "findings"
+            ? "Deterministic findings derived only from persisted source structure and resolved local dependencies"
+            : "Evidence-backed security review signals from hash-verified indexed source";
 
   return (
     <main className="shell">
@@ -615,6 +749,7 @@ export function App() {
         <NavButton active={view === "digital-twin"} disabled={!summary} onClick={() => void openView("digital-twin")}>Digital Twin</NavButton>
         <NavButton active={view === "semantics"} disabled={!summary} onClick={() => void openView("semantics")}>Semantics</NavButton>
         <NavButton active={view === "findings"} disabled={!summary} onClick={() => void openView("findings")}>Findings</NavButton>
+        <NavButton active={view === "security"} disabled={!summary} onClick={() => void openView("security")}>Security</NavButton>
         <button className="nav" disabled>Repair Lab</button>
       </aside>
 
@@ -721,7 +856,6 @@ export function App() {
                       <dt>Parse</dt><dd>{selectedFile.parse_state ?? "Unknown"}</dd>
                       <dt>Hash</dt><dd className="mono">{selectedFile.content_hash}</dd>
                     </dl>
-
                     <h3>Symbols</h3>
                     <div className="result-list small-list">
                       {fileSymbols.map((symbol) => (
@@ -732,12 +866,10 @@ export function App() {
                       ))}
                       {!fileSymbols.length && <p className="empty">No definition symbols persisted for this file.</p>}
                     </div>
-
                     <div className="relationship-grid">
                       <RelationshipList title="Imports" records={dependencies} direction="out" />
                       <RelationshipList title="Dependents" records={dependents} direction="in" />
                     </div>
-
                     <h3>LSP import evidence</h3>
                     <div className="relationship-list">
                       {semanticImports.map((item) => (
@@ -914,11 +1046,7 @@ export function App() {
                 <section className="panel compact">
                   <div className="section-heading">
                     <div><h2>Findings</h2><p>{qualityFindings.length} bounded result{qualityFindings.length === 1 ? "" : "s"}</p></div>
-                    <select aria-label="Finding status filter" value={findingFilter} onChange={(event) => void changeFindingFilter(event.target.value as FindingFilter)}>
-                      <option value="open">Open</option>
-                      <option value="resolved">Resolved</option>
-                      <option value="all">All</option>
-                    </select>
+                    <FindingFilterSelect value={findingFilter} onChange={(filter) => void changeFindingFilter(filter)} label="Finding status filter" />
                   </div>
                   <div className="result-list">
                     {qualityFindings.map((finding) => (
@@ -961,16 +1089,7 @@ export function App() {
                         <dt>First seen</dt><dd>{selectedFinding.first_seen}</dd>
                         <dt>Last seen</dt><dd>{selectedFinding.last_seen}</dd>
                       </dl>
-                      <div className="relationship-list">
-                        {findingEvidence.map((evidence) => (
-                          <div className="relationship-item" key={evidence.id}>
-                            <strong>{evidence.evidence_type}</strong>
-                            <span>{evidence.uri ?? "project-level evidence"}{evidence.line_start ? `:${evidence.line_start}` : ""}</span>
-                            <small>{evidence.summary}</small>
-                          </div>
-                        ))}
-                        {!findingEvidence.length && <p className="empty">No evidence records are persisted for this finding.</p>}
-                      </div>
+                      <EvidenceList evidence={findingEvidence} empty="No evidence records are persisted for this finding." />
                     </>
                   ) : <p className="empty">Select a finding to inspect its persisted source or dependency evidence.</p>}
                 </section>
@@ -983,6 +1102,110 @@ export function App() {
                     subtitle: run.started_at ?? "time unavailable",
                     detail: `${run.observations} observations · ${run.findings_opened} opened · ${run.findings_resolved} resolved · ${run.duration_ms ?? 0} ms`,
                   }))} empty="No code quality run has been persisted for this project." />
+                </section>
+              </div>
+            </section>
+          </section>
+        )}
+
+        {view === "security" && summary && (
+          <section className="security-workspace">
+            <section className="panel">
+              <div className="section-heading">
+                <div>
+                  <h2>Deterministic AppSec review</h2>
+                  <p>These are review signals backed by hash-verified indexed source. They are not confirmed exploits and do not claim taint flow or attacker reachability.</p>
+                </div>
+                <button onClick={() => void runSecurityAnalysis()} disabled={securityBusy}>{securityBusy ? "Reviewing…" : "Run AppSec review"}</button>
+              </div>
+              {securitySummary && (
+                <>
+                  {!securitySummary.coverage_complete && (
+                    <p className="warning banner" role="status">Coverage is incomplete: stale or skipped files were not used as evidence. Existing missing AppSec findings were not auto-resolved.</p>
+                  )}
+                  <section className="grid security-metrics">
+                    <Metric label="coverage" value={securitySummary.coverage_complete ? "complete" : "incomplete"} />
+                    <Metric label="files analyzed" value={`${securitySummary.files_analyzed}/${securitySummary.files_considered}`} />
+                    <Metric label="stale files" value={securitySummary.files_stale} />
+                    <Metric label="skipped files" value={securitySummary.files_skipped} />
+                    <Metric label="observations" value={securitySummary.observations} />
+                    <Metric label="opened" value={securitySummary.findings_opened} />
+                    <Metric label="refreshed" value={securitySummary.findings_refreshed} />
+                    <Metric label="resolved" value={securitySummary.findings_resolved} />
+                    <Metric label="credential literals" value={securitySummary.hardcoded_credentials} />
+                    <Metric label="dynamic execution" value={securitySummary.dynamic_execution} />
+                    <Metric label="weak hash" value={securitySummary.weak_crypto} />
+                    <Metric label="unsafe C APIs" value={securitySummary.unsafe_c_apis} />
+                    <Metric label="duration" value={`${securitySummary.duration_ms} ms`} />
+                  </section>
+                </>
+              )}
+            </section>
+
+            <section className="quality-layout">
+              <div className="twin-column">
+                <section className="panel compact">
+                  <div className="section-heading">
+                    <div><h2>Security review findings</h2><p>{securityFindings.length} bounded result{securityFindings.length === 1 ? "" : "s"}</p></div>
+                    <FindingFilterSelect value={securityFilter} onChange={(filter) => void changeSecurityFilter(filter)} label="Security finding status filter" />
+                  </div>
+                  <div className="result-list">
+                    {securityFindings.map((finding) => (
+                      <button key={finding.id} className={`result-item finding-item ${selectedSecurityFinding?.id === finding.id ? "selected" : ""}`} onClick={() => void selectSecurityFinding(finding)}>
+                        <strong>{finding.title}</strong>
+                        <span><Severity value={finding.severity} /> · {finding.status} · {finding.cwe ?? "CWE unavailable"}</span>
+                        <small className="mono">{finding.rule_id}</small>
+                      </button>
+                    ))}
+                    {!securityFindings.length && <p className="empty">No persisted AppSec findings match this status.</p>}
+                  </div>
+                </section>
+
+                <section className="panel compact">
+                  <h2>Security rule set</h2>
+                  <div className="relationship-list">
+                    {securityRules.map((rule) => (
+                      <div className="relationship-item" key={rule.id}>
+                        <strong>{rule.title}</strong>
+                        <span>{rule.cwe}{rule.owasp ? ` · ${rule.owasp}` : ""} · confidence {rule.confidence}</span>
+                        <small>{rule.description}</small>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
+
+              <div className="twin-column wide">
+                <section className="panel compact">
+                  <h2>Security evidence</h2>
+                  {selectedSecurityFinding ? (
+                    <>
+                      <div className="finding-title-row"><Severity value={selectedSecurityFinding.severity} /><strong>{selectedSecurityFinding.title}</strong></div>
+                      <p>{selectedSecurityFinding.description}</p>
+                      <dl className="metadata-grid">
+                        <dt>Status</dt><dd>{selectedSecurityFinding.status}</dd>
+                        <dt>Rule</dt><dd className="mono">{selectedSecurityFinding.rule_id}</dd>
+                        <dt>CWE</dt><dd>{selectedSecurityFinding.cwe ?? "Unavailable"}</dd>
+                        <dt>OWASP</dt><dd>{selectedSecurityFinding.owasp ?? "Not mapped"}</dd>
+                        <dt>Confidence</dt><dd>{selectedSecurityFinding.confidence ?? "Unavailable"}</dd>
+                        <dt>Source range</dt><dd>{selectedSecurityFinding.source_start_line ?? "—"}–{selectedSecurityFinding.source_end_line ?? "—"}</dd>
+                        <dt>First seen</dt><dd>{selectedSecurityFinding.first_seen}</dd>
+                        <dt>Last seen</dt><dd>{selectedSecurityFinding.last_seen}</dd>
+                      </dl>
+                      <p className="security-note">Credential values are redacted before persistence. Evidence metadata contains hashes, positions, and rule metadata only.</p>
+                      <EvidenceList evidence={securityEvidence} empty="No source evidence is persisted for this security finding." />
+                    </>
+                  ) : <p className="empty">Select a security review finding to inspect its redacted persisted evidence.</p>}
+                </section>
+
+                <section className="panel compact">
+                  <h2>Security history</h2>
+                  <HistoryList items={securityHistory.map((run) => ({
+                    id: run.run_id,
+                    title: `${run.status} · ${run.coverage_complete ? "complete coverage" : "incomplete coverage"}`,
+                    subtitle: run.started_at ?? "time unavailable",
+                    detail: `${run.observations} observations · ${run.findings_opened} opened · ${run.findings_resolved} resolved · ${run.files_stale} stale · ${run.duration_ms ?? 0} ms`,
+                  }))} empty="No AppSec review run has been persisted for this project." />
                 </section>
               </div>
             </section>
@@ -1003,6 +1226,31 @@ function Metric({ label, value }: { label: string; value: string | number }) {
 
 function Severity({ value }: { value: string }) {
   return <span className={`severity severity-${value}`}>{value}</span>;
+}
+
+function FindingFilterSelect({ value, onChange, label }: { value: FindingFilter; onChange: (value: FindingFilter) => void; label: string }) {
+  return (
+    <select aria-label={label} value={value} onChange={(event) => onChange(event.target.value as FindingFilter)}>
+      <option value="open">Open</option>
+      <option value="resolved">Resolved</option>
+      <option value="all">All</option>
+    </select>
+  );
+}
+
+function EvidenceList({ evidence, empty }: { evidence: FindingEvidenceRecord[]; empty: string }) {
+  return (
+    <div className="relationship-list">
+      {evidence.map((item) => (
+        <div className="relationship-item" key={item.id}>
+          <strong>{item.evidence_type}</strong>
+          <span>{item.uri ?? "project-level evidence"}{item.line_start ? `:${item.line_start}` : ""}</span>
+          <small>{item.summary}</small>
+        </div>
+      ))}
+      {!evidence.length && <p className="empty">{empty}</p>}
+    </div>
+  );
 }
 
 function HistoryList({ items, empty }: { items: Array<{ id: string; title: string; subtitle: string; detail: string }>; empty: string }) {

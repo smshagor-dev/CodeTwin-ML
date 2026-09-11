@@ -1,6 +1,6 @@
 # Software Digital Twin
 
-CodeTwin ML persists a local Software Digital Twin in SQLite. The schema stores projects, analysis runs, files, symbols, graph nodes, graph edges, normalized findings, evidence, artifacts, settings, import observations, source-backed symbol-reference observations, conservative semantic-resolution state, optional LSP semantic evidence, and deterministic code-quality run metrics. File, symbol, node, and edge identities are deterministic so incremental indexing updates existing entities rather than creating arbitrary duplicates.
+CodeTwin ML persists a local Software Digital Twin in SQLite. The schema stores projects, analysis runs, files, symbols, graph nodes, graph edges, normalized findings, evidence, artifacts, settings, import observations, source-backed symbol-reference observations, conservative semantic-resolution state, optional LSP semantic evidence, deterministic code-quality run metrics, and deterministic AppSec run metrics. File, symbol, node, and edge identities are deterministic so incremental indexing updates existing entities rather than creating arbitrary duplicates.
 
 ## Persisted source index
 
@@ -23,7 +23,7 @@ The UI and service layer use bounded queries rather than loading an entire repos
 
 ## Query and navigation services
 
-The core query services support active file lookup, bounded symbol listing/search, graph summary and neighborhoods, direct dependencies/dependents, index history, reverse dependency impact, semantic run history, per-symbol semantic state/relations, per-file LSP import evidence, deterministic quality findings/evidence, and quality run history. Tauri handlers delegate to core services instead of embedding persistence logic in command functions.
+The core query services support active file lookup, bounded symbol listing/search, graph summary and neighborhoods, direct dependencies/dependents, index history, reverse dependency impact, semantic run history, per-symbol semantic state/relations, per-file LSP import evidence, deterministic quality findings/evidence, quality run history, and bounded deterministic AppSec findings/evidence/history. Tauri handlers delegate to core services instead of embedding persistence logic in command functions.
 
 ## Impact analysis
 
@@ -37,6 +37,10 @@ LSP enrichment is not part of passive indexing. It requires explicit project tru
 
 The first quality layer reads only active persisted symbols and `resolved_local` imports. It currently detects oversized definitions, deep structural declaration nesting, high local dependency fan-out, and resolved-local dependency cycles. Findings have deterministic fingerprints, durable open/resolved lifecycle, bounded run history, and concrete source or dependency evidence. See `CODE_QUALITY_ANALYSIS.md` for rule thresholds and limitations.
 
+## Deterministic AppSec review
+
+The first security layer reads only active indexed source files whose current bytes still match their persisted content hash. Tree-sitter-backed rules currently surface potential hard-coded credential literals with redacted values, dynamic-code execution primitives, weak MD5/SHA-1 primitives, and selected unsafe C/C++ string APIs. Findings persist CWE/OWASP mappings where documented and use the same durable normalized finding/evidence model without touching quality findings. Incomplete source coverage never auto-resolves a previous AppSec finding. See `SECURITY_ANALYSIS.md` for the evidence and trust boundary.
+
 ## Current boundary
 
-A complete call graph, control-flow graph, data-flow graph, dynamic dispatch model, runtime trace graph, AppSec/security finding graph, ML defect prediction layer, and repair-verification graph are not yet claimed. The current quality findings are limited to the documented deterministic rules and are not generalized into unsupported QA conclusions. Additional relationships and findings will be added only when their dedicated analyzers can persist concrete evidence and regression tests.
+A complete call graph, control-flow graph, data-flow/taint graph, dynamic dispatch model, runtime trace graph, dependency-CVE model, exploitability proof, ML defect/security prediction layer, and repair-verification graph are not yet claimed. Current quality and AppSec findings are limited to the documented deterministic rules and are not generalized into unsupported conclusions. Additional relationships and findings will be added only when their dedicated analyzers can persist concrete evidence and regression tests.
