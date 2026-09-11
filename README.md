@@ -22,7 +22,7 @@ CodeTwin ML is a local-first engineering intelligence desktop application. It co
 | Deterministic code-quality findings | Implemented baseline for large definitions, deep declaration nesting, high local fan-out, and resolved-local dependency cycles |
 | Deterministic AppSec review findings | Implemented baseline for hard-coded credential literals, dynamic execution primitives, weak hash primitives, and unsafe C/C++ string APIs |
 | Deterministic database artifact analysis | Implemented baseline with desktop workspace for SQL/Prisma artifact inventory, destructive migration review, unscoped UPDATE/DELETE, SQLite foreign-key disable, and literal Prisma datasource URLs |
-| Deterministic runtime reliability analysis | Implemented core baseline for Dockerfile/Compose artifact inventory, mutable image references, healthcheck review, and explicit no-restart policies |
+| Deterministic runtime reliability analysis | Implemented baseline with desktop workspace for Dockerfile/Compose artifact inventory, mutable image references, healthcheck review, and explicit no-restart policies |
 | OpenMindAI Dataset catalog + action routing | Implemented foundation |
 | Runtime telemetry / live process tracing | Planned |
 | ML inference models | Planned |
