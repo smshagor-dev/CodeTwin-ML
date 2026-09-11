@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from codetwin_ml.models import ModelError, resolve_model_for_inference
 
@@ -28,6 +28,31 @@ ArrayFactory = Callable[[list[list[int]]], Any]
 ModelValidator = Callable[[Path], None]
 
 
+def _iter_graph_tensors(graph: Any, onnx: Any) -> Iterator[Any]:
+    yield from graph.initializer
+    for sparse in getattr(graph, "sparse_initializer", []):
+        yield sparse.values
+        yield sparse.indices
+    for node in graph.node:
+        for attribute in node.attribute:
+            if attribute.type == onnx.AttributeProto.TENSOR:
+                yield attribute.t
+            elif attribute.type == onnx.AttributeProto.TENSORS:
+                yield from attribute.tensors
+            elif attribute.type == onnx.AttributeProto.SPARSE_TENSOR:
+                yield attribute.sparse_tensor.values
+                yield attribute.sparse_tensor.indices
+            elif attribute.type == onnx.AttributeProto.SPARSE_TENSORS:
+                for sparse in attribute.sparse_tensors:
+                    yield sparse.values
+                    yield sparse.indices
+            elif attribute.type == onnx.AttributeProto.GRAPH:
+                yield from _iter_graph_tensors(attribute.g, onnx)
+            elif attribute.type == onnx.AttributeProto.GRAPHS:
+                for nested in attribute.graphs:
+                    yield from _iter_graph_tensors(nested, onnx)
+
+
 def _validate_single_file_onnx(model_path: Path) -> None:
     try:
         import onnx  # type: ignore[import-not-found]
@@ -41,7 +66,7 @@ def _validate_single_file_onnx(model_path: Path) -> None:
     except Exception as error:  # pragma: no cover - exact exception types depend on onnx
         raise InferenceRuntimeError(f"cannot validate ONNX model: {error}") from error
 
-    for tensor in model.graph.initializer:
+    for tensor in _iter_graph_tensors(model.graph, onnx):
         if tensor.data_location == onnx.TensorProto.EXTERNAL:
             raise InferenceRuntimeError("external-data ONNX models are not supported")
         if getattr(tensor, "external_data", None):
@@ -71,6 +96,8 @@ def _default_session_factory(model_path: Path) -> Any:
     options.inter_op_num_threads = 1
     options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+    options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    options.add_session_config_entry("session.inter_op.allow_spinning", "0")
     try:
         return ort.InferenceSession(
             str(model_path),
@@ -82,13 +109,15 @@ def _default_session_factory(model_path: Path) -> Any:
 
 
 def _encode_utf8_bytes(text: str, max_bytes: int) -> tuple[list[list[int]], int, str]:
+    if len(text) > MAX_TEXT_BYTES:
+        raise InferenceInputError(f"input exceeds the global {MAX_TEXT_BYTES}-character precheck")
     raw = text.encode("utf-8")
+    if len(raw) > MAX_TEXT_BYTES:
+        raise InferenceInputError(f"input exceeds the global {MAX_TEXT_BYTES}-byte limit")
     if len(raw) > max_bytes:
         raise InferenceInputError(
             f"input is {len(raw)} UTF-8 bytes but this model allows at most {max_bytes}"
         )
-    if len(raw) > MAX_TEXT_BYTES:
-        raise InferenceInputError(f"input exceeds the global {MAX_TEXT_BYTES}-byte limit")
     row = [value + 1 for value in raw]
     row.extend([0] * (max_bytes - len(row)))
     return [row], len(raw), hashlib.sha256(raw).hexdigest()
@@ -125,6 +154,41 @@ def _softmax(logits: list[float]) -> list[float]:
     if not math.isfinite(total) or total <= 0:
         raise InferenceRuntimeError("cannot normalize model logits")
     return [value / total for value in exponentials]
+
+
+def _validate_input_descriptor(descriptor: Any, input_name: str, max_bytes: int) -> None:
+    if getattr(descriptor, "name", None) != input_name:
+        raise InferenceRuntimeError("ONNX input name does not match the declared contract")
+    if getattr(descriptor, "type", None) != "tensor(int64)":
+        raise InferenceRuntimeError("ONNX input must be tensor(int64) for utf8-bytes-v1")
+    shape = getattr(descriptor, "shape", None)
+    if shape is None:
+        return
+    if not isinstance(shape, (list, tuple)) or len(shape) != 2:
+        raise InferenceRuntimeError("ONNX input must have rank 2")
+    first, second = shape
+    if isinstance(first, int) and first != 1:
+        raise InferenceRuntimeError("ONNX input batch dimension must allow a single item")
+    if isinstance(second, int) and second != max_bytes:
+        raise InferenceRuntimeError("ONNX input width does not match inference.max_bytes")
+
+
+def _validate_output_descriptor(descriptor: Any, output_name: str, label_count: int) -> None:
+    if getattr(descriptor, "name", None) != output_name:
+        raise InferenceRuntimeError("ONNX output name does not match the declared contract")
+    output_type = getattr(descriptor, "type", None)
+    if output_type not in {"tensor(float)", "tensor(double)", None}:
+        raise InferenceRuntimeError("ONNX logits output must be floating point")
+    shape = getattr(descriptor, "shape", None)
+    if shape is None:
+        return
+    if not isinstance(shape, (list, tuple)) or len(shape) not in {1, 2}:
+        raise InferenceRuntimeError("ONNX logits output must have rank 1 or 2")
+    last = shape[-1]
+    if isinstance(last, int) and last != label_count:
+        raise InferenceRuntimeError("ONNX output width does not match the declared label count")
+    if len(shape) == 2 and isinstance(shape[0], int) and shape[0] != 1:
+        raise InferenceRuntimeError("ONNX output batch dimension must allow a single item")
 
 
 def run_inference(
@@ -177,7 +241,7 @@ def run_inference(
         or not isinstance(output_name, str)
         or not output_name
         or not isinstance(labels, list)
-        or not labels
+        or len(labels) < 2
         or any(not isinstance(label, str) or not label for label in labels)
         or len(labels) > MAX_OUTPUT_ELEMENTS
     ):
@@ -202,12 +266,12 @@ def run_inference(
         outputs = session.get_outputs()
     except Exception as error:
         raise InferenceRuntimeError(f"cannot inspect ONNX model I/O: {error}") from error
-    if len(inputs) != 1 or getattr(inputs[0], "name", None) != input_name:
-        raise InferenceRuntimeError("ONNX input does not match the declared single-input contract")
-    if getattr(inputs[0], "type", None) not in {None, "tensor(int64)"}:
-        raise InferenceRuntimeError("ONNX input must be int64 for utf8-bytes-v1")
-    if len(outputs) != 1 or getattr(outputs[0], "name", None) != output_name:
-        raise InferenceRuntimeError("ONNX output does not match the declared single-output contract")
+    if len(inputs) != 1:
+        raise InferenceRuntimeError("ONNX model must expose exactly one input")
+    if len(outputs) != 1:
+        raise InferenceRuntimeError("ONNX model must expose exactly one output")
+    _validate_input_descriptor(inputs[0], input_name, max_bytes)
+    _validate_output_descriptor(outputs[0], output_name, len(labels))
 
     try:
         raw_outputs = session.run([output_name], {input_name: tensor})
