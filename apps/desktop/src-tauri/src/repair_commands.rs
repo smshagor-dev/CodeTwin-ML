@@ -160,14 +160,14 @@ pub(crate) async fn apply_repair_plan(
     repair_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<RepairApplicationRunRecord, String> {
-    if REPAIR_APPLICATION_RUNNING.swap(true, Ordering::SeqCst) {
-        return Err("a repair application or rollback is already running".to_string());
-    }
     let database_path = state.database_path.clone();
     let backup_root = database_path
         .parent()
         .ok_or_else(|| "database path has no parent directory".to_string())?
         .join("repair-backups");
+    if REPAIR_APPLICATION_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("a repair application or rollback is already running".to_string());
+    }
     let task = tauri::async_runtime::spawn_blocking(move || {
         let database = Database::open(&database_path).map_err(|error| error.to_string())?;
         RepairApplicationService::new(&database)
@@ -184,14 +184,14 @@ pub(crate) async fn rollback_repair_application(
     run_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<RepairApplicationRunRecord, String> {
-    if REPAIR_APPLICATION_RUNNING.swap(true, Ordering::SeqCst) {
-        return Err("a repair application or rollback is already running".to_string());
-    }
     let database_path = state.database_path.clone();
     let backup_root = database_path
         .parent()
         .ok_or_else(|| "database path has no parent directory".to_string())?
         .join("repair-backups");
+    if REPAIR_APPLICATION_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("a repair application or rollback is already running".to_string());
+    }
     let task = tauri::async_runtime::spawn_blocking(move || {
         let database = Database::open(&database_path).map_err(|error| error.to_string())?;
         RepairApplicationService::new(&database)
