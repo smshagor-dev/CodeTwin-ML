@@ -1,6 +1,8 @@
 import json
+import os
 import pathlib
 import sys
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -10,6 +12,18 @@ from codetwin_ml.main import process_line  # noqa: E402
 
 
 class ProtocolTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self._previous_model_cache = os.environ.get("CODETWIN_MODEL_CACHE")
+        os.environ["CODETWIN_MODEL_CACHE"] = str(pathlib.Path(self._temporary.name) / "models")
+
+    def tearDown(self) -> None:
+        if self._previous_model_cache is None:
+            os.environ.pop("CODETWIN_MODEL_CACHE", None)
+        else:
+            os.environ["CODETWIN_MODEL_CACHE"] = self._previous_model_cache
+        self._temporary.cleanup()
+
     def test_health(self) -> None:
         response = process_line(json.dumps({"id": "r1", "method": "health", "params": {}}))
         self.assertTrue(response["ok"])
@@ -63,7 +77,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "invalid_request")
 
-    def test_model_inventory_is_empty_on_clean_checkout(self) -> None:
+    def test_model_inventory_is_empty_on_clean_cache(self) -> None:
         response = process_line(json.dumps({"id": "r6", "method": "models.list", "params": {}}))
         self.assertTrue(response["ok"])
         self.assertTrue(response["result"]["execution_implemented"])
