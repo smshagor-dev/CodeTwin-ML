@@ -41,11 +41,14 @@ If the same model/version is already present and still verifies, installation is
 
 Model actions must already exist in the OpenMindAI Dataset routing catalog. `models.route` only returns installed models whose current files still pass integrity checks and whose manifest explicitly contains the requested action.
 
-Registry readiness and execution readiness are distinct. A package can be valid and installed without an executable inference contract. `inference.plan` therefore returns one of:
+Registry readiness, adapter support, and local runtime availability are distinct. A package can be valid and installed without an executable inference contract, and an executable package can be installed on a machine that does not yet have the optional ONNX runtime dependencies. `inference.plan` therefore returns one of:
 
 - `model_unavailable` when no valid package is installed for the action;
 - `model_ready_execution_pending` when a valid package exists but has no supported execution contract;
-- `ready` when exactly the local adapter contract is supported by at least one installed model.
+- `runtime_unavailable` when an execution-ready model exists but `numpy`, `onnx`, or `onnxruntime` is missing;
+- `ready` when both the reviewed local adapter contract and the required runtime dependencies are available.
+
+`capabilities.inference` advertises an action only in the final `ready` state.
 
 ## Execution boundary
 
@@ -53,4 +56,4 @@ The first executable adapter supports `onnx-classification-v1` with `utf8-bytes-
 
 The registry still does not execute package code. The ONNX adapter loads only the verified model artifact through the allow-listed local runtime. The package cannot register custom native libraries, shell commands, Python modules, or repository scripts through the model contract.
 
-See `ONNX_INFERENCE_RUNTIME.md` for the input/output contract, limits, provenance, and remaining runtime-sandbox limitations.
+See `ONNX_INFERENCE_RUNTIME.md` for the input/output contract, limits, provenance, dependency readiness, and remaining runtime-sandbox limitations.
