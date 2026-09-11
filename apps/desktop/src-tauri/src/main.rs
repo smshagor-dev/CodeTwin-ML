@@ -1,4 +1,5 @@
 mod database_commands;
+mod runtime_commands;
 
 use std::{
     path::PathBuf,
@@ -26,6 +27,10 @@ use database_commands::{
     list_database_rules, run_database_analysis,
 };
 use project_discovery::ProjectProfile;
+use runtime_commands::{
+    list_runtime_artifacts, list_runtime_evidence, list_runtime_findings, list_runtime_rules,
+    run_runtime_analysis, runtime_history,
+};
 use tauri::Manager;
 
 struct AppState {
@@ -571,6 +576,12 @@ fn main() {
             list_database_evidence,
             database_history,
             list_database_rules,
+            run_runtime_analysis,
+            list_runtime_artifacts,
+            list_runtime_findings,
+            list_runtime_evidence,
+            runtime_history,
+            list_runtime_rules,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");
