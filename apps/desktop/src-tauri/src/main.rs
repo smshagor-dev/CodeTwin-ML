@@ -3,7 +3,8 @@ use std::sync::Mutex;
 use codetwin_core::{
     Database, GraphNeighborhood, GraphSummary, ImpactAnalysisService, ImpactReport,
     ImportReferenceRecord, IndexRunRecord, IndexSummary, ProjectIndexService, ProjectQueryService,
-    ReferenceRefreshSummary, SourceFileRecord, SymbolRecord, SymbolReferenceObservationRecord,
+    ReferenceRefreshSummary, SemanticReferenceRecord, SemanticResolutionSummary,
+    SemanticSymbolResolver, SourceFileRecord, SymbolRecord, SymbolReferenceObservationRecord,
     SymbolReferenceService, SymbolSearchQuery,
 };
 use project_discovery::ProjectProfile;
@@ -193,6 +194,31 @@ fn list_file_reference_observations(
 }
 
 #[tauri::command]
+fn resolve_symbol_references(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<SemanticResolutionSummary>, String> {
+    with_database(&state, |database| {
+        SemanticSymbolResolver::new(database)
+            .resolve_project(&project_id)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn list_file_semantic_resolutions(
+    file_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SemanticReferenceRecord>, String> {
+    with_database(&state, |database| {
+        SemanticSymbolResolver::new(database)
+            .list_file_resolutions(&file_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
 fn index_history(
     project_id: String,
     limit: usize,
@@ -231,6 +257,8 @@ fn main() {
             analyze_file_impact,
             refresh_symbol_references,
             list_file_reference_observations,
+            resolve_symbol_references,
+            list_file_semantic_resolutions,
             index_history,
         ])
         .run(tauri::generate_context!())

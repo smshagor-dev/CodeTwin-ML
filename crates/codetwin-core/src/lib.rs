@@ -5,6 +5,7 @@ pub mod impact_analysis;
 pub mod import_resolver;
 pub mod persistent_index;
 pub mod query_service;
+pub mod semantic_resolution;
 pub mod symbol_reference;
 
 pub use db::{Database, DatabaseError};
@@ -25,6 +26,10 @@ pub use impact_analysis::{
 pub use import_resolver::{resolve_import, ResolvedImport};
 pub use persistent_index::{IndexServiceError, ProjectIndexService};
 pub use query_service::{ProjectQueryService, QueryServiceError};
+pub use semantic_resolution::{
+    SemanticReferenceRecord, SemanticResolutionError, SemanticResolutionSummary,
+    SemanticSymbolResolver,
+};
 pub use symbol_reference::{
     ReferenceRefreshSummary, SymbolReferenceError, SymbolReferenceObservationRecord,
     SymbolReferenceService,
