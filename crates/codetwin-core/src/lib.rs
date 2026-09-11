@@ -8,6 +8,7 @@ pub mod persistent_index;
 pub mod quality_analysis;
 pub mod query_service;
 pub mod repair_workflow;
+pub mod repair_workspace;
 pub mod runtime_analysis;
 pub mod security_analysis;
 pub mod semantic_config;
@@ -47,6 +48,9 @@ pub use query_service::{ProjectQueryService, QueryServiceError};
 pub use repair_workflow::{
     RepairChangeRecord, RepairPlanRecord, RepairVerificationItemRecord,
     RepairVerificationRunRecord, RepairWorkflowError, VerifiedRepairService,
+};
+pub use repair_workspace::{
+    RepairFindingRecord, RepairSourceSnapshot, RepairWorkspaceError, RepairWorkspaceQueryService,
 };
 pub use runtime_analysis::{
     RuntimeAnalysisError, RuntimeArtifactRecord, RuntimeFindingRecord, RuntimeReliabilityService,
