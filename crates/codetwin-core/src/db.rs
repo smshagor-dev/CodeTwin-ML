@@ -7,6 +7,7 @@ const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_digital_twin_persistence.sql");
 const MIGRATION_0003: &str = include_str!("../migrations/0003_symbol_reference_observations.sql");
 const MIGRATION_0004: &str = include_str!("../migrations/0004_semantic_symbol_resolution.sql");
+const MIGRATION_0005: &str = include_str!("../migrations/0005_lsp_semantic_enrichment.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -48,6 +49,7 @@ impl Database {
         self.apply_migration(2, MIGRATION_0002)?;
         self.apply_migration(3, MIGRATION_0003)?;
         self.apply_migration(4, MIGRATION_0004)?;
+        self.apply_migration(5, MIGRATION_0005)?;
         Ok(())
     }
 
@@ -79,17 +81,17 @@ mod tests {
     use super::Database;
 
     #[test]
-    fn creates_expected_foundation_and_persistence_tables() {
+    fn creates_expected_foundation_reference_and_semantic_tables() {
         let db = Database::open_in_memory().expect("open db");
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 8);
+        assert_eq!(count, 12);
     }
 
     #[test]
@@ -99,7 +101,7 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 4);
+        assert_eq!(count, 5);
     }
 
     #[test]

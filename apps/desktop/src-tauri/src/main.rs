@@ -1,17 +1,29 @@
-use std::sync::Mutex;
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+};
 
 use codetwin_core::{
     Database, GraphNeighborhood, GraphSummary, ImpactAnalysisService, ImpactReport,
-    ImportReferenceRecord, IndexRunRecord, IndexSummary, ProjectIndexService, ProjectQueryService,
-    ReferenceRefreshSummary, SemanticReferenceRecord, SemanticResolutionSummary,
-    SemanticSymbolResolver, SourceFileRecord, SymbolRecord, SymbolReferenceObservationRecord,
-    SymbolReferenceService, SymbolSearchQuery,
+    ImportReferenceRecord, IndexRunRecord, IndexSummary, LanguageServerConfig,
+    LanguageServerConfigService, LanguageServerKind, ProjectIndexService, ProjectQueryService,
+    ReferenceRefreshSummary, SemanticEnrichmentRequest, SemanticEnrichmentService,
+    SemanticImportResolutionRecord, SemanticQueryService, SemanticReferenceRecord,
+    SemanticRelationDirection, SemanticRelationRecord, SemanticResolutionSummary, SemanticRunRecord,
+    SemanticRunSummary, SemanticSymbolResolver, SemanticSymbolStateRecord, SourceFileRecord,
+    SymbolRecord, SymbolReferenceObservationRecord, SymbolReferenceService, SymbolSearchQuery,
 };
 use project_discovery::ProjectProfile;
 use tauri::Manager;
 
 struct AppState {
     database: Mutex<Database>,
+    database_path: PathBuf,
+    semantic_cancelled: Arc<AtomicBool>,
+    semantic_running: Arc<AtomicBool>,
 }
 
 fn with_database<T>(
@@ -231,14 +243,139 @@ fn index_history(
     })
 }
 
+#[tauri::command]
+fn list_language_server_configs(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<LanguageServerConfig>, String> {
+    with_database(&state, |database| {
+        LanguageServerConfigService::new(database)
+            .list()
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn set_language_server_config(
+    config: LanguageServerConfig,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    with_database(&state, |database| {
+        LanguageServerConfigService::new(database)
+            .set(&config)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn remove_language_server_config(
+    kind: LanguageServerKind,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    with_database(&state, |database| {
+        LanguageServerConfigService::new(database)
+            .remove(kind)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+async fn enrich_project_semantics(
+    project_id: String,
+    request: SemanticEnrichmentRequest,
+    state: tauri::State<'_, AppState>,
+) -> Result<SemanticRunSummary, String> {
+    if state.semantic_running.swap(true, Ordering::SeqCst) {
+        return Err("semantic enrichment is already running".to_string());
+    }
+    state.semantic_cancelled.store(false, Ordering::SeqCst);
+
+    let database_path = state.database_path.clone();
+    let cancelled = Arc::clone(&state.semantic_cancelled);
+    let running = Arc::clone(&state.semantic_running);
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let database = Database::open(database_path).map_err(|error| error.to_string())?;
+        SemanticEnrichmentService::new(&database)
+            .enrich_project_with_cancel(&project_id, &request, cancelled.as_ref())
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    running.store(false, Ordering::SeqCst);
+    task.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn cancel_semantic_enrichment(state: tauri::State<'_, AppState>) -> bool {
+    let running = state.semantic_running.load(Ordering::SeqCst);
+    if running {
+        state.semantic_cancelled.store(true, Ordering::SeqCst);
+    }
+    running
+}
+
+#[tauri::command]
+fn list_symbol_semantic_relations(
+    symbol_id: String,
+    direction: SemanticRelationDirection,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SemanticRelationRecord>, String> {
+    with_database(&state, |database| {
+        SemanticQueryService::new(database)
+            .relations_for_symbol(&symbol_id, direction, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn get_symbol_semantic_state(
+    symbol_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<SemanticSymbolStateRecord>, String> {
+    with_database(&state, |database| {
+        SemanticQueryService::new(database)
+            .symbol_state(&symbol_id)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn list_file_semantic_imports(
+    file_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SemanticImportResolutionRecord>, String> {
+    with_database(&state, |database| {
+        SemanticQueryService::new(database)
+            .semantic_imports(&file_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn semantic_history(
+    project_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SemanticRunRecord>, String> {
+    with_database(&state, |database| {
+        SemanticQueryService::new(database)
+            .history(&project_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
-            let database = Database::open(app_data_dir.join("codetwin.sqlite3"))?;
+            let database_path = app_data_dir.join("codetwin.sqlite3");
+            let database = Database::open(&database_path)?;
             app.manage(AppState {
                 database: Mutex::new(database),
+                database_path,
+                semantic_cancelled: Arc::new(AtomicBool::new(false)),
+                semantic_running: Arc::new(AtomicBool::new(false)),
             });
             Ok(())
         })
@@ -260,6 +397,15 @@ fn main() {
             resolve_symbol_references,
             list_file_semantic_resolutions,
             index_history,
+            list_language_server_configs,
+            set_language_server_config,
+            remove_language_server_config,
+            enrich_project_semantics,
+            cancel_semantic_enrichment,
+            list_symbol_semantic_relations,
+            get_symbol_semantic_state,
+            list_file_semantic_imports,
+            semantic_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");
