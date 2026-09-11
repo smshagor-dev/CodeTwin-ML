@@ -4,12 +4,18 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from codetwin_ml.datasets import load_catalog  # noqa: E402
-from codetwin_ml.inference import InferenceInputError, InferenceRuntimeError, run_inference  # noqa: E402
+from codetwin_ml.inference import (  # noqa: E402
+    InferenceInputError,
+    InferenceRuntimeError,
+    plan_inference,
+    run_inference,
+)
 from codetwin_ml.models import install_model  # noqa: E402
 
 
@@ -117,6 +123,19 @@ class InferenceTests(unittest.TestCase):
             self.assertEqual(encoded[:4], [ord("e") + 1, ord("v") + 1, ord("a") + 1, ord("l") + 1])
             self.assertEqual(len(encoded), 16)
             self.assertEqual(session.output_names, ["logits"])
+
+    def test_plan_reports_runtime_dependency_gap_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            model_root = self._install(root)
+            with patch("codetwin_ml.inference.importlib.util.find_spec", return_value=None):
+                plan = plan_inference("security_analysis", model_root=model_root)
+            self.assertEqual(plan["status"], "runtime_unavailable")
+            self.assertFalse(plan["runtime_dependencies"]["available"])
+            self.assertEqual(
+                plan["runtime_dependencies"]["missing"],
+                ["numpy", "onnx", "onnxruntime"],
+            )
 
     def test_rejects_input_larger_than_model_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
