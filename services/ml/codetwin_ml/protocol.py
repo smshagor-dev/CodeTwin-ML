@@ -12,6 +12,14 @@ from codetwin_ml.datasets import (
     prefetch_dataset,
     route_action,
 )
+from codetwin_ml.models import (
+    ModelError,
+    inference_plan,
+    install_model,
+    list_models,
+    model_status,
+    route_model,
+)
 
 
 class ProtocolError(ValueError):
@@ -70,16 +78,27 @@ def handle_request(request: Request) -> dict[str, Any]:
             return _ok(request, {"status": "ready", "protocol": 1})
         if request.method == "capabilities":
             catalog = list_datasets()
+            models = list_models()
             return _ok(request, {
                 "protocol": 1,
                 "inference": [],
                 "training": [],
+                "models": {
+                    "registry": True,
+                    "installed": len(models["models"]),
+                    "ready": sum(1 for item in models["models"] if item.get("ready")),
+                    "execution_implemented": models["execution_implemented"],
+                    "backends": models["execution_backends"],
+                },
                 "datasets": {
                     "catalog_version": catalog["schema_version"],
                     "downloadable": True,
                     "actions": catalog["actions"],
                 },
-                "note": "No model is reported until an evaluated artifact is installed.",
+                "note": (
+                    "Model registry readiness is reported separately from inference execution. "
+                    "No prediction capability is reported until a reviewed runtime adapter is implemented."
+                ),
             })
         if request.method == "datasets.list":
             return _ok(request, list_datasets())
@@ -104,8 +123,27 @@ def handle_request(request: Request) -> dict[str, Any]:
             if dataset_id is not None:
                 return _ok(request, prefetch_dataset(dataset_id, accepted_licenses=accepted))
             return _ok(request, prefetch_all(accepted_licenses=accepted))
+        if request.method == "models.list":
+            return _ok(request, list_models())
+        if request.method == "models.status":
+            model_id = _string_param(request, "model_id")
+            return _ok(request, model_status(model_id))
+        if request.method == "models.route":
+            action = _string_param(request, "action", required=True)
+            return _ok(request, route_model(action))
+        if request.method == "models.install":
+            package_path = _string_param(request, "package_path", required=True)
+            return _ok(
+                request,
+                install_model(package_path, accepted_licenses=_accepted_licenses(request)),
+            )
+        if request.method == "inference.plan":
+            action = _string_param(request, "action", required=True)
+            return _ok(request, inference_plan(action))
         return _error(request, "method_not_found", f"unsupported method: {request.method}")
     except ProtocolError:
         raise
     except DatasetError as error:
         return _error(request, "dataset_error", str(error))
+    except ModelError as error:
+        return _error(request, "model_error", str(error))

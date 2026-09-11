@@ -24,6 +24,8 @@ class ProtocolTests(unittest.TestCase):
         response = process_line(json.dumps({"id": "r2", "method": "capabilities"}))
         self.assertEqual(response["result"]["inference"], [])
         self.assertEqual(response["result"]["training"], [])
+        self.assertTrue(response["result"]["models"]["registry"])
+        self.assertFalse(response["result"]["models"]["execution_implemented"])
         self.assertTrue(response["result"]["datasets"]["downloadable"])
         self.assertIn("repair_verification", response["result"]["datasets"]["actions"])
 
@@ -59,6 +61,40 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "invalid_request")
+
+    def test_model_inventory_is_empty_on_clean_checkout(self) -> None:
+        response = process_line(json.dumps({"id": "r6", "method": "models.list", "params": {}}))
+        self.assertTrue(response["ok"])
+        self.assertFalse(response["result"]["execution_implemented"])
+        self.assertEqual(response["result"]["models"], [])
+
+    def test_inference_plan_reports_missing_model_without_fabricating_prediction(self) -> None:
+        response = process_line(
+            json.dumps(
+                {
+                    "id": "r7",
+                    "method": "inference.plan",
+                    "params": {"action": "defect_detection"},
+                }
+            )
+        )
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["status"], "model_unavailable")
+        self.assertFalse(response["result"]["execution_implemented"])
+        self.assertEqual(response["result"]["models"], [])
+
+    def test_unknown_model_action_returns_structured_error(self) -> None:
+        response = process_line(
+            json.dumps(
+                {
+                    "id": "r8",
+                    "method": "models.route",
+                    "params": {"action": "not_real"},
+                }
+            )
+        )
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "model_error")
 
 
 if __name__ == "__main__":
