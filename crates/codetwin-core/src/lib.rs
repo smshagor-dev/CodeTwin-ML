@@ -1,3 +1,4 @@
+pub mod database_analysis;
 pub mod db;
 pub mod domain;
 pub mod identity;
@@ -14,6 +15,10 @@ pub mod semantic_resolution;
 pub mod semantic_service;
 pub mod symbol_reference;
 
+pub use database_analysis::{
+    DatabaseAnalysisError, DatabaseAnalysisService, DatabaseArtifactRecord, DatabaseFindingRecord,
+    DatabaseRuleRecord, DatabaseRunRecord, DatabaseRunSummary,
+};
 pub use db::{Database, DatabaseError};
 pub use domain::{
     AnalysisRun, AnalysisStatus, EvidenceKind, FindingSeverity, GraphEdgeRecord, GraphNeighborhood,
