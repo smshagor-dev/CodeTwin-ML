@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { App } from "./App";
 import { DatabaseWorkspace } from "./DatabaseWorkspace";
+import { RepairApplicationWorkspace } from "./RepairApplicationWorkspace";
 import { RepairWorkspace } from "./RepairWorkspace";
 import { RuntimeWorkspace } from "./RuntimeWorkspace";
 import "./runtime-workspace.css";
 import "./repair-workspace.css";
+import "./repair-application-workspace.css";
 
-type Workspace = "engineering" | "database" | "runtime" | "repair";
+type Workspace = "engineering" | "database" | "runtime" | "repair" | "repair-apply";
 
 export function DesktopRoot() {
   const [workspace, setWorkspace] = useState<Workspace>("engineering");
@@ -38,11 +40,18 @@ export function DesktopRoot() {
         >
           Repair Lab
         </button>
+        <button
+          className={workspace === "repair-apply" ? "active" : ""}
+          onClick={() => setWorkspace("repair-apply")}
+        >
+          Apply & Rollback
+        </button>
       </nav>
       {workspace === "engineering" && <App />}
       {workspace === "database" && <DatabaseWorkspace />}
       {workspace === "runtime" && <RuntimeWorkspace />}
       {workspace === "repair" && <RepairWorkspace />}
+      {workspace === "repair-apply" && <RepairApplicationWorkspace />}
     </div>
   );
 }
