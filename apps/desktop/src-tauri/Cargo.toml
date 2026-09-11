@@ -11,4 +11,6 @@ tauri-build = { version = "2" }
 codetwin-core = { path = "../../../crates/codetwin-core" }
 project-discovery = { path = "../../../crates/project-discovery" }
 serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 tauri.workspace = true
