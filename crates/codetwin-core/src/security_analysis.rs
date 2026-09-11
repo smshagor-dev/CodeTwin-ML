@@ -1,18 +1,19 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
     fs,
     path::{Component, Path, PathBuf},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use rusqlite::{params, Connection, OptionalExtension};
+use security_analyzer::{analyze_source, SecurityObservation};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{deterministic_id, AnalysisStatus, Database, FindingEvidenceRecord};
-use security_analyzer::{analyze_source, SecurityObservation};
 
 const ANALYZER_KEY: &str = "appsec";
 const ANALYZER_VERSION: &str = "appsec-v1";
@@ -47,6 +48,7 @@ pub struct SecurityRunSummary {
     pub project_id: String,
     pub run_id: String,
     pub status: AnalysisStatus,
+    pub coverage_complete: bool,
     pub files_considered: usize,
     pub files_analyzed: usize,
     pub files_stale: usize,
@@ -70,6 +72,7 @@ pub struct SecurityRunRecord {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub duration_ms: Option<u64>,
+    pub coverage_complete: bool,
     pub files_considered: usize,
     pub files_analyzed: usize,
     pub files_stale: usize,
@@ -142,6 +145,12 @@ struct Collection {
     observations: Vec<PersistedObservation>,
 }
 
+impl Collection {
+    fn coverage_complete(&self) -> bool {
+        self.files_stale == 0 && self.files_skipped == 0 && self.files_analyzed == self.files_considered
+    }
+}
+
 pub struct CodeSecurityService<'a> {
     database: &'a Database,
 }
@@ -182,19 +191,11 @@ impl<'a> CodeSecurityService<'a> {
                 &configuration_json,
             ],
         );
-
         self.database.connection().execute(
             "INSERT INTO analysis_runs(\
                id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint\
              ) VALUES (?1, ?2, 'running', ?3, CURRENT_TIMESTAMP, ?4, 'security_analysis', ?5, ?6)",
-            params![
-                run_id,
-                project_id,
-                ANALYZER_VERSION,
-                configuration_json,
-                QUERY_VERSION,
-                config_fingerprint,
-            ],
+            params![run_id, project_id, ANALYZER_VERSION, configuration_json, QUERY_VERSION, config_fingerprint],
         )?;
 
         let collected = match collect_observations(
@@ -202,7 +203,7 @@ impl<'a> CodeSecurityService<'a> {
             project_id,
             &canonical_root,
         ) {
-            Ok(collected) => collected,
+            Ok(value) => value,
             Err(error) => {
                 let _ = finish_run(
                     self.database.connection(),
@@ -213,7 +214,6 @@ impl<'a> CodeSecurityService<'a> {
                 return Err(error);
             }
         };
-
         let duration_ms = elapsed_ms(started);
         match persist_collection(
             self.database.connection(),
@@ -247,19 +247,11 @@ impl<'a> CodeSecurityService<'a> {
                     first_seen, last_seen, resolved_at\
              FROM findings\
              WHERE project_id = ?1 AND analyzer_key = ?2 AND (?3 IS NULL OR status = ?3)\
-             ORDER BY CASE severity\
-                        WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3\
-                        WHEN 'low' THEN 2 ELSE 1 END DESC,\
-                      status, last_seen DESC, id\
-             LIMIT ?4",
+             ORDER BY CASE severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3\
+                        WHEN 'low' THEN 2 ELSE 1 END DESC, status, last_seen DESC, id LIMIT ?4",
         )?;
         let rows = statement.query_map(
-            params![
-                project_id,
-                ANALYZER_KEY,
-                status,
-                bounded(limit, MAX_FINDINGS_QUERY)
-            ],
+            params![project_id, ANALYZER_KEY, status, bounded(limit, MAX_FINDINGS_QUERY)],
             |row| {
                 Ok(SecurityFindingRecord {
                     id: row.get(0)?,
@@ -294,10 +286,8 @@ impl<'a> CodeSecurityService<'a> {
     ) -> Result<Vec<FindingEvidenceRecord>, SecurityAnalysisError> {
         let mut statement = self.database.connection().prepare(
             "SELECT id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json\
-             FROM finding_evidence\
-             WHERE finding_id = ?1\
-             ORDER BY COALESCE(uri, ''), COALESCE(line_start, 0), id\
-             LIMIT ?2",
+             FROM finding_evidence WHERE finding_id = ?1\
+             ORDER BY COALESCE(uri, ''), COALESCE(line_start, 0), id LIMIT ?2",
         )?;
         let rows = statement.query_map(
             params![finding_id, bounded(limit, MAX_EVIDENCE_QUERY)],
@@ -320,34 +310,34 @@ impl<'a> CodeSecurityService<'a> {
     pub fn rules(&self) -> Vec<SecurityRuleRecord> {
         vec![
             SecurityRuleRecord {
-                id: "security.hardcoded_credential_literal".to_string(),
-                title: "Potential hard-coded credential literal".to_string(),
-                description: "Credential-like assignment to a non-placeholder string literal. Values are redacted and never persisted.".to_string(),
-                cwe: "CWE-798".to_string(),
-                owasp: Some("OWASP A07:2021 Identification and Authentication Failures".to_string()),
+                id: "security.hardcoded_credential_literal".into(),
+                title: "Potential hard-coded credential literal".into(),
+                description: "Credential-like assignment to a non-placeholder string literal. Values are redacted and never persisted.".into(),
+                cwe: "CWE-798".into(),
+                owasp: Some("OWASP A07:2021 Identification and Authentication Failures".into()),
                 confidence: 0.90,
             },
             SecurityRuleRecord {
-                id: "security.dynamic_code_execution".to_string(),
-                title: "Dynamic code execution primitive".to_string(),
-                description: "Flags eval/exec-style primitives for input-provenance review; it does not claim attacker-controlled input.".to_string(),
-                cwe: "CWE-95".to_string(),
-                owasp: Some("OWASP A03:2021 Injection".to_string()),
+                id: "security.dynamic_code_execution".into(),
+                title: "Dynamic code execution primitive".into(),
+                description: "Flags eval/exec-style primitives for input-provenance review; it does not claim attacker-controlled input.".into(),
+                cwe: "CWE-95".into(),
+                owasp: Some("OWASP A03:2021 Injection".into()),
                 confidence: 0.68,
             },
             SecurityRuleRecord {
-                id: "security.weak_cryptographic_hash".to_string(),
-                title: "Weak cryptographic hash primitive".to_string(),
-                description: "Flags MD5/SHA-1 use for security-context review because checksum-only uses can be intentional.".to_string(),
-                cwe: "CWE-327".to_string(),
-                owasp: Some("OWASP A02:2021 Cryptographic Failures".to_string()),
+                id: "security.weak_cryptographic_hash".into(),
+                title: "Weak cryptographic hash primitive".into(),
+                description: "Flags MD5/SHA-1 use for security-context review because checksum-only uses can be intentional.".into(),
+                cwe: "CWE-327".into(),
+                owasp: Some("OWASP A02:2021 Cryptographic Failures".into()),
                 confidence: 0.82,
             },
             SecurityRuleRecord {
-                id: "security.unsafe_c_string_api".to_string(),
-                title: "Unsafe C/C++ string API".to_string(),
-                description: "Flags unbounded legacy C/C++ string APIs for concrete destination-bounds review.".to_string(),
-                cwe: "CWE-120".to_string(),
+                id: "security.unsafe_c_string_api".into(),
+                title: "Unsafe C/C++ string API".into(),
+                description: "Flags unbounded legacy C/C++ string APIs for concrete destination-bounds review.".into(),
+                cwe: "CWE-120".into(),
                 owasp: None,
                 confidence: 0.78,
             },
@@ -362,13 +352,11 @@ impl<'a> CodeSecurityService<'a> {
         let mut statement = self.database.connection().prepare(
             "SELECT a.id, a.project_id, a.status, a.started_at, a.finished_at, a.duration_ms,\
                     COALESCE(m.files_considered, 0), COALESCE(m.files_analyzed, 0),\
-                    COALESCE(m.files_stale, 0), COALESCE(m.files_skipped, 0),\
-                    COALESCE(m.observations, 0), COALESCE(m.findings_opened, 0),\
-                    COALESCE(m.findings_refreshed, 0), COALESCE(m.findings_resolved, 0),\
+                    COALESCE(m.files_stale, 0), COALESCE(m.files_skipped, 0), COALESCE(m.observations, 0),\
+                    COALESCE(m.findings_opened, 0), COALESCE(m.findings_refreshed, 0), COALESCE(m.findings_resolved, 0),\
                     COALESCE(m.hardcoded_credentials, 0), COALESCE(m.dynamic_execution, 0),\
                     COALESCE(m.weak_crypto, 0), COALESCE(m.unsafe_c_apis, 0)\
-             FROM analysis_runs a\
-             LEFT JOIN security_run_metrics m ON m.run_id = a.id\
+             FROM analysis_runs a LEFT JOIN security_run_metrics m ON m.run_id = a.id\
              WHERE a.project_id = ?1 AND a.run_kind = 'security_analysis'\
              ORDER BY a.started_at DESC, a.id DESC LIMIT ?2",
         )?;
@@ -383,6 +371,10 @@ impl<'a> CodeSecurityService<'a> {
                         format!("invalid analysis status {status_text}").into(),
                     )
                 })?;
+                let files_considered = to_usize(row.get(6)?);
+                let files_analyzed = to_usize(row.get(7)?);
+                let files_stale = to_usize(row.get(8)?);
+                let files_skipped = to_usize(row.get(9)?);
                 Ok(SecurityRunRecord {
                     run_id: row.get(0)?,
                     project_id: row.get(1)?,
@@ -390,10 +382,13 @@ impl<'a> CodeSecurityService<'a> {
                     started_at: row.get(3)?,
                     finished_at: row.get(4)?,
                     duration_ms: row.get::<_, Option<i64>>(5)?.map(to_u64),
-                    files_considered: to_usize(row.get(6)?),
-                    files_analyzed: to_usize(row.get(7)?),
-                    files_stale: to_usize(row.get(8)?),
-                    files_skipped: to_usize(row.get(9)?),
+                    coverage_complete: files_stale == 0
+                        && files_skipped == 0
+                        && files_analyzed == files_considered,
+                    files_considered,
+                    files_analyzed,
+                    files_stale,
+                    files_skipped,
                     observations: to_usize(row.get(10)?),
                     findings_opened: to_usize(row.get(11)?),
                     findings_refreshed: to_usize(row.get(12)?),
@@ -430,7 +425,6 @@ fn collect_observations(
     if files.len() > MAX_FILES {
         return Err(SecurityAnalysisError::TooManyFiles { limit: MAX_FILES });
     }
-
     let mut collection = Collection {
         files_considered: files.len(),
         ..Collection::default()
@@ -441,19 +435,13 @@ fn collect_observations(
             collection.files_skipped += 1;
             continue;
         };
-        if !supported_language(language) {
+        if !supported_language(language)
+            || file.parse_state.as_deref() != Some("parsed")
+            || file.byte_size > MAX_SOURCE_BYTES
+        {
             collection.files_skipped += 1;
             continue;
         }
-        if file.parse_state.as_deref() != Some("parsed") {
-            collection.files_skipped += 1;
-            continue;
-        }
-        if file.byte_size > MAX_SOURCE_BYTES {
-            collection.files_skipped += 1;
-            continue;
-        }
-
         let Some(bytes) = read_verified_source(canonical_root, &file)? else {
             collection.files_stale += 1;
             continue;
@@ -468,14 +456,16 @@ fn collect_observations(
             continue;
         }
         collection.files_analyzed += 1;
-        collection
-            .observations
-            .extend(result.observations.into_iter().map(|observation| PersistedObservation {
-                file: file.clone(),
-                observation,
-            }));
+        collection.observations.extend(
+            result
+                .observations
+                .into_iter()
+                .map(|observation| PersistedObservation {
+                    file: file.clone(),
+                    observation,
+                }),
+        );
     }
-
     Ok(collection)
 }
 
@@ -485,10 +475,8 @@ fn load_active_files(
 ) -> Result<Vec<IndexedSecurityFile>, SecurityAnalysisError> {
     let mut statement = connection.prepare(
         "SELECT id, relative_path, language, content_hash, byte_size, parse_state\
-         FROM files\
-         WHERE project_id = ?1 AND is_active = 1\
-         ORDER BY relative_path, id\
-         LIMIT ?2",
+         FROM files WHERE project_id = ?1 AND is_active = 1\
+         ORDER BY relative_path, id LIMIT ?2",
     )?;
     let rows = statement.query_map(
         params![project_id, i64::try_from(MAX_FILES + 1).unwrap_or(i64::MAX)],
@@ -523,10 +511,9 @@ fn read_verified_source(
             file.relative_path.clone(),
         ));
     }
-
     let candidate = canonical_root.join(relative);
     let metadata = match fs::symlink_metadata(&candidate) {
-        Ok(metadata) => metadata,
+        Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
@@ -571,7 +558,6 @@ fn persist_collection(
             "security.unsafe_c_string_api" => unsafe_c_apis += 1,
             _ => {}
         }
-
         let fingerprint = finding_fingerprint(project_id, item);
         current.insert(fingerprint.clone());
         if previous.contains_key(&fingerprint) {
@@ -582,17 +568,19 @@ fn persist_collection(
         persist_finding(&transaction, project_id, run_id, &fingerprint, item)?;
     }
 
+    let coverage_complete = collection.coverage_complete();
     let mut resolved = 0usize;
-    for (fingerprint, finding_id) in previous {
-        if current.contains(&fingerprint) {
-            continue;
+    if coverage_complete {
+        for (fingerprint, finding_id) in previous {
+            if current.contains(&fingerprint) {
+                continue;
+            }
+            resolved += transaction.execute(
+                "UPDATE findings SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, last_run_id = ?1\
+                 WHERE id = ?2 AND analyzer_key = ?3 AND status = 'open'",
+                params![run_id, finding_id, ANALYZER_KEY],
+            )?;
         }
-        resolved += transaction.execute(
-            "UPDATE findings\
-             SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, last_run_id = ?1\
-             WHERE id = ?2 AND analyzer_key = ?3 AND status = 'open'",
-            params![run_id, finding_id, ANALYZER_KEY],
-        )?;
     }
 
     transaction.execute(
@@ -624,6 +612,7 @@ fn persist_collection(
         project_id: project_id.to_string(),
         run_id: run_id.to_string(),
         status: AnalysisStatus::Completed,
+        coverage_complete,
         files_considered: collection.files_considered,
         files_analyzed: collection.files_analyzed,
         files_stale: collection.files_stale,
@@ -668,16 +657,13 @@ fn persist_finding(
         item.observation.start_line,
         item.observation.end_line,
     )?;
-
     connection.execute(
         "INSERT INTO findings(\
            id, project_id, run_id, category, sub_category, severity, confidence, title, description,\
            file_id, symbol_id, source_start_line, source_end_line, cwe, owasp, status, fingerprint,\
            rule_version, first_seen, last_seen, analyzer_key, last_run_id, resolved_at\
-         ) VALUES (\
-           ?1, ?2, ?3, 'security', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'open', ?15,\
-           ?16, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?17, ?3, NULL\
-         )\
+         ) VALUES (?1, ?2, ?3, 'security', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,\
+                   'open', ?15, ?16, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?17, ?3, NULL)\
          ON CONFLICT(project_id, fingerprint) DO UPDATE SET\
            run_id = excluded.run_id, category = excluded.category, sub_category = excluded.sub_category,\
            severity = excluded.severity, confidence = excluded.confidence, title = excluded.title,\
@@ -707,10 +693,7 @@ fn persist_finding(
         ],
     )?;
 
-    connection.execute(
-        "DELETE FROM finding_evidence WHERE finding_id = ?1",
-        [&finding_id],
-    )?;
+    connection.execute("DELETE FROM finding_evidence WHERE finding_id = ?1", [&finding_id])?;
     let evidence_id = deterministic_id("security-evidence", &[&finding_id, &item.file.id]);
     let analyzer_metadata: Value = serde_json::from_str(&item.observation.metadata_json)
         .unwrap_or_else(|_| json!({"metadata_parse_error": true}));
@@ -748,11 +731,9 @@ fn containing_symbol(
 ) -> Result<Option<String>, SecurityAnalysisError> {
     connection
         .query_row(
-            "SELECT id FROM symbols\
-             WHERE file_id = ?1 AND is_active = 1\
+            "SELECT id FROM symbols WHERE file_id = ?1 AND is_active = 1\
                AND start_line <= ?2 AND end_line >= ?3\
-             ORDER BY (end_line - start_line) ASC, start_line DESC, id\
-             LIMIT 1",
+             ORDER BY (end_line - start_line) ASC, start_line DESC, id LIMIT 1",
             params![file_id, to_i64(start_line), to_i64(end_line)],
             |row| row.get(0),
         )
@@ -795,9 +776,7 @@ fn finish_run(
     duration_ms: u64,
 ) -> Result<(), rusqlite::Error> {
     connection.execute(
-        "UPDATE analysis_runs\
-         SET status = ?2, finished_at = CURRENT_TIMESTAMP, duration_ms = ?3\
-         WHERE id = ?1",
+        "UPDATE analysis_runs SET status = ?2, finished_at = CURRENT_TIMESTAMP, duration_ms = ?3 WHERE id = ?1",
         params![run_id, status.as_str(), to_i64_u64(duration_ms)],
     )?;
     Ok(())
@@ -816,7 +795,11 @@ fn elapsed_ms(started: Instant) -> u64 {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
 }
 
 fn bounded(value: usize, maximum: usize) -> i64 {
@@ -824,7 +807,7 @@ fn bounded(value: usize, maximum: usize) -> i64 {
 }
 
 fn optional_usize(value: Option<i64>) -> Option<usize> {
-    value.and_then(|value| usize::try_from(value).ok())
+    value.and_then(|item| usize::try_from(item).ok())
 }
 
 fn to_usize(value: i64) -> usize {
