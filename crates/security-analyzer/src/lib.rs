@@ -197,7 +197,7 @@ fn inspect_call(
     let callee = normalize_callee(callee_text);
     let base = callee_basename(&callee);
 
-    if matches!(base.as_str(), "eval" | "exec") {
+    if is_dynamic_execution_callee(&callee, family) {
         observations.push(dynamic_code_observation(node, &callee));
     }
 
@@ -233,6 +233,17 @@ fn inspect_call(
             format!("Potentially unsafe C/C++ API call `{callee}` is present."),
             json!({"callee": callee, "review_required": true}),
         ));
+    }
+}
+
+fn is_dynamic_execution_callee(callee: &str, family: LanguageFamily) -> bool {
+    match family {
+        LanguageFamily::TypeScript | LanguageFamily::JavaScript => {
+            matches!(callee, "eval" | "window.eval" | "globalthis.eval")
+        }
+        LanguageFamily::Python => matches!(callee, "eval" | "exec"),
+        LanguageFamily::Php => callee == "eval",
+        LanguageFamily::Rust | LanguageFamily::Go | LanguageFamily::C | LanguageFamily::Cpp => false,
     }
 }
 
@@ -493,6 +504,15 @@ mod tests {
             .expect("dynamic execution");
         assert_eq!(finding.cwe, "CWE-95");
         assert!(finding.description.contains("does not prove"));
+    }
+
+    #[test]
+    fn does_not_treat_javascript_regex_exec_as_dynamic_code_execution() {
+        let result = analyze_source("JavaScript", "const ok = /a/.exec(value);\n").expect("analyze");
+        assert!(result
+            .observations
+            .iter()
+            .all(|item| item.rule_id != "security.dynamic_code_execution"));
     }
 
     #[test]
