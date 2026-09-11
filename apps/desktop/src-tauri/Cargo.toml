@@ -10,6 +10,7 @@ tauri-build = { version = "2" }
 [dependencies]
 codetwin-core = { path = "../../../crates/codetwin-core" }
 project-discovery = { path = "../../../crates/project-discovery" }
+rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
