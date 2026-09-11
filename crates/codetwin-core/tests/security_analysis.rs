@@ -21,6 +21,7 @@ fn appsec_findings_are_persisted_with_redacted_secret_evidence() {
         .analyze_project(&index.project_id)
         .expect("security analysis");
 
+    assert!(run.coverage_complete);
     assert_eq!(run.files_analyzed, 1);
     assert!(run.hardcoded_credentials >= 1);
     assert!(run.dynamic_execution >= 1);
@@ -69,6 +70,7 @@ fn disappeared_security_evidence_resolves_existing_finding_after_reindex() {
     let first_run = security
         .analyze_project(&first_index.project_id)
         .expect("first security run");
+    assert!(first_run.coverage_complete);
     assert_eq!(first_run.weak_crypto, 1);
 
     let first_findings = security
@@ -90,6 +92,7 @@ fn disappeared_security_evidence_resolves_existing_finding_after_reindex() {
     let second_run = security
         .analyze_project(&first_index.project_id)
         .expect("second security run");
+    assert!(second_run.coverage_complete);
     assert_eq!(second_run.weak_crypto, 0);
     assert!(second_run.findings_resolved >= 1);
 
@@ -122,6 +125,7 @@ fn source_changed_after_index_is_stale_and_cannot_create_findings() {
     let run = security
         .analyze_project(&index.project_id)
         .expect("security analysis");
+    assert!(!run.coverage_complete);
     assert_eq!(run.files_analyzed, 0);
     assert_eq!(run.files_stale, 1);
     assert_eq!(run.observations, 0);
@@ -129,6 +133,40 @@ fn source_changed_after_index_is_stale_and_cannot_create_findings() {
         .list_findings(&index.project_id, Some("open"), 100)
         .expect("findings")
         .is_empty());
+}
+
+#[test]
+fn incomplete_coverage_never_resolves_a_previous_finding() {
+    let root = tempdir().expect("project");
+    let source = root.path().join("app.js");
+    fs::write(&source, "eval(input);\n").expect("source");
+
+    let database = Database::open_in_memory().expect("database");
+    let indexer = ProjectIndexService::new(&database);
+    let index = indexer.index_project(root.path()).expect("index");
+    let security = CodeSecurityService::new(&database);
+    let first = security
+        .analyze_project(&index.project_id)
+        .expect("first security analysis");
+    assert!(first.coverage_complete);
+    let original = security
+        .list_findings(&index.project_id, Some("open"), 100)
+        .expect("open findings")
+        .into_iter()
+        .find(|finding| finding.rule_id == "security.dynamic_code_execution")
+        .expect("dynamic finding");
+
+    fs::write(&source, "const clean = true;\n").expect("changed without index");
+    let stale = security
+        .analyze_project(&index.project_id)
+        .expect("stale security analysis");
+    assert!(!stale.coverage_complete);
+    assert_eq!(stale.findings_resolved, 0);
+
+    let open = security
+        .list_findings(&index.project_id, Some("open"), 100)
+        .expect("still open");
+    assert!(open.iter().any(|finding| finding.id == original.id));
 }
 
 #[test]
