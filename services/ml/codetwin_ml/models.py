@@ -59,6 +59,7 @@ def _safe_relative_path(value: Any) -> PurePosixPath:
         not value
         or path.is_absolute()
         or "\\" in value
+        or value != path.as_posix()
         or any(part in {"", ".", ".."} for part in path.parts)
     ):
         raise ModelManifestError(f"unsafe model artifact path: {value!r}")
@@ -102,11 +103,6 @@ def _validate_metrics(value: Any) -> dict[str, float]:
     return result
 
 
-def _dataset_revision_map() -> dict[str, str]:
-    catalog = load_catalog()
-    return {item["id"]: item["revision"] for item in catalog["datasets"]}
-
-
 def validate_manifest(manifest: Any) -> dict[str, Any]:
     if not isinstance(manifest, dict):
         raise ModelManifestError("model manifest must be an object")
@@ -123,6 +119,7 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
     if backend not in SUPPORTED_BACKENDS:
         raise ModelManifestError(f"unsupported model backend: {backend!r}")
 
+    catalog = load_catalog()
     actions = manifest.get("actions")
     if (
         not isinstance(actions, list)
@@ -131,7 +128,7 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
         or len(set(actions)) != len(actions)
     ):
         raise ModelManifestError("actions must be a non-empty array of unique strings")
-    known_actions = set(load_catalog()["routes"])
+    known_actions = set(catalog["routes"])
     unknown_actions = sorted(set(actions) - known_actions)
     if unknown_actions:
         raise ModelManifestError(f"model references unknown actions: {', '.join(unknown_actions)}")
@@ -141,7 +138,7 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
         raise ModelManifestError("artifacts must be a non-empty array")
     normalized_artifacts: list[dict[str, Any]] = []
     seen_paths: set[str] = set()
-    model_roles = 0
+    model_paths: list[str] = []
     for item in artifacts:
         if not isinstance(item, dict):
             raise ModelManifestError("model artifacts must be objects")
@@ -153,7 +150,8 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
         role = item.get("role")
         if not isinstance(role, str) or not role:
             raise ModelManifestError(f"artifact role is required for {path_text}")
-        model_roles += int(role == "model")
+        if role == "model":
+            model_paths.append(path_text)
         size_bytes = item.get("size_bytes")
         sha256 = item.get("sha256")
         if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
@@ -163,8 +161,10 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
         normalized_artifacts.append(
             {"role": role, "path": path_text, "size_bytes": size_bytes, "sha256": sha256}
         )
-    if model_roles != 1:
+    if len(model_paths) != 1:
         raise ModelManifestError("artifacts must contain exactly one role=model entry")
+    if backend.startswith("onnx-") and not model_paths[0].lower().endswith(".onnx"):
+        raise ModelManifestError("ONNX backends require the role=model artifact to use a .onnx path")
 
     evaluation = manifest.get("evaluation")
     if not isinstance(evaluation, dict) or evaluation.get("status") != "passed":
@@ -175,7 +175,7 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
     evaluations = evaluation.get("datasets")
     if not isinstance(evaluations, list) or not evaluations:
         raise ModelManifestError("evaluation.datasets must be a non-empty array")
-    pinned_revisions = _dataset_revision_map()
+    pinned_revisions = {item["id"]: item["revision"] for item in catalog["datasets"]}
     normalized_evaluations: list[dict[str, Any]] = []
     for item in evaluations:
         if not isinstance(item, dict):
@@ -199,6 +199,13 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
                 "metrics": _validate_metrics(item.get("metrics")),
             }
         )
+    evaluated_dataset_ids = {item["dataset_id"] for item in normalized_evaluations}
+    for action in actions:
+        routed_datasets = set(catalog["routes"][action])
+        if evaluated_dataset_ids.isdisjoint(routed_datasets):
+            raise ModelManifestError(
+                f"evaluation datasets do not cover any OpenMindAI Dataset routed for action: {action}"
+            )
 
     license_info = manifest.get("license")
     if not isinstance(license_info, dict):
@@ -325,7 +332,6 @@ def install_model(
             "package_digest": package_digest,
             "installed_at": _utc_now(),
             "integrity_verified": True,
-            "source_package": str(package_root),
         }
         (stage / MODEL_METADATA_FILE).write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -378,18 +384,30 @@ def list_models(*, model_root: Path | str | None = None) -> dict[str, Any]:
     root = Path(model_root) if model_root is not None else default_model_root()
     models: list[dict[str, Any]] = []
     if root.is_dir():
-        for model_dir in sorted((item for item in root.iterdir() if item.is_dir() and not item.is_symlink()), key=lambda p: p.name):
-            for version_dir in sorted((item for item in model_dir.iterdir() if item.is_dir() and not item.is_symlink()), key=lambda p: p.name):
+        model_dirs = sorted(
+            (item for item in root.iterdir() if item.is_dir() and not item.is_symlink()),
+            key=lambda path: path.name,
+        )
+        for model_dir in model_dirs:
+            version_dirs = sorted(
+                (item for item in model_dir.iterdir() if item.is_dir() and not item.is_symlink()),
+                key=lambda path: path.name,
+            )
+            for version_dir in version_dirs:
                 metadata = _load_metadata(version_dir)
                 if not metadata:
                     continue
                 ready = _installed_ready(version_dir, metadata)
-                public = _public_model(metadata) if ready else {
-                    "id": metadata.get("id", model_dir.name),
-                    "version": metadata.get("version", version_dir.name),
-                    "integrity_verified": False,
-                    "execution_supported": False,
-                }
+                public = (
+                    _public_model(metadata)
+                    if ready
+                    else {
+                        "id": metadata.get("id", model_dir.name),
+                        "version": metadata.get("version", version_dir.name),
+                        "integrity_verified": False,
+                        "execution_supported": False,
+                    }
+                )
                 public["ready"] = ready
                 models.append(public)
     return {
