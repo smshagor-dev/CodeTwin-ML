@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 lsp-enrichment = { path = "../lsp-enrichment" }
 rusqlite.workspace = true
+security-analyzer = { path = "../security-analyzer" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
