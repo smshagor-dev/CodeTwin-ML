@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File, OpenOptions, Permissions},
+    fs::{self, OpenOptions, Permissions},
     io::Write,
     path::{Component, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -23,6 +23,8 @@ pub enum RepairApplicationError {
     Sqlite(#[from] rusqlite::Error),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("repair workflow error: {0}")]
+    Workflow(String),
     #[error("repair plan not found: {0}")]
     PlanNotFound(String),
     #[error("repair plan must be approved before application; current status: {0}")]
@@ -97,14 +99,14 @@ impl<'a> RepairApplicationService<'a> {
         let repair = VerifiedRepairService::new(self.database);
         let plan = repair
             .get_plan(repair_id)
-            .map_err(|error| RepairApplicationError::UnsafePath(error.to_string()))?
+            .map_err(|error| RepairApplicationError::Workflow(error.to_string()))?
             .ok_or_else(|| RepairApplicationError::PlanNotFound(repair_id.to_owned()))?;
         if plan.status != "approved" {
             return Err(RepairApplicationError::PlanNotApproved(plan.status));
         }
         let changes = repair
             .list_changes(repair_id, MAX_APPLICATION_FILES + 1)
-            .map_err(|error| RepairApplicationError::UnsafePath(error.to_string()))?;
+            .map_err(|error| RepairApplicationError::Workflow(error.to_string()))?;
         if changes.is_empty() {
             return Err(RepairApplicationError::NoChanges);
         }
@@ -118,31 +120,30 @@ impl<'a> RepairApplicationService<'a> {
         let backup_dir_name = safe_token(&run_id);
         let backup_dir = backup_root.join(&backup_dir_name);
         fs::create_dir(&backup_dir)?;
-        self.insert_run(
-            &run_id,
-            &plan,
-            changes.len(),
-            &backup_dir_name,
-        )?;
+        self.insert_run(&run_id, &plan, changes.len(), &backup_dir_name)?;
 
         let prepared = match self.prepare_apply(&root, &run_id, &changes, &backup_dir) {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.finish_run(&run_id, "failed", 0, false, Some(&error.to_string()))?;
                 let _ = fs::remove_dir_all(&backup_dir);
-                return self.get_run(&run_id)?.ok_or_else(|| {
-                    RepairApplicationError::ApplicationNotFound(run_id.clone())
-                });
+                return self
+                    .get_run(&run_id)?
+                    .ok_or_else(|| RepairApplicationError::ApplicationNotFound(run_id.clone()));
             }
         };
 
         self.insert_items(&run_id, &prepared)?;
         if let Err(error) = stage_apply_files(&prepared) {
-            cleanup_staged_files(&prepared);
-            self.finish_run(&run_id, "failed", 0, false, Some(&error.to_string()))?;
-            return self.get_run(&run_id)?.ok_or_else(|| {
-                RepairApplicationError::ApplicationNotFound(run_id.clone())
-            });
+            let cleanup_ok = cleanup_apply_work_files(&prepared);
+            let status = if cleanup_ok { "failed" } else { "rollback_failed" };
+            if !cleanup_ok {
+                self.set_plan_status(repair_id, "superseded")?;
+            }
+            self.finish_run(&run_id, status, 0, false, Some(&error.to_string()))?;
+            return self
+                .get_run(&run_id)?
+                .ok_or_else(|| RepairApplicationError::ApplicationNotFound(run_id.clone()));
         }
 
         let mut applied_indices = Vec::new();
@@ -160,26 +161,30 @@ impl<'a> RepairApplicationService<'a> {
         }
 
         if let Some(message) = failure {
-            let rollback_ok = rollback_applied_swaps(&prepared, &applied_indices);
-            cleanup_staged_files(&prepared);
-            let status = if rollback_ok { "failed" } else { "rollback_failed" };
-            for index in &applied_indices {
-                self.set_item_state(
-                    &run_id,
-                    &prepared[*index].change.id,
-                    if rollback_ok { "rolled_back" } else { "applied" },
-                )?;
+            let rollback = rollback_applied_swaps(&prepared, &applied_indices);
+            let cleanup_ok = cleanup_apply_work_files(&prepared);
+            for index in &rollback.restored_indices {
+                self.set_item_state(&run_id, &prepared[*index].change.id, "rolled_back")?;
             }
+            for index in &rollback.failed_indices {
+                self.set_item_state(&run_id, &prepared[*index].change.id, "applied")?;
+            }
+            let recovered = rollback.failed_indices.is_empty() && cleanup_ok;
+            let status = if recovered { "failed" } else { "rollback_failed" };
+            if !recovered {
+                self.set_plan_status(repair_id, "superseded")?;
+            }
+            let applied_count = rollback.failed_indices.len();
             self.finish_run(
                 &run_id,
                 status,
-                if rollback_ok { 0 } else { applied_indices.len() },
+                applied_count,
                 !applied_indices.is_empty(),
                 Some(&message),
             )?;
-            return self.get_run(&run_id)?.ok_or_else(|| {
-                RepairApplicationError::ApplicationNotFound(run_id.clone())
-            });
+            return self
+                .get_run(&run_id)?
+                .ok_or_else(|| RepairApplicationError::ApplicationNotFound(run_id.clone()));
         }
 
         let mut cleanup_warnings = Vec::new();
@@ -189,10 +194,7 @@ impl<'a> RepairApplicationService<'a> {
             }
             self.set_item_state(&run_id, &item.change.id, "applied")?;
         }
-        self.database.connection().execute(
-            "UPDATE repair_plans SET status='applied', updated_at=CURRENT_TIMESTAMP WHERE id=?1",
-            [repair_id],
-        )?;
+        self.set_plan_status(repair_id, "applied")?;
         let warning = if cleanup_warnings.is_empty() {
             None
         } else {
@@ -244,7 +246,10 @@ impl<'a> RepairApplicationService<'a> {
             return Err(RepairApplicationError::CorruptBackup(run_id.to_owned()));
         }
         let prepared = self.prepare_rollback(&root, run_id, &items, &backup_dir)?;
-        stage_rollback_files(&prepared)?;
+        if let Err(error) = stage_rollback_files(&prepared) {
+            cleanup_rollback_work_files(&prepared);
+            return Err(error);
+        }
 
         let mut restored_indices = Vec::new();
         let mut failure: Option<String> = None;
@@ -261,21 +266,26 @@ impl<'a> RepairApplicationService<'a> {
         }
 
         if let Some(message) = failure {
-            let recovered = restore_applied_state(&prepared, &restored_indices);
-            cleanup_rollback_staged_files(&prepared);
-            if !recovered {
-                self.finish_run(
-                    run_id,
-                    "rollback_failed",
-                    run.changes_applied,
-                    true,
-                    Some(&message),
-                )?;
-                return self.get_run(run_id)?.ok_or_else(|| {
-                    RepairApplicationError::ApplicationNotFound(run_id.to_owned())
-                });
+            let recovery = restore_applied_state(&prepared, &restored_indices);
+            let cleanup_ok = cleanup_rollback_work_files(&prepared);
+            if recovery.failed_indices.is_empty() && cleanup_ok {
+                return Err(RepairApplicationError::RollbackConflict(message));
             }
-            return Err(RepairApplicationError::RollbackConflict(message));
+            for index in &recovery.failed_indices {
+                self.set_item_state(run_id, &prepared[*index].item.change_id, "rolled_back")?;
+            }
+            self.set_plan_status(&run.repair_id, "superseded")?;
+            let applied_count = prepared.len().saturating_sub(recovery.failed_indices.len());
+            self.finish_run(
+                run_id,
+                "rollback_failed",
+                applied_count,
+                true,
+                Some(&message),
+            )?;
+            return self
+                .get_run(run_id)?
+                .ok_or_else(|| RepairApplicationError::ApplicationNotFound(run_id.to_owned()));
         }
 
         let mut cleanup_warnings = Vec::new();
@@ -285,10 +295,8 @@ impl<'a> RepairApplicationService<'a> {
             }
             self.set_item_state(run_id, &item.item.change_id, "rolled_back")?;
         }
-        self.database.connection().execute(
-            "UPDATE repair_plans SET status='approved', updated_at=CURRENT_TIMESTAMP WHERE id=?1",
-            [&run.repair_id],
-        )?;
+        // Returning to draft forces a fresh index + approval precondition before re-application.
+        self.set_plan_status(&run.repair_id, "draft")?;
         let warning = if cleanup_warnings.is_empty() {
             None
         } else {
@@ -297,13 +305,7 @@ impl<'a> RepairApplicationService<'a> {
                 cleanup_warnings.join("; ")
             ))
         };
-        self.finish_run(
-            run_id,
-            "rolled_back",
-            0,
-            true,
-            warning.as_deref(),
-        )?;
+        self.finish_run(run_id, "rolled_back", 0, true, warning.as_deref())?;
         self.get_run(run_id)?
             .ok_or_else(|| RepairApplicationError::ApplicationNotFound(run_id.to_owned()))
     }
@@ -380,7 +382,7 @@ impl<'a> RepairApplicationService<'a> {
         self.database.connection().execute(
             "INSERT INTO repair_application_runs(id, repair_id, project_id, status, changes_total, backup_dir_name)\
              VALUES (?1, ?2, ?3, 'running', ?4, ?5)",
-            params![run_id, plan.id, plan.project_id, to_i64(total), backup_dir_name],
+            params![run_id, &plan.id, &plan.project_id, to_i64(total), backup_dir_name],
         )?;
         Ok(())
     }
@@ -398,12 +400,12 @@ impl<'a> RepairApplicationService<'a> {
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     run_id,
-                    item.change.id,
-                    item.change.relative_path,
-                    item.change.base_content_hash,
-                    item.change.proposed_content_hash,
-                    item.original_hash,
-                    item.backup_file_name,
+                    &item.change.id,
+                    &item.change.relative_path,
+                    &item.change.base_content_hash,
+                    &item.change.proposed_content_hash,
+                    &item.original_hash,
+                    &item.backup_file_name,
                 ],
             )?;
         }
@@ -420,6 +422,14 @@ impl<'a> RepairApplicationService<'a> {
         self.database.connection().execute(
             "UPDATE repair_application_items SET state=?3 WHERE run_id=?1 AND change_id=?2",
             params![run_id, change_id, state],
+        )?;
+        Ok(())
+    }
+
+    fn set_plan_status(&self, repair_id: &str, status: &str) -> Result<(), RepairApplicationError> {
+        self.database.connection().execute(
+            "UPDATE repair_plans SET status=?2, updated_at=CURRENT_TIMESTAMP WHERE id=?1",
+            params![repair_id, status],
         )?;
         Ok(())
     }
@@ -600,6 +610,11 @@ struct PreparedRollback {
     permissions: Permissions,
 }
 
+struct SwapRecovery {
+    restored_indices: Vec<usize>,
+    failed_indices: Vec<usize>,
+}
+
 fn stage_apply_files(items: &[PreparedApply]) -> Result<(), RepairApplicationError> {
     for item in items {
         write_new_file(&item.backup_path, &item.original, item.permissions.clone())?;
@@ -641,68 +656,92 @@ fn swap_in_rollback(item: &PreparedRollback) -> Result<(), RepairApplicationErro
     }
 }
 
-fn rollback_applied_swaps(items: &[PreparedApply], indices: &[usize]) -> bool {
-    let mut ok = true;
+fn rollback_applied_swaps(items: &[PreparedApply], indices: &[usize]) -> SwapRecovery {
+    let mut restored_indices = Vec::new();
+    let mut failed_indices = Vec::new();
     for index in indices.iter().rev() {
         let item = &items[*index];
         if !item.target_path.exists() || !item.sidecar_path.exists() {
-            ok = false;
+            failed_indices.push(*index);
             continue;
         }
         let discard = &item.stage_path;
         if fs::rename(&item.target_path, discard).is_err() {
-            ok = false;
+            failed_indices.push(*index);
             continue;
         }
         if fs::rename(&item.sidecar_path, &item.target_path).is_err() {
             let _ = fs::rename(discard, &item.target_path);
-            ok = false;
+            failed_indices.push(*index);
             continue;
         }
         let _ = fs::remove_file(discard);
+        restored_indices.push(*index);
     }
-    ok
+    SwapRecovery {
+        restored_indices,
+        failed_indices,
+    }
 }
 
-fn restore_applied_state(items: &[PreparedRollback], indices: &[usize]) -> bool {
-    let mut ok = true;
+fn restore_applied_state(items: &[PreparedRollback], indices: &[usize]) -> SwapRecovery {
+    let mut restored_indices = Vec::new();
+    let mut failed_indices = Vec::new();
     for index in indices.iter().rev() {
         let item = &items[*index];
         if !item.target_path.exists() || !item.sidecar_path.exists() {
-            ok = false;
+            failed_indices.push(*index);
             continue;
         }
         let discard = &item.stage_path;
         if fs::rename(&item.target_path, discard).is_err() {
-            ok = false;
+            failed_indices.push(*index);
             continue;
         }
         if fs::rename(&item.sidecar_path, &item.target_path).is_err() {
             let _ = fs::rename(discard, &item.target_path);
-            ok = false;
+            failed_indices.push(*index);
             continue;
         }
         let _ = fs::remove_file(discard);
+        restored_indices.push(*index);
     }
-    ok
-}
-
-fn cleanup_staged_files(items: &[PreparedApply]) {
-    for item in items {
-        let _ = fs::remove_file(&item.stage_path);
-        if item.sidecar_path.exists() && !item.target_path.exists() {
-            let _ = fs::rename(&item.sidecar_path, &item.target_path);
-        }
+    SwapRecovery {
+        restored_indices,
+        failed_indices,
     }
 }
 
-fn cleanup_rollback_staged_files(items: &[PreparedRollback]) {
+fn cleanup_apply_work_files(items: &[PreparedApply]) -> bool {
+    let mut clean = true;
     for item in items {
         let _ = fs::remove_file(&item.stage_path);
         if item.sidecar_path.exists() && !item.target_path.exists() {
-            let _ = fs::rename(&item.sidecar_path, &item.target_path);
+            if fs::rename(&item.sidecar_path, &item.target_path).is_err() {
+                clean = false;
+            }
+        }
+        if item.sidecar_path.exists() {
+            clean = false;
         }
     }
+    clean
+}
+
+fn cleanup_rollback_work_files(items: &[PreparedRollback]) -> bool {
+    let mut clean = true;
+    for item in items {
+        let _ = fs::remove_file(&item.stage_path);
+        if item.sidecar_path.exists() && !item.target_path.exists() {
+            if fs::rename(&item.sidecar_path, &item.target_path).is_err() {
+                clean = false;
+            }
+        }
+        if item.sidecar_path.exists() {
+            clean = false;
+        }
+    }
+    clean
 }
 
 fn revalidate_hash(path: &Path, expected: &str) -> Result<(), RepairApplicationError> {
@@ -771,7 +810,10 @@ fn application_id(repair_id: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos().to_string())
         .unwrap_or_else(|_| "0".to_owned());
-    format!("repair-application:{}", sha256_hex(format!("{repair_id}:{nonce}").as_bytes()))
+    format!(
+        "repair-application:{}",
+        sha256_hex(format!("{repair_id}:{nonce}").as_bytes())
+    )
 }
 
 fn safe_token(value: &str) -> String {
