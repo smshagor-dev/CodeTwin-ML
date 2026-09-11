@@ -2,6 +2,7 @@ import { useState } from "react";
 import { App } from "./App";
 import { DatabaseWorkspace } from "./DatabaseWorkspace";
 import { RuntimeWorkspace } from "./RuntimeWorkspace";
+import "./runtime-workspace.css";
 
 type Workspace = "engineering" | "database" | "runtime";
 
