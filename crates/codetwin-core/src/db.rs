@@ -6,7 +6,8 @@ use thiserror::Error;
 const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_digital_twin_persistence.sql");
 const MIGRATION_0003: &str = include_str!("../migrations/0003_symbol_reference_observations.sql");
-const MIGRATION_0004: &str = include_str!("../migrations/0004_lsp_semantic_enrichment.sql");
+const MIGRATION_0004: &str = include_str!("../migrations/0004_semantic_symbol_resolution.sql");
+const MIGRATION_0005: &str = include_str!("../migrations/0005_lsp_semantic_enrichment.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -48,6 +49,7 @@ impl Database {
         self.apply_migration(2, MIGRATION_0002)?;
         self.apply_migration(3, MIGRATION_0003)?;
         self.apply_migration(4, MIGRATION_0004)?;
+        self.apply_migration(5, MIGRATION_0005)?;
         Ok(())
     }
 
@@ -79,7 +81,7 @@ mod tests {
     use super::Database;
 
     #[test]
-    fn creates_expected_foundation_persistence_reference_and_semantic_tables() {
+    fn creates_expected_foundation_reference_and_semantic_tables() {
         let db = Database::open_in_memory().expect("open db");
         let count: i64 = db
             .connection()
@@ -99,7 +101,25 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 4);
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn symbol_reference_resolution_columns_exist() {
+        let db = Database::open_in_memory().expect("open db");
+        let mut statement = db
+            .connection()
+            .prepare("PRAGMA table_info(symbol_reference_observations)")
+            .expect("table info");
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("columns")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect columns");
+        assert!(columns.iter().any(|name| name == "resolution_state"));
+        assert!(columns
+            .iter()
+            .any(|name| name == "resolved_target_symbol_id"));
     }
 
     #[test]

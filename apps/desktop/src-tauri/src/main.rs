@@ -11,10 +11,10 @@ use codetwin_core::{
     ImportReferenceRecord, IndexRunRecord, IndexSummary, LanguageServerConfig,
     LanguageServerConfigService, LanguageServerKind, ProjectIndexService, ProjectQueryService,
     ReferenceRefreshSummary, SemanticEnrichmentRequest, SemanticEnrichmentService,
-    SemanticImportResolutionRecord, SemanticQueryService, SemanticRelationDirection,
-    SemanticRelationRecord, SemanticRunRecord, SemanticRunSummary, SemanticSymbolStateRecord,
-    SourceFileRecord, SymbolRecord, SymbolReferenceObservationRecord, SymbolReferenceService,
-    SymbolSearchQuery,
+    SemanticImportResolutionRecord, SemanticQueryService, SemanticReferenceRecord,
+    SemanticRelationDirection, SemanticRelationRecord, SemanticResolutionSummary, SemanticRunRecord,
+    SemanticRunSummary, SemanticSymbolResolver, SemanticSymbolStateRecord, SourceFileRecord,
+    SymbolRecord, SymbolReferenceObservationRecord, SymbolReferenceService, SymbolSearchQuery,
 };
 use project_discovery::ProjectProfile;
 use tauri::Manager;
@@ -206,6 +206,31 @@ fn list_file_reference_observations(
 }
 
 #[tauri::command]
+fn resolve_symbol_references(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<SemanticResolutionSummary>, String> {
+    with_database(&state, |database| {
+        SemanticSymbolResolver::new(database)
+            .resolve_project(&project_id)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn list_file_semantic_resolutions(
+    file_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SemanticReferenceRecord>, String> {
+    with_database(&state, |database| {
+        SemanticSymbolResolver::new(database)
+            .list_file_resolutions(&file_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
 fn index_history(
     project_id: String,
     limit: usize,
@@ -369,6 +394,8 @@ fn main() {
             analyze_file_impact,
             refresh_symbol_references,
             list_file_reference_observations,
+            resolve_symbol_references,
+            list_file_semantic_resolutions,
             index_history,
             list_language_server_configs,
             set_language_server_config,

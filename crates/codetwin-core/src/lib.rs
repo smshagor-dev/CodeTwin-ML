@@ -8,6 +8,7 @@ pub mod query_service;
 pub mod semantic_config;
 pub mod semantic_domain;
 pub mod semantic_query;
+pub mod semantic_resolution;
 pub mod semantic_service;
 pub mod symbol_reference;
 
@@ -30,15 +31,17 @@ pub use import_resolver::{resolve_import, ResolvedImport};
 pub use lsp_enrichment::{LanguageServerConfig, LanguageServerKind};
 pub use persistent_index::{IndexServiceError, ProjectIndexService};
 pub use query_service::{ProjectQueryService, QueryServiceError};
-pub use semantic_config::{
-    LanguageServerConfigService, SemanticConfigError,
-};
+pub use semantic_config::{LanguageServerConfigService, SemanticConfigError};
 pub use semantic_domain::{
     LanguageServerConfigRecord, SemanticEnrichmentRequest, SemanticImportResolutionRecord,
     SemanticRelationDirection, SemanticRelationRecord, SemanticRunRecord, SemanticRunSummary,
     SemanticServerRun, SemanticServerStatus, SemanticSymbolState, SemanticSymbolStateRecord,
 };
 pub use semantic_query::{SemanticQueryError, SemanticQueryService};
+pub use semantic_resolution::{
+    SemanticReferenceRecord, SemanticResolutionError, SemanticResolutionSummary,
+    SemanticSymbolResolver,
+};
 pub use semantic_service::{SemanticEnrichmentService, SemanticServiceError};
 pub use symbol_reference::{
     ReferenceRefreshSummary, SymbolReferenceError, SymbolReferenceObservationRecord,
