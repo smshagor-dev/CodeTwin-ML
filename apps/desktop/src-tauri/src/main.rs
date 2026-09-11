@@ -1,4 +1,5 @@
 mod database_commands;
+mod repair_commands;
 mod runtime_commands;
 
 use std::{
@@ -27,6 +28,12 @@ use database_commands::{
     list_database_rules, run_database_analysis,
 };
 use project_discovery::ProjectProfile;
+use repair_commands::{
+    add_repair_file_replacement, approve_repair_plan, create_repair_plan,
+    list_repair_candidate_findings, list_repair_changes, list_repair_plans,
+    list_repair_verification_items, read_repair_source, reject_repair_plan,
+    repair_verification_history, verify_repair_plan,
+};
 use runtime_commands::{
     list_runtime_artifacts, list_runtime_evidence, list_runtime_findings, list_runtime_rules,
     run_runtime_analysis, runtime_history,
@@ -582,6 +589,17 @@ fn main() {
             list_runtime_evidence,
             runtime_history,
             list_runtime_rules,
+            create_repair_plan,
+            add_repair_file_replacement,
+            approve_repair_plan,
+            reject_repair_plan,
+            verify_repair_plan,
+            list_repair_plans,
+            list_repair_changes,
+            repair_verification_history,
+            list_repair_verification_items,
+            read_repair_source,
+            list_repair_candidate_findings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");
