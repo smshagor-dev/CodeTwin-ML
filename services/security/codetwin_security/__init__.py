@@ -1,5 +1,6 @@
 """Static web security review for untrusted repositories."""
 
-from .analyzer import Finding, ScanResult, scan_repository
+from .analyzer import Finding, ScanResult
+from .combined import scan_repository
 
 __all__ = ["Finding", "ScanResult", "scan_repository"]
