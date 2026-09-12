@@ -3,6 +3,8 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
+#[path = "windows_lpac.rs"]
+mod lpac;
 #[path = "windows_toolchain_guard.rs"]
 mod toolchain_guard;
 
@@ -84,6 +86,14 @@ pub(crate) fn execute_approved_plan(
         BackendExecutionError::JobSetup(format!("external read-surface provenance: {error}"))
     })?;
 
+    let mirror_root = PathBuf::from(&workspace.inputs_path);
+    let lpac_readiness = lpac::probe_suspended_lpac_readiness(plan, &mirror_root)?;
+    if !lpac_readiness.satisfies_readiness_contract() {
+        return Err(BackendExecutionError::JobSetup(
+            "LPAC readiness evidence did not match the required conservative contract".to_string(),
+        ));
+    }
+
     let identity = probe_restricted_identity(workspace).map_err(|error| {
         BackendExecutionError::JobSetup(format!("project-mirror restricted identity: {error}"))
     })?;
@@ -106,7 +116,6 @@ pub(crate) fn execute_approved_plan(
         ));
     }
 
-    let mirror_root = PathBuf::from(&workspace.inputs_path);
     let outcome = crate::windows_restricted::execute_approved_plan(
         plan,
         &mirror_root,
