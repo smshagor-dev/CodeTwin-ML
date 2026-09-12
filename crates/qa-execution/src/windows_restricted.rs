@@ -177,6 +177,11 @@ pub(crate) fn execute_approved_plan(
         }
     }
 
+    // Closing a KILL_ON_JOB_CLOSE job after the root runner exits terminates any surviving
+    // descendants before pipe draining and workspace cleanup. This prevents detached children
+    // from extending the execution lifetime or retaining writable workspace handles.
+    drop(job);
+
     let stdout = receive_bounded_output(stdout_reader, OUTPUT_DRAIN_TIMEOUT)?;
     let stderr = receive_bounded_output(stderr_reader, OUTPUT_DRAIN_TIMEOUT)?;
     workspace_guard.cleanup()?;
