@@ -1,10 +1,12 @@
 mod backend;
+#[cfg(windows)]
+mod windows_restricted;
 pub mod workspace;
 
 pub use backend::{
-    current_backend_info, snapshot_execution_inputs, verify_execution_inputs, BackendControls,
-    BackendExecutionError, ExecutionBackendInfo, ExecutionBackendKind, ExecutionInputSnapshot,
-    RawExecutionOutcome, MAX_EXECUTION_INPUT_BYTES,
+    snapshot_execution_inputs, verify_execution_inputs, BackendControls, BackendExecutionError,
+    ExecutionBackendInfo, ExecutionBackendKind, ExecutionInputSnapshot, RawExecutionOutcome,
+    MAX_EXECUTION_INPUT_BYTES,
 };
 pub use workspace::{
     cleanup_detached_workspace, prepare_detached_workspace, verify_detached_workspace,
@@ -226,6 +228,29 @@ pub enum PlanError {
     InvalidRustTarget(String),
 }
 
+pub fn current_backend_info() -> ExecutionBackendInfo {
+    #[cfg(windows)]
+    {
+        let mut info = backend::current_backend_info();
+        info.limitations.retain(|item| {
+            !item.contains("restricted-token/AppContainer identity isolation is not implemented")
+        });
+        info.limitations.insert(
+            0,
+            "the crate-level Windows execution path now launches with a WRITE_RESTRICTED low-integrity primary token, explicit stdio handle inheritance, and pre-launch write-boundary probing; filesystem isolation is still not promoted until dependency-complete detached execution and adversarial Windows validation exist".to_string(),
+        );
+        info.limitations.insert(
+            1,
+            "the restricted runner still shares the caller desktop/window station; separate desktop isolation is pending before public execution".to_string(),
+        );
+        info
+    }
+    #[cfg(not(windows))]
+    {
+        backend::current_backend_info()
+    }
+}
+
 pub fn build_execution_plan(
     request: TestExecutionRequest,
     toolchain: TrustedToolchain,
@@ -274,7 +299,16 @@ pub fn execute_approved_plan(
     if !rebuilt.blocking_reasons.is_empty() {
         return Err(BackendExecutionError::PlanBlocked);
     }
-    backend::execute_approved_plan(plan, project_root, snapshots, cancelled)
+
+    let project_root = project_root.as_ref();
+    #[cfg(windows)]
+    {
+        windows_restricted::execute_approved_plan(plan, project_root, snapshots, cancelled)
+    }
+    #[cfg(not(windows))]
+    {
+        backend::execute_approved_plan(plan, project_root, snapshots, cancelled)
+    }
 }
 
 pub fn bound_output(text: &str, max_bytes: usize) -> BoundedOutput {
