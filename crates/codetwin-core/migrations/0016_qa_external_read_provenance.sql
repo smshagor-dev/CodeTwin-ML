@@ -82,7 +82,7 @@ WHEN OLD.status = 'approved'
     OR NEW.blocking_reasons_json IS NOT OLD.blocking_reasons_json
   )
 BEGIN
-  SELECT RAISE(ABORT, 'approved QA execution plan specification and provenance are immutable');
+  SELECT RAISE(ABORT, 'approved QA execution plan specification is immutable, including provenance');
 END;
 
 CREATE TRIGGER qa_execution_run_external_surface_matches_plan
