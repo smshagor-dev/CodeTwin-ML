@@ -637,7 +637,7 @@ fn build_environment_block(workspace: &DetachedExecutionWorkspace) -> Vec<u16> {
     entries.insert("CI".to_string(), OsString::from("1"));
 
     let mut ordered = entries.into_iter().collect::<Vec<_>>();
-    ordered.sort_by(|left, right| left.0.to_ascii_uppercase().cmp(&right.0.to_ascii_uppercase()));
+    ordered.sort_by_key(|entry| entry.0.to_ascii_uppercase());
 
     let mut block = Vec::new();
     for (key, value) in ordered {
@@ -773,6 +773,8 @@ mod tests {
             total_input_bytes: 0,
             source_files_read_only: true,
             dependency_complete: false,
+            project_directories: Vec::new(),
+            project_manifest_sha256: None,
         };
         let block = build_environment_block(&workspace);
         assert!(block.len() >= 2);
