@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    fmt::Write as _,
     fs,
     path::Path,
 };
@@ -64,7 +65,6 @@ pub fn prepare_dependency_complete_workspace(
     fs::create_dir(&temp)?;
 
     let result = copy_project_tree(&source_root, &inputs, &snapshot).and_then(|files| {
-        let manifest_sha256 = project_manifest_sha256(&snapshot);
         let workspace = DetachedExecutionWorkspace {
             root_path: path_text(&root),
             parent_path: path_text(&workspace_parent),
@@ -77,7 +77,7 @@ pub fn prepare_dependency_complete_workspace(
             source_files_read_only: true,
             dependency_complete: true,
             project_directories: snapshot.directories.clone(),
-            project_manifest_sha256: Some(manifest_sha256),
+            project_manifest_sha256: Some(project_manifest_sha256(&snapshot)),
         };
         verify_dependency_complete_workspace(&workspace)?;
         Ok(workspace)
@@ -131,16 +131,7 @@ pub fn verify_dependency_complete_workspace(
     }
 
     let expected = snapshot_from_workspace_manifest(workspace)?;
-    if expected.files.len() > MAX_PROJECT_MIRROR_FILES {
-        return Err(WorkspaceError::ProjectFileLimitExceeded);
-    }
-    if expected.directories.len() > MAX_PROJECT_MIRROR_DIRECTORIES {
-        return Err(WorkspaceError::ProjectDirectoryLimitExceeded);
-    }
-    if expected.total_bytes > MAX_PROJECT_MIRROR_BYTES {
-        return Err(WorkspaceError::ProjectMirrorTooLarge);
-    }
-
+    enforce_snapshot_bounds(&expected)?;
     let expected_manifest = project_manifest_sha256(&expected);
     if workspace.project_manifest_sha256.as_deref() != Some(expected_manifest.as_str()) {
         return Err(WorkspaceError::ProjectMirrorMismatch(
@@ -148,15 +139,12 @@ pub fn verify_dependency_complete_workspace(
         ));
     }
 
-    let source_snapshot = snapshot_project_tree(&source)?;
-    if source_snapshot != expected {
+    if snapshot_project_tree(&source)? != expected {
         return Err(WorkspaceError::ProjectSnapshotChanged(
             "source project tree no longer matches the prepared full-tree manifest".to_string(),
         ));
     }
-
-    let mirror_snapshot = snapshot_project_tree(&inputs)?;
-    if mirror_snapshot != expected {
+    if snapshot_project_tree(&inputs)? != expected {
         return Err(WorkspaceError::ProjectMirrorMismatch(
             "detached project mirror no longer matches its full-tree manifest".to_string(),
         ));
@@ -170,6 +158,19 @@ pub fn verify_dependency_complete_workspace(
                 file.relative_path
             )));
         }
+    }
+    Ok(())
+}
+
+fn enforce_snapshot_bounds(snapshot: &ProjectTreeSnapshot) -> Result<(), WorkspaceError> {
+    if snapshot.files.len() > MAX_PROJECT_MIRROR_FILES {
+        return Err(WorkspaceError::ProjectFileLimitExceeded);
+    }
+    if snapshot.directories.len() > MAX_PROJECT_MIRROR_DIRECTORIES {
+        return Err(WorkspaceError::ProjectDirectoryLimitExceeded);
+    }
+    if snapshot.total_bytes > MAX_PROJECT_MIRROR_BYTES {
+        return Err(WorkspaceError::ProjectMirrorTooLarge);
     }
     Ok(())
 }
@@ -217,7 +218,7 @@ fn snapshot_from_workspace_manifest(
         })?;
     }
 
-    let mut files = Vec::with_capacity(workspace.files.len());
+    let mut file_map = BTreeMap::new();
     for file in &workspace.files {
         crate::validate_target(&file.relative_path).map_err(|_| {
             WorkspaceError::ProjectMirrorMismatch(format!(
@@ -231,22 +232,21 @@ fn snapshot_from_workspace_manifest(
                 file.relative_path
             )));
         }
-        files.push(ProjectFileSnapshot {
+        let snapshot = ProjectFileSnapshot {
             relative_path: file.relative_path.clone(),
             sha256: file.sha256.clone(),
             byte_size: file.byte_size,
-        });
+        };
+        if file_map
+            .insert(file.relative_path.clone(), snapshot)
+            .is_some()
+        {
+            return Err(WorkspaceError::ProjectMirrorMismatch(
+                "project file manifest contains duplicates".to_string(),
+            ));
+        }
     }
-    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    if files
-        .windows(2)
-        .any(|pair| pair[0].relative_path == pair[1].relative_path)
-    {
-        return Err(WorkspaceError::ProjectMirrorMismatch(
-            "project file manifest contains duplicates".to_string(),
-        ));
-    }
-
+    let files = file_map.into_values().collect::<Vec<_>>();
     let total_bytes = files.iter().try_fold(0u64, |total, file| {
         total
             .checked_add(file.byte_size)
@@ -272,12 +272,12 @@ fn snapshot_project_tree(root: &Path) -> Result<ProjectTreeSnapshot, WorkspaceEr
     }
 
     let mut directories = Vec::new();
-    let mut files = Vec::new();
+    let mut file_map = BTreeMap::new();
     let mut total_bytes = 0u64;
     let mut pending = vec![(canonical_root.clone(), String::new())];
 
     while let Some((directory, prefix)) = pending.pop() {
-        let mut entries = Vec::new();
+        let mut entries = BTreeMap::new();
         for entry in fs::read_dir(&directory)? {
             let entry = entry?;
             let name = entry.file_name().into_string().map_err(|_| {
@@ -285,9 +285,8 @@ fn snapshot_project_tree(root: &Path) -> Result<ProjectTreeSnapshot, WorkspaceEr
                     "project paths must be valid Unicode for deterministic mirroring".to_string(),
                 )
             })?;
-            entries.push((name, entry.path()));
+            entries.insert(name, entry.path());
         }
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
 
         for (name, path) in entries {
             let relative = if prefix.is_empty() {
@@ -322,7 +321,7 @@ fn snapshot_project_tree(root: &Path) -> Result<ProjectTreeSnapshot, WorkspaceEr
                 }
                 pending.push((canonical, relative));
             } else if metadata.is_file() {
-                if files.len() >= MAX_PROJECT_MIRROR_FILES {
+                if file_map.len() >= MAX_PROJECT_MIRROR_FILES {
                     return Err(WorkspaceError::ProjectFileLimitExceeded);
                 }
                 total_bytes = total_bytes
@@ -331,11 +330,14 @@ fn snapshot_project_tree(root: &Path) -> Result<ProjectTreeSnapshot, WorkspaceEr
                 if total_bytes > MAX_PROJECT_MIRROR_BYTES {
                     return Err(WorkspaceError::ProjectMirrorTooLarge);
                 }
-                files.push(ProjectFileSnapshot {
-                    relative_path: relative,
-                    sha256: sha256_file(&canonical)?,
-                    byte_size: metadata.len(),
-                });
+                file_map.insert(
+                    relative.clone(),
+                    ProjectFileSnapshot {
+                        relative_path: relative,
+                        sha256: sha256_file(&canonical)?,
+                        byte_size: metadata.len(),
+                    },
+                );
             } else {
                 return Err(WorkspaceError::UnsupportedProjectEntry(format!(
                     "special filesystem entries are not supported in a dependency-complete mirror: {relative}"
@@ -345,12 +347,13 @@ fn snapshot_project_tree(root: &Path) -> Result<ProjectTreeSnapshot, WorkspaceEr
     }
 
     directories.sort();
-    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    Ok(ProjectTreeSnapshot {
+    let snapshot = ProjectTreeSnapshot {
         directories,
-        files,
+        files: file_map.into_values().collect(),
         total_bytes,
-    })
+    };
+    enforce_snapshot_bounds(&snapshot)?;
+    Ok(snapshot)
 }
 
 fn copy_project_tree(
@@ -359,11 +362,7 @@ fn copy_project_tree(
     snapshot: &ProjectTreeSnapshot,
 ) -> Result<Vec<DetachedWorkspaceFile>, WorkspaceError> {
     let mut directories = snapshot.directories.clone();
-    directories.sort_by(|left, right| {
-        let left_depth = left.matches('/').count();
-        let right_depth = right.matches('/').count();
-        left_depth.cmp(&right_depth).then_with(|| left.cmp(right))
-    });
+    directories.sort_by_key(|path| (path.matches('/').count(), path.clone()));
     for relative in directories {
         fs::create_dir_all(inputs_root.join(relative))?;
     }
@@ -422,14 +421,12 @@ fn copy_project_tree(
         });
     }
 
-    let source_after_copy = snapshot_project_tree(source_root)?;
-    if &source_after_copy != snapshot {
+    if &snapshot_project_tree(source_root)? != snapshot {
         return Err(WorkspaceError::ProjectSnapshotChanged(
             "source project changed while the detached mirror was being copied".to_string(),
         ));
     }
-    let mirror_after_copy = snapshot_project_tree(inputs_root)?;
-    if &mirror_after_copy != snapshot {
+    if &snapshot_project_tree(inputs_root)? != snapshot {
         return Err(WorkspaceError::ProjectMirrorMismatch(
             "detached project mirror differs from the source manifest after copy".to_string(),
         ));
@@ -455,13 +452,12 @@ fn project_manifest_sha256(snapshot: &ProjectTreeSnapshot) -> String {
         digest.update(b"\0");
     }
     let bytes = digest.finalize();
-    hex_digest(&bytes)
+    hex_digest(bytes.as_ref())
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        use std::fmt::Write as _;
         write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
     }
     output
