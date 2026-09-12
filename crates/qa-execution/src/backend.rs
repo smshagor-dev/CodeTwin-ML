@@ -52,7 +52,8 @@ pub struct BackendControls {
     pub sanitized_environment: bool,
     pub trusted_toolchain_hash: bool,
     pub input_hash_verification: bool,
-    pub process_assigned_after_spawn: bool,
+    pub process_created_suspended: bool,
+    pub process_assigned_before_resume: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +116,8 @@ pub enum BackendExecutionError {
     JobSetup(String),
     #[error("Windows Job Object assignment failed: {0}")]
     JobAssignment(String),
+    #[error("Windows suspended process resume failed: {0}")]
+    ProcessResume(String),
     #[error("Windows Job Object termination failed: {0}")]
     JobTermination(String),
     #[error("execution I/O failed: {0}")]
@@ -131,7 +134,14 @@ pub fn current_backend_info() -> ExecutionBackendInfo {
         ExecutionBackendInfo {
             kind: ExecutionBackendKind::WindowsJobObject,
             execution_available: true,
-            capabilities: SandboxCapabilities::planning_only(),
+            capabilities: SandboxCapabilities {
+                process_isolation: true,
+                filesystem_isolation: false,
+                network_isolation: false,
+                cpu_limit: true,
+                memory_limit: true,
+                cancellation: true,
+            },
             controls: BackendControls {
                 job_object: true,
                 kill_on_job_close: true,
@@ -142,14 +152,14 @@ pub fn current_backend_info() -> ExecutionBackendInfo {
                 sanitized_environment: true,
                 trusted_toolchain_hash: true,
                 input_hash_verification: true,
-                process_assigned_after_spawn: true,
+                process_created_suspended: true,
+                process_assigned_before_resume: true,
             },
             limitations: vec![
-                "the process is assigned to the Job Object after spawn, so pre-assignment child creation cannot be ruled out".to_string(),
-                "restricted-token/AppContainer isolation is not implemented".to_string(),
+                "restricted-token/AppContainer identity isolation is not implemented".to_string(),
                 "filesystem/write isolation is not implemented".to_string(),
                 "network isolation is not implemented".to_string(),
-                "Job Object resource controls are therefore not promoted to sandbox capability guarantees yet".to_string(),
+                "the public QA service remains planning-only until all strict sandbox capabilities are enforced".to_string(),
             ],
         }
     }
@@ -169,7 +179,8 @@ pub fn current_backend_info() -> ExecutionBackendInfo {
                 sanitized_environment: false,
                 trusted_toolchain_hash: true,
                 input_hash_verification: true,
-                process_assigned_after_spawn: false,
+                process_created_suspended: false,
+                process_assigned_before_resume: false,
             },
             limitations: vec![
                 "no OS-specific QA execution backend is implemented for this platform".to_string(),
@@ -368,16 +379,19 @@ fn execute_windows_job_object(
     backend: ExecutionBackendInfo,
 ) -> Result<RawExecutionOutcome, BackendExecutionError> {
     use std::{
-        os::windows::io::AsRawHandle,
+        os::windows::{io::AsRawHandle, process::CommandExt},
         process::{Command, Stdio},
     };
     use windows_sys::Win32::{
         Foundation::{CloseHandle, HANDLE},
-        System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_JOB_TIME,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        System::{
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_JOB_TIME,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            },
+            Threading::CREATE_SUSPENDED,
         },
     };
 
@@ -430,7 +444,8 @@ fn execute_windows_job_object(
         .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_SUSPENDED);
     for key in ["SYSTEMROOT", "WINDIR", "TEMP", "TMP"] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
@@ -450,6 +465,11 @@ fn execute_windows_job_object(
         let _ = child.kill();
         let _ = child.wait();
         return Err(BackendExecutionError::JobAssignment(error));
+    }
+    if let Err(error) = resume_suspended_process(child.id()) {
+        let _ = terminate_windows_job(job.0);
+        let _ = child.wait();
+        return Err(error);
     }
 
     let stdout = child
@@ -504,6 +524,84 @@ fn execute_windows_job_object(
         parser_completed: false,
         tests_passed: None,
     })
+}
+
+#[cfg(windows)]
+fn resume_suspended_process(process_id: u32) -> Result<(), BackendExecutionError> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32,
+                TH32CS_SNAPTHREAD,
+            },
+            Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
+        },
+    };
+
+    struct OwnedHandle(HANDLE);
+    impl Drop for OwnedHandle {
+        fn drop(&mut self) {
+            if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+                unsafe {
+                    CloseHandle(self.0);
+                }
+            }
+        }
+    }
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(BackendExecutionError::ProcessResume(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    let snapshot = OwnedHandle(snapshot);
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
+    if unsafe { Thread32First(snapshot.0, &mut entry) } == 0 {
+        return Err(BackendExecutionError::ProcessResume(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+
+    let mut thread_ids = Vec::new();
+    loop {
+        if entry.th32OwnerProcessID == process_id {
+            thread_ids.push(entry.th32ThreadID);
+        }
+        if unsafe { Thread32Next(snapshot.0, &mut entry) } == 0 {
+            break;
+        }
+    }
+    if thread_ids.len() != 1 {
+        return Err(BackendExecutionError::ProcessResume(format!(
+            "expected exactly one initial suspended thread for process {process_id}, found {}",
+            thread_ids.len()
+        )));
+    }
+
+    let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, thread_ids[0]) };
+    if thread.is_null() {
+        return Err(BackendExecutionError::ProcessResume(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    let thread = OwnedHandle(thread);
+    let previous_suspend_count = unsafe { ResumeThread(thread.0) };
+    if previous_suspend_count == u32::MAX {
+        return Err(BackendExecutionError::ProcessResume(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    if previous_suspend_count != 1 {
+        return Err(BackendExecutionError::ProcessResume(format!(
+            "unexpected initial thread suspend count {previous_suspend_count}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -616,9 +714,21 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_or_partial_backend_never_claims_full_sandbox() {
+    fn backend_promotes_only_enforced_capabilities() {
         let info = current_backend_info();
-        assert!(!info.capabilities.process_isolation);
+        if cfg!(windows) {
+            assert!(info.capabilities.process_isolation);
+            assert!(info.capabilities.cpu_limit);
+            assert!(info.capabilities.memory_limit);
+            assert!(info.capabilities.cancellation);
+            assert!(info.controls.process_created_suspended);
+            assert!(info.controls.process_assigned_before_resume);
+        } else {
+            assert!(!info.capabilities.process_isolation);
+            assert!(!info.capabilities.cpu_limit);
+            assert!(!info.capabilities.memory_limit);
+            assert!(!info.capabilities.cancellation);
+        }
         assert!(!info.capabilities.filesystem_isolation);
         assert!(!info.capabilities.network_isolation);
     }
