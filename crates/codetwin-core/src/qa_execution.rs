@@ -1,11 +1,12 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use ::qa_execution::{
-    build_execution_plan, cleanup_detached_workspace, current_backend_info,
-    prepare_dependency_complete_workspace, snapshot_execution_inputs, ExecutionCommand,
+    build_execution_plan, capture_external_read_surface, cleanup_detached_workspace,
+    current_backend_info, prepare_dependency_complete_workspace, snapshot_execution_inputs,
+    validate_approved_external_read_surface_shape, ApprovedExternalReadSurface, ExecutionCommand,
     ExecutionPlanStatus, SandboxCapabilities, SandboxPolicy, TestExecutionPlan,
     TestExecutionRequest, TestRunnerKind, TrustedToolchain, MAX_PROJECT_MIRROR_BYTES,
     MAX_PROJECT_MIRROR_DIRECTORIES, MAX_PROJECT_MIRROR_FILES,
@@ -31,6 +32,8 @@ pub enum QaExecutionError {
     InputSnapshot(#[from] ::qa_execution::BackendExecutionError),
     #[error("project mirror error: {0}")]
     ProjectMirror(#[from] ::qa_execution::WorkspaceError),
+    #[error("external read provenance error: {0}")]
+    ExternalProvenance(#[from] ::qa_execution::ExternalProvenanceError),
     #[error("project not found: {0}")]
     ProjectNotFound(String),
     #[error("QA discovery run is not a completed run for this project: {0}")]
@@ -74,6 +77,7 @@ pub struct QaExecutionPlanRecord {
     pub provenance: Value,
     pub blocking_reasons: Vec<String>,
     pub approved_project_manifest: Option<QaExecutionProjectManifest>,
+    pub approved_external_read_surface: Option<ApprovedExternalReadSurface>,
     pub created_at: String,
     pub approved_at: Option<String>,
     pub superseded_at: Option<String>,
@@ -81,23 +85,28 @@ pub struct QaExecutionPlanRecord {
 
 impl QaExecutionPlanRecord {
     pub fn execution_plan(&self) -> Result<TestExecutionPlan, QaExecutionError> {
-        let approved_project_manifest_sha256 =
-            match (self.status, self.approved_project_manifest.as_ref()) {
-                (ExecutionPlanStatus::Approved, Some(manifest)) => Some(manifest.sha256.clone()),
-                (ExecutionPlanStatus::Approved, None) => {
-                    return Err(QaExecutionError::ApprovalManifest(format!(
-                        "approved plan {} has no bound project manifest; recreate and approve the plan",
-                        self.id
-                    )))
-                }
-                (_, Some(_)) => {
-                    return Err(QaExecutionError::ApprovalManifest(format!(
-                        "non-approved plan {} unexpectedly carries approval manifest evidence",
-                        self.id
-                    )))
-                }
-                (_, None) => None,
-            };
+        let (approved_project_manifest_sha256, approved_external_read_surface) = match (
+            self.status,
+            self.approved_project_manifest.as_ref(),
+            self.approved_external_read_surface.as_ref(),
+        ) {
+            (ExecutionPlanStatus::Approved, Some(manifest), Some(surface)) => {
+                (Some(manifest.sha256.clone()), Some(surface.clone()))
+            }
+            (ExecutionPlanStatus::Approved, _, _) => {
+                return Err(QaExecutionError::ApprovalManifest(format!(
+                    "approved plan {} is missing project or external read-surface evidence; recreate and approve the plan",
+                    self.id
+                )))
+            }
+            (_, None, None) => (None, None),
+            _ => {
+                return Err(QaExecutionError::ApprovalManifest(format!(
+                    "non-approved plan {} unexpectedly carries approval evidence",
+                    self.id
+                )))
+            }
+        };
 
         Ok(TestExecutionPlan {
             status: self.status,
@@ -108,6 +117,7 @@ impl QaExecutionPlanRecord {
             capabilities: self.capabilities.clone(),
             command: self.command.clone(),
             approved_project_manifest_sha256,
+            approved_external_read_surface,
         })
     }
 }
@@ -124,7 +134,7 @@ impl<'a> QaExecutionService<'a> {
     pub fn availability(&self) -> QaExecutionAvailability {
         let backend = current_backend_info();
         let reason = if cfg!(windows) {
-            "The Windows QA backend has suspended Job Object containment, a restricted low-integrity launcher, and bounded detached project mirroring. Public repository test execution remains disabled because filesystem capability validation, desktop isolation, and network isolation are not complete."
+            "The Windows QA backend has suspended Job Object containment, a restricted low-integrity launcher, bounded detached project mirroring, and approval-bound external runtime provenance. Public repository test execution remains disabled because undeclared host reads are not denied, desktop isolation is incomplete, and network isolation is not enforced."
         } else {
             "No OS-specific QA execution backend is enabled on this platform. Plans may be persisted and reviewed, but CodeTwin will not execute repository tests."
         };
@@ -210,15 +220,19 @@ impl<'a> QaExecutionService<'a> {
                 return Err(QaExecutionError::PlanBlocked(plan_id.to_string()));
             }
             ExecutionPlanStatus::Approved => {
-                if plan.approved_project_manifest.is_none() {
+                if plan.approved_project_manifest.is_none()
+                    || plan.approved_external_read_surface.is_none()
+                {
                     return Err(QaExecutionError::ApprovalManifest(format!(
-                        "approved plan {plan_id} predates manifest binding; recreate and approve it"
+                        "approved plan {plan_id} predates complete provenance binding; recreate and approve it"
                     )));
                 }
                 return Ok(plan);
             }
             ExecutionPlanStatus::Planned => {
-                if plan.approved_project_manifest.is_some() {
+                if plan.approved_project_manifest.is_some()
+                    || plan.approved_external_read_surface.is_some()
+                {
                     return Err(QaExecutionError::ApprovalManifest(format!(
                         "planned plan {plan_id} already contains immutable approval evidence"
                     )));
@@ -226,7 +240,12 @@ impl<'a> QaExecutionService<'a> {
             }
         }
 
-        let manifest = self.capture_approval_manifest(&plan)?;
+        let project_root = self.project_root_path(&plan.project_id)?;
+        let manifest = self.capture_approval_manifest(&plan, &project_root)?;
+        let external_surface = capture_external_read_surface(
+            &plan.toolchain.declared_external_read_roots,
+            &project_root,
+        )?;
         let mut provenance = plan.provenance.clone();
         let Some(provenance_object) = provenance.as_object_mut() else {
             return Err(QaExecutionError::ApprovalManifest(format!(
@@ -237,17 +256,49 @@ impl<'a> QaExecutionService<'a> {
             "approved_project_manifest".to_string(),
             serde_json::to_value(&manifest)?,
         );
+        provenance_object.insert(
+            "approved_external_read_surface".to_string(),
+            serde_json::to_value(&external_surface)?,
+        );
 
         let manifest_json = serde_json::to_string(&manifest)?;
+        let external_surface_json = serde_json::to_string(&external_surface)?;
+        let request_json = serde_json::to_string(&plan.request)?;
+        let toolchain_json = serde_json::to_string(&plan.toolchain)?;
+        let policy_json = serde_json::to_string(&plan.policy)?;
+        let capabilities_json = serde_json::to_string(&plan.capabilities)?;
+        let command_json = serde_json::to_string(&plan.command)?;
+        let blocking_reasons_json = serde_json::to_string(&plan.blocking_reasons)?;
+        let original_provenance_json = plan.provenance.to_string();
         let changed = self.database.connection().execute(
             "UPDATE qa_execution_plans\
              SET status = 'approved', approved_at = CURRENT_TIMESTAMP,\
                  approved_project_manifest_sha256 = ?2, approved_project_manifest_json = ?3,\
-                 provenance_json = ?4\
+                 approved_external_read_surface_sha256 = ?4,\
+                 approved_external_read_surface_json = ?5, provenance_json = ?6\
              WHERE id = ?1 AND status = 'planned'\
                AND approved_project_manifest_sha256 IS NULL\
-               AND approved_project_manifest_json IS NULL",
-            params![plan_id, manifest.sha256, manifest_json, provenance.to_string()],
+               AND approved_project_manifest_json IS NULL\
+               AND approved_external_read_surface_sha256 IS NULL\
+               AND approved_external_read_surface_json IS NULL\
+               AND request_json = ?7 AND toolchain_json = ?8 AND policy_json = ?9\
+               AND capabilities_json = ?10 AND command_json = ?11\
+               AND blocking_reasons_json = ?12 AND provenance_json = ?13",
+            params![
+                plan_id,
+                manifest.sha256,
+                manifest_json,
+                external_surface.sha256,
+                external_surface_json,
+                provenance.to_string(),
+                request_json,
+                toolchain_json,
+                policy_json,
+                capabilities_json,
+                command_json,
+                blocking_reasons_json,
+                original_provenance_json,
+            ],
         )?;
 
         let current = self
@@ -258,11 +309,12 @@ impl<'a> QaExecutionService<'a> {
         }
         if current.status == ExecutionPlanStatus::Approved
             && current.approved_project_manifest.as_ref() == Some(&manifest)
+            && current.approved_external_read_surface.as_ref() == Some(&external_surface)
         {
             return Ok(current);
         }
         Err(QaExecutionError::ApprovalManifest(format!(
-            "plan {plan_id} changed or a different project manifest won a concurrent approval"
+            "plan {plan_id} changed or different provenance won a concurrent approval"
         )))
     }
 
@@ -276,7 +328,8 @@ impl<'a> QaExecutionService<'a> {
                 "SELECT id, project_id, discovery_run_id, runner_kind, status, request_json,\
                         toolchain_json, policy_json, capabilities_json, command_json, provenance_json,\
                         blocking_reasons_json, approved_project_manifest_sha256,\
-                        approved_project_manifest_json, created_at, approved_at, superseded_at\
+                        approved_project_manifest_json, approved_external_read_surface_sha256,\
+                        approved_external_read_surface_json, created_at, approved_at, superseded_at\
                  FROM qa_execution_plans WHERE id = ?1",
                 [plan_id],
                 plan_from_row,
@@ -294,7 +347,8 @@ impl<'a> QaExecutionService<'a> {
             "SELECT id, project_id, discovery_run_id, runner_kind, status, request_json,\
                     toolchain_json, policy_json, capabilities_json, command_json, provenance_json,\
                     blocking_reasons_json, approved_project_manifest_sha256,\
-                    approved_project_manifest_json, created_at, approved_at, superseded_at\
+                    approved_project_manifest_json, approved_external_read_surface_sha256,\
+                    approved_external_read_surface_json, created_at, approved_at, superseded_at\
              FROM qa_execution_plans WHERE project_id = ?1\
              ORDER BY created_at DESC, id DESC LIMIT ?2",
         )?;
@@ -308,11 +362,11 @@ impl<'a> QaExecutionService<'a> {
     fn capture_approval_manifest(
         &self,
         plan: &QaExecutionPlanRecord,
+        project_root: &Path,
     ) -> Result<QaExecutionProjectManifest, QaExecutionError> {
-        let project_root = self.project_root_path(&plan.project_id)?;
-        let snapshots = snapshot_execution_inputs(&project_root, &plan.request.targets)?;
+        let snapshots = snapshot_execution_inputs(project_root, &plan.request.targets)?;
         let workspace = prepare_dependency_complete_workspace(
-            &project_root,
+            project_root,
             std::env::temp_dir(),
             &snapshots,
         )?;
@@ -403,8 +457,14 @@ fn plan_from_row(row: &rusqlite::Row<'_>) -> Result<QaExecutionPlanRecord, rusql
     let blocking_text: String = row.get(11)?;
     let manifest_sha256: Option<String> = row.get(12)?;
     let manifest_json: Option<String> = row.get(13)?;
-    let approved_project_manifest =
-        parse_optional_manifest(manifest_sha256, manifest_json, 13)?;
+    let external_surface_sha256: Option<String> = row.get(14)?;
+    let external_surface_json: Option<String> = row.get(15)?;
+    let approved_project_manifest = parse_optional_manifest(manifest_sha256, manifest_json, 13)?;
+    let approved_external_read_surface = parse_optional_external_surface(
+        external_surface_sha256,
+        external_surface_json,
+        15,
+    )?;
     Ok(QaExecutionPlanRecord {
         id: row.get(0)?,
         project_id: row.get(1)?,
@@ -419,9 +479,10 @@ fn plan_from_row(row: &rusqlite::Row<'_>) -> Result<QaExecutionPlanRecord, rusql
         provenance: parse_json(&provenance_text, 10)?,
         blocking_reasons: parse_json(&blocking_text, 11)?,
         approved_project_manifest,
-        created_at: row.get(14)?,
-        approved_at: row.get(15)?,
-        superseded_at: row.get(16)?,
+        approved_external_read_surface,
+        created_at: row.get(16)?,
+        approved_at: row.get(17)?,
+        superseded_at: row.get(18)?,
     })
 }
 
@@ -452,6 +513,26 @@ fn parse_optional_manifest(
     }
 }
 
+fn parse_optional_external_surface(
+    sha256: Option<String>,
+    surface_json: Option<String>,
+    index: usize,
+) -> Result<Option<ApprovedExternalReadSurface>, rusqlite::Error> {
+    match (sha256, surface_json) {
+        (None, None) => Ok(None),
+        (Some(sha256), Some(text)) => {
+            let surface: ApprovedExternalReadSurface = parse_json(&text, index)?;
+            if surface.sha256 != sha256
+                || validate_approved_external_read_surface_shape(&surface).is_err()
+            {
+                return invalid_external_surface(index);
+            }
+            Ok(Some(surface))
+        }
+        _ => invalid_external_surface(index),
+    }
+}
+
 fn valid_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -461,6 +542,14 @@ fn invalid_manifest<T>(index: usize) -> Result<T, rusqlite::Error> {
         index,
         rusqlite::types::Type::Text,
         "inconsistent QA approval project manifest columns".into(),
+    ))
+}
+
+fn invalid_external_surface<T>(index: usize) -> Result<T, rusqlite::Error> {
+    Err(rusqlite::Error::FromSqlConversionFailure(
+        index,
+        rusqlite::types::Type::Text,
+        "inconsistent QA approval external read-surface columns".into(),
     ))
 }
 
@@ -522,12 +611,13 @@ fn bounded(value: usize, maximum: usize) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, path::Path};
 
     use ::qa_execution::{
         cleanup_detached_workspace, current_backend_info, prepare_dependency_complete_workspace,
-        snapshot_execution_inputs, ExecutionPlanStatus, SandboxCapabilities, SandboxPolicy,
-        TestExecutionRequest, TestRunnerKind, TrustedToolchain,
+        snapshot_execution_inputs, verify_external_read_surface, DeclaredExternalReadRoot,
+        ExecutionPlanStatus, ExternalProvenanceError, ExternalReadRootKind, SandboxCapabilities,
+        SandboxPolicy, TestExecutionRequest, TestRunnerKind, TrustedToolchain,
     };
     use rusqlite::params;
     use tempfile::TempDir;
@@ -557,7 +647,14 @@ mod tests {
         root
     }
 
-    fn toolchain() -> TrustedToolchain {
+    fn runtime_root() -> TempDir {
+        let root = tempfile::tempdir().expect("runtime root");
+        fs::create_dir_all(root.path().join("Lib")).expect("runtime lib");
+        fs::write(root.path().join("Lib/runtime.py"), "VALUE = 1\n").expect("runtime file");
+        root
+    }
+
+    fn toolchain(runtime_root: &Path) -> TrustedToolchain {
         TrustedToolchain {
             runner: TestRunnerKind::Pytest,
             executable_path: if cfg!(windows) {
@@ -568,6 +665,10 @@ mod tests {
             version: "3.12".into(),
             sha256: Some("b".repeat(64)),
             trusted_by_user: true,
+            declared_external_read_roots: vec![DeclaredExternalReadRoot {
+                kind: ExternalReadRootKind::RuntimeRoot,
+                path: runtime_root.to_string_lossy().into_owned(),
+            }],
         }
     }
 
@@ -583,6 +684,7 @@ mod tests {
     fn public_planner_uses_only_enforced_backend_capabilities_and_remains_blocked() {
         let database = Database::open_in_memory().expect("database");
         let _project = project(&database);
+        let runtime = runtime_root();
         let service = QaExecutionService::new(&database);
         let availability = service.availability();
         assert_eq!(
@@ -594,12 +696,13 @@ mod tests {
             .create_plan(
                 "project-1",
                 request(),
-                toolchain(),
+                toolchain(runtime.path()),
                 SandboxPolicy::default(),
             )
             .expect("plan");
         assert_eq!(plan.status, ExecutionPlanStatus::Blocked);
         assert!(plan.approved_project_manifest.is_none());
+        assert!(plan.approved_external_read_surface.is_none());
         assert!(!plan.blocking_reasons.is_empty());
         assert!(matches!(
             service.approve_plan(&plan.id),
@@ -608,21 +711,23 @@ mod tests {
     }
 
     #[test]
-    fn future_capable_backend_plan_approval_binds_project_manifest_without_executing() {
+    fn future_capable_backend_plan_approval_binds_project_and_external_provenance() {
         let database = Database::open_in_memory().expect("database");
         let project = project(&database);
+        let runtime = runtime_root();
         let service = QaExecutionService::new(&database);
         let plan = service
             .create_plan_with_capabilities(
                 "project-1",
                 request(),
-                toolchain(),
+                toolchain(runtime.path()),
                 SandboxPolicy::default(),
                 SandboxCapabilities::fully_enforced(),
             )
             .expect("plan");
         assert_eq!(plan.status, ExecutionPlanStatus::Planned);
         assert!(plan.approved_project_manifest.is_none());
+        assert!(plan.approved_external_read_surface.is_none());
 
         let approved = service.approve_plan(&plan.id).expect("approve");
         assert_eq!(approved.status, ExecutionPlanStatus::Approved);
@@ -630,28 +735,36 @@ mod tests {
             .approved_project_manifest
             .as_ref()
             .expect("approval manifest");
+        let external_surface = approved
+            .approved_external_read_surface
+            .as_ref()
+            .expect("external surface");
         assert_eq!(manifest.sha256.len(), 64);
         assert_eq!(manifest.file_count, 2);
         assert!(manifest.directory_count >= 1);
+        assert_eq!(external_surface.sha256.len(), 64);
+        assert_eq!(external_surface.roots.len(), 1);
         assert_eq!(approved.provenance["tests_executed"], false);
         assert_eq!(
             approved.provenance["approved_project_manifest"]["sha256"].as_str(),
             Some(manifest.sha256.as_str())
+        );
+        assert_eq!(
+            approved.provenance["approved_external_read_surface"]["sha256"].as_str(),
+            Some(external_surface.sha256.as_str())
         );
         let execution_plan = approved.execution_plan().expect("typed execution plan");
         assert_eq!(
             execution_plan.approved_project_manifest_sha256.as_deref(),
             Some(manifest.sha256.as_str())
         );
+        assert_eq!(
+            execution_plan.approved_external_read_surface.as_ref(),
+            Some(external_surface)
+        );
         assert!(!service.availability().execution_enabled);
 
         fs::write(project.path().join("module.py"), "VALUE = 2\n").expect("mutate dependency");
-        let approved_again = service.approve_plan(&plan.id).expect("already approved");
-        assert_eq!(
-            approved_again.approved_project_manifest,
-            approved.approved_project_manifest
-        );
-
         let targets = vec!["tests/test_api.py".to_string()];
         let snapshots = snapshot_execution_inputs(project.path(), &targets).expect("snapshots");
         let current_workspace = prepare_dependency_complete_workspace(
@@ -665,18 +778,55 @@ mod tests {
             Some(manifest.sha256.as_str())
         );
         cleanup_detached_workspace(&current_workspace).expect("cleanup current mirror");
+
+        fs::write(runtime.path().join("Lib/runtime.py"), "VALUE = 2\n")
+            .expect("mutate runtime");
+        assert!(matches!(
+            verify_external_read_surface(
+                &approved.toolchain.declared_external_read_roots,
+                external_surface,
+                project.path(),
+            ),
+            Err(ExternalProvenanceError::SurfaceChanged)
+        ));
     }
 
     #[test]
-    fn database_trigger_rejects_approval_without_manifest_binding() {
+    fn future_capable_approval_rejects_missing_external_roots() {
         let database = Database::open_in_memory().expect("database");
         let _project = project(&database);
+        let runtime = runtime_root();
+        let service = QaExecutionService::new(&database);
+        let mut trusted = toolchain(runtime.path());
+        trusted.declared_external_read_roots.clear();
+        let plan = service
+            .create_plan_with_capabilities(
+                "project-1",
+                request(),
+                trusted,
+                SandboxPolicy::default(),
+                SandboxCapabilities::fully_enforced(),
+            )
+            .expect("plan");
+        assert!(matches!(
+            service.approve_plan(&plan.id),
+            Err(QaExecutionError::ExternalProvenance(
+                ExternalProvenanceError::NoDeclaredRoots
+            ))
+        ));
+    }
+
+    #[test]
+    fn database_trigger_rejects_approval_without_complete_provenance() {
+        let database = Database::open_in_memory().expect("database");
+        let _project = project(&database);
+        let runtime = runtime_root();
         let service = QaExecutionService::new(&database);
         let plan = service
             .create_plan_with_capabilities(
                 "project-1",
                 request(),
-                toolchain(),
+                toolchain(runtime.path()),
                 SandboxPolicy::default(),
                 SandboxCapabilities::fully_enforced(),
             )
@@ -687,9 +837,62 @@ mod tests {
                 "UPDATE qa_execution_plans SET status = 'approved' WHERE id = ?1",
                 params![plan.id],
             )
-            .expect_err("manifest trigger");
-        assert!(error
-            .to_string()
-            .contains("requires a bound project manifest"));
+            .expect_err("provenance trigger");
+        assert!(error.to_string().contains("requires a valid bound"));
+    }
+
+    #[test]
+    fn database_trigger_rejects_project_only_approval_without_external_surface() {
+        let database = Database::open_in_memory().expect("database");
+        let _project = project(&database);
+        let runtime = runtime_root();
+        let service = QaExecutionService::new(&database);
+        let plan = service
+            .create_plan_with_capabilities(
+                "project-1",
+                request(),
+                toolchain(runtime.path()),
+                SandboxPolicy::default(),
+                SandboxCapabilities::fully_enforced(),
+            )
+            .expect("plan");
+        let digest = "a".repeat(64);
+        let error = database
+            .connection()
+            .execute(
+                "UPDATE qa_execution_plans\
+                 SET status = 'approved', approved_project_manifest_sha256 = ?2,\
+                     approved_project_manifest_json = '{}'\
+                 WHERE id = ?1",
+                params![plan.id, digest],
+            )
+            .expect_err("external provenance trigger");
+        assert!(error.to_string().contains("external read surface"));
+    }
+
+    #[test]
+    fn approved_plan_specification_is_database_immutable() {
+        let database = Database::open_in_memory().expect("database");
+        let _project = project(&database);
+        let runtime = runtime_root();
+        let service = QaExecutionService::new(&database);
+        let plan = service
+            .create_plan_with_capabilities(
+                "project-1",
+                request(),
+                toolchain(runtime.path()),
+                SandboxPolicy::default(),
+                SandboxCapabilities::fully_enforced(),
+            )
+            .expect("plan");
+        let approved = service.approve_plan(&plan.id).expect("approve");
+        let error = database
+            .connection()
+            .execute(
+                "UPDATE qa_execution_plans SET toolchain_json = '{}' WHERE id = ?1",
+                params![approved.id],
+            )
+            .expect_err("approved spec immutable");
+        assert!(error.to_string().contains("specification is immutable"));
     }
 }
