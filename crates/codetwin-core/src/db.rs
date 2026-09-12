@@ -118,42 +118,17 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
         assert_eq!(count, 13);
-        let qa_discovery_version: i64 = db
-            .connection()
-            .query_row(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version = 13",
-                [],
-                |row| row.get(0),
-            )
-            .expect("query QA discovery migration");
-        assert_eq!(qa_discovery_version, 1);
-        let qa_execution_version: i64 = db
-            .connection()
-            .query_row(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version = 14",
-                [],
-                |row| row.get(0),
-            )
-            .expect("query QA execution migration");
-        assert_eq!(qa_execution_version, 1);
-        let qa_manifest_binding_version: i64 = db
-            .connection()
-            .query_row(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version = 15",
-                [],
-                |row| row.get(0),
-            )
-            .expect("query QA manifest binding migration");
-        assert_eq!(qa_manifest_binding_version, 1);
-        let qa_external_provenance_version: i64 = db
-            .connection()
-            .query_row(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version = 16",
-                [],
-                |row| row.get(0),
-            )
-            .expect("query QA external provenance migration");
-        assert_eq!(qa_external_provenance_version, 1);
+        for version in [13i64, 14, 15, 16] {
+            let applied: i64 = db
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+                    [version],
+                    |row| row.get(0),
+                )
+                .expect("query migration version");
+            assert_eq!(applied, 1);
+        }
     }
 
     #[test]
@@ -279,13 +254,14 @@ mod tests {
                  'qa_execution_run_manifest_matches_plan',\
                  'qa_execution_approval_requires_external_surface',\
                  'qa_execution_approved_external_surface_immutable',\
-                 'qa_execution_approved_spec_immutable',\
+                 'qa_execution_plan_spec_immutable',\
+                 'qa_execution_approved_provenance_immutable',\
                  'qa_execution_run_external_surface_matches_plan')",
                 [],
                 |row| row.get(0),
             )
             .expect("QA provenance triggers");
-        assert_eq!(trigger_count, 7);
+        assert_eq!(trigger_count, 8);
     }
 
     #[test]
