@@ -8,8 +8,8 @@ mod toolchain_guard;
 
 use crate::{
     cleanup_detached_workspace, prepare_dependency_complete_workspace, probe_restricted_identity,
-    BackendExecutionError, DetachedExecutionWorkspace, ExecutionInputSnapshot, RawExecutionOutcome,
-    TestExecutionPlan,
+    verify_external_read_surface, BackendExecutionError, DetachedExecutionWorkspace,
+    ExecutionInputSnapshot, RawExecutionOutcome, TestExecutionPlan,
 };
 
 pub(crate) fn execute_approved_plan(
@@ -35,6 +35,14 @@ pub(crate) fn execute_approved_plan(
             "approved project manifest SHA-256 is malformed".to_string(),
         ));
     }
+    let approved_external_surface = plan
+        .approved_external_read_surface
+        .as_ref()
+        .ok_or_else(|| {
+            BackendExecutionError::JobSetup(
+                "approved execution plan is missing its external read-surface binding".to_string(),
+            )
+        })?;
 
     let workspace_parent = std::env::temp_dir();
     let workspace =
@@ -67,6 +75,14 @@ pub(crate) fn execute_approved_plan(
 
     let _toolchain_guard =
         toolchain_guard::lock_and_attest_external_read_surface(plan, project_root)?;
+    verify_external_read_surface(
+        &plan.toolchain.declared_external_read_roots,
+        approved_external_surface,
+        project_root,
+    )
+    .map_err(|error| {
+        BackendExecutionError::JobSetup(format!("external read-surface provenance: {error}"))
+    })?;
 
     let identity = probe_restricted_identity(workspace).map_err(|error| {
         BackendExecutionError::JobSetup(format!("project-mirror restricted identity: {error}"))

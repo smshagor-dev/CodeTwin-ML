@@ -1,113 +1,128 @@
 # QA / Test Execution Foundation
 
-CodeTwin separates passive QA discovery from repository test execution. Passive discovery may inventory tests and framework configuration without granting execution authority. Test execution is a separate trust boundary and requires an explicit typed plan, trusted toolchain, user approval, immutable project-input provenance, and an OS backend whose enforced controls are represented conservatively.
+CodeTwin separates passive QA discovery from repository test execution. Repositories remain untrusted data. Test execution is a separate trust boundary and requires an explicit typed plan, trusted toolchain, user approval, immutable approval provenance, and an OS backend whose enforced controls are represented conservatively.
 
 ## Current implementation status
 
-The QA execution foundation implements typed planning, policy validation, command generation, durable plan persistence, approval state, reserved run/result persistence, bounded output helpers, test-verdict rules, selected-target snapshot hashing, trusted-toolchain hash revalidation, Windows Job Object containment, write-restricted low-integrity primary-token launch, explicit inherited-handle control, bounded full-project detached mirroring, approval-time project-manifest binding, and exact trusted-runner launch locking/attestation.
+The QA execution foundation implements typed planning, policy validation, direct argument-vector command generation, durable plan persistence, bounded output helpers, selected-target snapshot hashing, a bounded full-project detached mirror, approval-bound project manifests, approval-bound declared external-runtime provenance, exact trusted-runner launch locking, Windows Job Object containment, write-restricted low-integrity primary-token launch, explicit inherited-handle control, bounded resource controls, and cancellation.
 
-The public `QaExecutionService` still reports `execution_enabled = false` and exposes no execute method. `filesystem_isolation` and `network_isolation` remain false, so normal strict plans remain blocked and there is no unsandboxed fallback.
+The public `QaExecutionService` still reports `execution_enabled = false` and exposes no execute method. `filesystem_isolation` and `network_isolation` remain false. Normal strict plans therefore remain blocked and there is no unsandboxed fallback.
 
-## Typed runner model
+## Typed runner and toolchain model
 
 Only allow-listed runner kinds can be represented: Pytest, Rust `cargo test` integration tests, Go `go test`, Vitest, Jest, and PHPUnit. A plan stores an exact trusted absolute executable path and a generated argument vector. It never stores or executes a shell command string or package-script entrypoint.
 
-Every request contains explicit project-relative targets. Absolute paths, parent traversal, Windows-style backslash targets, empty targets, and requests beyond the configured target bound are rejected. Rust integration-test targets are restricted to conventional `tests/*.rs` paths before a `cargo test --test <name>` command can be planned.
+Every request contains explicit project-relative targets. Absolute targets, parent traversal, Windows-style backslash targets, empty targets, and requests beyond the configured target bound are rejected. Rust integration-test targets are restricted to conventional `tests/*.rs` paths before a `cargo test --test <name>` command can be planned.
 
-Planning creates `TestExecutionPlan.approved_project_manifest_sha256 = None`. A project manifest is not guessed or captured before approval. The manifest becomes execution authority only when the durable approval workflow successfully binds it.
+`TrustedToolchain` may additionally declare explicit external read roots needed by a future execution path. A declaration contains a typed purpose and an absolute path. Supported purpose labels are runtime root, standard library, compiler sysroot, toolchain support, package store, and extension directory. Planning validates declaration shape but does not execute the toolchain to discover roots automatically. This preserves the non-executing planning/approval boundary.
+
+Planning creates both `approved_project_manifest_sha256 = None` and `approved_external_read_surface = None`. Approval evidence is never guessed during planning.
 
 ## Default sandbox policy
 
 The default policy requires process isolation, filesystem/write isolation, network isolation, CPU and memory limits, reliable cancellation, a wall-clock timeout, bounded output and target count, and no inherited host environment.
 
-`SandboxCapabilities` describes only what a trusted backend actually guarantees. Missing required capabilities make a plan `blocked`. Controls that exist but are not yet strong enough to prove a capability remain limitations rather than being promoted.
+`SandboxCapabilities` describes only controls that an OS backend actually enforces. Missing required capabilities make a plan blocked. A component-level hardening measure is not promoted to a capability unless the end-to-end property is enforced and validated.
 
 ## Approval-bound project manifest
 
-A future-capable `planned` plan cannot transition to `approved` by changing status alone. Approval performs a bounded, non-executing project snapshot:
+A future-capable planned plan cannot transition to approved by changing status alone. Project approval evidence is captured without running repository code:
 
-1. read the project's persisted root path;
+1. read the persisted project root;
 2. re-snapshot the explicit selected test targets and verify their hashes;
-3. build the existing bounded dependency-complete detached project mirror outside the source tree;
-4. reject symlinks, Windows reparse-point entries, unsupported filesystem entries, unsafe paths, source mutation during staging, or mirror drift;
-5. obtain the deterministic full-project manifest SHA-256 plus file count, directory count, and total regular-file bytes;
+3. build a bounded dependency-complete detached project mirror outside the source tree;
+4. reject symbolic links, Windows reparse-point entries, unsupported filesystem entries, unsafe paths, source mutation during staging, or mirror drift;
+5. obtain a deterministic full-project SHA-256 manifest plus file count, directory count, and total regular-file bytes;
 6. remove the temporary approval mirror;
-7. atomically persist the digest and typed manifest metadata while transitioning the plan to `approved`.
+7. persist the project evidence only as part of the approval transition.
 
-Approval does not run repository commands, package scripts, interpreters, compilers, browsers, hooks, or tests. It only reads, hashes, and temporarily copies the bounded project tree through the same detached-mirror primitive used by the lower execution layer.
+Project-mirror bounds are 8,192 regular files, 4,096 directories, and 256 MiB total regular-file bytes. Empty directories are retained. Source files are rechecked before copy, copied files are rehashed and marked read-only, the source tree is rescanned, and the detached tree is independently rescanned.
 
-The manifest captures project-local tree state, not host-wide filesystem state. It does not include arbitrary external compiler/runtime installations, package registries, user caches, or network-fetched dependencies.
+The project manifest captures project-local state only. It does not describe host runtime installations, compiler sysroots, package stores, or arbitrary host files.
 
-### Durable approval invariants
+## Approval-bound external read provenance
 
-Migration `0015_qa_execution_manifest_binding.sql` adds:
+Migration `0016_qa_external_read_provenance.sql` adds a second approval binding for explicitly declared host-side runtime/toolchain trees. Approval still does not invoke Python, Cargo, Rustc, Go, Node, npm, PHP, package scripts, repository hooks, tests, or any other interpreter/compiler command to discover these roots. They must already be explicit trusted-toolchain metadata.
 
-- `qa_execution_plans.approved_project_manifest_sha256`;
-- `qa_execution_plans.approved_project_manifest_json`;
-- `qa_execution_runs.project_manifest_sha256`.
+Current external-surface bounds are:
 
-Database triggers enforce that manifest evidence can be created only with an approval transition, approved manifest evidence and approved status cannot be mutated afterward, and a future execution-run row cannot be inserted unless its manifest digest exactly matches an approved plan digest.
+- at most 8 declared roots;
+- at most 65,536 regular files across all roots;
+- at most 16,384 directories across all roots;
+- at most 2 GiB total regular-file bytes across all roots.
 
-Older approved rows that predate manifest binding are not silently trusted. The service fails closed and requires a new plan and approval.
+For each declaration CodeTwin requires an absolute directory, canonicalizes it, rejects a symlink/reparse-point root, and requires it to be disjoint from the analyzed repository. A declared root may neither reside inside the repository nor contain the repository. Multiple declarations may not canonicalize to the same root.
 
-`QaExecutionPlanRecord::execution_plan` reconstructs the low-level typed `TestExecutionPlan`. For an approved record it requires manifest evidence and copies the approved digest into `approved_project_manifest_sha256`. A non-approved record carrying approval evidence is treated as inconsistent rather than normalized silently.
+The tree walker accepts only regular files and directories, requires deterministic Unicode-relative paths, rejects symbolic links, Windows reparse points and special filesystem objects, canonicalizes every entry back under its declared root, and content-hashes every regular file. It records a deterministic per-root manifest containing directory names, file names, file sizes and file SHA-256 values.
 
-Concurrent approval is first-writer-wins only when both callers captured the same manifest. If another approval binds a different project snapshot while a caller is capturing evidence, that caller receives an explicit approval-manifest error instead of silently treating the different snapshot as its approval.
+The aggregate surface digest is domain-separated from project manifests and includes each root's kind, canonical path, root manifest digest, file count, directory count and total bytes. Approval performs two independent bounded scans of the complete declared surface and requires exact equality. If the surface changes while approval provenance is being captured, approval fails closed rather than storing an unstable snapshot.
 
-## Bounded dependency-complete project mirror
+An empty declared-root list is permitted during passive planning for backward compatibility, but a future-capable plan cannot be approved without at least one explicit external root. Existing approved rows that predate this provenance layer are not silently upgraded; typed reconstruction fails closed and requires a new plan/approval.
 
-`prepare_dependency_complete_workspace` mirrors the accepted project-local tree under detached `inputs/` and records `dependency_complete = true` only after full verification. The current bounds are:
+At execution time the Windows project-mirror path rescans the declared external surface and requires exact equality with the approved typed evidence before restricted process creation. A changed standard library, compiler/sysroot file, package-store file, root path, file size, directory layout or content hash therefore blocks launch.
 
-- at most 8,192 regular files;
-- at most 4,096 directories;
-- at most 256 MiB total regular-file bytes.
+This is provenance attestation, not read access enforcement. CodeTwin does not yet prevent the restricted process from reading an undeclared host path that Windows ACL/MIC rules otherwise permit. It also does not hold every file in a declared directory immutable for the full process lifetime. External-tree mutation after the pre-launch attestation remains a reason `filesystem_isolation` is false.
 
-The mirror includes empty directories and all accepted project-local regular files. It rejects symbolic links, Windows reparse-point entries, non-Unicode/unsafe paths, and special filesystem objects. Selected target snapshots must match entries in the full-tree manifest.
+## Durable approval invariants
 
-Each source file is rechecked immediately before copying, each copied file is rehashed and marked read-only, the source tree is rescanned after copy, and the detached tree is independently rescanned. Missing files, extra files, directory drift, size drift, hash drift, or source mutation fail closed.
+Migration `0015_qa_execution_manifest_binding.sql` binds the project manifest. Migration `0016_qa_external_read_provenance.sql` adds:
 
-Exact-target staging remains a separate compatibility primitive with `dependency_complete = false`; it must not be confused with the full-project mirror.
+- `qa_execution_plans.approved_external_read_surface_sha256`;
+- `qa_execution_plans.approved_external_read_surface_json`;
+- `qa_execution_runs.external_read_surface_sha256`.
+
+Database triggers enforce the following rules:
+
+- project and external evidence can be bound only during an approval transition;
+- a non-approved inserted plan cannot already carry approval evidence;
+- approved project/external evidence is immutable;
+- plan execution specification is immutable from creation; changing project identity, discovery identity, runner, request, toolchain, policy, capabilities, command or blocking reasons requires a new plan;
+- approval may append approval provenance while transitioning from planned to approved, but approved provenance is immutable afterward;
+- approved status cannot be downgraded;
+- a future run row must carry a project-manifest digest matching its approved plan;
+- a future run row must also carry an external-read-surface digest matching its approved plan.
+
+The service additionally performs compare-and-update approval: the persisted request/toolchain/policy/capability/command/blocking/provenance JSON must still equal the originally loaded plan while project and external evidence are being captured. A concurrent approval is idempotent only when the resulting approved evidence is exactly the same.
+
+`QaExecutionPlanRecord::execution_plan` requires both evidence sets for an approved plan and carries them into the low-level typed `TestExecutionPlan`. A non-approved plan carrying either approval evidence set is treated as inconsistent instead of normalized silently.
 
 ## Exact trusted-runner launch attestation
 
-The first external-read-surface hardening phase covers the exact executable image selected as the trusted runner. It does not claim that all transitive runtime or library reads are constrained.
+The exact executable image selected as the trusted runner has a stronger launch-time lock than the directory-level provenance layer.
 
-Before entering the lower restricted launcher, Windows execution now:
+Before entering the lower restricted launcher, Windows execution:
 
 1. requires `plan.command.program` to exactly equal the approved trusted-toolchain path;
 2. requires the runner path to be absolute, regular, outside the analyzed repository, and not a symbolic-link/reparse-point file;
 3. canonicalizes the runner and its immediate toolchain directory;
-4. canonicalizes `SYSTEMROOT` and `WINDIR`, requires both to resolve outside the repository, and requires them to identify the same Windows root;
+4. canonicalizes `SYSTEMROOT` and `WINDIR`, requires both outside the repository, and requires them to identify the same Windows root;
 5. requires the approved runner SHA-256 and verifies it from the same file handle used for the launch lock;
-6. opens the canonical runner with Windows sharing restricted to `FILE_SHARE_READ`, which denies new write/delete/rename opens while the guard exists;
-7. keeps that handle alive across the complete lower restricted-launch call, including the second hash check and `CreateProcessAsUserW` process creation.
+6. opens the canonical runner with Windows sharing restricted to `FILE_SHARE_READ`, denying new write/delete/rename opens while the guard exists;
+7. keeps that handle alive across the complete lower restricted-launch call.
 
-Rust's default Windows file-sharing mode permits read, write, and delete sharing. The explicit read-only share mode therefore closes the previous hash-then-close replacement window for new writer/delete opens during launch. The lower launcher deliberately keeps its independent path/hash verification as defense in depth.
-
-This is executable launch attestation, not a filesystem namespace. The runner can still request reads from other host paths permitted by Windows ACL/MIC rules. Transitive interpreter standard libraries, compiler sysroots, DLL/plugin directories, package stores, and other runtime-specific external roots are not yet represented by a complete immutable allow-list.
+The lower launcher retains its independent runner path/hash verification as defense in depth. This stronger handle lifetime currently applies to the exact runner executable, not every file in the declared runtime/toolchain trees.
 
 ## Windows restricted suspended launcher
 
 The crate-level Windows execution path uses the following ordering:
 
-1. require an approved project-manifest SHA-256 on the typed execution plan;
+1. require approved project-manifest and external-read-surface evidence;
 2. canonicalize the live project root and revalidate selected target snapshots;
 3. build a fresh bounded dependency-complete detached mirror;
-4. require the fresh mirror digest to exactly equal the approved plan digest;
-5. lock and re-attest the exact trusted runner plus canonical Windows system-root inputs;
-6. probe the restricted-identity write matrix before any repository code can run;
-7. derive a fresh `DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED` low-integrity primary token;
-8. revalidate the trusted runner path and SHA-256 while the outer runner lock remains held;
-9. create stdin/stdout/stderr handles and restrict inheritance with `STARTUPINFOEXW` plus `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`;
-10. pass the exact trusted executable through `lpApplicationName` and use a writable Unicode command-line buffer for the generated argv;
-11. construct a minimal Unicode environment and redirect supported writable caches/temp state into generated detached directories;
-12. call `CreateProcessAsUserW` with `CREATE_SUSPENDED`;
-13. assign the still-suspended process to the configured Job Object;
-14. resume the exact primary-thread handle returned by process creation and require the prior suspend count to be exactly one;
-15. enforce bounded timeout, cancellation, job CPU/memory controls, and bounded stdout/stderr capture;
-16. close the kill-on-close Job before final output drain/workspace cleanup so surviving descendants cannot extend the execution lifetime.
-
-The project-manifest digest equality and trusted-runner lock/attestation both happen before restricted process creation. A non-target source/config/dependency change after approval blocks launch, and a new write/delete/rename open against the exact runner image cannot be introduced after the lock is acquired.
+4. require the fresh project digest to exactly equal the approved project digest;
+5. lock and re-attest the exact trusted runner and validate canonical Windows system-root inputs;
+6. rescan and exactly match the approved declared external read surface;
+7. probe the restricted-identity write matrix;
+8. derive a fresh `DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED` low-integrity primary token;
+9. independently revalidate the runner path and SHA-256 while the outer runner lock remains held;
+10. create only the intended stdin/stdout/stderr handles and restrict inheritance through `STARTUPINFOEXW` plus `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`;
+11. pass the exact trusted executable through `lpApplicationName` and use a writable Unicode command-line buffer for the generated argv;
+12. construct a minimal Unicode environment and redirect supported writable caches/temp state into generated detached directories;
+13. call `CreateProcessAsUserW` with `CREATE_SUSPENDED`;
+14. assign the still-suspended process to the configured Job Object;
+15. resume the exact primary-thread handle returned by process creation and require the prior suspend count to be exactly one;
+16. enforce bounded timeout, cancellation, job CPU/memory controls, and bounded stdout/stderr capture;
+17. close the kill-on-close Job before final output drain/workspace cleanup so surviving descendants cannot extend execution lifetime.
 
 There is intentionally no normal-token or alternate-logon fallback when restricted process creation fails.
 
@@ -115,46 +130,38 @@ There is intentionally no normal-token or alternate-logon fallback when restrict
 
 The Windows identity layer creates a `WRITE_RESTRICTED`, low-integrity token using `WinWriteRestrictedCodeSid`, preserves existing generated-workspace DACLs while adding restricting-SID ACEs, and applies low-integrity mandatory labels.
 
-The probe requires mutation-capable access to the original source root and mirrored project inputs to be denied while `artifacts/` and `temp/` remain writable. The original repository ACL is not modified.
+The probe requires mutation-capable access to the original source root and mirrored project inputs to be denied while generated `artifacts/` and `temp/` remain writable. The original repository ACL is never modified.
 
-This is a write boundary, not a host-wide read sandbox. A restricted process may still be able to read host objects permitted by Windows ACL/MIC rules if it knows their absolute paths. That remaining boundary is one reason `filesystem_isolation` is still false.
+This is a write boundary, not a host-wide read sandbox. A restricted process may still read host objects permitted by Windows ACL/MIC rules if it knows their paths.
 
 ## Environment, handles, and process containment
 
-The launcher does not inherit the full host environment or a host `PATH`. Required Windows system-root values are retained only after the outer attestation path verifies their canonical relationship, while explicit CodeTwin/test controls are supplied. Writable state is redirected where supported through `TEMP`, `TMP`, `GOTMPDIR`, `CARGO_TARGET_DIR`, `GOCACHE`, `NPM_CONFIG_CACHE`, and `XDG_CACHE_HOME`. Python user-site imports and bytecode writes are disabled, `NO_COLOR` is set, and `CI=1` is supplied.
+The launcher does not inherit the full host environment or a host `PATH`. Required Windows system-root values are retained only after canonical checks. Writable state is redirected where supported through `TEMP`, `TMP`, `GOTMPDIR`, `CARGO_TARGET_DIR`, `GOCACHE`, `NPM_CONFIG_CACHE`, and `XDG_CACHE_HOME`. Python user-site imports and bytecode writes are disabled; `NO_COLOR` and `CI=1` are supplied.
 
-Only the explicit standard-I/O handles are inheritable by the child. The runner is born suspended, receives Job Object membership before its primary thread can execute untrusted user-mode code, and has no weaker pre-assignment path.
+Only explicit standard-I/O handles are inheritable. The runner is born suspended and receives Job Object membership before its primary thread can execute untrusted user-mode code.
 
-A raw process completion is not automatically a test verdict. Pass/fail requires a completed execution, completed runner-specific parser, and exit code. Timeout, cancellation, infrastructure failure, setup failure, manifest mismatch, toolchain-attestation failure, or incomplete parsing produce no pass/fail claim.
+A raw process completion is not automatically a test verdict. Pass/fail requires a completed execution, a completed runner-specific parser and an exit code. Timeout, cancellation, infrastructure/setup failure, project-manifest mismatch, external-surface mismatch, toolchain-attestation failure or incomplete parsing produces no pass/fail claim.
 
 ## Current capability truth
 
 On Windows, `current_backend_info()` can report process-tree containment, CPU limit, memory limit, and cancellation because those controls are enforced by the Job Object path.
 
-`filesystem_isolation` remains false even though project-local execution now uses an approval-bound detached mirror and the exact trusted runner is hash-verified while held against new write/delete replacement. Remaining reasons include:
+`filesystem_isolation` remains false despite the project mirror, restricted identity, runner lock and external provenance because:
 
 - the restricted token is not a host-wide read sandbox;
-- transitive external DLL/runtime/compiler/package reads are not yet reduced to an immutable verified allow-list or denied outside such a list;
+- undeclared host reads are not denied;
+- declared external trees are re-attested before launch but are not held immutable for the complete execution lifetime;
 - the runner still shares the caller desktop/window station;
-- adversarial Windows integration tests have not actually executed in CI;
-- the capability has therefore not been promoted from component evidence to an end-to-end guarantee.
+- adversarial Windows integration tests have not actually executed in CI.
 
-`network_isolation` remains false because no OS-level network denial mechanism is enforced.
-
-The strict policy therefore continues to block normal execution plans, and the public desktop/service layer still has no execute method.
+`network_isolation` remains false because no OS-level network denial mechanism is enforced. Strict plans therefore remain blocked and the public desktop/service layer still has no execute method.
 
 ## Remaining hardening steps
 
-The next external-read phase should represent each runner's required transitive host roots explicitly—such as interpreter/runtime libraries, compiler sysroots, and other trusted package/toolchain stores—and bind them to immutable approval evidence where practical. More importantly, the Windows security boundary must eventually deny undeclared host reads rather than treating a declared list as documentation alone. AppContainer-style namespace/capability isolation or another enforceable Windows boundary should be evaluated for that purpose.
+The next Windows filesystem phase must **enforce** an external read boundary rather than merely attest declared roots. Candidate designs include AppContainer-style identity/capability/file grants or another Windows mechanism that can deny reads outside a narrowly defined set while preserving only the system/runtime access intentionally required by a trusted runner. Any design must be validated against DLL loading, interpreter standard libraries, compiler sysroots, package stores, plugins and child processes rather than assuming declared provenance is enforcement.
 
-A restricted desktop/window station or equivalent UI isolation should also be added before public execution.
+A restricted desktop/window station or equivalent UI boundary is also pending. Network isolation is an independent strict blocker.
 
-Adversarial Windows integration tests must then exercise approval-manifest mismatch, original-source write denial, mirror immutability, artifact/temp writability, trusted-runner replacement attempts, external-read escape attempts, explicit handle inheritance, process-tree containment, cancellation, CPU/memory limits, timeout behavior, command-line quoting, token restrictions, and descendant cleanup.
+Adversarial Windows tests must cover project-manifest mismatch, external-root drift, undeclared-host-read attempts, runtime mutation races, original-source write denial, mirror immutability, artifact/temp writability, runner replacement attempts, handle inheritance, process-tree containment, cancellation, CPU/memory limits, timeout behavior, command-line quoting, token restrictions and descendant cleanup.
 
-Only after those end-to-end tests pass should `filesystem_isolation` be considered for promotion. Network isolation remains an independent strict blocker and must be implemented and verified before public repository execution can be enabled. Linux and macOS execution backends remain future work.
-
-## Security boundary
-
-Repositories remain untrusted data throughout planning and approval. The public desktop/service layer still does not invoke repository commands, package scripts, interpreters, test runners, compilers, browsers, or hooks. The restricted Windows launcher exists below that public boundary and remains unreachable through normal strict plans while required capabilities are missing.
-
-Future public execution wiring must consume only approved typed plans, preserve the bound project-manifest digest into run provenance, revalidate exact trusted-toolchain provenance, enforce every required sandbox capability, bound output/results, support cancellation, and report infrastructure failure separately from test failure.
+Only after end-to-end enforcement and adversarial validation should `filesystem_isolation` be considered for promotion. Public repository execution must remain disabled until all required capability flags are truthfully enforced.
