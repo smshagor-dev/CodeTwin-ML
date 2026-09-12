@@ -20,7 +20,6 @@ use windows_sys::Win32::{
         CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
     },
     System::{
-        SystemServices::PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT,
         Threading::{
             CreateProcessAsUserW, DeleteProcThreadAttributeList,
             InitializeProcThreadAttributeList, OpenProcessToken, TerminateProcess,
@@ -29,6 +28,7 @@ use windows_sys::Win32::{
             PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
             PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW, STARTUPINFOW,
         },
+        WindowsProgramming::PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT,
     },
 };
 
@@ -97,10 +97,8 @@ pub(crate) fn probe_suspended_lpac_readiness(
         Reserved: 0,
     };
     let all_application_packages_policy = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
-    let attributes = ProcThreadAttributeList::lpac(
-        &capabilities,
-        &all_application_packages_policy,
-    )?;
+    let attributes =
+        ProcThreadAttributeList::lpac(&capabilities, &all_application_packages_policy)?;
 
     let application = wide_null(OsStr::new(plan.command.program.as_str()));
     let quoted_program = format!("\"{}\"", plan.command.program);
@@ -181,9 +179,8 @@ impl LpacProfileSid {
             )));
         }
 
-        let derived = unsafe {
-            DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid)
-        };
+        let derived =
+            unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
         if derived < 0 || sid.is_null() {
             return Err(BackendExecutionError::JobSetup(format!(
                 "DeriveAppContainerSidFromAppContainerName failed with HRESULT 0x{:08x}",
