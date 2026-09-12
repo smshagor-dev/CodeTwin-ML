@@ -69,8 +69,8 @@ pub enum ExternalProvenanceError {
     TooManyRoots,
     #[error("invalid external read root declaration: {0}")]
     InvalidDeclaration(String),
-    #[error("external read root must remain outside the analyzed repository: {0}")]
-    RootInsideProject(String),
+    #[error("external read root must be disjoint from the analyzed repository: {0}")]
+    RootOverlapsProject(String),
     #[error("unsupported external filesystem entry: {0}")]
     UnsupportedEntry(String),
     #[error("external read surface exceeds the bounded file-count limit")]
@@ -79,6 +79,8 @@ pub enum ExternalProvenanceError {
     DirectoryLimitExceeded,
     #[error("external read surface exceeds the bounded byte limit")]
     ByteLimitExceeded,
+    #[error("external read surface changed while provenance was being captured")]
+    UnstableSurface,
     #[error("external read surface changed from its approved provenance")]
     SurfaceChanged,
     #[error("invalid approved external read surface: {0}")]
@@ -149,53 +151,16 @@ pub fn capture_external_read_surface(
     validate_declared_external_read_roots(roots)?;
 
     let project_root = canonical_directory(project_root.as_ref(), "project root")?;
-    let mut budget = SurfaceBudget::default();
-    let mut evidence = Vec::with_capacity(roots.len());
-    let mut canonical_seen = BTreeSet::new();
-
-    for declared in roots {
-        let original = Path::new(&declared.path);
-        let metadata = fs::symlink_metadata(original)?;
-        if metadata.file_type().is_symlink() || metadata_is_reparse_point(&metadata) {
-            return Err(ExternalProvenanceError::UnsupportedEntry(format!(
-                "external read root is a symlink/reparse point: {}",
-                original.display()
-            )));
-        }
-        let canonical = canonical_directory(original, "external read root")?;
-        if canonical.starts_with(&project_root) {
-            return Err(ExternalProvenanceError::RootInsideProject(
-                canonical.display().to_string(),
-            ));
-        }
-        let canonical_text = path_text(&canonical);
-        let canonical_key = canonical_path_key(&canonical_text);
-        if !canonical_seen.insert(canonical_key) {
-            return Err(ExternalProvenanceError::InvalidDeclaration(format!(
-                "multiple declarations resolve to the same external root: {canonical_text}"
-            )));
-        }
-
-        let tree = snapshot_tree(&canonical, &mut budget)?;
-        if tree.files.is_empty() {
-            return Err(ExternalProvenanceError::InvalidDeclaration(format!(
-                "external read root contains no regular files: {canonical_text}"
-            )));
-        }
-        evidence.push(ExternalReadRootEvidence {
-            kind: declared.kind,
-            canonical_path: canonical_text,
-            manifest_sha256: tree_manifest_sha256(&tree),
-            file_count: u64::try_from(tree.files.len()).unwrap_or(u64::MAX),
-            directory_count: u64::try_from(tree.directories.len()).unwrap_or(u64::MAX),
-            total_bytes: tree.total_bytes,
-        });
+    let canonical_roots = canonicalize_declared_roots(roots, &project_root)?;
+    let first = snapshot_surface(&canonical_roots)?;
+    let second = snapshot_surface(&canonical_roots)?;
+    if first != second {
+        return Err(ExternalProvenanceError::UnstableSurface);
     }
 
-    evidence.sort_by(|left, right| evidence_sort_key(left).cmp(&evidence_sort_key(right)));
     let surface = ApprovedExternalReadSurface {
-        sha256: surface_sha256(&evidence),
-        roots: evidence,
+        sha256: surface_sha256(&first),
+        roots: first,
     };
     validate_approved_external_read_surface_shape(&surface)?;
     Ok(surface)
@@ -269,13 +234,73 @@ pub fn validate_approved_external_read_surface_shape(
     }
 
     let mut roots = surface.roots.clone();
-    roots.sort_by(|left, right| evidence_sort_key(left).cmp(&evidence_sort_key(right)));
+    roots.sort_by_key(evidence_sort_key);
     if roots != surface.roots || surface_sha256(&roots) != surface.sha256 {
         return Err(ExternalProvenanceError::InvalidEvidence(
             "surface digest/order does not match its root evidence".to_string(),
         ));
     }
     Ok(())
+}
+
+fn canonicalize_declared_roots(
+    roots: &[DeclaredExternalReadRoot],
+    project_root: &Path,
+) -> Result<Vec<(ExternalReadRootKind, PathBuf)>, ExternalProvenanceError> {
+    let mut canonical_seen = BTreeSet::new();
+    let mut canonical_roots = Vec::with_capacity(roots.len());
+    for declared in roots {
+        let original = Path::new(&declared.path);
+        let metadata = fs::symlink_metadata(original)?;
+        if metadata.file_type().is_symlink() || metadata_is_reparse_point(&metadata) {
+            return Err(ExternalProvenanceError::UnsupportedEntry(format!(
+                "external read root is a symlink/reparse point: {}",
+                original.display()
+            )));
+        }
+        let canonical = canonical_directory(original, "external read root")?;
+        if canonical.starts_with(project_root) || project_root.starts_with(&canonical) {
+            return Err(ExternalProvenanceError::RootOverlapsProject(
+                canonical.display().to_string(),
+            ));
+        }
+        let key = canonical_path_key(&path_text(&canonical));
+        if !canonical_seen.insert(key) {
+            return Err(ExternalProvenanceError::InvalidDeclaration(format!(
+                "multiple declarations resolve to the same external root: {}",
+                canonical.display()
+            )));
+        }
+        canonical_roots.push((declared.kind, canonical));
+    }
+    canonical_roots.sort_by_key(|(kind, path)| (*kind, canonical_path_key(&path_text(path))));
+    Ok(canonical_roots)
+}
+
+fn snapshot_surface(
+    roots: &[(ExternalReadRootKind, PathBuf)],
+) -> Result<Vec<ExternalReadRootEvidence>, ExternalProvenanceError> {
+    let mut budget = SurfaceBudget::default();
+    let mut evidence = Vec::with_capacity(roots.len());
+    for (kind, canonical) in roots {
+        let tree = snapshot_tree(canonical, &mut budget)?;
+        let canonical_text = path_text(canonical);
+        if tree.files.is_empty() {
+            return Err(ExternalProvenanceError::InvalidDeclaration(format!(
+                "external read root contains no regular files: {canonical_text}"
+            )));
+        }
+        evidence.push(ExternalReadRootEvidence {
+            kind: *kind,
+            canonical_path: canonical_text,
+            manifest_sha256: tree_manifest_sha256(&tree),
+            file_count: u64::try_from(tree.files.len()).unwrap_or(u64::MAX),
+            directory_count: u64::try_from(tree.directories.len()).unwrap_or(u64::MAX),
+            total_bytes: tree.total_bytes,
+        });
+    }
+    evidence.sort_by_key(evidence_sort_key);
+    Ok(evidence)
 }
 
 fn snapshot_tree(
@@ -540,5 +565,22 @@ mod tests {
             Err(ExternalProvenanceError::NoDeclaredRoots)
         ));
         let _ = fs::remove_dir_all(project);
+    }
+
+    #[test]
+    fn external_root_cannot_contain_project() {
+        let parent = temp_directory("external-overlap-parent");
+        let project = parent.join("project");
+        fs::create_dir_all(&project).expect("project");
+        fs::write(parent.join("runtime.txt"), "runtime\n").expect("runtime file");
+        let roots = vec![DeclaredExternalReadRoot {
+            kind: ExternalReadRootKind::RuntimeRoot,
+            path: parent.to_string_lossy().into_owned(),
+        }];
+        assert!(matches!(
+            capture_external_read_surface(&roots, &project),
+            Err(ExternalProvenanceError::RootOverlapsProject(_))
+        ));
+        let _ = fs::remove_dir_all(parent);
     }
 }
