@@ -66,23 +66,26 @@ BEGIN
   SELECT RAISE(ABORT, 'approved QA execution external read-surface binding is immutable');
 END;
 
-CREATE TRIGGER qa_execution_approved_spec_immutable
-BEFORE UPDATE OF project_id, discovery_run_id, runner_kind, request_json, toolchain_json, policy_json, capabilities_json, command_json, provenance_json, blocking_reasons_json ON qa_execution_plans
-WHEN OLD.status = 'approved'
-  AND (
-    NEW.project_id IS NOT OLD.project_id
-    OR NEW.discovery_run_id IS NOT OLD.discovery_run_id
-    OR NEW.runner_kind IS NOT OLD.runner_kind
-    OR NEW.request_json IS NOT OLD.request_json
-    OR NEW.toolchain_json IS NOT OLD.toolchain_json
-    OR NEW.policy_json IS NOT OLD.policy_json
-    OR NEW.capabilities_json IS NOT OLD.capabilities_json
-    OR NEW.command_json IS NOT OLD.command_json
-    OR NEW.provenance_json IS NOT OLD.provenance_json
-    OR NEW.blocking_reasons_json IS NOT OLD.blocking_reasons_json
-  )
+CREATE TRIGGER qa_execution_plan_spec_immutable
+BEFORE UPDATE OF project_id, discovery_run_id, runner_kind, request_json, toolchain_json, policy_json, capabilities_json, command_json, blocking_reasons_json ON qa_execution_plans
+WHEN NEW.project_id IS NOT OLD.project_id
+  OR NEW.discovery_run_id IS NOT OLD.discovery_run_id
+  OR NEW.runner_kind IS NOT OLD.runner_kind
+  OR NEW.request_json IS NOT OLD.request_json
+  OR NEW.toolchain_json IS NOT OLD.toolchain_json
+  OR NEW.policy_json IS NOT OLD.policy_json
+  OR NEW.capabilities_json IS NOT OLD.capabilities_json
+  OR NEW.command_json IS NOT OLD.command_json
+  OR NEW.blocking_reasons_json IS NOT OLD.blocking_reasons_json
 BEGIN
-  SELECT RAISE(ABORT, 'approved QA execution plan specification is immutable, including provenance');
+  SELECT RAISE(ABORT, 'QA execution plan specification is immutable; create a new plan instead');
+END;
+
+CREATE TRIGGER qa_execution_approved_provenance_immutable
+BEFORE UPDATE OF provenance_json ON qa_execution_plans
+WHEN OLD.status = 'approved' AND NEW.provenance_json IS NOT OLD.provenance_json
+BEGIN
+  SELECT RAISE(ABORT, 'approved QA execution plan provenance is immutable');
 END;
 
 CREATE TRIGGER qa_execution_run_external_surface_matches_plan
