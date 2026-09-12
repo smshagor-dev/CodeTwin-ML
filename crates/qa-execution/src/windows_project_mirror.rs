@@ -3,6 +3,8 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
+#[path = "windows_lpac_bundle.rs"]
+mod bundle;
 #[path = "windows_lpac.rs"]
 mod lpac;
 #[path = "windows_toolchain_guard.rs"]
@@ -86,14 +88,6 @@ pub(crate) fn execute_approved_plan(
         BackendExecutionError::JobSetup(format!("external read-surface provenance: {error}"))
     })?;
 
-    let mirror_root = PathBuf::from(&workspace.inputs_path);
-    let lpac_readiness = lpac::probe_suspended_lpac_readiness(plan, &mirror_root)?;
-    if !lpac_readiness.satisfies_readiness_contract() {
-        return Err(BackendExecutionError::JobSetup(
-            "LPAC readiness evidence did not match the required conservative contract".to_string(),
-        ));
-    }
-
     let identity = probe_restricted_identity(workspace).map_err(|error| {
         BackendExecutionError::JobSetup(format!("project-mirror restricted identity: {error}"))
     })?;
@@ -113,6 +107,26 @@ pub(crate) fn execute_approved_plan(
         return Err(BackendExecutionError::JobSetup(
             "project mirror identity evidence did not match the required conservative contract"
                 .to_string(),
+        ));
+    }
+
+    let lpac_bundle =
+        bundle::prepare_lpac_execution_bundle(plan, approved_external_surface, workspace)?;
+    if !lpac_bundle.evidence().satisfies_readiness_contract()
+        || !lpac_bundle.root_path().starts_with(Path::new(&workspace.root_path))
+        || !lpac_bundle.runner_path().is_file()
+    {
+        return Err(BackendExecutionError::JobSetup(
+            "detached LPAC execution bundle did not satisfy the required readiness contract"
+                .to_string(),
+        ));
+    }
+
+    let mirror_root = PathBuf::from(&workspace.inputs_path);
+    let lpac_readiness = lpac::probe_suspended_lpac_readiness(plan, &mirror_root)?;
+    if !lpac_readiness.satisfies_readiness_contract() {
+        return Err(BackendExecutionError::JobSetup(
+            "LPAC readiness evidence did not match the required conservative contract".to_string(),
         ));
     }
 
