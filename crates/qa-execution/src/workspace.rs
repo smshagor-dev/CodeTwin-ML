@@ -12,6 +12,11 @@ use thiserror::Error;
 
 use crate::{verify_execution_inputs, ExecutionInputSnapshot, MAX_TARGETS};
 
+pub mod identity;
+pub use identity::{
+    probe_restricted_identity, RestrictedIdentityError, RestrictedIdentityEvidence,
+};
+
 pub const MAX_DETACHED_WORKSPACE_BYTES: u64 = 64 * 1024 * 1024;
 const WORKSPACE_PREFIX: &str = "codetwin-qa-";
 
