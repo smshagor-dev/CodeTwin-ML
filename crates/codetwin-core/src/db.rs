@@ -15,6 +15,7 @@ const MIGRATION_0009: &str = include_str!("../migrations/0009_runtime_reliabilit
 const MIGRATION_0013: &str = include_str!("../migrations/0013_qa_test_discovery.sql");
 const MIGRATION_0014: &str = include_str!("../migrations/0014_qa_test_execution.sql");
 const MIGRATION_0015: &str = include_str!("../migrations/0015_qa_execution_manifest_binding.sql");
+const MIGRATION_0016: &str = include_str!("../migrations/0016_qa_external_read_provenance.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -64,6 +65,7 @@ impl Database {
         self.apply_migration(13, MIGRATION_0013)?;
         self.apply_migration(14, MIGRATION_0014)?;
         self.apply_migration(15, MIGRATION_0015)?;
+        self.apply_migration(16, MIGRATION_0016)?;
         Ok(())
     }
 
@@ -115,7 +117,7 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 12);
+        assert_eq!(count, 13);
         let qa_discovery_version: i64 = db
             .connection()
             .query_row(
@@ -143,6 +145,15 @@ mod tests {
             )
             .expect("query QA manifest binding migration");
         assert_eq!(qa_manifest_binding_version, 1);
+        let qa_external_provenance_version: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 16",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query QA external provenance migration");
+        assert_eq!(qa_external_provenance_version, 1);
     }
 
     #[test]
@@ -237,12 +248,14 @@ mod tests {
             .expect("plan column rows")
             .collect::<Result<Vec<_>, _>>()
             .expect("plan column list");
-        assert!(plan_columns
-            .iter()
-            .any(|name| name == "approved_project_manifest_sha256"));
-        assert!(plan_columns
-            .iter()
-            .any(|name| name == "approved_project_manifest_json"));
+        for expected in [
+            "approved_project_manifest_sha256",
+            "approved_project_manifest_json",
+            "approved_external_read_surface_sha256",
+            "approved_external_read_surface_json",
+        ] {
+            assert!(plan_columns.iter().any(|name| name == expected));
+        }
 
         let mut run_columns = db
             .connection()
@@ -253,23 +266,26 @@ mod tests {
             .expect("run column rows")
             .collect::<Result<Vec<_>, _>>()
             .expect("run column list");
-        assert!(run_columns
-            .iter()
-            .any(|name| name == "project_manifest_sha256"));
+        for expected in ["project_manifest_sha256", "external_read_surface_sha256"] {
+            assert!(run_columns.iter().any(|name| name == expected));
+        }
 
         let trigger_count: i64 = db
             .connection()
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (\
                  'qa_execution_approval_requires_manifest',\
-                 'qa_execution_approved_insert_requires_manifest',\
                  'qa_execution_approved_manifest_immutable',\
-                 'qa_execution_run_manifest_matches_plan')",
+                 'qa_execution_run_manifest_matches_plan',\
+                 'qa_execution_approval_requires_external_surface',\
+                 'qa_execution_approved_external_surface_immutable',\
+                 'qa_execution_approved_spec_immutable',\
+                 'qa_execution_run_external_surface_matches_plan')",
                 [],
                 |row| row.get(0),
             )
-            .expect("manifest triggers");
-        assert_eq!(trigger_count, 4);
+            .expect("QA provenance triggers");
+        assert_eq!(trigger_count, 7);
     }
 
     #[test]
