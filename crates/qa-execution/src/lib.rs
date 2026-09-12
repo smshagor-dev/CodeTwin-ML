@@ -1,3 +1,12 @@
+mod backend;
+
+pub use backend::{
+    current_backend_info, execute_approved_plan, snapshot_execution_inputs,
+    verify_execution_inputs, BackendControls, BackendExecutionError, ExecutionBackendInfo,
+    ExecutionBackendKind, ExecutionInputSnapshot, RawExecutionOutcome,
+    MAX_EXECUTION_INPUT_BYTES,
+};
+
 use std::{
     collections::BTreeSet,
     path::{Component, Path},
