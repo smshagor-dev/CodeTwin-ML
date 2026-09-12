@@ -1,8 +1,14 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use ::qa_execution::{
-    build_execution_plan, current_backend_info, ExecutionCommand, ExecutionPlanStatus,
-    SandboxCapabilities, SandboxPolicy, TestExecutionRequest, TestRunnerKind, TrustedToolchain,
+    build_execution_plan, cleanup_detached_workspace, current_backend_info,
+    prepare_dependency_complete_workspace, snapshot_execution_inputs, ExecutionCommand,
+    ExecutionPlanStatus, SandboxCapabilities, SandboxPolicy, TestExecutionPlan,
+    TestExecutionRequest, TestRunnerKind, TrustedToolchain, MAX_PROJECT_MIRROR_BYTES,
+    MAX_PROJECT_MIRROR_DIRECTORIES, MAX_PROJECT_MIRROR_FILES,
 };
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -21,6 +27,10 @@ pub enum QaExecutionError {
     Serde(#[from] serde_json::Error),
     #[error("execution plan error: {0}")]
     Plan(#[from] ::qa_execution::PlanError),
+    #[error("execution input snapshot error: {0}")]
+    InputSnapshot(#[from] ::qa_execution::BackendExecutionError),
+    #[error("project mirror error: {0}")]
+    ProjectMirror(#[from] ::qa_execution::WorkspaceError),
     #[error("project not found: {0}")]
     ProjectNotFound(String),
     #[error("QA discovery run is not a completed run for this project: {0}")]
@@ -29,6 +39,8 @@ pub enum QaExecutionError {
     PlanNotFound(String),
     #[error("blocked QA execution plan cannot be approved: {0}")]
     PlanBlocked(String),
+    #[error("QA execution approval manifest error: {0}")]
+    ApprovalManifest(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +49,14 @@ pub struct QaExecutionAvailability {
     pub backend_kind: String,
     pub enforced_capabilities: SandboxCapabilities,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QaExecutionProjectManifest {
+    pub sha256: String,
+    pub file_count: u64,
+    pub directory_count: u64,
+    pub total_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -53,9 +73,43 @@ pub struct QaExecutionPlanRecord {
     pub command: ExecutionCommand,
     pub provenance: Value,
     pub blocking_reasons: Vec<String>,
+    pub approved_project_manifest: Option<QaExecutionProjectManifest>,
     pub created_at: String,
     pub approved_at: Option<String>,
     pub superseded_at: Option<String>,
+}
+
+impl QaExecutionPlanRecord {
+    pub fn execution_plan(&self) -> Result<TestExecutionPlan, QaExecutionError> {
+        let approved_project_manifest_sha256 =
+            match (self.status, self.approved_project_manifest.as_ref()) {
+                (ExecutionPlanStatus::Approved, Some(manifest)) => Some(manifest.sha256.clone()),
+                (ExecutionPlanStatus::Approved, None) => {
+                    return Err(QaExecutionError::ApprovalManifest(format!(
+                        "approved plan {} has no bound project manifest; recreate and approve the plan",
+                        self.id
+                    )))
+                }
+                (_, Some(_)) => {
+                    return Err(QaExecutionError::ApprovalManifest(format!(
+                        "non-approved plan {} unexpectedly carries approval manifest evidence",
+                        self.id
+                    )))
+                }
+                (_, None) => None,
+            };
+
+        Ok(TestExecutionPlan {
+            status: self.status,
+            blocking_reasons: self.blocking_reasons.clone(),
+            request: self.request.clone(),
+            toolchain: self.toolchain.clone(),
+            policy: self.policy.clone(),
+            capabilities: self.capabilities.clone(),
+            command: self.command.clone(),
+            approved_project_manifest_sha256,
+        })
+    }
 }
 
 pub struct QaExecutionService<'a> {
@@ -70,7 +124,7 @@ impl<'a> QaExecutionService<'a> {
     pub fn availability(&self) -> QaExecutionAvailability {
         let backend = current_backend_info();
         let reason = if cfg!(windows) {
-            "The Windows Job Object backend now enforces pre-resume process-tree containment, CPU/memory limits, cancellation, timeout, and bounded logs. Public repository test execution remains disabled because filesystem/write and network isolation are not yet enforced."
+            "The Windows QA backend has suspended Job Object containment, a restricted low-integrity launcher, and bounded detached project mirroring. Public repository test execution remains disabled because filesystem capability validation, desktop isolation, and network isolation are not complete."
         } else {
             "No OS-specific QA execution backend is enabled on this platform. Plans may be persisted and reviewed, but CodeTwin will not execute repository tests."
         };
@@ -155,16 +209,61 @@ impl<'a> QaExecutionService<'a> {
             ExecutionPlanStatus::Blocked => {
                 return Err(QaExecutionError::PlanBlocked(plan_id.to_string()));
             }
-            ExecutionPlanStatus::Approved => return Ok(plan),
-            ExecutionPlanStatus::Planned => {}
+            ExecutionPlanStatus::Approved => {
+                if plan.approved_project_manifest.is_none() {
+                    return Err(QaExecutionError::ApprovalManifest(format!(
+                        "approved plan {plan_id} predates manifest binding; recreate and approve it"
+                    )));
+                }
+                return Ok(plan);
+            }
+            ExecutionPlanStatus::Planned => {
+                if plan.approved_project_manifest.is_some() {
+                    return Err(QaExecutionError::ApprovalManifest(format!(
+                        "planned plan {plan_id} already contains immutable approval evidence"
+                    )));
+                }
+            }
         }
-        self.database.connection().execute(
-            "UPDATE qa_execution_plans SET status = 'approved', approved_at = CURRENT_TIMESTAMP\
-             WHERE id = ?1 AND status = 'planned'",
-            [plan_id],
+
+        let manifest = self.capture_approval_manifest(&plan)?;
+        let mut provenance = plan.provenance.clone();
+        let Some(provenance_object) = provenance.as_object_mut() else {
+            return Err(QaExecutionError::ApprovalManifest(format!(
+                "plan {plan_id} provenance is not a JSON object"
+            )));
+        };
+        provenance_object.insert(
+            "approved_project_manifest".to_string(),
+            serde_json::to_value(&manifest)?,
+        );
+
+        let manifest_json = serde_json::to_string(&manifest)?;
+        let changed = self.database.connection().execute(
+            "UPDATE qa_execution_plans\
+             SET status = 'approved', approved_at = CURRENT_TIMESTAMP,\
+                 approved_project_manifest_sha256 = ?2, approved_project_manifest_json = ?3,\
+                 provenance_json = ?4\
+             WHERE id = ?1 AND status = 'planned'\
+               AND approved_project_manifest_sha256 IS NULL\
+               AND approved_project_manifest_json IS NULL",
+            params![plan_id, manifest.sha256, manifest_json, provenance.to_string()],
         )?;
-        self.get_plan(plan_id)?
-            .ok_or_else(|| QaExecutionError::PlanNotFound(plan_id.to_string()))
+
+        let current = self
+            .get_plan(plan_id)?
+            .ok_or_else(|| QaExecutionError::PlanNotFound(plan_id.to_string()))?;
+        if changed == 1 {
+            return Ok(current);
+        }
+        if current.status == ExecutionPlanStatus::Approved
+            && current.approved_project_manifest.as_ref() == Some(&manifest)
+        {
+            return Ok(current);
+        }
+        Err(QaExecutionError::ApprovalManifest(format!(
+            "plan {plan_id} changed or a different project manifest won a concurrent approval"
+        )))
     }
 
     pub fn get_plan(
@@ -176,7 +275,8 @@ impl<'a> QaExecutionService<'a> {
             .query_row(
                 "SELECT id, project_id, discovery_run_id, runner_kind, status, request_json,\
                         toolchain_json, policy_json, capabilities_json, command_json, provenance_json,\
-                        blocking_reasons_json, created_at, approved_at, superseded_at\
+                        blocking_reasons_json, approved_project_manifest_sha256,\
+                        approved_project_manifest_json, created_at, approved_at, superseded_at\
                  FROM qa_execution_plans WHERE id = ?1",
                 [plan_id],
                 plan_from_row,
@@ -193,7 +293,8 @@ impl<'a> QaExecutionService<'a> {
         let mut statement = self.database.connection().prepare(
             "SELECT id, project_id, discovery_run_id, runner_kind, status, request_json,\
                     toolchain_json, policy_json, capabilities_json, command_json, provenance_json,\
-                    blocking_reasons_json, created_at, approved_at, superseded_at\
+                    blocking_reasons_json, approved_project_manifest_sha256,\
+                    approved_project_manifest_json, created_at, approved_at, superseded_at\
              FROM qa_execution_plans WHERE project_id = ?1\
              ORDER BY created_at DESC, id DESC LIMIT ?2",
         )?;
@@ -202,6 +303,55 @@ impl<'a> QaExecutionService<'a> {
             plan_from_row,
         )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    fn capture_approval_manifest(
+        &self,
+        plan: &QaExecutionPlanRecord,
+    ) -> Result<QaExecutionProjectManifest, QaExecutionError> {
+        let project_root = self.project_root_path(&plan.project_id)?;
+        let snapshots = snapshot_execution_inputs(&project_root, &plan.request.targets)?;
+        let workspace = prepare_dependency_complete_workspace(
+            &project_root,
+            std::env::temp_dir(),
+            &snapshots,
+        )?;
+
+        let evidence = if let Some(sha256) = workspace.project_manifest_sha256.as_deref() {
+            if valid_sha256(sha256) {
+                Ok(QaExecutionProjectManifest {
+                    sha256: sha256.to_string(),
+                    file_count: u64::try_from(workspace.files.len()).unwrap_or(u64::MAX),
+                    directory_count: u64::try_from(workspace.project_directories.len())
+                        .unwrap_or(u64::MAX),
+                    total_bytes: workspace.total_input_bytes,
+                })
+            } else {
+                Err(QaExecutionError::ApprovalManifest(
+                    "prepared project mirror exposed a malformed SHA-256 manifest".to_string(),
+                ))
+            }
+        } else {
+            Err(QaExecutionError::ApprovalManifest(
+                "prepared project mirror did not expose a SHA-256 manifest".to_string(),
+            ))
+        };
+
+        cleanup_detached_workspace(&workspace)?;
+        evidence
+    }
+
+    fn project_root_path(&self, project_id: &str) -> Result<PathBuf, QaExecutionError> {
+        self.database
+            .connection()
+            .query_row(
+                "SELECT root_path FROM projects WHERE id = ?1",
+                [project_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(PathBuf::from)
+            .ok_or_else(|| QaExecutionError::ProjectNotFound(project_id.to_string()))
     }
 
     fn project_last_indexed_at(
@@ -251,6 +401,10 @@ fn plan_from_row(row: &rusqlite::Row<'_>) -> Result<QaExecutionPlanRecord, rusql
     let command_text: String = row.get(9)?;
     let provenance_text: String = row.get(10)?;
     let blocking_text: String = row.get(11)?;
+    let manifest_sha256: Option<String> = row.get(12)?;
+    let manifest_json: Option<String> = row.get(13)?;
+    let approved_project_manifest =
+        parse_optional_manifest(manifest_sha256, manifest_json, 13)?;
     Ok(QaExecutionPlanRecord {
         id: row.get(0)?,
         project_id: row.get(1)?,
@@ -264,10 +418,50 @@ fn plan_from_row(row: &rusqlite::Row<'_>) -> Result<QaExecutionPlanRecord, rusql
         command: parse_json(&command_text, 9)?,
         provenance: parse_json(&provenance_text, 10)?,
         blocking_reasons: parse_json(&blocking_text, 11)?,
-        created_at: row.get(12)?,
-        approved_at: row.get(13)?,
-        superseded_at: row.get(14)?,
+        approved_project_manifest,
+        created_at: row.get(14)?,
+        approved_at: row.get(15)?,
+        superseded_at: row.get(16)?,
     })
+}
+
+fn parse_optional_manifest(
+    sha256: Option<String>,
+    manifest_json: Option<String>,
+    index: usize,
+) -> Result<Option<QaExecutionProjectManifest>, rusqlite::Error> {
+    match (sha256, manifest_json) {
+        (None, None) => Ok(None),
+        (Some(sha256), Some(text)) => {
+            let manifest: QaExecutionProjectManifest = parse_json(&text, index)?;
+            let file_limit = u64::try_from(MAX_PROJECT_MIRROR_FILES).unwrap_or(u64::MAX);
+            let directory_limit =
+                u64::try_from(MAX_PROJECT_MIRROR_DIRECTORIES).unwrap_or(u64::MAX);
+            if manifest.sha256 != sha256
+                || !valid_sha256(&sha256)
+                || manifest.file_count == 0
+                || manifest.file_count > file_limit
+                || manifest.directory_count > directory_limit
+                || manifest.total_bytes > MAX_PROJECT_MIRROR_BYTES
+            {
+                return invalid_manifest(index);
+            }
+            Ok(Some(manifest))
+        }
+        _ => invalid_manifest(index),
+    }
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn invalid_manifest<T>(index: usize) -> Result<T, rusqlite::Error> {
+    Err(rusqlite::Error::FromSqlConversionFailure(
+        index,
+        rusqlite::types::Type::Text,
+        "inconsistent QA approval project manifest columns".into(),
+    ))
 }
 
 fn parse_json<T: for<'de> Deserialize<'de>>(
@@ -328,24 +522,39 @@ fn bounded(value: usize, maximum: usize) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use ::qa_execution::{
-        current_backend_info, ExecutionPlanStatus, SandboxCapabilities, SandboxPolicy,
+        cleanup_detached_workspace, current_backend_info, prepare_dependency_complete_workspace,
+        snapshot_execution_inputs, ExecutionPlanStatus, SandboxCapabilities, SandboxPolicy,
         TestExecutionRequest, TestRunnerKind, TrustedToolchain,
     };
+    use rusqlite::params;
+    use tempfile::TempDir;
 
     use crate::Database;
 
     use super::{QaExecutionError, QaExecutionService};
 
-    fn project(database: &Database) {
+    fn project(database: &Database) -> TempDir {
+        let root = tempfile::tempdir().expect("project root");
+        fs::create_dir_all(root.path().join("tests")).expect("tests directory");
+        fs::write(
+            root.path().join("tests/test_api.py"),
+            "def test_ok():\n    assert True\n",
+        )
+        .expect("test source");
+        fs::write(root.path().join("module.py"), "VALUE = 1\n").expect("module source");
+        let root_path = root.path().to_string_lossy().into_owned();
         database
             .connection()
             .execute(
                 "INSERT INTO projects(id, root_path, display_name, last_indexed_at)\
-                 VALUES ('project-1', '/tmp/project-1', 'project', CURRENT_TIMESTAMP)",
-                [],
+                 VALUES ('project-1', ?1, 'project', CURRENT_TIMESTAMP)",
+                [root_path],
             )
             .expect("project");
+        root
     }
 
     fn toolchain() -> TrustedToolchain {
@@ -373,7 +582,7 @@ mod tests {
     #[test]
     fn public_planner_uses_only_enforced_backend_capabilities_and_remains_blocked() {
         let database = Database::open_in_memory().expect("database");
-        project(&database);
+        let _project = project(&database);
         let service = QaExecutionService::new(&database);
         let availability = service.availability();
         assert_eq!(
@@ -390,6 +599,7 @@ mod tests {
             )
             .expect("plan");
         assert_eq!(plan.status, ExecutionPlanStatus::Blocked);
+        assert!(plan.approved_project_manifest.is_none());
         assert!(!plan.blocking_reasons.is_empty());
         assert!(matches!(
             service.approve_plan(&plan.id),
@@ -398,9 +608,9 @@ mod tests {
     }
 
     #[test]
-    fn future_capable_backend_plan_can_be_approved_without_executing() {
+    fn future_capable_backend_plan_approval_binds_project_manifest_without_executing() {
         let database = Database::open_in_memory().expect("database");
-        project(&database);
+        let project = project(&database);
         let service = QaExecutionService::new(&database);
         let plan = service
             .create_plan_with_capabilities(
@@ -412,9 +622,74 @@ mod tests {
             )
             .expect("plan");
         assert_eq!(plan.status, ExecutionPlanStatus::Planned);
+        assert!(plan.approved_project_manifest.is_none());
+
         let approved = service.approve_plan(&plan.id).expect("approve");
         assert_eq!(approved.status, ExecutionPlanStatus::Approved);
+        let manifest = approved
+            .approved_project_manifest
+            .as_ref()
+            .expect("approval manifest");
+        assert_eq!(manifest.sha256.len(), 64);
+        assert_eq!(manifest.file_count, 2);
+        assert!(manifest.directory_count >= 1);
         assert_eq!(approved.provenance["tests_executed"], false);
+        assert_eq!(
+            approved.provenance["approved_project_manifest"]["sha256"].as_str(),
+            Some(manifest.sha256.as_str())
+        );
+        let execution_plan = approved.execution_plan().expect("typed execution plan");
+        assert_eq!(
+            execution_plan.approved_project_manifest_sha256.as_deref(),
+            Some(manifest.sha256.as_str())
+        );
         assert!(!service.availability().execution_enabled);
+
+        fs::write(project.path().join("module.py"), "VALUE = 2\n").expect("mutate dependency");
+        let approved_again = service.approve_plan(&plan.id).expect("already approved");
+        assert_eq!(
+            approved_again.approved_project_manifest,
+            approved.approved_project_manifest
+        );
+
+        let targets = vec!["tests/test_api.py".to_string()];
+        let snapshots = snapshot_execution_inputs(project.path(), &targets).expect("snapshots");
+        let current_workspace = prepare_dependency_complete_workspace(
+            project.path(),
+            std::env::temp_dir(),
+            &snapshots,
+        )
+        .expect("current project mirror");
+        assert_ne!(
+            current_workspace.project_manifest_sha256.as_deref(),
+            Some(manifest.sha256.as_str())
+        );
+        cleanup_detached_workspace(&current_workspace).expect("cleanup current mirror");
+    }
+
+    #[test]
+    fn database_trigger_rejects_approval_without_manifest_binding() {
+        let database = Database::open_in_memory().expect("database");
+        let _project = project(&database);
+        let service = QaExecutionService::new(&database);
+        let plan = service
+            .create_plan_with_capabilities(
+                "project-1",
+                request(),
+                toolchain(),
+                SandboxPolicy::default(),
+                SandboxCapabilities::fully_enforced(),
+            )
+            .expect("plan");
+        let error = database
+            .connection()
+            .execute(
+                "UPDATE qa_execution_plans SET status = 'approved' WHERE id = ?1",
+                params![plan.id],
+            )
+            .expect_err("manifest trigger");
+        assert!(error
+            .to_string()
+            .contains("requires a bound project manifest"));
     }
 }

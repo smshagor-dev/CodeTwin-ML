@@ -15,6 +15,24 @@ pub(crate) fn execute_approved_plan(
     snapshots: &[ExecutionInputSnapshot],
     cancelled: &AtomicBool,
 ) -> Result<RawExecutionOutcome, BackendExecutionError> {
+    let expected_manifest = plan
+        .approved_project_manifest_sha256
+        .as_deref()
+        .ok_or_else(|| {
+            BackendExecutionError::JobSetup(
+                "approved execution plan is missing its project manifest binding".to_string(),
+            )
+        })?;
+    if expected_manifest.len() != 64
+        || !expected_manifest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(BackendExecutionError::JobSetup(
+            "approved project manifest SHA-256 is malformed".to_string(),
+        ));
+    }
+
     let workspace_parent = std::env::temp_dir();
     let workspace =
         prepare_dependency_complete_workspace(project_root, &workspace_parent, snapshots).map_err(
@@ -27,10 +45,21 @@ pub(crate) fn execute_approved_plan(
     let mut guard = ProjectMirrorGuard::new(workspace);
     let workspace = guard.workspace();
 
-    if !workspace.dependency_complete || workspace.project_manifest_sha256.is_none() {
+    if !workspace.dependency_complete {
         return Err(BackendExecutionError::JobSetup(
-            "dependency-complete project mirror did not retain its manifest evidence".to_string(),
+            "dependency-complete project mirror did not retain its completeness evidence"
+                .to_string(),
         ));
+    }
+    let actual_manifest = workspace.project_manifest_sha256.as_deref().ok_or_else(|| {
+        BackendExecutionError::JobSetup(
+            "dependency-complete project mirror did not retain its manifest digest".to_string(),
+        )
+    })?;
+    if actual_manifest != expected_manifest {
+        return Err(BackendExecutionError::JobSetup(format!(
+            "approved project manifest mismatch: expected {expected_manifest}, prepared {actual_manifest}"
+        )));
     }
 
     let identity = probe_restricted_identity(workspace).map_err(|error| {

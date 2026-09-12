@@ -14,6 +14,7 @@ const MIGRATION_0008: &str = include_str!("../migrations/0008_database_analysis.
 const MIGRATION_0009: &str = include_str!("../migrations/0009_runtime_reliability.sql");
 const MIGRATION_0013: &str = include_str!("../migrations/0013_qa_test_discovery.sql");
 const MIGRATION_0014: &str = include_str!("../migrations/0014_qa_test_execution.sql");
+const MIGRATION_0015: &str = include_str!("../migrations/0015_qa_execution_manifest_binding.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -62,6 +63,7 @@ impl Database {
         self.apply_migration(9, MIGRATION_0009)?;
         self.apply_migration(13, MIGRATION_0013)?;
         self.apply_migration(14, MIGRATION_0014)?;
+        self.apply_migration(15, MIGRATION_0015)?;
         Ok(())
     }
 
@@ -113,7 +115,7 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 11);
+        assert_eq!(count, 12);
         let qa_discovery_version: i64 = db
             .connection()
             .query_row(
@@ -132,6 +134,15 @@ mod tests {
             )
             .expect("query QA execution migration");
         assert_eq!(qa_execution_version, 1);
+        let qa_manifest_binding_version: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 15",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query QA manifest binding migration");
+        assert_eq!(qa_manifest_binding_version, 1);
     }
 
     #[test]
@@ -216,6 +227,49 @@ mod tests {
             .expect("run schema");
         assert!(run_sql.contains("'timed_out'"));
         assert!(run_sql.contains("'infrastructure_error'"));
+
+        let mut plan_columns = db
+            .connection()
+            .prepare("PRAGMA table_info(qa_execution_plans)")
+            .expect("plan columns");
+        let plan_columns = plan_columns
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("plan column rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("plan column list");
+        assert!(plan_columns
+            .iter()
+            .any(|name| name == "approved_project_manifest_sha256"));
+        assert!(plan_columns
+            .iter()
+            .any(|name| name == "approved_project_manifest_json"));
+
+        let mut run_columns = db
+            .connection()
+            .prepare("PRAGMA table_info(qa_execution_runs)")
+            .expect("run columns");
+        let run_columns = run_columns
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("run column rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("run column list");
+        assert!(run_columns
+            .iter()
+            .any(|name| name == "project_manifest_sha256"));
+
+        let trigger_count: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (\
+                 'qa_execution_approval_requires_manifest',\
+                 'qa_execution_approved_insert_requires_manifest',\
+                 'qa_execution_approved_manifest_immutable',\
+                 'qa_execution_run_manifest_matches_plan')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("manifest triggers");
+        assert_eq!(trigger_count, 4);
     }
 
     #[test]

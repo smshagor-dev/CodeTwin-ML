@@ -201,6 +201,8 @@ pub struct TestExecutionPlan {
     pub policy: SandboxPolicy,
     pub capabilities: SandboxCapabilities,
     pub command: ExecutionCommand,
+    #[serde(default)]
+    pub approved_project_manifest_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,6 +284,7 @@ pub fn build_execution_plan(
         policy,
         capabilities,
         command,
+        approved_project_manifest_sha256: None,
     })
 }
 
@@ -579,6 +582,7 @@ mod tests {
         assert_eq!(plan.status, ExecutionPlanStatus::Blocked);
         assert_eq!(plan.blocking_reasons.len(), 6);
         assert!(!plan.command.uses_shell);
+        assert!(plan.approved_project_manifest_sha256.is_none());
     }
 
     #[test]
@@ -600,6 +604,7 @@ mod tests {
             vec!["run".to_string(), "src/widget.test.ts".to_string()]
         );
         assert!(!plan.command.uses_shell);
+        assert!(plan.approved_project_manifest_sha256.is_none());
     }
 
     #[test]
