@@ -4,13 +4,11 @@ CodeTwin separates passive QA discovery from repository test execution. Passive 
 
 ## Current implementation status
 
-The foundation implements planning, policy validation, command generation, durable plan persistence, approval state, future run/result schema, output bounding helpers, test-verdict rules, target snapshot hashing, trusted-toolchain hash revalidation, a Windows Job Object constrained-execution backend, detached hash-pinned input staging, and a Windows restricted-identity readiness probe.
+The foundation implements planning, policy validation, command generation, durable plan persistence, approval state, future run/result schema, output bounding helpers, test-verdict rules, target snapshot hashing, trusted-toolchain hash revalidation, Windows Job Object containment, detached hash-pinned input staging, restricted-token/ACL/MIC readiness probing, and a crate-level Windows restricted-process launcher.
 
-The Windows backend creates the runner with `CREATE_SUSPENDED`, assigns the still-suspended process to the configured Job Object, resolves the one initial thread, and resumes it only after assignment succeeds. This removes the earlier interval in which repository code could run before Job Object membership. The backend therefore promotes process-tree containment, CPU limit, memory limit, and cancellation into enforced capability flags.
+The Windows crate-level execution path now derives a `WRITE_RESTRICTED`, low-integrity primary token and launches the exact trusted toolchain through `CreateProcessAsUserW`. The process is created with `CREATE_SUSPENDED`, inherits only an explicit standard-I/O handle list, is assigned to the Job Object before execution, and is resumed directly through the primary thread handle returned by process creation. CPU time, job memory, wall-clock time, output capture, cancellation, trusted-toolchain hashing, and selected-input hashing remain bounded and revalidated.
 
-Detached staging copies only approved, hash-pinned inputs to a generated workspace outside the analyzed repository. The new Windows identity readiness path can create a write-restricted, low-integrity token, apply an explicit workspace ACL/mandatory-integrity contract, impersonate the token, and verify the intended write boundary. This is evidence that the Windows host can establish the security contract; it is **not** execution authority. The actual runner launcher still uses the caller's normal primary token.
-
-Accordingly, the public `QaExecutionService` still reports `execution_enabled = false` and exposes no execute method. `filesystem_isolation` and `network_isolation` remain false, normal strict plans remain `blocked`, and there is no unsandboxed fallback.
+This does **not** enable public test execution. The strict default policy still requires `filesystem_isolation` and `network_isolation`, while both capabilities remain false. The current restricted runner reads project dependencies from the live source tree under a write-restricted/low-integrity identity and redirects common writable temp/cache state into the generated detached workspace, but the workspace is still `dependency_complete = false`. Separate desktop/window-station isolation and adversarial Windows validation are also pending. The public `QaExecutionService` therefore continues to report `execution_enabled = false`, exposes no execute method, and normal strict plans remain `blocked`.
 
 ## Typed runner model
 
@@ -22,63 +20,86 @@ Every request must contain explicit project-relative targets. Absolute paths, pa
 
 The default policy requires process isolation, filesystem/write isolation, network isolation, CPU and memory limits, reliable cancellation, a wall-clock timeout, bounded output and target count, and no inherited host environment.
 
-A `SandboxCapabilities` record describes what a trusted backend actually guarantees. Missing required capabilities make the plan `blocked`. Controls that exist but have not yet been connected to the actual runner must not be promoted into capability flags.
+A `SandboxCapabilities` record describes what a trusted backend actually guarantees. Missing required capabilities make the plan `blocked`. Controls that exist but are not yet strong enough to prove a capability remain visible as limitations rather than being promoted.
 
-## Windows suspended-launch Job Object backend
+## Windows restricted suspended launcher
 
-The Windows execution primitive provides:
+The crate-level Windows execution path performs this sequence:
 
-- Job Object creation and resource policy before launch;
-- `CREATE_SUSPENDED` runner creation;
-- Job Object assignment before the initial thread resumes;
-- fail-closed thread-state verification;
-- kill-on-job-close, job CPU time and job memory limits;
-- bounded wall-clock timeout and explicit cancellation through `TerminateJobObject`;
-- no shell command execution;
-- cleared host environment with a minimal Windows allow-list;
-- bounded stdout/stderr capture and bounded drain wait;
-- trusted runner path and SHA-256 revalidation;
-- exact selected-input SHA-256 revalidation and symlink/root-escape rejection.
+1. canonicalize the project root and revalidate the exact trusted executable SHA-256;
+2. revalidate the selected test-input snapshots;
+3. create a bounded detached workspace outside the repository;
+4. apply the restricted-identity workspace ACL/MIC contract and probe the expected write matrix;
+5. derive a fresh `DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED` low-integrity primary token;
+6. create inherited stdin/stdout/stderr handles, then constrain inheritance with `STARTUPINFOEXW` and `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` so no unrelated inheritable host handles are passed to the child;
+7. provide the trusted executable separately through `lpApplicationName` and construct a writable Unicode command-line buffer for the allow-listed argv;
+8. build a minimal Unicode environment instead of inheriting the host environment;
+9. point `TEMP`, `TMP`, `GOTMPDIR`, Cargo target output, Go cache, npm cache, and generic cache state at the detached workspace;
+10. call `CreateProcessAsUserW` with `CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW`;
+11. assign the returned process handle to the configured Job Object while the primary thread is still suspended;
+12. call `ResumeThread` on the exact primary-thread handle returned by process creation and require an initial suspend count of one;
+13. enter bounded timeout/cancellation/output handling only after assignment and resume succeed;
+14. fail closed and terminate the suspended process/job if setup, assignment, token use, or resume verification fails.
 
-`current_backend_info()` reports `process_isolation`, `cpu_limit`, `memory_limit`, and `cancellation` on Windows. Here `process_isolation` means process-tree containment under the Job Object; it does not mean a reduced Windows security identity or isolated filesystem/network namespace.
+There is intentionally no weaker alternate-logon or normal-token fallback if restricted process creation fails. `CreateProcessAsUserW` privilege or access failures are infrastructure failures.
+
+The explicit application path avoids executable-name ambiguity. The child receives only stdin/stdout/stderr handles; stdout/stderr parent read handles are explicitly marked non-inheritable. This is stricter than generic `bInheritHandles = TRUE` inheritance.
+
+## Current capability truth
+
+`current_backend_info()` continues to report `process_isolation`, `cpu_limit`, `memory_limit`, and `cancellation` on Windows. `process_isolation` still means process-tree containment under the Job Object. The restricted primary token is now an additional enforced launcher control, but `filesystem_isolation` is intentionally still false because:
+
+- execution still reads dependencies/configuration from the live source tree rather than a dependency-complete detached root;
+- the detached workspace records `dependency_complete = false`;
+- source write denial has not yet been exercised by adversarial Windows integration tests in CI;
+- the restricted runner still shares the caller desktop/window station;
+- the current write-boundary probes cover the source root and staged inputs but do not yet constitute an exhaustive proof over every possible host filesystem object.
+
+`network_isolation` is also false because no OS-level network denial mechanism is enforced yet.
 
 ## Detached execution workspace
 
 `prepare_detached_workspace` accepts only already snapshotted inputs, revalidates them against the live source tree, and copies them into a generated workspace outside the analyzed repository. The workspace is bounded to 128 inputs and 64 MiB total staged input bytes.
 
-Approved inputs are copied under `inputs/`, rehashed, and marked read-only. Separate `artifacts/` and `temp/` directories are created for future writable execution state. Workspace verification checks canonical containment, copied hashes and sizes, the read-only marker, and the aggregate byte count. Cleanup is restricted to verified CodeTwin-generated workspace roots.
+Approved inputs are copied under `inputs/`, rehashed, and marked read-only. Separate `artifacts/` and `temp/` directories are created for writable execution state. Workspace verification checks canonical containment, copied hashes and sizes, the read-only marker, and the aggregate byte count. Cleanup is restricted to verified CodeTwin-generated workspace roots.
 
-The workspace deliberately records `dependency_complete = false`. It does not yet copy the complete import/config/build/runtime dependency closure required by arbitrary Pytest, Cargo, Go, Vitest, Jest, or PHPUnit runs, so it is not yet a general execution root.
+The restricted launcher currently uses the live source tree as its working directory so project imports/configuration remain resolvable while the token prevents the write accesses covered by the verified contract. Common temporary/build caches are redirected into `artifacts/` or `temp/`. This is an intermediate compatibility step, not the final filesystem sandbox design.
 
-## Windows restricted-identity readiness
+## Windows restricted identity
 
-`probe_restricted_identity` is a security-readiness check for a verified detached workspace. On Windows it:
+The Windows identity layer:
 
-1. opens the current process token only for the access needed to derive a restricted token;
-2. creates a token with `DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED`;
-3. adds `WinWriteRestrictedCodeSid` as the restricting SID and verifies that the resulting token is restricted;
-4. assigns the token a low mandatory-integrity label;
-5. preserves existing workspace DACLs while granting the restricting SID read/execute access to the workspace root and staged inputs, and read/write/execute access to `artifacts/` and `temp/`;
-6. applies a low-integrity mandatory label to the generated workspace tree;
-7. temporarily impersonates the restricted token and performs real Windows access probes;
-8. requires source-repository-root write access to be denied;
-9. requires staged-input write access to be denied;
-10. requires `artifacts/` and `temp/` write access to be allowed;
-11. reverts impersonation before returning any evidence.
+- opens the current process token only for the access needed to derive a restricted token;
+- creates a restricted token with `DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED`;
+- uses `WinWriteRestrictedCodeSid` as the restricting SID and verifies that the token is restricted;
+- applies a low mandatory-integrity label;
+- preserves existing generated-workspace DACLs while adding restricting-SID ACEs;
+- grants read/execute to workspace root and staged inputs and read/write/execute to `artifacts/` and `temp/`;
+- applies low-integrity mandatory labels to the generated workspace tree;
+- impersonates a restricted token for non-mutating access probes;
+- requires source-root mutation-capable rights and staged-input mutation rights to be denied;
+- requires artifact/temp writable rights to be allowed;
+- always reverts impersonation before returning evidence.
 
-The source repository's ACL is not modified. The write restriction comes from the token's restricting SID plus mandatory-integrity policy. If any access result differs from the expected contract, the probe fails closed.
-
-This readiness evidence explicitly reports `executor_uses_restricted_token = false`, `filesystem_isolation_promoted = false`, and `network_isolation_enforced = false`. The production execution primitive still launches through the existing normal-token `Command` path, so a successful probe must not be interpreted as sandboxed execution.
+The source repository ACL is not modified. A second freshly derived token using the same restricted-token construction is used by the actual Windows launcher after the readiness probe succeeds.
 
 ## Suspended-process ordering
 
-The current process-containment ordering is security-significant: configure Job Object, construct direct executable/argv, request `CREATE_SUSPENDED`, assign the returned process to the Job Object, prove one suspended initial thread, resume exactly once, then enter timeout/cancellation/result handling. Assignment or thread-state failure terminates the process/job instead of permitting execution outside containment.
+The current restricted launcher no longer needs ToolHelp enumeration to find the initial thread. `CreateProcessAsUserW` returns the primary thread handle directly. CodeTwin therefore creates the process suspended, assigns the returned process handle to the Job Object, resumes the exact returned primary thread, and requires the prior suspend count to equal one. This removes an unnecessary enumeration step and keeps the pre-execution ordering explicit.
+
+The older Job Object primitive remains internal implementation history, but the crate-level Windows `execute_approved_plan` routing now selects the restricted launcher when execution eventually becomes eligible under the strict capability floor.
+
+## Environment and output boundary
+
+The launcher does not inherit the host environment. It carries forward only required Windows system-root values and explicit CodeTwin/test controls. Writable state is redirected where supported: `TEMP`, `TMP`, `GOTMPDIR`, `CARGO_TARGET_DIR`, `GOCACHE`, `NPM_CONFIG_CACHE`, and `XDG_CACHE_HOME` point inside the detached workspace. Python user-site imports and bytecode writes are disabled, `NO_COLOR` is set, and `CI=1` is supplied.
+
+Output is captured through separate stdout/stderr pipes with independent byte budgets. Reader threads retain original byte counts and truncation state. A bounded post-process drain timeout converts stuck output inheritance into an infrastructure error instead of hanging or claiming a clean result.
 
 ## Execution input and runner integrity
 
 Execution inputs can be snapshotted with `snapshot_execution_inputs`. Each selected test target must resolve to a regular, non-symlink file inside the canonical project root and is limited to 8 MiB. The snapshot stores relative path, byte size, and SHA-256. `verify_execution_inputs` requires the execution-time target set and bytes to match exactly.
 
-The runner itself must be an absolute, regular, non-symlink executable outside the analyzed repository with a 64-hex-character SHA-256 pinned in the trusted toolchain record. The executable is hashed again immediately before launch.
+The runner itself must be an absolute, regular, non-symlink executable outside the analyzed repository with a 64-hex-character SHA-256 pinned in the trusted toolchain record. The executable is hashed again immediately before restricted launch. The exact executable path is also passed via `lpApplicationName` instead of relying on search-path parsing.
 
 ## Durable state and truth rules
 
@@ -88,12 +109,14 @@ Planning provenance records that repository commands, package scripts, and tests
 
 ## Next sandbox hardening steps
 
-Before filesystem isolation can be promoted, the restricted token and workspace contract must be wired into the **actual** Windows launcher while preserving suspended creation, pre-resume Job Object assignment, trusted toolchain provenance, sanitized environment, stdio capture, timeout, cancellation, and failure cleanup. The detached workspace must also become dependency-complete for the selected runner without falling back to the live source repository.
+The next Windows filesystem slice should replace live-source dependency reads with a dependency-complete, bounded execution snapshot/closure or another stronger isolated-root mechanism. It must preserve trusted toolchain provenance and exact target hashes while keeping only approved writable state under `artifacts/` and `temp/`.
 
-After that, adversarial integration tests must prove source-tree write denial, staged-input immutability, writable artifact/temp scope, process-tree containment, resource limits, cancellation, and escape resistance. Network isolation remains an independent strict blocker and must be implemented and verified before public repository execution can be enabled.
+A separate restricted desktop/window station or equivalent UI isolation should be added before public execution, because restricted-token guidance warns against running untrusted restricted applications on the caller's default desktop.
 
-Linux and macOS backends remain future work.
+After that, adversarial Windows integration tests must prove source-tree write denial, staged-input immutability, artifact/temp writability, explicit handle inheritance, process-tree containment, cancellation, CPU/memory limits, timeout behavior, command-line quoting, token restrictions, and failure cleanup. Only after those tests pass should `filesystem_isolation` be considered for promotion.
+
+Network isolation remains an independent strict blocker and must be implemented and verified before public repository execution can be enabled. Linux and macOS backends remain future work.
 
 ## Security boundary
 
-The planner treats repository metadata and targets as untrusted input. The public desktop/service layer still does not invoke shells, package managers, repository hooks, interpreters, test runners, compilers, browsers, or repository executables. The lower-level Windows execution and identity primitives are intentionally not connected to public execution authority yet. Future wiring must consume only approved typed plans, persist and revalidate input snapshots, preserve exact toolchain provenance, enforce every required sandbox capability, bound logs/results, support cancellation, and report infrastructure failure separately from test failure.
+The planner treats repository metadata and targets as untrusted input. The public desktop/service layer still does not invoke shells, package managers, repository hooks, interpreters, test runners, compilers, browsers, or repository executables. The restricted Windows launcher exists below that public boundary and is unreachable through normal strict plans while required capabilities are missing. Future public wiring must consume only approved typed plans, persist and revalidate input snapshots, preserve exact toolchain provenance, enforce every required sandbox capability, bound logs/results, support cancellation, and report infrastructure failure separately from test failure.
