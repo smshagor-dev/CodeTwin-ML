@@ -3,6 +3,9 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
+#[path = "windows_toolchain_guard.rs"]
+mod toolchain_guard;
+
 use crate::{
     cleanup_detached_workspace, prepare_dependency_complete_workspace, probe_restricted_identity,
     BackendExecutionError, DetachedExecutionWorkspace, ExecutionInputSnapshot, RawExecutionOutcome,
@@ -61,6 +64,9 @@ pub(crate) fn execute_approved_plan(
             "approved project manifest mismatch: expected {expected_manifest}, prepared {actual_manifest}"
         )));
     }
+
+    let _toolchain_guard =
+        toolchain_guard::lock_and_attest_external_read_surface(plan, project_root)?;
 
     let identity = probe_restricted_identity(workspace).map_err(|error| {
         BackendExecutionError::JobSetup(format!("project-mirror restricted identity: {error}"))
