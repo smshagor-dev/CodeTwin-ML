@@ -1,4 +1,5 @@
 mod backend;
+mod external_provenance;
 #[cfg(windows)]
 mod windows_project_mirror;
 #[cfg(windows)]
@@ -9,6 +10,13 @@ pub use backend::{
     snapshot_execution_inputs, verify_execution_inputs, BackendControls, BackendExecutionError,
     ExecutionBackendInfo, ExecutionBackendKind, ExecutionInputSnapshot, RawExecutionOutcome,
     MAX_EXECUTION_INPUT_BYTES,
+};
+pub use external_provenance::{
+    capture_external_read_surface, validate_approved_external_read_surface_shape,
+    validate_declared_external_read_roots, verify_external_read_surface,
+    ApprovedExternalReadSurface, DeclaredExternalReadRoot, ExternalProvenanceError,
+    ExternalReadRootEvidence, ExternalReadRootKind, MAX_EXTERNAL_READ_BYTES,
+    MAX_EXTERNAL_READ_DIRECTORIES, MAX_EXTERNAL_READ_FILES, MAX_EXTERNAL_READ_ROOTS,
 };
 pub use workspace::{
     cleanup_detached_workspace, prepare_dependency_complete_workspace, prepare_detached_workspace,
@@ -107,6 +115,8 @@ pub struct TrustedToolchain {
     pub version: String,
     pub sha256: Option<String>,
     pub trusted_by_user: bool,
+    #[serde(default)]
+    pub declared_external_read_roots: Vec<DeclaredExternalReadRoot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +213,8 @@ pub struct TestExecutionPlan {
     pub command: ExecutionCommand,
     #[serde(default)]
     pub approved_project_manifest_sha256: Option<String>,
+    #[serde(default)]
+    pub approved_external_read_surface: Option<ApprovedExternalReadSurface>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,6 +240,8 @@ pub enum PlanError {
     ToolchainNotTrusted,
     #[error("runner version must not be empty")]
     MissingToolchainVersion,
+    #[error("invalid external read roots: {0}")]
+    InvalidExternalReadRoots(String),
     #[error("invalid sandbox policy: {0}")]
     InvalidPolicy(String),
     #[error("Rust cargo test targets must be conventional tests/*.rs files: {0}")]
@@ -248,7 +262,7 @@ pub fn current_backend_info() -> ExecutionBackendInfo {
         );
         info.limitations.insert(
             1,
-            "project-local dependency completeness does not include external toolchain/package caches and does not imply host-wide read isolation".to_string(),
+            "declared external runtime/toolchain roots can be hash-pinned and re-attested before launch, but undeclared host reads are not denied and the declared trees are not held immutable during execution".to_string(),
         );
         info.limitations.insert(
             2,
@@ -285,6 +299,7 @@ pub fn build_execution_plan(
         capabilities,
         command,
         approved_project_manifest_sha256: None,
+        approved_external_read_surface: None,
     })
 }
 
@@ -400,6 +415,8 @@ fn validate_request(
     if toolchain.version.trim().is_empty() {
         return Err(PlanError::MissingToolchainVersion);
     }
+    validate_declared_external_read_roots(&toolchain.declared_external_read_roots)
+        .map_err(|error| PlanError::InvalidExternalReadRoots(error.to_string()))?;
     validate_policy(policy)
 }
 
@@ -563,6 +580,7 @@ mod tests {
             version: "1.0.0".into(),
             sha256: Some("a".repeat(64)),
             trusted_by_user: true,
+            declared_external_read_roots: Vec::new(),
         }
     }
 
@@ -583,6 +601,7 @@ mod tests {
         assert_eq!(plan.blocking_reasons.len(), 6);
         assert!(!plan.command.uses_shell);
         assert!(plan.approved_project_manifest_sha256.is_none());
+        assert!(plan.approved_external_read_surface.is_none());
     }
 
     #[test]
@@ -605,6 +624,7 @@ mod tests {
         );
         assert!(!plan.command.uses_shell);
         assert!(plan.approved_project_manifest_sha256.is_none());
+        assert!(plan.approved_external_read_surface.is_none());
     }
 
     #[test]
