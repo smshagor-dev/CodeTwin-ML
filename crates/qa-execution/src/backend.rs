@@ -751,6 +751,7 @@ mod tests {
                 version: "3.12".to_string(),
                 sha256: Some("a".repeat(64)),
                 trusted_by_user: true,
+                declared_external_read_roots: Vec::new(),
             },
             SandboxPolicy::default(),
             SandboxCapabilities::planning_only(),
