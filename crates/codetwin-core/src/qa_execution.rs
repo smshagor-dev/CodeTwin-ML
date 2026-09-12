@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ::qa_execution::{
-    build_execution_plan, ExecutionCommand, ExecutionPlanStatus, SandboxCapabilities,
-    SandboxPolicy, TestExecutionRequest, TestRunnerKind, TrustedToolchain,
+    build_execution_plan, current_backend_info, ExecutionCommand, ExecutionPlanStatus,
+    SandboxCapabilities, SandboxPolicy, TestExecutionRequest, TestRunnerKind, TrustedToolchain,
 };
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -68,11 +68,17 @@ impl<'a> QaExecutionService<'a> {
     }
 
     pub fn availability(&self) -> QaExecutionAvailability {
+        let backend = current_backend_info();
+        let reason = if cfg!(windows) {
+            "The Windows Job Object backend now enforces pre-resume process-tree containment, CPU/memory limits, cancellation, timeout, and bounded logs. Public repository test execution remains disabled because filesystem/write and network isolation are not yet enforced."
+        } else {
+            "No OS-specific QA execution backend is enabled on this platform. Plans may be persisted and reviewed, but CodeTwin will not execute repository tests."
+        };
         QaExecutionAvailability {
             execution_enabled: false,
-            backend_kind: "planning_only".to_string(),
-            enforced_capabilities: SandboxCapabilities::planning_only(),
-            reason: "No OS-specific sandbox backend is enabled. Plans may be persisted and reviewed, but CodeTwin will not execute repository tests from this foundation.".to_string(),
+            backend_kind: backend.kind.as_str().to_string(),
+            enforced_capabilities: backend.capabilities,
+            reason: reason.to_string(),
         }
     }
 
@@ -323,8 +329,8 @@ fn bounded(value: usize, maximum: usize) -> i64 {
 #[cfg(test)]
 mod tests {
     use ::qa_execution::{
-        ExecutionPlanStatus, SandboxCapabilities, SandboxPolicy, TestExecutionRequest,
-        TestRunnerKind, TrustedToolchain,
+        current_backend_info, ExecutionPlanStatus, SandboxCapabilities, SandboxPolicy,
+        TestExecutionRequest, TestRunnerKind, TrustedToolchain,
     };
 
     use crate::Database;
@@ -365,10 +371,16 @@ mod tests {
     }
 
     #[test]
-    fn public_planner_uses_only_enforced_planning_backend_capabilities() {
+    fn public_planner_uses_only_enforced_backend_capabilities_and_remains_blocked() {
         let database = Database::open_in_memory().expect("database");
         project(&database);
         let service = QaExecutionService::new(&database);
+        let availability = service.availability();
+        assert_eq!(
+            availability.enforced_capabilities,
+            current_backend_info().capabilities
+        );
+        assert!(!availability.execution_enabled);
         let plan = service
             .create_plan(
                 "project-1",
@@ -383,7 +395,6 @@ mod tests {
             service.approve_plan(&plan.id),
             Err(QaExecutionError::PlanBlocked(_))
         ));
-        assert!(!service.availability().execution_enabled);
     }
 
     #[test]
