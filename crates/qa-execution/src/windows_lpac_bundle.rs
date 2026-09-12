@@ -31,8 +31,8 @@ use windows_sys::Win32::{
 use crate::{
     validate_approved_external_read_surface_shape, ApprovedExternalReadSurface,
     BackendExecutionError, DetachedExecutionWorkspace, ExternalReadRootEvidence,
-    ExternalReadRootKind, TestExecutionPlan, MAX_EXTERNAL_READ_BYTES,
-    MAX_EXTERNAL_READ_DIRECTORIES, MAX_EXTERNAL_READ_FILES,
+    TestExecutionPlan, MAX_EXTERNAL_READ_BYTES, MAX_EXTERNAL_READ_DIRECTORIES,
+    MAX_EXTERNAL_READ_FILES, MAX_EXTERNAL_READ_ROOTS,
 };
 
 const BUNDLE_DIRECTORY_NAME: &str = "lpac-external";
@@ -61,7 +61,11 @@ pub(crate) struct LpacExecutionBundleEvidence {
 impl LpacExecutionBundleEvidence {
     pub(crate) const fn satisfies_readiness_contract(&self) -> bool {
         self.root_count > 0
+            && self.root_count <= MAX_EXTERNAL_READ_ROOTS
             && self.file_count > 0
+            && self.file_count <= MAX_EXTERNAL_READ_FILES as u64
+            && self.directory_count <= MAX_EXTERNAL_READ_DIRECTORIES as u64
+            && self.total_bytes <= MAX_EXTERNAL_READ_BYTES
             && self.approved_roots_verified
             && self.source_stable_during_copy
             && self.destination_manifests_verified
@@ -165,9 +169,11 @@ fn prepare_bundle_inner(
     bundle_root: &Path,
 ) -> Result<LpacExecutionBundle, BackendExecutionError> {
     let runner_source = canonical_regular_file(Path::new(&plan.toolchain.executable_path), "runner")?;
-    let expected_runner_hash = plan.toolchain.sha256.as_deref().ok_or_else(|| {
-        BackendExecutionError::MissingToolchainHash
-    })?;
+    let expected_runner_hash = plan
+        .toolchain
+        .sha256
+        .as_deref()
+        .ok_or(BackendExecutionError::MissingToolchainHash)?;
     if !valid_sha256(expected_runner_hash) {
         return Err(BackendExecutionError::InvalidToolchain(
             "trusted runner SHA-256 must be 64 hexadecimal characters".to_string(),
@@ -194,19 +200,23 @@ fn prepare_bundle_inner(
 
         aggregate_files = aggregate_files
             .checked_add(u64::try_from(source_before.files.len()).unwrap_or(u64::MAX))
-            .ok_or_else(|| BackendExecutionError::JobSetup("LPAC bundle file count overflow".to_string()))?;
+            .ok_or_else(|| {
+                BackendExecutionError::JobSetup("LPAC bundle file count overflow".to_string())
+            })?;
         aggregate_directories = aggregate_directories
             .checked_add(u64::try_from(source_before.directories.len()).unwrap_or(u64::MAX))
-            .ok_or_else(|| BackendExecutionError::JobSetup("LPAC bundle directory count overflow".to_string()))?;
+            .ok_or_else(|| {
+                BackendExecutionError::JobSetup("LPAC bundle directory count overflow".to_string())
+            })?;
         aggregate_bytes = aggregate_bytes
             .checked_add(source_before.total_bytes)
-            .ok_or_else(|| BackendExecutionError::JobSetup("LPAC bundle byte count overflow".to_string()))?;
+            .ok_or_else(|| {
+                BackendExecutionError::JobSetup("LPAC bundle byte count overflow".to_string())
+            })?;
         enforce_aggregate_bounds(aggregate_files, aggregate_directories, aggregate_bytes)?;
 
-        let destination = bundle_root.join(format!(
-            "root-{index:02}-{}",
-            evidence.kind.as_str()
-        ));
+        let destination =
+            bundle_root.join(format!("root-{index:02}-{}", evidence.kind.as_str()));
         fs::create_dir(&destination)?;
         copy_tree(&source_root, &destination, &source_before)?;
 
@@ -623,7 +633,7 @@ fn grant_sid(
     };
     let mut new_dacl: *mut ACL = std::ptr::null_mut();
     let acl_code = unsafe { SetEntriesInAclW(1, &explicit, old_dacl, &mut new_dacl) };
-    if acl_code != ERROR_SUCCESS {
+    if acl_code != ERROR_SUCCESS || new_dacl.is_null() {
         return Err(BackendExecutionError::JobSetup(format!(
             "SetEntriesInAclW({}) returned {acl_code}",
             path.display()
@@ -705,6 +715,7 @@ impl Drop for AppContainerProfileSid {
             unsafe {
                 FreeSid(self.0);
             }
+            self.0 = std::ptr::null_mut();
         }
     }
 }
