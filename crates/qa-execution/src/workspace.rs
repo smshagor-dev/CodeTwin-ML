@@ -13,8 +13,13 @@ use thiserror::Error;
 use crate::{verify_execution_inputs, ExecutionInputSnapshot, MAX_TARGETS};
 
 pub mod identity;
+pub mod project_mirror;
 pub use identity::{
     probe_restricted_identity, RestrictedIdentityError, RestrictedIdentityEvidence,
+};
+pub use project_mirror::{
+    prepare_dependency_complete_workspace, verify_dependency_complete_workspace,
+    MAX_PROJECT_MIRROR_BYTES, MAX_PROJECT_MIRROR_DIRECTORIES, MAX_PROJECT_MIRROR_FILES,
 };
 
 pub const MAX_DETACHED_WORKSPACE_BYTES: u64 = 64 * 1024 * 1024;
@@ -40,6 +45,10 @@ pub struct DetachedExecutionWorkspace {
     pub total_input_bytes: u64,
     pub source_files_read_only: bool,
     pub dependency_complete: bool,
+    #[serde(default)]
+    pub project_directories: Vec<String>,
+    #[serde(default)]
+    pub project_manifest_sha256: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -54,6 +63,18 @@ pub enum WorkspaceError {
     InvalidInputCount,
     #[error("detached workspace input bytes exceed the bounded maximum of {MAX_DETACHED_WORKSPACE_BYTES}")]
     WorkspaceTooLarge,
+    #[error("project mirror exceeds the bounded maximum byte size")]
+    ProjectMirrorTooLarge,
+    #[error("project mirror exceeds the bounded file-count limit")]
+    ProjectFileLimitExceeded,
+    #[error("project mirror exceeds the bounded directory-count limit")]
+    ProjectDirectoryLimitExceeded,
+    #[error("unsupported project filesystem entry: {0}")]
+    UnsupportedProjectEntry(String),
+    #[error("project source snapshot changed: {0}")]
+    ProjectSnapshotChanged(String),
+    #[error("detached project mirror verification failed: {0}")]
+    ProjectMirrorMismatch(String),
     #[error("workspace input snapshot verification failed: {0}")]
     SnapshotVerification(String),
     #[error("workspace copy verification failed: {0}")]
@@ -115,6 +136,8 @@ pub fn prepare_detached_workspace(
             total_input_bytes,
             source_files_read_only: true,
             dependency_complete: false,
+            project_directories: Vec::new(),
+            project_manifest_sha256: None,
         };
         verify_detached_workspace(&workspace)?;
         Ok(workspace)
@@ -129,6 +152,15 @@ pub fn prepare_detached_workspace(
 pub fn verify_detached_workspace(
     workspace: &DetachedExecutionWorkspace,
 ) -> Result<(), WorkspaceError> {
+    if workspace.dependency_complete {
+        return verify_dependency_complete_workspace(workspace);
+    }
+    if !workspace.project_directories.is_empty() || workspace.project_manifest_sha256.is_some() {
+        return Err(WorkspaceError::CopyVerification(
+            "exact-input staging must not carry a project-mirror manifest".to_string(),
+        ));
+    }
+
     let root = fs::canonicalize(&workspace.root_path)?;
     let parent = fs::canonicalize(&workspace.parent_path)?;
     let source = fs::canonicalize(&workspace.source_root)?;
@@ -177,11 +209,6 @@ pub fn verify_detached_workspace(
     if total != workspace.total_input_bytes || total > MAX_DETACHED_WORKSPACE_BYTES {
         return Err(WorkspaceError::CopyVerification(
             "detached workspace byte total changed".to_string(),
-        ));
-    }
-    if workspace.dependency_complete {
-        return Err(WorkspaceError::CopyVerification(
-            "exact-input staging must not claim dependency completeness".to_string(),
         ));
     }
     Ok(())
@@ -258,7 +285,7 @@ fn copy_snapshotted_inputs(
     Ok(files)
 }
 
-fn create_unique_workspace(parent: &Path) -> Result<PathBuf, WorkspaceError> {
+pub(crate) fn create_unique_workspace(parent: &Path) -> Result<PathBuf, WorkspaceError> {
     for attempt in 0..8u32 {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -280,7 +307,10 @@ fn create_unique_workspace(parent: &Path) -> Result<PathBuf, WorkspaceError> {
     )))
 }
 
-fn canonical_directory(path: &Path, source: bool) -> Result<PathBuf, WorkspaceError> {
+pub(crate) fn canonical_directory(
+    path: &Path,
+    source: bool,
+) -> Result<PathBuf, WorkspaceError> {
     let canonical = fs::canonicalize(path).map_err(|error| {
         if source {
             WorkspaceError::InvalidSourceRoot(format!("{}: {error}", path.display()))
@@ -298,13 +328,13 @@ fn canonical_directory(path: &Path, source: bool) -> Result<PathBuf, WorkspaceEr
     Ok(canonical)
 }
 
-fn workspace_name_is_safe(path: &Path) -> bool {
+pub(crate) fn workspace_name_is_safe(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.starts_with(WORKSPACE_PREFIX))
 }
 
-fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
     let mut file = File::open(path)?;
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -323,7 +353,7 @@ fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
     Ok(output)
 }
 
-fn path_text(path: &Path) -> String {
+pub(crate) fn path_text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
@@ -362,6 +392,8 @@ mod tests {
             prepare_detached_workspace(&source, &parent, &snapshots).expect("workspace");
         assert!(!workspace.dependency_complete);
         assert!(workspace.source_files_read_only);
+        assert!(workspace.project_directories.is_empty());
+        assert!(workspace.project_manifest_sha256.is_none());
         verify_detached_workspace(&workspace).expect("verify");
         let staged = std::path::Path::new(&workspace.inputs_path).join("tests/test_api.py");
         assert!(fs::metadata(staged).expect("metadata").permissions().readonly());
