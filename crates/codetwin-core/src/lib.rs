@@ -6,6 +6,7 @@ pub mod impact_analysis;
 pub mod import_resolver;
 pub mod persistent_index;
 pub mod qa_discovery;
+pub mod qa_execution;
 pub mod quality_analysis;
 pub mod query_service;
 pub mod runtime_analysis;
@@ -42,6 +43,9 @@ pub use persistent_index::{IndexServiceError, ProjectIndexService};
 pub use qa_discovery::{
     QaArtifactRecord, QaDiscoveryError, QaDiscoveryRunRecord, QaDiscoveryRunSummary,
     QaDiscoveryService, QaFrameworkSummary,
+};
+pub use qa_execution::{
+    QaExecutionAvailability, QaExecutionError, QaExecutionPlanRecord, QaExecutionService,
 };
 pub use quality_analysis::{
     CodeQualityService, FindingEvidenceRecord, QualityAnalysisError, QualityFindingRecord,
