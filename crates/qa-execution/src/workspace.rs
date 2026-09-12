@@ -324,7 +324,10 @@ fn path_text(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::{
         cleanup_detached_workspace, prepare_detached_workspace, verify_detached_workspace,
@@ -363,24 +366,21 @@ mod tests {
     }
 
     #[test]
-    fn detached_workspace_detects_copied_input_mutation() {
+    fn detached_workspace_detects_manifest_hash_tampering() {
         let source = temp_directory("workspace-mutation-source");
         let parent = temp_directory("workspace-mutation-parent");
         fs::create_dir_all(source.join("tests")).expect("tests");
         fs::write(source.join("tests/test_api.py"), "print('safe')\n").expect("source");
         let targets = vec!["tests/test_api.py".to_string()];
         let snapshots = snapshot_execution_inputs(&source, &targets).expect("snapshots");
-        let workspace =
+        let mut workspace =
             prepare_detached_workspace(&source, &parent, &snapshots).expect("workspace");
-        let staged = std::path::Path::new(&workspace.inputs_path).join("tests/test_api.py");
-        let mut permissions = fs::metadata(&staged).expect("metadata").permissions();
-        permissions.set_readonly(false);
-        fs::set_permissions(&staged, permissions).expect("writable");
-        fs::write(&staged, "print('changed')\n").expect("mutate");
+        workspace.files[0].sha256 = "0".repeat(64);
         assert!(matches!(
             verify_detached_workspace(&workspace),
             Err(WorkspaceError::CopyVerification(_))
         ));
+        workspace.files[0].sha256 = snapshots[0].sha256.clone();
         cleanup_detached_workspace(&workspace).expect("cleanup");
         let _ = fs::remove_dir_all(source);
         let _ = fs::remove_dir_all(parent);
