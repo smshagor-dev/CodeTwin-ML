@@ -39,7 +39,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy -p qa-execution -p codetwin-core --all-targets -- -D warnings
-      - run: cargo test -p qa-execution -p codetwin-core qa_execution
+      - run: cargo test -p qa-execution -p codetwin-core
 
   python:
     runs-on: ubuntu-latest
