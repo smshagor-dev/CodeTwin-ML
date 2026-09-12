@@ -24,12 +24,15 @@ For an approved low-level plan, after project-manifest and declared external-sur
 8. opens the suspended child's token and requires all of the following before accepting readiness evidence:
    - `TokenIsAppContainer` is true;
    - `TokenIsLessPrivilegedAppContainer` is true;
+   - `IsTokenRestricted` is true;
+   - `TokenRestrictedSids` still contains the exact `WinWriteRestrictedCodeSid` restricting SID used by the parent token;
    - the AppContainer SID exactly matches the expected profile SID;
-   - `IsTokenRestricted` remains true;
    - the low-integrity label remains present;
    - `TokenCapabilities` contains zero capability SIDs;
 9. terminates and waits for the still-suspended probe child;
 10. fails closed on any profile, process-creation, token-attestation, termination, or wait error.
+
+The restricted-SID list is returned by Windows as a variable-length `TOKEN_GROUPS` buffer. CodeTwin validates the reported entry count against the returned byte buffer and walks entries from the raw allocation base instead of indexing beyond the SDK's one-element trailing-array declaration. Malformed size/count relationships fail closed.
 
 The probe child receives no repository arguments, is never resumed, and therefore does not execute repository code, package scripts, tests, interpreter initialization, compiler logic, or hooks.
 
