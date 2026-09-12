@@ -1,10 +1,14 @@
-use std::{path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use ::qa_execution::{
     build_execution_plan, cleanup_detached_workspace, current_backend_info,
     prepare_dependency_complete_workspace, snapshot_execution_inputs, ExecutionCommand,
     ExecutionPlanStatus, SandboxCapabilities, SandboxPolicy, TestExecutionPlan,
-    TestExecutionRequest, TestRunnerKind, TrustedToolchain,
+    TestExecutionRequest, TestRunnerKind, TrustedToolchain, MAX_PROJECT_MIRROR_BYTES,
+    MAX_PROJECT_MIRROR_DIRECTORIES, MAX_PROJECT_MIRROR_FILES,
 };
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -77,25 +81,23 @@ pub struct QaExecutionPlanRecord {
 
 impl QaExecutionPlanRecord {
     pub fn execution_plan(&self) -> Result<TestExecutionPlan, QaExecutionError> {
-        let approved_project_manifest_sha256 = match (
-            self.status,
-            self.approved_project_manifest.as_ref(),
-        ) {
-            (ExecutionPlanStatus::Approved, Some(manifest)) => Some(manifest.sha256.clone()),
-            (ExecutionPlanStatus::Approved, None) => {
-                return Err(QaExecutionError::ApprovalManifest(format!(
-                    "approved plan {} has no bound project manifest; recreate and approve the plan",
-                    self.id
-                )))
-            }
-            (_, Some(_)) => {
-                return Err(QaExecutionError::ApprovalManifest(format!(
-                    "non-approved plan {} unexpectedly carries approval manifest evidence",
-                    self.id
-                )))
-            }
-            (_, None) => None,
-        };
+        let approved_project_manifest_sha256 =
+            match (self.status, self.approved_project_manifest.as_ref()) {
+                (ExecutionPlanStatus::Approved, Some(manifest)) => Some(manifest.sha256.clone()),
+                (ExecutionPlanStatus::Approved, None) => {
+                    return Err(QaExecutionError::ApprovalManifest(format!(
+                        "approved plan {} has no bound project manifest; recreate and approve the plan",
+                        self.id
+                    )))
+                }
+                (_, Some(_)) => {
+                    return Err(QaExecutionError::ApprovalManifest(format!(
+                        "non-approved plan {} unexpectedly carries approval manifest evidence",
+                        self.id
+                    )))
+                }
+                (_, None) => None,
+            };
 
         Ok(TestExecutionPlan {
             status: self.status,
@@ -255,12 +257,12 @@ impl<'a> QaExecutionService<'a> {
             return Ok(current);
         }
         if current.status == ExecutionPlanStatus::Approved
-            && current.approved_project_manifest.is_some()
+            && current.approved_project_manifest.as_ref() == Some(&manifest)
         {
             return Ok(current);
         }
         Err(QaExecutionError::ApprovalManifest(format!(
-            "plan {plan_id} changed while approval evidence was being captured"
+            "plan {plan_id} changed or a different project manifest won a concurrent approval"
         )))
     }
 
@@ -315,11 +317,8 @@ impl<'a> QaExecutionService<'a> {
             &snapshots,
         )?;
 
-        let evidence = match workspace.project_manifest_sha256.as_deref() {
-            Some(sha256)
-                if sha256.len() == 64
-                    && sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
-            {
+        let evidence = if let Some(sha256) = workspace.project_manifest_sha256.as_deref() {
+            if valid_sha256(sha256) {
                 Ok(QaExecutionProjectManifest {
                     sha256: sha256.to_string(),
                     file_count: u64::try_from(workspace.files.len()).unwrap_or(u64::MAX),
@@ -327,10 +326,15 @@ impl<'a> QaExecutionService<'a> {
                         .unwrap_or(u64::MAX),
                     total_bytes: workspace.total_input_bytes,
                 })
+            } else {
+                Err(QaExecutionError::ApprovalManifest(
+                    "prepared project mirror exposed a malformed SHA-256 manifest".to_string(),
+                ))
             }
-            _ => Err(QaExecutionError::ApprovalManifest(
-                "prepared project mirror did not expose a valid SHA-256 manifest".to_string(),
-            )),
+        } else {
+            Err(QaExecutionError::ApprovalManifest(
+                "prepared project mirror did not expose a SHA-256 manifest".to_string(),
+            ))
         };
 
         cleanup_detached_workspace(&workspace)?;
@@ -430,9 +434,15 @@ fn parse_optional_manifest(
         (None, None) => Ok(None),
         (Some(sha256), Some(text)) => {
             let manifest: QaExecutionProjectManifest = parse_json(&text, index)?;
+            let file_limit = u64::try_from(MAX_PROJECT_MIRROR_FILES).unwrap_or(u64::MAX);
+            let directory_limit =
+                u64::try_from(MAX_PROJECT_MIRROR_DIRECTORIES).unwrap_or(u64::MAX);
             if manifest.sha256 != sha256
-                || sha256.len() != 64
-                || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || !valid_sha256(&sha256)
+                || manifest.file_count == 0
+                || manifest.file_count > file_limit
+                || manifest.directory_count > directory_limit
+                || manifest.total_bytes > MAX_PROJECT_MIRROR_BYTES
             {
                 return invalid_manifest(index);
             }
@@ -440,6 +450,10 @@ fn parse_optional_manifest(
         }
         _ => invalid_manifest(index),
     }
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn invalid_manifest<T>(index: usize) -> Result<T, rusqlite::Error> {
@@ -621,8 +635,8 @@ mod tests {
         assert!(manifest.directory_count >= 1);
         assert_eq!(approved.provenance["tests_executed"], false);
         assert_eq!(
-            approved.provenance["approved_project_manifest"]["sha256"],
-            manifest.sha256
+            approved.provenance["approved_project_manifest"]["sha256"].as_str(),
+            Some(manifest.sha256.as_str())
         );
         let execution_plan = approved.execution_plan().expect("typed execution plan");
         assert_eq!(
