@@ -277,6 +277,10 @@ fn probe_windows_restricted_identity(
     workspace: &DetachedExecutionWorkspace,
 ) -> Result<RestrictedIdentityEvidence, RestrictedIdentityError> {
     use std::path::Path;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA, FILE_DELETE_CHILD,
+        FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, WRITE_DAC, WRITE_OWNER,
+    };
 
     let token = create_windows_write_restricted_token()?;
     let mut restricting_sid = windows_write_restricted_sid()?;
@@ -296,14 +300,49 @@ fn probe_windows_restricted_identity(
         )));
     }
 
+    let directory_mutation_rights = [
+        FILE_ADD_FILE,
+        FILE_ADD_SUBDIRECTORY,
+        FILE_WRITE_ATTRIBUTES,
+        FILE_WRITE_EA,
+        FILE_DELETE_CHILD,
+        DELETE,
+        WRITE_DAC,
+        WRITE_OWNER,
+    ];
+    let file_mutation_rights = [
+        FILE_WRITE_DATA,
+        FILE_APPEND_DATA,
+        FILE_WRITE_ATTRIBUTES,
+        FILE_WRITE_EA,
+        DELETE,
+        WRITE_DAC,
+        WRITE_OWNER,
+    ];
+    let workspace_write_rights = FILE_ADD_FILE
+        | FILE_ADD_SUBDIRECTORY
+        | FILE_WRITE_ATTRIBUTES
+        | FILE_WRITE_EA
+        | FILE_DELETE_CHILD;
+
     let access_result = (|| {
-        let source_root_write = directory_write_access(source_root)?;
-        let inputs_write = directory_write_access(inputs)?;
-        let artifacts_write = directory_write_access(artifacts)?;
-        let temp_write = directory_write_access(temp)?;
+        let source_root_write =
+            path_has_any_access(source_root, &directory_mutation_rights, true)?;
+        let inputs_directory_write =
+            path_has_any_access(inputs, &directory_mutation_rights, true)?;
+        let mut staged_input_write = false;
+        for file in &workspace.files {
+            let staged = inputs.join(&file.relative_path);
+            if path_has_any_access(&staged, &file_mutation_rights, false)? {
+                staged_input_write = true;
+                break;
+            }
+        }
+        let artifacts_write = path_has_access(artifacts, workspace_write_rights, true)?;
+        let temp_write = path_has_access(temp, workspace_write_rights, true)?;
         Ok::<_, RestrictedIdentityError>((
             source_root_write,
-            inputs_write,
+            inputs_directory_write || staged_input_write,
             artifacts_write,
             temp_write,
         ))
@@ -381,7 +420,7 @@ fn apply_workspace_security_contract(
 ) -> Result<(), RestrictedIdentityError> {
     use std::path::Path;
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+        DELETE, FILE_DELETE_CHILD, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
     };
 
     let root = Path::new(&workspace.root_path);
@@ -404,13 +443,21 @@ fn apply_workspace_security_contract(
     grant_restricted_sid(
         artifacts,
         restricting_sid,
-        FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE,
+        FILE_GENERIC_READ
+            | FILE_GENERIC_WRITE
+            | FILE_GENERIC_EXECUTE
+            | FILE_DELETE_CHILD
+            | DELETE,
         true,
     )?;
     grant_restricted_sid(
         temp,
         restricting_sid,
-        FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE,
+        FILE_GENERIC_READ
+            | FILE_GENERIC_WRITE
+            | FILE_GENERIC_EXECUTE
+            | FILE_DELETE_CHILD
+            | DELETE,
         true,
     )?;
 
@@ -644,15 +691,31 @@ fn apply_low_integrity_label(
 }
 
 #[cfg(windows)]
-fn directory_write_access(
+fn path_has_any_access(
     path: &std::path::Path,
+    rights: &[u32],
+    directory: bool,
+) -> Result<bool, RestrictedIdentityError> {
+    for right in rights {
+        if path_has_access(path, *right, directory)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(windows)]
+fn path_has_access(
+    path: &std::path::Path,
+    desired_access: u32,
+    directory: bool,
 ) -> Result<bool, RestrictedIdentityError> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::{
         Foundation::{CloseHandle, ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE},
         Storage::FileSystem::{
-            CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_WRITE, FILE_SHARE_DELETE,
-            FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+            CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, OPEN_EXISTING,
         },
     };
 
@@ -661,14 +724,19 @@ fn directory_write_access(
         .encode_wide()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
+    let flags = if directory {
+        FILE_FLAG_BACKUP_SEMANTICS
+    } else {
+        0
+    };
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
-            FILE_GENERIC_WRITE,
+            desired_access,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             std::ptr::null(),
             OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
+            flags,
             std::ptr::null_mut(),
         )
     };
