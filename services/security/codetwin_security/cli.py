@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .analyzer import scan_repository
+from .combined import scan_repository
 
 SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
