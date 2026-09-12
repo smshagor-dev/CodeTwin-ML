@@ -4,7 +4,7 @@ CodeTwin separates passive QA discovery from repository test execution. Reposito
 
 ## Current implementation status
 
-The QA execution foundation implements typed planning, policy validation, direct argument-vector command generation, durable plan persistence, bounded output helpers, selected-target snapshot hashing, a bounded full-project detached mirror, approval-bound project manifests, approval-bound declared external-runtime provenance, exact trusted-runner launch locking, Windows Job Object containment, write-restricted low-integrity primary-token launch, explicit inherited-handle control, bounded resource controls, and cancellation.
+The QA execution foundation implements typed planning, policy validation, direct argument-vector command generation, durable plan persistence, bounded output helpers, selected-target snapshot hashing, a bounded full-project detached mirror, approval-bound project manifests, approval-bound declared external-runtime provenance, exact trusted-runner launch locking, Windows Job Object containment, write-restricted low-integrity primary-token launch, explicit inherited-handle control, bounded resource controls, cancellation, and a never-resumed zero-capability LPAC launch-readiness probe.
 
 The public `QaExecutionService` still reports `execution_enabled = false` and exposes no execute method. `filesystem_isolation` and `network_isolation` remain false. Normal strict plans therefore remain blocked and there is no unsandboxed fallback.
 
@@ -102,9 +102,28 @@ Before entering the lower restricted launcher, Windows execution:
 
 The lower launcher retains its independent runner path/hash verification as defense in depth. This stronger handle lifetime currently applies to the exact runner executable, not every file in the declared runtime/toolchain trees.
 
+## Windows zero-capability LPAC readiness
+
+CodeTwin now has a conservative preflight for composing the existing write-restricted low-integrity token with a Less Privileged AppContainer (LPAC) identity. This is readiness evidence only; the resumed production runner is not yet LPAC.
+
+The preflight uses a stable per-user AppContainer profile named `CodeTwinML.QA.RestrictedRunner.V1`. It builds `SECURITY_CAPABILITIES` with the profile package SID and zero capability SIDs, and supplies both `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` and `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` with `PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT`.
+
+The exact trusted executable is created through `CreateProcessAsUserW` with `CREATE_SUSPENDED`. No repository/test arguments are supplied and the primary thread is never resumed. Before accepting readiness, the parent opens the suspended child token and requires:
+
+- `TokenIsAppContainer = true`;
+- `TokenIsLessPrivilegedAppContainer = true`;
+- the token remains restricted;
+- the low-integrity label remains present;
+- the child AppContainer SID equals the expected profile SID;
+- the token has zero capability SIDs.
+
+The child is then terminated and waited for while still suspended. Error paths also terminate/wait the probe child, including an incomplete process/thread-handle pair. Profile creation/derivation, process creation, token inspection, termination or wait failure all fail closed; there is no weaker readiness fallback.
+
+This does **not** mean the declared external read surface is enforced. CodeTwin does not add persistent AppContainer ACEs to arbitrary host Python/Rust/Go/Node/PHP toolchain trees in this phase. The real lower launcher still creates the resumed test process with the existing restricted low-integrity identity, without LPAC attributes. See `WINDOWS_LPAC_READINESS.md` for the detailed boundary and next enforcement design.
+
 ## Windows restricted suspended launcher
 
-The crate-level Windows execution path uses the following ordering:
+The crate-level Windows execution path currently uses the following ordering:
 
 1. require approved project-manifest and external-read-surface evidence;
 2. canonicalize the live project root and revalidate selected target snapshots;
@@ -112,19 +131,20 @@ The crate-level Windows execution path uses the following ordering:
 4. require the fresh project digest to exactly equal the approved project digest;
 5. lock and re-attest the exact trusted runner and validate canonical Windows system-root inputs;
 6. rescan and exactly match the approved declared external read surface;
-7. probe the restricted-identity write matrix;
-8. derive a fresh `DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED` low-integrity primary token;
-9. independently revalidate the runner path and SHA-256 while the outer runner lock remains held;
-10. create only the intended stdin/stdout/stderr handles and restrict inheritance through `STARTUPINFOEXW` plus `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`;
-11. pass the exact trusted executable through `lpApplicationName` and use a writable Unicode command-line buffer for the generated argv;
-12. construct a minimal Unicode environment and redirect supported writable caches/temp state into generated detached directories;
-13. call `CreateProcessAsUserW` with `CREATE_SUSPENDED`;
-14. assign the still-suspended process to the configured Job Object;
-15. resume the exact primary-thread handle returned by process creation and require the prior suspend count to be exactly one;
-16. enforce bounded timeout, cancellation, job CPU/memory controls, and bounded stdout/stderr capture;
-17. close the kill-on-close Job before final output drain/workspace cleanup so surviving descendants cannot extend execution lifetime.
+7. create a never-resumed zero-capability LPAC preflight child, attest its restricted/low-integrity/LPAC token composition, then terminate it;
+8. probe the existing restricted-identity write matrix;
+9. derive a fresh `DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED` low-integrity primary token for the actual resumed runner;
+10. independently revalidate the runner path and SHA-256 while the outer runner lock remains held;
+11. create only the intended stdin/stdout/stderr handles and restrict inheritance through `STARTUPINFOEXW` plus `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`;
+12. pass the exact trusted executable through `lpApplicationName` and use a writable Unicode command-line buffer for the generated argv;
+13. construct a minimal Unicode environment and redirect supported writable caches/temp state into generated detached directories;
+14. call `CreateProcessAsUserW` with `CREATE_SUSPENDED`;
+15. assign the still-suspended process to the configured Job Object;
+16. resume the exact primary-thread handle returned by process creation and require the prior suspend count to be exactly one;
+17. enforce bounded timeout, cancellation, job CPU/memory controls, and bounded stdout/stderr capture;
+18. close the kill-on-close Job before final output drain/workspace cleanup so surviving descendants cannot extend execution lifetime.
 
-There is intentionally no normal-token or alternate-logon fallback when restricted process creation fails.
+There is intentionally no normal-token, non-LPAC-readiness, or alternate-logon fallback when a required preflight/launch step fails.
 
 ## Restricted identity and write boundary
 
@@ -138,30 +158,31 @@ This is a write boundary, not a host-wide read sandbox. A restricted process may
 
 The launcher does not inherit the full host environment or a host `PATH`. Required Windows system-root values are retained only after canonical checks. Writable state is redirected where supported through `TEMP`, `TMP`, `GOTMPDIR`, `CARGO_TARGET_DIR`, `GOCACHE`, `NPM_CONFIG_CACHE`, and `XDG_CACHE_HOME`. Python user-site imports and bytecode writes are disabled; `NO_COLOR` and `CI=1` are supplied.
 
-Only explicit standard-I/O handles are inheritable. The runner is born suspended and receives Job Object membership before its primary thread can execute untrusted user-mode code.
+Only explicit standard-I/O handles are inheritable. The actual test runner is born suspended and receives Job Object membership before its primary thread can execute untrusted user-mode code.
 
-A raw process completion is not automatically a test verdict. Pass/fail requires a completed execution, a completed runner-specific parser and an exit code. Timeout, cancellation, infrastructure/setup failure, project-manifest mismatch, external-surface mismatch, toolchain-attestation failure or incomplete parsing produces no pass/fail claim.
+A raw process completion is not automatically a test verdict. Pass/fail requires a completed execution, a completed runner-specific parser and an exit code. Timeout, cancellation, infrastructure/setup failure, project-manifest mismatch, external-surface mismatch, toolchain-attestation failure, LPAC-readiness failure or incomplete parsing produces no pass/fail claim.
 
 ## Current capability truth
 
 On Windows, `current_backend_info()` can report process-tree containment, CPU limit, memory limit, and cancellation because those controls are enforced by the Job Object path.
 
-`filesystem_isolation` remains false despite the project mirror, restricted identity, runner lock and external provenance because:
+`filesystem_isolation` remains false despite the project mirror, restricted identity, runner lock, external provenance and LPAC readiness because:
 
-- the restricted token is not a host-wide read sandbox;
-- undeclared host reads are not denied;
+- the actual resumed test runner is not yet LPAC;
+- undeclared host reads are not denied by the production execution identity;
 - declared external trees are re-attested before launch but are not held immutable for the complete execution lifetime;
+- no AppContainer package-SID read/execute grants are yet scoped to generated per-run runtime material;
 - the runner still shares the caller desktop/window station;
 - adversarial Windows integration tests have not actually executed in CI.
 
-`network_isolation` remains false because no OS-level network denial mechanism is enforced. Strict plans therefore remain blocked and the public desktop/service layer still has no execute method.
+`network_isolation` also remains false. The zero-capability LPAC preflight provides useful composition evidence, but the real resumed process is not yet that LPAC child and negative network tests have not run. Strict plans therefore remain blocked and the public desktop/service layer still has no execute method.
 
 ## Remaining hardening steps
 
-The next Windows filesystem phase must **enforce** an external read boundary rather than merely attest declared roots. Candidate designs include AppContainer-style identity/capability/file grants or another Windows mechanism that can deny reads outside a narrowly defined set while preserving only the system/runtime access intentionally required by a trusted runner. Any design must be validated against DLL loading, interpreter standard libraries, compiler sysroots, package stores, plugins and child processes rather than assuming declared provenance is enforcement.
+The next Windows filesystem phase must make the **actual resumed runner** the attested LPAC child while preserving suspended creation, Job assignment-before-resume, restricted-token properties and explicit inherited-handle control. Required runtime/toolchain material should preferably be staged into generated per-run locations whose ACL lifecycle CodeTwin owns, then granted narrowly to the AppContainer package SID rather than weakening arbitrary host runtime ACLs.
 
-A restricted desktop/window station or equivalent UI boundary is also pending. Network isolation is an independent strict blocker.
+Runner-specific path translation must prevent Python, Rust, Go, Node and PHP from silently falling back to ambient host stores. Adversarial tests must prove reads outside the generated project/runtime surface are denied. A restricted desktop/window station or equivalent UI boundary is also pending. Network isolation remains independently gated until the actual resumed LPAC child has no network capability and negative network tests pass.
 
-Adversarial Windows tests must cover project-manifest mismatch, external-root drift, undeclared-host-read attempts, runtime mutation races, original-source write denial, mirror immutability, artifact/temp writability, runner replacement attempts, handle inheritance, process-tree containment, cancellation, CPU/memory limits, timeout behavior, command-line quoting, token restrictions and descendant cleanup.
+Adversarial Windows tests must cover project-manifest mismatch, external-root drift, undeclared-host-read attempts, runtime mutation races, original-source write denial, mirror immutability, artifact/temp writability, runner replacement attempts, handle inheritance, process-tree containment, cancellation, CPU/memory limits, timeout behavior, command-line quoting, token restrictions, LPAC token properties, network-denial attempts and descendant cleanup.
 
-Only after end-to-end enforcement and adversarial validation should `filesystem_isolation` be considered for promotion. Public repository execution must remain disabled until all required capability flags are truthfully enforced.
+Only after end-to-end enforcement and adversarial validation should `filesystem_isolation` or `network_isolation` be considered for promotion. Public repository execution must remain disabled until all required capability flags are truthfully enforced.
