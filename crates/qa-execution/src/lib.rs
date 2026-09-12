@@ -1,9 +1,15 @@
 mod backend;
+pub mod workspace;
 
 pub use backend::{
     current_backend_info, snapshot_execution_inputs, verify_execution_inputs, BackendControls,
     BackendExecutionError, ExecutionBackendInfo, ExecutionBackendKind, ExecutionInputSnapshot,
     RawExecutionOutcome, MAX_EXECUTION_INPUT_BYTES,
+};
+pub use workspace::{
+    cleanup_detached_workspace, prepare_detached_workspace, verify_detached_workspace,
+    DetachedExecutionWorkspace, DetachedWorkspaceFile, WorkspaceError,
+    MAX_DETACHED_WORKSPACE_BYTES,
 };
 
 use std::{
