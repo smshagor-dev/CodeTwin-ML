@@ -11,10 +11,10 @@ use windows_sys::Win32::{
     },
     Security::{
         CreateWellKnownSid, EqualSid, FreeSid, GetTokenInformation, IsTokenRestricted, PSID,
-        SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, TOKEN_APPCONTAINER_INFORMATION,
+        SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, TOKEN_APPCONTAINER_INFORMATION, TOKEN_GROUPS,
         TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenAppContainerSid, TokenCapabilities,
         TokenIntegrityLevel, TokenIsAppContainer, TokenIsLessPrivilegedAppContainer,
-        WinLowLabelSid,
+        TokenRestrictedSids, WinLowLabelSid, WinWriteRestrictedCodeSid,
     },
     Security::Isolation::{
         CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
@@ -46,6 +46,7 @@ pub(crate) struct LpacLaunchReadinessEvidence {
     pub child_is_appcontainer: bool,
     pub child_is_lpac: bool,
     pub child_is_restricted: bool,
+    pub write_restricted_sid_present: bool,
     pub child_low_integrity: bool,
     pub package_sid_matches: bool,
     pub capability_count: u32,
@@ -60,6 +61,7 @@ impl LpacLaunchReadinessEvidence {
         self.child_is_appcontainer
             && self.child_is_lpac
             && self.child_is_restricted
+            && self.write_restricted_sid_present
             && self.child_low_integrity
             && self.package_sid_matches
             && self.capability_count == 0
@@ -323,14 +325,17 @@ fn attest_child_token(
     let child_is_appcontainer = token_bool(token.raw(), TokenIsAppContainer)?;
     let child_is_lpac = token_bool(token.raw(), TokenIsLessPrivilegedAppContainer)?;
     let child_is_restricted = unsafe { IsTokenRestricted(token.raw()) } != 0;
+    let write_restricted_sid_present = token_has_restricted_sid(token.raw())?;
     let child_low_integrity = token_has_low_integrity(token.raw())?;
-    let package_sid_matches = token_appcontainer_sid_matches(token.raw(), expected_appcontainer_sid)?;
+    let package_sid_matches =
+        token_appcontainer_sid_matches(token.raw(), expected_appcontainer_sid)?;
     let capability_count = token_capability_count(token.raw())?;
 
     Ok(LpacLaunchReadinessEvidence {
         child_is_appcontainer,
         child_is_lpac,
         child_is_restricted,
+        write_restricted_sid_present,
         child_low_integrity,
         package_sid_matches,
         capability_count,
@@ -379,7 +384,39 @@ fn token_appcontainer_sid_matches(
 
 fn token_capability_count(token: HANDLE) -> Result<u32, BackendExecutionError> {
     let storage = token_information_buffer(token, TokenCapabilities)?;
-    Ok(unsafe { *(storage.as_ptr().cast::<u32>()) })
+    let groups = unsafe { &*(storage.as_ptr().cast::<TOKEN_GROUPS>()) };
+    Ok(groups.GroupCount)
+}
+
+fn token_has_restricted_sid(token: HANDLE) -> Result<bool, BackendExecutionError> {
+    let mut expected = [0u8; SECURITY_MAX_SID_SIZE as usize];
+    let mut expected_len = expected.len() as u32;
+    if unsafe {
+        CreateWellKnownSid(
+            WinWriteRestrictedCodeSid,
+            std::ptr::null_mut(),
+            expected.as_mut_ptr().cast::<c_void>(),
+            &mut expected_len,
+        )
+    } == 0
+    {
+        return Err(BackendExecutionError::JobSetup(format!(
+            "CreateWellKnownSid(WinWriteRestrictedCodeSid): {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    let storage = token_information_buffer(token, TokenRestrictedSids)?;
+    let groups = unsafe { &*(storage.as_ptr().cast::<TOKEN_GROUPS>()) };
+    for index in 0..groups.GroupCount as usize {
+        let entry = unsafe { &*groups.Groups.as_ptr().add(index) };
+        if !entry.Sid.is_null()
+            && unsafe { EqualSid(entry.Sid, expected.as_mut_ptr().cast::<c_void>()) } != 0
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn token_has_low_integrity(token: HANDLE) -> Result<bool, BackendExecutionError> {
