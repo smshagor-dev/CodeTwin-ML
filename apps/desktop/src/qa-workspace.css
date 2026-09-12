@@ -1,0 +1,8 @@
+.qa-artifact-list {
+  max-height: 680px;
+  overflow: auto;
+}
+
+.qa-artifact-list .relationship-item {
+  align-items: flex-start;
+}
