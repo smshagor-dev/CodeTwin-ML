@@ -30,6 +30,12 @@ Migration `0013_qa_test_discovery.sql` adds project-scoped QA artifact records a
 
 A complete rescan can mark disappeared artifact identities inactive. An incomplete scan never uses missing evidence to deactivate prior artifacts.
 
+## Desktop workspace
+
+The desktop QA workspace exposes the passive discovery service through bounded Tauri commands. A user can index a project, trigger a discovery scan, inspect framework summaries, filter test/config evidence, and review discovery history. The workspace labels the boundary explicitly: discovered evidence is not a test execution result and does not imply pass/fail status or code coverage.
+
+The Tauri bridge opens the application-managed SQLite database and calls the existing `QaDiscoveryService`; it does not launch repository processes or interpret package scripts. A process-local concurrency guard prevents overlapping QA discovery scans from the desktop command surface.
+
 ## Bounds and trust boundary
 
 Discovery is read-only and bounded to 50,000 candidate files, 1 MiB per candidate, and traversal depth 16. Known generated/vendor/cache directories are skipped. Symlink candidates, unreadable files, oversized files, non-UTF-8 files, traversal failures, and root escapes make coverage incomplete rather than being treated as absent evidence.
