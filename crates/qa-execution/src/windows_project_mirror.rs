@@ -1,9 +1,12 @@
-use std::{path::{Path, PathBuf}, sync::atomic::AtomicBool};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
+};
 
 use crate::{
-    cleanup_detached_workspace, prepare_dependency_complete_workspace,
-    probe_restricted_identity, BackendExecutionError, DetachedExecutionWorkspace,
-    ExecutionInputSnapshot, RawExecutionOutcome, TestExecutionPlan,
+    cleanup_detached_workspace, prepare_dependency_complete_workspace, probe_restricted_identity,
+    BackendExecutionError, DetachedExecutionWorkspace, ExecutionInputSnapshot, RawExecutionOutcome,
+    TestExecutionPlan,
 };
 
 pub(crate) fn execute_approved_plan(
@@ -13,10 +16,14 @@ pub(crate) fn execute_approved_plan(
     cancelled: &AtomicBool,
 ) -> Result<RawExecutionOutcome, BackendExecutionError> {
     let workspace_parent = std::env::temp_dir();
-    let workspace = prepare_dependency_complete_workspace(project_root, &workspace_parent, snapshots)
-        .map_err(|error| {
-            BackendExecutionError::JobSetup(format!("dependency-complete project mirror: {error}"))
-        })?;
+    let workspace =
+        prepare_dependency_complete_workspace(project_root, &workspace_parent, snapshots).map_err(
+            |error| {
+                BackendExecutionError::JobSetup(format!(
+                    "dependency-complete project mirror: {error}"
+                ))
+            },
+        )?;
     let mut guard = ProjectMirrorGuard::new(workspace);
     let workspace = guard.workspace();
 
@@ -71,7 +78,9 @@ impl ProjectMirrorGuard {
     }
 
     fn workspace(&self) -> &DetachedExecutionWorkspace {
-        self.workspace.as_ref().expect("project mirror guard is active")
+        self.workspace
+            .as_ref()
+            .expect("project mirror guard is active")
     }
 
     fn cleanup(&mut self) -> Result<(), BackendExecutionError> {
