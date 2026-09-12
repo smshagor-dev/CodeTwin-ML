@@ -82,6 +82,22 @@ impl<'a> QaExecutionService<'a> {
         request: TestExecutionRequest,
         toolchain: TrustedToolchain,
         policy: SandboxPolicy,
+    ) -> Result<QaExecutionPlanRecord, QaExecutionError> {
+        self.create_plan_with_capabilities(
+            project_id,
+            request,
+            toolchain,
+            policy,
+            self.availability().enforced_capabilities,
+        )
+    }
+
+    pub(crate) fn create_plan_with_capabilities(
+        &self,
+        project_id: &str,
+        request: TestExecutionRequest,
+        toolchain: TrustedToolchain,
+        policy: SandboxPolicy,
         capabilities: SandboxCapabilities,
     ) -> Result<QaExecutionPlanRecord, QaExecutionError> {
         let project_last_indexed_at = self.project_last_indexed_at(project_id)?;
@@ -175,11 +191,17 @@ impl<'a> QaExecutionService<'a> {
              FROM qa_execution_plans WHERE project_id = ?1\
              ORDER BY created_at DESC, id DESC LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![project_id, bounded(limit, MAX_PLAN_QUERY)], plan_from_row)?;
+        let rows = statement.query_map(
+            params![project_id, bounded(limit, MAX_PLAN_QUERY)],
+            plan_from_row,
+        )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    fn project_last_indexed_at(&self, project_id: &str) -> Result<Option<String>, QaExecutionError> {
+    fn project_last_indexed_at(
+        &self,
+        project_id: &str,
+    ) -> Result<Option<String>, QaExecutionError> {
         self.database
             .connection()
             .query_row(
@@ -343,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn blocked_plan_is_persisted_but_cannot_be_approved() {
+    fn public_planner_uses_only_enforced_planning_backend_capabilities() {
         let database = Database::open_in_memory().expect("database");
         project(&database);
         let service = QaExecutionService::new(&database);
@@ -353,7 +375,6 @@ mod tests {
                 request(),
                 toolchain(),
                 SandboxPolicy::default(),
-                SandboxCapabilities::planning_only(),
             )
             .expect("plan");
         assert_eq!(plan.status, ExecutionPlanStatus::Blocked);
@@ -366,12 +387,12 @@ mod tests {
     }
 
     #[test]
-    fn executable_ready_plan_can_be_approved_without_executing() {
+    fn future_capable_backend_plan_can_be_approved_without_executing() {
         let database = Database::open_in_memory().expect("database");
         project(&database);
         let service = QaExecutionService::new(&database);
         let plan = service
-            .create_plan(
+            .create_plan_with_capabilities(
                 "project-1",
                 request(),
                 toolchain(),

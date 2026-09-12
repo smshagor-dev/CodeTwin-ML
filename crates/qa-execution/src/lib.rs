@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, path::{Component, Path}};
+use std::{
+    collections::BTreeSet,
+    path::{Component, Path},
+};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -396,9 +399,12 @@ fn build_command(
             let mut names = BTreeSet::new();
             for target in &request.targets {
                 let path = Path::new(target);
+                let first_component = path
+                    .components()
+                    .next()
+                    .and_then(|item| item.as_os_str().to_str());
                 if path.extension().and_then(|value| value.to_str()) != Some("rs")
-                    || path.components().next().and_then(|item| item.as_os_str().to_str())
-                        != Some("tests")
+                    || first_component != Some("tests")
                 {
                     return Err(PlanError::InvalidRustTarget(target.clone()));
                 }
@@ -496,7 +502,10 @@ mod tests {
         )
         .expect("plan");
         assert_eq!(plan.status, ExecutionPlanStatus::Planned);
-        assert_eq!(plan.command.args, vec!["run", "src/widget.test.ts"]);
+        assert_eq!(
+            plan.command.args,
+            vec!["run".to_string(), "src/widget.test.ts".to_string()]
+        );
         assert!(!plan.command.uses_shell);
     }
 
@@ -541,10 +550,25 @@ mod tests {
 
     #[test]
     fn verdict_requires_completed_execution_and_parser() {
-        assert_eq!(test_verdict(ExecutionRunStatus::Completed, true, Some(0)), Some(true));
-        assert_eq!(test_verdict(ExecutionRunStatus::Completed, true, Some(1)), Some(false));
-        assert_eq!(test_verdict(ExecutionRunStatus::Completed, false, Some(0)), None);
-        assert_eq!(test_verdict(ExecutionRunStatus::TimedOut, true, Some(1)), None);
-        assert_eq!(test_verdict(ExecutionRunStatus::InfrastructureError, true, Some(1)), None);
+        assert_eq!(
+            test_verdict(ExecutionRunStatus::Completed, true, Some(0)),
+            Some(true)
+        );
+        assert_eq!(
+            test_verdict(ExecutionRunStatus::Completed, true, Some(1)),
+            Some(false)
+        );
+        assert_eq!(
+            test_verdict(ExecutionRunStatus::Completed, false, Some(0)),
+            None
+        );
+        assert_eq!(
+            test_verdict(ExecutionRunStatus::TimedOut, true, Some(1)),
+            None
+        );
+        assert_eq!(
+            test_verdict(ExecutionRunStatus::InfrastructureError, true, Some(1)),
+            None
+        );
     }
 }
