@@ -4,7 +4,7 @@ use thiserror::Error;
 use tree_sitter::{Language, Node, Parser};
 
 pub const ANALYZER_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const RULESET_VERSION: &str = "appsec-source-v1";
+pub const RULESET_VERSION: &str = "appsec-source-v2";
 
 #[derive(Debug, Error)]
 pub enum SecurityAnalyzerError {
@@ -234,6 +234,214 @@ fn inspect_call(
             json!({"callee": callee, "review_required": true}),
         ));
     }
+
+    inspect_web_call(node, source, family, &callee, &base, observations);
+}
+
+fn inspect_web_call(
+    node: Node<'_>,
+    source: &str,
+    family: LanguageFamily,
+    callee: &str,
+    base: &str,
+    observations: &mut Vec<SecurityObservation>,
+) {
+    if !matches!(
+        family,
+        LanguageFamily::TypeScript
+            | LanguageFamily::JavaScript
+            | LanguageFamily::Python
+            | LanguageFamily::Php
+    ) {
+        return;
+    }
+    let Ok(call_text) = node.utf8_text(source.as_bytes()) else {
+        return;
+    };
+    let normalized = call_text.to_ascii_lowercase();
+    let request_controlled = contains_request_input(&normalized);
+
+    let sql_sink = matches!(
+        base,
+        "execute"
+            | "executemany"
+            | "query"
+            | "raw"
+            | "mysqli_query"
+            | "queryrawunsafe"
+            | "executerawunsafe"
+    ) || callee.contains("$queryrawunsafe")
+        || callee.contains("$executerawunsafe");
+
+    if sql_sink && request_controlled {
+        observations.push(observation(
+            "web.sql.request_to_query",
+            "critical",
+            0.99,
+            "Request-controlled data reaches a SQL/ORM query sink",
+            "Request input is used directly inside a database query call. Keep SQL structure fixed and bind every data value through the driver/ORM parameter API. Dynamic identifiers must be mapped through a fixed allow-list rather than concatenated.",
+            "CWE-89",
+            Some("OWASP A03:2021 Injection"),
+            node,
+            callee.to_string(),
+            format!("Request-controlled data reaches database call `{callee}`; query parameterization is required."),
+            json!({
+                "callee": callee,
+                "request_controlled": true,
+                "repository_command_executed": false,
+                "exploit_attempted": false
+            }),
+        ));
+    } else if is_explicitly_unsafe_raw_sql(callee) {
+        observations.push(observation(
+            "web.sql.unsafe_raw_api",
+            "high",
+            0.92,
+            "Explicitly unsafe/raw SQL API requires injection review",
+            "An API intended for raw SQL construction is present. Prefer parameterized/tagged query APIs; if dynamic identifiers are unavoidable, map them from a fixed application allow-list.",
+            "CWE-89",
+            Some("OWASP A03:2021 Injection"),
+            node,
+            callee.to_string(),
+            format!("Raw/unsafe SQL API `{callee}` is used; input provenance and parameterization require review."),
+            json!({"callee": callee, "request_controlled": false, "review_required": true}),
+        ));
+    }
+
+    if sql_sink && request_controlled && contains_sql_identifier_position(&normalized) {
+        observations.push(observation(
+            "web.sql.dynamic_identifier",
+            "high",
+            0.96,
+            "Request-controlled SQL identifier or ordering value",
+            "SQL parameters protect data values, not table/column/order identifiers. Map user choices to fixed known identifiers and reject everything else.",
+            "CWE-89",
+            Some("OWASP A03:2021 Injection"),
+            node,
+            callee.to_string(),
+            "Request-controlled input appears in a SQL identifier/order context; use a strict identifier allow-list.".into(),
+            json!({"callee": callee, "identifier_allowlist_required": true}),
+        ));
+    }
+
+    if is_header_sink(callee, base) && request_controlled {
+        observations.push(observation(
+            "web.header.request_to_response",
+            "high",
+            0.94,
+            "Request-controlled value reaches an HTTP response header",
+            "Reject carriage-return/line-feed characters and prefer fixed or allow-listed header values. Redirect targets should be validated against an explicit destination policy.",
+            "CWE-113",
+            Some("OWASP A03:2021 Injection"),
+            node,
+            callee.to_string(),
+            format!("Request-controlled data reaches response-header call `{callee}`; CR/LF and destination validation are required."),
+            json!({"callee": callee, "request_controlled": true}),
+        ));
+    }
+
+    if is_outbound_http_sink(callee) && request_controlled {
+        observations.push(observation(
+            "web.ssrf.request_url",
+            "high",
+            0.94,
+            "Request-controlled URL reaches an outbound HTTP client",
+            "Allow-list destination schemes and hosts, reject credentials in URLs, and block private, loopback, link-local, and metadata-service address ranges before making outbound requests.",
+            "CWE-918",
+            Some("OWASP A10:2021 Server-Side Request Forgery"),
+            node,
+            callee.to_string(),
+            format!("Request-controlled data reaches outbound HTTP call `{callee}`; destination validation is required."),
+            json!({"callee": callee, "request_controlled": true}),
+        ));
+    }
+
+    if is_process_sink(callee, base) && request_controlled {
+        observations.push(observation(
+            "web.command.request_to_process",
+            "critical",
+            0.97,
+            "Request-controlled value reaches a process execution sink",
+            "Do not pass request data to a shell. Use a fixed executable and fixed argument schema with strict allow-list validation, or remove the execution path.",
+            "CWE-78",
+            Some("OWASP A03:2021 Injection"),
+            node,
+            callee.to_string(),
+            format!("Request-controlled data reaches process call `{callee}`; shell/command injection is possible."),
+            json!({"callee": callee, "request_controlled": true}),
+        ));
+    }
+}
+
+fn contains_request_input(value: &str) -> bool {
+    [
+        "request.args",
+        "request.form",
+        "request.json",
+        "request.values",
+        "request.get",
+        "request.post",
+        "request.query_params",
+        "request.path_params",
+        "req.query",
+        "req.body",
+        "req.params",
+        "ctx.request",
+        "$_get",
+        "$_post",
+        "$_request",
+        "params[",
+        "request[",
+    ]
+    .iter()
+    .any(|needle| value.contains(needle))
+}
+
+fn contains_sql_identifier_position(value: &str) -> bool {
+    [" from ", " join ", " order by ", " group by ", " update ", " into "]
+        .iter()
+        .any(|needle| value.contains(needle))
+}
+
+fn is_explicitly_unsafe_raw_sql(callee: &str) -> bool {
+    callee.contains("$queryrawunsafe")
+        || callee.contains("$executerawunsafe")
+        || callee.ends_with(".raw")
+        || callee.contains("sequelize.literal")
+        || callee.contains("knex.raw")
+}
+
+fn is_header_sink(callee: &str, base: &str) -> bool {
+    matches!(base, "setheader" | "header" | "set")
+        && (callee.contains("res.") || callee.contains("response") || base == "header")
+}
+
+fn is_outbound_http_sink(callee: &str) -> bool {
+    matches!(
+        callee,
+        "requests.get"
+            | "requests.post"
+            | "requests.put"
+            | "requests.delete"
+            | "httpx.get"
+            | "httpx.post"
+            | "httpx.put"
+            | "httpx.delete"
+            | "axios.get"
+            | "axios.post"
+            | "axios.put"
+            | "axios.delete"
+            | "fetch"
+            | "urllib.request.urlopen"
+    )
+}
+
+fn is_process_sink(callee: &str, base: &str) -> bool {
+    matches!(base, "system" | "popen" | "run" | "call" | "check_output" | "exec" | "execsync")
+        && (callee.starts_with("os.")
+            || callee.starts_with("subprocess.")
+            || callee.starts_with("child_process.")
+            || matches!(base, "exec" | "execsync"))
 }
 
 fn is_dynamic_execution_callee(callee: &str, family: LanguageFamily) -> bool {
@@ -530,5 +738,48 @@ mod tests {
             .observations
             .iter()
             .any(|item| item.rule_id == "security.unsafe_c_string_api"));
+    }
+
+    #[test]
+    fn detects_direct_request_to_sql_query() {
+        let result = analyze_source(
+            "Python",
+            "cursor.execute(f\"SELECT * FROM users WHERE id={request.args['id']}\")\n",
+        )
+        .expect("analyze");
+        assert!(result
+            .observations
+            .iter()
+            .any(|item| item.rule_id == "web.sql.request_to_query" && item.cwe == "CWE-89"));
+    }
+
+    #[test]
+    fn does_not_flag_parameterized_sql_without_request_in_sql_text() {
+        let result = analyze_source(
+            "Python",
+            "user_id = request.args['id']\ncursor.execute(\"SELECT * FROM users WHERE id = ?\", (user_id,))\n",
+        )
+        .expect("analyze");
+        assert!(result
+            .observations
+            .iter()
+            .all(|item| item.rule_id != "web.sql.request_to_query"));
+    }
+
+    #[test]
+    fn detects_request_to_header_and_ssrf_sinks() {
+        let js = analyze_source(
+            "JavaScript",
+            "res.setHeader('X-Next', req.query.next);\nfetch(req.query.url);\n",
+        )
+        .expect("analyze");
+        assert!(js
+            .observations
+            .iter()
+            .any(|item| item.rule_id == "web.header.request_to_response"));
+        assert!(js
+            .observations
+            .iter()
+            .any(|item| item.rule_id == "web.ssrf.request_url"));
     }
 }
