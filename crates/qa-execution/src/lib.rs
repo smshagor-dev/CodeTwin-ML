@@ -1,5 +1,7 @@
 mod backend;
 #[cfg(windows)]
+mod windows_project_mirror;
+#[cfg(windows)]
 mod windows_restricted;
 pub mod workspace;
 
@@ -9,9 +11,11 @@ pub use backend::{
     MAX_EXECUTION_INPUT_BYTES,
 };
 pub use workspace::{
-    cleanup_detached_workspace, prepare_detached_workspace, verify_detached_workspace,
-    DetachedExecutionWorkspace, DetachedWorkspaceFile, WorkspaceError,
-    MAX_DETACHED_WORKSPACE_BYTES,
+    cleanup_detached_workspace, prepare_dependency_complete_workspace, prepare_detached_workspace,
+    probe_restricted_identity, verify_dependency_complete_workspace, verify_detached_workspace,
+    DetachedExecutionWorkspace, DetachedWorkspaceFile, RestrictedIdentityError,
+    RestrictedIdentityEvidence, WorkspaceError, MAX_DETACHED_WORKSPACE_BYTES,
+    MAX_PROJECT_MIRROR_BYTES, MAX_PROJECT_MIRROR_DIRECTORIES, MAX_PROJECT_MIRROR_FILES,
 };
 
 use std::{
@@ -234,13 +238,18 @@ pub fn current_backend_info() -> ExecutionBackendInfo {
         let mut info = backend::current_backend_info();
         info.limitations.retain(|item| {
             !item.contains("restricted-token/AppContainer identity isolation is not implemented")
+                && !item.contains("filesystem/write isolation is not implemented")
         });
         info.limitations.insert(
             0,
-            "the crate-level Windows execution path now launches with a WRITE_RESTRICTED low-integrity primary token, explicit stdio handle inheritance, and pre-launch write-boundary probing; filesystem isolation is still not promoted until dependency-complete detached execution and adversarial Windows validation exist".to_string(),
+            "the crate-level Windows execution path now builds a bounded, hash-pinned, project-local dependency-complete mirror and runs from that mirror with a WRITE_RESTRICTED low-integrity primary token; filesystem_isolation remains false until adversarial Windows validation proves the remaining host/desktop escape boundaries".to_string(),
         );
         info.limitations.insert(
             1,
+            "project-local dependency completeness does not include external toolchain/package caches and does not imply host-wide read isolation".to_string(),
+        );
+        info.limitations.insert(
+            2,
             "the restricted runner still shares the caller desktop/window station; separate desktop isolation is pending before public execution".to_string(),
         );
         info
@@ -303,7 +312,7 @@ pub fn execute_approved_plan(
     let project_root = project_root.as_ref();
     #[cfg(windows)]
     {
-        windows_restricted::execute_approved_plan(plan, project_root, snapshots, cancelled)
+        windows_project_mirror::execute_approved_plan(plan, project_root, snapshots, cancelled)
     }
     #[cfg(not(windows))]
     {
