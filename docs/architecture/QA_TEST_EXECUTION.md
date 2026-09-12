@@ -6,7 +6,7 @@ CodeTwin separates passive QA discovery from repository test execution. Passive 
 
 This foundation implements planning, policy validation, command generation, durable plan persistence, approval state, future run/result schema, output bounding helpers, and test-verdict rules. **It does not execute repository tests.** The built-in backend availability is `planning_only` and reports `execution_enabled = false`.
 
-A plan created with the current backend is blocked because CodeTwin does not yet have a portable OS sandbox that can enforce process, filesystem, network, CPU, memory, and cancellation guarantees. There is no unsandboxed fallback.
+A plan created through the current public service is blocked because CodeTwin does not yet have a portable OS sandbox that can enforce process, filesystem, network, CPU, memory, and cancellation guarantees. There is no unsandboxed fallback and callers cannot override the public service's enforced capability set.
 
 ## Typed runner model
 
@@ -38,7 +38,7 @@ The default policy requires all of the following:
 - bounded target count;
 - no inherited host environment.
 
-A `SandboxCapabilities` record describes what the selected backend actually enforces. Missing required capabilities make the plan `blocked`. A fully capable future backend may produce a `planned` plan, which can then move to `approved`; approval still does not imply execution.
+A `SandboxCapabilities` record describes what a trusted backend actually enforces. Missing required capabilities make the plan `blocked`. The public service currently supplies only its own `planning_only` capability set; it does not accept capability claims from an external caller. A fully capable future internal backend may produce a `planned` plan, which can then move to `approved`; approval still does not imply execution.
 
 ## Durable state
 
@@ -48,13 +48,13 @@ Migration `0014_qa_test_execution.sql` adds two tables.
 
 `qa_execution_runs` reserves bounded result persistence for a future executor. Run states are `queued`, `running`, `completed`, `failed`, `timed_out`, `cancelled`, and `infrastructure_error`. It stores bounded stdout/stderr excerpts, original byte counts, truncation flags, exit code, parser completion, optional test verdict, and structured result JSON.
 
-The current service can create, approve, retrieve, and list plans and can query future run records. It deliberately has no execute method and does not create execution runs.
+The current service exposes availability plus plan create, approve, get, and list operations. It deliberately exposes no execute method and does not create or claim execution-run records. The run table is a schema contract for the future sandbox executor rather than evidence that execution already exists.
 
 ## Provenance and truth rules
 
 A plan may reference a completed `qa_discovery` run from the same project. Plan provenance also records the project's last indexed time and explicit facts that repository commands, package scripts, and tests were not executed during planning.
 
-A test verdict is only allowed when the runner process has a `completed` status, the result parser completed, and an exit code exists. Timeout, cancellation, infrastructure errors, failed setup, or incomplete parsing produce no pass/fail claim.
+A test verdict is only allowed when a future runner process has a `completed` status, the result parser completed, and an exit code exists. Timeout, cancellation, infrastructure errors, failed setup, or incomplete parsing produce no pass/fail claim.
 
 Output excerpts are byte-bounded on UTF-8 boundaries and retain the original byte count plus a truncation flag.
 
