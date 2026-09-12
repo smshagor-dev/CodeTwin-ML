@@ -212,14 +212,8 @@ impl Drop for LpacProfileSid {
 struct OwnedHandle(HANDLE);
 
 impl OwnedHandle {
-    fn new(handle: HANDLE, label: &str) -> Result<Self, BackendExecutionError> {
-        if handle.is_null() {
-            Err(BackendExecutionError::JobSetup(format!(
-                "LPAC readiness {label} handle is null"
-            )))
-        } else {
-            Ok(Self(handle))
-        }
+    const fn from_valid(handle: HANDLE) -> Self {
+        Self(handle)
     }
 
     const fn raw(&self) -> HANDLE {
@@ -245,9 +239,27 @@ struct SuspendedProbeChild {
 
 impl SuspendedProbeChild {
     fn new(process: HANDLE, thread: HANDLE) -> Result<Self, BackendExecutionError> {
+        if process.is_null() || thread.is_null() {
+            if !process.is_null() {
+                unsafe {
+                    TerminateProcess(process, 1);
+                    WaitForSingleObject(process, PROBE_TERMINATION_WAIT_MS);
+                    CloseHandle(process);
+                }
+            }
+            if !thread.is_null() {
+                unsafe {
+                    CloseHandle(thread);
+                }
+            }
+            return Err(BackendExecutionError::JobSetup(
+                "CreateProcessAsUserW(LPAC readiness) returned an incomplete process/thread handle pair"
+                    .to_string(),
+            ));
+        }
         Ok(Self {
-            process: OwnedHandle::new(process, "process")?,
-            _thread: OwnedHandle::new(thread, "thread")?,
+            process: OwnedHandle::from_valid(process),
+            _thread: OwnedHandle::from_valid(thread),
             terminated: false,
         })
     }
@@ -304,7 +316,12 @@ fn attest_child_token(
             std::io::Error::last_os_error()
         )));
     }
-    let token = OwnedHandle::new(token, "token")?;
+    if token.is_null() {
+        return Err(BackendExecutionError::JobSetup(
+            "OpenProcessToken(LPAC readiness) returned a null token handle".to_string(),
+        ));
+    }
+    let token = OwnedHandle::from_valid(token);
 
     let child_is_appcontainer = token_bool(token.raw(), TokenIsAppContainer)?;
     let child_is_lpac = token_bool(token.raw(), TokenIsLessPrivilegedAppContainer)?;
