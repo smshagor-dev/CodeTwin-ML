@@ -1,3 +1,11 @@
+mod backend;
+
+pub use backend::{
+    current_backend_info, snapshot_execution_inputs, verify_execution_inputs, BackendControls,
+    BackendExecutionError, ExecutionBackendInfo, ExecutionBackendKind, ExecutionInputSnapshot,
+    RawExecutionOutcome, MAX_EXECUTION_INPUT_BYTES,
+};
+
 use std::{
     collections::BTreeSet,
     path::{Component, Path},
@@ -237,6 +245,32 @@ pub fn build_execution_plan(
     })
 }
 
+pub fn execute_approved_plan(
+    plan: &TestExecutionPlan,
+    project_root: impl AsRef<Path>,
+    snapshots: &[ExecutionInputSnapshot],
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<RawExecutionOutcome, BackendExecutionError> {
+    if !strict_execution_policy(&plan.policy) {
+        return Err(BackendExecutionError::PlanBlocked);
+    }
+    let backend_info = current_backend_info();
+    let rebuilt = build_execution_plan(
+        plan.request.clone(),
+        plan.toolchain.clone(),
+        plan.policy.clone(),
+        backend_info.capabilities.clone(),
+    )
+    .map_err(|error| BackendExecutionError::InvalidToolchain(error.to_string()))?;
+    if rebuilt.command != plan.command || rebuilt.capabilities != plan.capabilities {
+        return Err(BackendExecutionError::CapabilityMismatch);
+    }
+    if !rebuilt.blocking_reasons.is_empty() {
+        return Err(BackendExecutionError::PlanBlocked);
+    }
+    backend::execute_approved_plan(plan, project_root, snapshots, cancelled)
+}
+
 pub fn bound_output(text: &str, max_bytes: usize) -> BoundedOutput {
     let original_bytes = text.len();
     if original_bytes <= max_bytes {
@@ -271,6 +305,16 @@ pub const fn test_verdict(
         Some(code) => Some(code == 0),
         None => None,
     }
+}
+
+fn strict_execution_policy(policy: &SandboxPolicy) -> bool {
+    policy.require_process_isolation
+        && policy.require_filesystem_isolation
+        && policy.require_network_isolation
+        && policy.require_cpu_limit
+        && policy.require_memory_limit
+        && policy.require_cancellation
+        && !policy.inherit_host_environment
 }
 
 fn validate_request(
@@ -451,9 +495,9 @@ fn build_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        bound_output, build_execution_plan, test_verdict, ExecutionPlanStatus, ExecutionRunStatus,
-        PlanError, SandboxCapabilities, SandboxPolicy, TestExecutionRequest, TestRunnerKind,
-        TrustedToolchain,
+        bound_output, build_execution_plan, execute_approved_plan, test_verdict,
+        ExecutionPlanStatus, ExecutionRunStatus, PlanError, SandboxCapabilities, SandboxPolicy,
+        TestExecutionRequest, TestRunnerKind, TrustedToolchain,
     };
 
     fn toolchain(runner: TestRunnerKind) -> TrustedToolchain {
@@ -507,6 +551,36 @@ mod tests {
             vec!["run".to_string(), "src/widget.test.ts".to_string()]
         );
         assert!(!plan.command.uses_shell);
+    }
+
+    #[test]
+    fn relaxed_policy_cannot_bypass_execution_capability_floor() {
+        let mut policy = SandboxPolicy::default();
+        policy.require_process_isolation = false;
+        policy.require_filesystem_isolation = false;
+        policy.require_network_isolation = false;
+        policy.require_cpu_limit = false;
+        policy.require_memory_limit = false;
+        policy.require_cancellation = false;
+        let mut plan = build_execution_plan(
+            TestExecutionRequest {
+                runner: TestRunnerKind::Pytest,
+                targets: vec!["tests/test_api.py".into()],
+                discovery_run_id: None,
+            },
+            toolchain(TestRunnerKind::Pytest),
+            policy,
+            SandboxCapabilities::planning_only(),
+        )
+        .expect("relaxed plan");
+        plan.status = ExecutionPlanStatus::Approved;
+        let result = execute_approved_plan(
+            &plan,
+            ".",
+            &[],
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        assert!(matches!(result, Err(super::BackendExecutionError::PlanBlocked)));
     }
 
     #[test]
