@@ -11,10 +11,11 @@ use windows_sys::Win32::{
     },
     Security::{
         CreateWellKnownSid, EqualSid, FreeSid, GetTokenInformation, IsTokenRestricted, PSID,
-        SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, TOKEN_APPCONTAINER_INFORMATION, TOKEN_GROUPS,
-        TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenAppContainerSid, TokenCapabilities,
-        TokenIntegrityLevel, TokenIsAppContainer, TokenIsLessPrivilegedAppContainer,
-        TokenRestrictedSids, WinLowLabelSid, WinWriteRestrictedCodeSid,
+        SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
+        TOKEN_APPCONTAINER_INFORMATION, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+        TokenAppContainerSid, TokenCapabilities, TokenIntegrityLevel, TokenIsAppContainer,
+        TokenIsLessPrivilegedAppContainer, TokenRestrictedSids, WinLowLabelSid,
+        WinWriteRestrictedCodeSid,
     },
     Security::Isolation::{
         CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
@@ -408,8 +409,36 @@ fn token_has_restricted_sid(token: HANDLE) -> Result<bool, BackendExecutionError
 
     let storage = token_information_buffer(token, TokenRestrictedSids)?;
     let groups = unsafe { &*(storage.as_ptr().cast::<TOKEN_GROUPS>()) };
-    for index in 0..groups.GroupCount as usize {
-        let entry = unsafe { &*groups.Groups.as_ptr().add(index) };
+    let count = groups.GroupCount as usize;
+    let entries_offset = std::mem::offset_of!(TOKEN_GROUPS, Groups);
+    let entries_bytes = count
+        .checked_mul(size_of::<SID_AND_ATTRIBUTES>())
+        .ok_or_else(|| {
+            BackendExecutionError::JobSetup(
+                "TokenRestrictedSids entry-byte count overflowed".to_string(),
+            )
+        })?;
+    let required_bytes = entries_offset.checked_add(entries_bytes).ok_or_else(|| {
+        BackendExecutionError::JobSetup(
+            "TokenRestrictedSids buffer-size calculation overflowed".to_string(),
+        )
+    })?;
+    let available_bytes = storage.len().saturating_mul(size_of::<usize>());
+    if required_bytes > available_bytes {
+        return Err(BackendExecutionError::JobSetup(format!(
+            "TokenRestrictedSids reported {count} entries outside its returned buffer"
+        )));
+    }
+
+    let entries = unsafe {
+        storage
+            .as_ptr()
+            .cast::<u8>()
+            .add(entries_offset)
+            .cast::<SID_AND_ATTRIBUTES>()
+    };
+    for index in 0..count {
+        let entry = unsafe { &*entries.add(index) };
         if !entry.Sid.is_null()
             && unsafe { EqualSid(entry.Sid, expected.as_mut_ptr().cast::<c_void>()) } != 0
         {
