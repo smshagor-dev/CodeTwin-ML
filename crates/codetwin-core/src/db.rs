@@ -12,6 +12,7 @@ const MIGRATION_0006: &str = include_str!("../migrations/0006_code_quality_analy
 const MIGRATION_0007: &str = include_str!("../migrations/0007_security_analysis.sql");
 const MIGRATION_0008: &str = include_str!("../migrations/0008_database_analysis.sql");
 const MIGRATION_0009: &str = include_str!("../migrations/0009_runtime_reliability.sql");
+const MIGRATION_0010: &str = include_str!("../migrations/0010_ml_inference_provenance.sql");
 const MIGRATION_0011: &str = include_str!("../migrations/0011_verified_repair_workflow.sql");
 const MIGRATION_0013: &str = include_str!("../migrations/0013_qa_test_discovery.sql");
 const MIGRATION_0014: &str = include_str!("../migrations/0014_qa_test_execution.sql");
@@ -63,6 +64,7 @@ impl Database {
         self.apply_migration(7, MIGRATION_0007)?;
         self.apply_migration(8, MIGRATION_0008)?;
         self.apply_migration(9, MIGRATION_0009)?;
+        self.apply_migration(10, MIGRATION_0010)?;
         self.apply_migration(11, MIGRATION_0011)?;
         self.apply_migration(13, MIGRATION_0013)?;
         self.apply_migration(14, MIGRATION_0014)?;
@@ -104,12 +106,12 @@ mod tests {
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 26);
+        assert_eq!(count, 28);
     }
 
     #[test]
@@ -119,8 +121,8 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 14);
-        for version in [11i64, 13, 14, 15, 16] {
+        assert_eq!(count, 15);
+        for version in [10i64, 11, 13, 14, 15, 16] {
             let applied: i64 = db
                 .connection()
                 .query_row(
@@ -131,6 +133,24 @@ mod tests {
                 .expect("query migration version");
             assert_eq!(applied, 1);
         }
+    }
+
+    #[test]
+    fn ml_inference_schema_does_not_store_raw_input_text() {
+        let db = Database::open_in_memory().expect("open db");
+        let mut statement = db
+            .connection()
+            .prepare("PRAGMA table_info(ml_inference_records)")
+            .expect("table info");
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("columns")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect columns");
+        assert!(columns.iter().any(|name| name == "input_sha256"));
+        assert!(!columns
+            .iter()
+            .any(|name| name == "input_text" || name == "source_text"));
     }
 
     #[test]
