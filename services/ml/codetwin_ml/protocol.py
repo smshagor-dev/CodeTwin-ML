@@ -15,9 +15,9 @@ from codetwin_ml.datasets import (
 from codetwin_ml.inference import (
     InferenceError,
     plan_inference,
-    run_inference,
     runtime_dependency_status,
 )
+from codetwin_ml.isolated import run_isolated_inference
 from codetwin_ml.models import (
     ModelError,
     install_model,
@@ -169,7 +169,7 @@ def handle_request(request: Request) -> dict[str, Any]:
             action = _string_param(request, "action", required=True)
             return _ok(
                 request,
-                run_inference(
+                run_isolated_inference(
                     action,
                     _text_param(request, "text"),
                     model_id=_string_param(request, "model_id"),

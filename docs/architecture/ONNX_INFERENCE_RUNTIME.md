@@ -46,22 +46,36 @@ The returned confidence is the model's normalized output for that request. It is
 
 ## Runtime restrictions
 
-The production adapter imports `onnx`, `numpy`, and `onnxruntime` only when real inference is requested. Unit tests inject a fake session so the normal Python CI suite can test the contract without downloading those optional dependencies.
+The production adapter imports `onnx`, `numpy`, and `onnxruntime` only when real inference is requested. Unit tests inject a fake session so the normal Python CI suite can test the model I/O contract without downloading those optional dependencies.
 
 Before creating an ONNX Runtime session, CodeTwin parses the model with external data disabled and rejects external tensor references throughout initializers and nested graph attributes. The executable model artifact is limited to 512 MiB. The ONNX Runtime session uses only `CPUExecutionProvider`, sequential execution, one intra-op thread, and one inter-op thread, with spinning disabled. Input and output sizes are bounded and model I/O descriptors are checked against the manifest contract.
 
 Model packages do not provide custom native libraries, Python callbacks, repository commands, or shell hooks through this contract.
 
-## Known limitation
+## Isolated worker boundary
 
-This baseline does not provide a hard process-level memory limit or wall-clock timeout for ONNX execution. A malicious or pathological graph can still consume excessive resources inside the sidecar process despite the model-size, input-size, output-size, provider, and thread limits. A later hardening slice should move inference into an isolated worker process with enforceable timeout/memory policy before untrusted third-party model execution is treated as strongly sandboxed.
+`inference.run` no longer executes an ONNX graph in the long-lived protocol process. The protocol serializes a bounded request and starts a one-request worker with the same trusted Python interpreter using `python -m codetwin_ml.worker`. No shell command is constructed.
+
+The parent process applies a 15-second wall-clock timeout to the worker. A timeout terminates the worker process and returns a structured inference error. Requests are capped at 131,072 bytes and worker responses at 1 MiB.
+
+On POSIX platforms the worker attempts to lower its own resource limits before importing ONNX Runtime:
+
+- CPU time: 10 seconds;
+- address space: 4 GiB when `RLIMIT_AS` is supported;
+- output file size: 16 MiB when `RLIMIT_FSIZE` is supported.
+
+The worker never raises an existing hard resource limit. If a resource constant is unavailable, that specific limit is skipped. These controls reduce the impact of pathological graphs but are not equivalent to a VM, container, seccomp profile, or cross-platform kernel sandbox.
+
+Windows receives the separate worker process and parent wall-clock timeout, but this baseline does not impose a Windows Job Object memory limit. Therefore CodeTwin does **not** describe arbitrary third-party model execution as fully sandboxed.
+
+See `ML_INFERENCE_ISOLATION.md` for the worker protocol and remaining platform limitations.
 
 ## Protocol
 
 The sidecar exposes:
 
 - `inference.plan` to report routing/readiness without running a model, including a distinct `runtime_unavailable` state when optional runtime dependencies are missing;
-- `inference.run` to execute a ready classifier with `action`, `text`, and optional `model_id` / `model_version` selectors;
+- `inference.run` to execute a ready classifier in the isolated worker with `action`, `text`, and optional `model_id` / `model_version` selectors;
 - `capabilities` to advertise only actions backed by an installed execution-ready model **and** available local runtime dependencies.
 
-Missing models, ambiguous model selection, invalid input contracts, model I/O mismatch, dependency absence, and runtime failures return structured errors rather than fabricated predictions.
+Missing models, ambiguous model selection, invalid input contracts, model I/O mismatch, dependency absence, worker timeout, and runtime failures return structured errors rather than fabricated predictions.
