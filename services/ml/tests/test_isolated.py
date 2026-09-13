@@ -51,6 +51,43 @@ class IsolatedInferenceTests(unittest.TestCase):
         self.assertEqual(request["model_id"], "model-a")
         self.assertEqual(request["model_version"], "1.0.0")
 
+    def test_worker_environment_excludes_unrelated_secrets(self) -> None:
+        result = {
+            "action": "security_analysis",
+            "prediction": {"label": "review", "confidence": 0.8},
+        }
+        response = json.dumps({"protocol": 1, "ok": True, "result": result}).encode("utf-8")
+        completed = subprocess.CompletedProcess(
+            args=[sys.executable, "-m", "codetwin_ml.worker"],
+            returncode=0,
+            stdout=response,
+        )
+        model_cache = str(ROOT / "model-cache")
+
+        with patch.dict(
+            "codetwin_ml.isolated.os.environ",
+            {
+                "GITHUB_TOKEN": "github-secret",
+                "AWS_SECRET_ACCESS_KEY": "aws-secret",
+                "DATABASE_URL": "postgres://secret",
+                "CODETWIN_MODEL_CACHE": model_cache,
+                "TEMP": str(ROOT / "tmp"),
+            },
+            clear=True,
+        ), patch("codetwin_ml.isolated.subprocess.run", return_value=completed) as run:
+            run_isolated_inference("security_analysis", "x")
+
+        environment = run.call_args.kwargs["env"]
+        self.assertNotIn("GITHUB_TOKEN", environment)
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", environment)
+        self.assertNotIn("DATABASE_URL", environment)
+        self.assertEqual(environment["CODETWIN_MODEL_CACHE"], model_cache)
+        self.assertEqual(environment["PYTHONPATH"], str(ROOT))
+        self.assertEqual(environment["OMP_NUM_THREADS"], "1")
+        self.assertEqual(environment["OPENBLAS_NUM_THREADS"], "1")
+        self.assertEqual(environment["MKL_NUM_THREADS"], "1")
+        self.assertEqual(environment["NUMEXPR_NUM_THREADS"], "1")
+
     def test_timeout_is_reported_as_runtime_error(self) -> None:
         with patch(
             "codetwin_ml.isolated.subprocess.run",
