@@ -14,9 +14,42 @@ MAX_WORKER_REQUEST_BYTES = 131_072
 MAX_WORKER_RESPONSE_BYTES = 1_048_576
 WORKER_TIMEOUT_SECONDS = 15
 
+_WORKER_ENV_ALLOWLIST = (
+    "SYSTEMROOT",
+    "WINDIR",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "HOME",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "LANG",
+    "LC_ALL",
+    "CODETWIN_MODEL_CACHE",
+)
+
 
 def _sidecar_root() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parents[1]
+
+
+def _worker_environment(root: pathlib.Path) -> dict[str, str]:
+    environment = {
+        key: value
+        for key in _WORKER_ENV_ALLOWLIST
+        if (value := os.environ.get(key))
+    }
+    environment.update(
+        {
+            "PYTHONPATH": str(root),
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+        }
+    )
+    return environment
 
 
 def run_isolated_inference(
@@ -40,8 +73,7 @@ def run_isolated_inference(
         )
 
     root = _sidecar_root()
-    environment = os.environ.copy()
-    environment["PYTHONPATH"] = str(root)
+    environment = _worker_environment(root)
     kwargs: dict[str, Any] = {
         "input": request,
         "stdout": subprocess.PIPE,
