@@ -1,5 +1,7 @@
 mod database_commands;
+mod ml_commands;
 mod qa_commands;
+mod repair_commands;
 mod runtime_commands;
 
 use std::{
@@ -27,9 +29,20 @@ use database_commands::{
     database_history, list_database_artifacts, list_database_evidence, list_database_findings,
     list_database_rules, run_database_analysis,
 };
+use ml_commands::{
+    link_ml_finding, list_ml_finding_links, ml_inference_history, ml_inference_plan, ml_models,
+    ml_sidecar_capabilities, ml_sidecar_health, run_ml_file_inference,
+};
 use project_discovery::ProjectProfile;
 use qa_commands::{
     list_qa_artifacts, list_qa_frameworks, qa_discovery_history, run_qa_discovery,
+};
+use repair_commands::{
+    add_repair_file_replacement, apply_repair_plan, approve_repair_plan, create_repair_plan,
+    list_repair_application_items, list_repair_candidate_findings, list_repair_changes,
+    list_repair_plans, list_repair_verification_items, read_repair_source, reject_repair_plan,
+    repair_application_history, repair_verification_history, rollback_repair_application,
+    verify_repair_plan,
 };
 use runtime_commands::{
     list_runtime_artifacts, list_runtime_evidence, list_runtime_findings, list_runtime_rules,
@@ -44,6 +57,7 @@ struct AppState {
     semantic_running: Arc<AtomicBool>,
     quality_running: Arc<AtomicBool>,
     security_running: Arc<AtomicBool>,
+    ml_running: Arc<AtomicBool>,
 }
 
 fn with_database<T>(
@@ -534,6 +548,7 @@ fn main() {
                 semantic_running: Arc::new(AtomicBool::new(false)),
                 quality_running: Arc::new(AtomicBool::new(false)),
                 security_running: Arc::new(AtomicBool::new(false)),
+                ml_running: Arc::new(AtomicBool::new(false)),
             });
             Ok(())
         })
@@ -590,6 +605,29 @@ fn main() {
             list_qa_artifacts,
             list_qa_frameworks,
             qa_discovery_history,
+            ml_sidecar_health,
+            ml_sidecar_capabilities,
+            ml_models,
+            ml_inference_plan,
+            run_ml_file_inference,
+            ml_inference_history,
+            link_ml_finding,
+            list_ml_finding_links,
+            create_repair_plan,
+            add_repair_file_replacement,
+            approve_repair_plan,
+            reject_repair_plan,
+            verify_repair_plan,
+            list_repair_plans,
+            list_repair_changes,
+            repair_verification_history,
+            list_repair_verification_items,
+            read_repair_source,
+            list_repair_candidate_findings,
+            apply_repair_plan,
+            rollback_repair_application,
+            repair_application_history,
+            list_repair_application_items,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");
