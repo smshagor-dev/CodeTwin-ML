@@ -33,10 +33,11 @@ use qa_commands::{
     list_qa_artifacts, list_qa_frameworks, qa_discovery_history, run_qa_discovery,
 };
 use repair_commands::{
-    add_repair_file_replacement, approve_repair_plan, create_repair_plan,
-    list_repair_candidate_findings, list_repair_changes, list_repair_plans,
-    list_repair_verification_items, read_repair_source, reject_repair_plan,
-    repair_verification_history, verify_repair_plan,
+    add_repair_file_replacement, apply_repair_plan, approve_repair_plan, create_repair_plan,
+    list_repair_application_items, list_repair_candidate_findings, list_repair_changes,
+    list_repair_plans, list_repair_verification_items, read_repair_source,
+    reject_repair_plan, repair_application_history, repair_verification_history,
+    rollback_repair_application, verify_repair_plan,
 };
 use runtime_commands::{
     list_runtime_artifacts, list_runtime_evidence, list_runtime_findings, list_runtime_rules,
@@ -608,6 +609,10 @@ fn main() {
             list_repair_verification_items,
             read_repair_source,
             list_repair_candidate_findings,
+            apply_repair_plan,
+            rollback_repair_application,
+            repair_application_history,
+            list_repair_application_items,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");

@@ -9,6 +9,7 @@ pub mod qa_discovery;
 pub mod qa_execution;
 pub mod quality_analysis;
 pub mod query_service;
+pub mod repair_application;
 pub mod repair_workflow;
 pub mod repair_workspace;
 pub mod runtime_analysis;
@@ -55,6 +56,10 @@ pub use quality_analysis::{
     QualityRuleRecord, QualityRunRecord, QualityRunSummary,
 };
 pub use query_service::{ProjectQueryService, QueryServiceError};
+pub use repair_application::{
+    RepairApplicationError, RepairApplicationItemRecord, RepairApplicationRunRecord,
+    RepairApplicationService,
+};
 pub use repair_workflow::{
     RepairChangeRecord, RepairPlanRecord, RepairVerificationItemRecord,
     RepairVerificationRunRecord, RepairWorkflowError, VerifiedRepairService,
