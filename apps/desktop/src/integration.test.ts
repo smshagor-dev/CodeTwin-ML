@@ -18,5 +18,7 @@ describe("desktop integration surface", () => {
     expect(source).toContain("Evidence unavailable");
     expect(source).not.toContain("catch { return fallback; }");
     expect(source).toContain("Run deterministic analysis");
+    expect(source).toContain("Displayed persisted evidence may be from an earlier successful run.");
+    expect(source).not.toContain("Failed analyzers remain explicitly unavailable/incomplete.");
   });
 });
