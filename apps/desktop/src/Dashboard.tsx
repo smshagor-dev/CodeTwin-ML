@@ -89,7 +89,7 @@ export function Dashboard({ onNavigate }: Props) {
     ]);
     await refresh(projectId);
     const failed = results.filter((item) => item.status === "rejected").length;
-    if (failed) setError(`${failed} deterministic analysis task${failed === 1 ? "" : "s"} failed. Failed analyzers remain explicitly unavailable/incomplete.`);
+    if (failed) setError(`${failed} deterministic analysis task${failed === 1 ? "" : "s"} failed. Displayed persisted evidence may be from an earlier successful run.`);
     setRunning(false);
   }
 
