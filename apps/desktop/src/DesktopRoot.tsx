@@ -1,51 +1,32 @@
 import { useState } from "react";
 import { App } from "./App";
+import { Dashboard, type DashboardDestination } from "./Dashboard";
 import { DatabaseWorkspace } from "./DatabaseWorkspace";
 import { QaWorkspace } from "./QaWorkspace";
 import { RuntimeWorkspace } from "./RuntimeWorkspace";
 import { WebSecurityWorkspace } from "./WebSecurityWorkspace";
+import "./dashboard.css";
 import "./runtime-workspace.css";
 import "./qa-workspace.css";
 
-type Workspace = "engineering" | "security" | "database" | "runtime" | "qa";
+type Workspace = "dashboard" | DashboardDestination;
 
 export function DesktopRoot() {
-  const [workspace, setWorkspace] = useState<Workspace>("engineering");
+  const [workspace, setWorkspace] = useState<Workspace>("dashboard");
 
   return (
     <div className="desktop-root">
-      <nav className="workspace-switcher" aria-label="Desktop workspace switcher">
-        <button
-          className={workspace === "engineering" ? "active" : ""}
-          onClick={() => setWorkspace("engineering")}
-        >
-          Engineering
-        </button>
-        <button
-          className={workspace === "security" ? "active" : ""}
-          onClick={() => setWorkspace("security")}
-        >
-          Security
-        </button>
-        <button
-          className={workspace === "database" ? "active" : ""}
-          onClick={() => setWorkspace("database")}
-        >
-          Database
-        </button>
-        <button
-          className={workspace === "runtime" ? "active" : ""}
-          onClick={() => setWorkspace("runtime")}
-        >
-          Runtime
-        </button>
-        <button
-          className={workspace === "qa" ? "active" : ""}
-          onClick={() => setWorkspace("qa")}
-        >
-          QA
-        </button>
-      </nav>
+      {workspace !== "dashboard" && (
+        <nav className="workspace-switcher" aria-label="Desktop workspace switcher">
+          <button onClick={() => setWorkspace("dashboard")}>Dashboard</button>
+          <button className={workspace === "engineering" ? "active" : ""} onClick={() => setWorkspace("engineering")}>Engineering</button>
+          <button className={workspace === "security" ? "active" : ""} onClick={() => setWorkspace("security")}>Security</button>
+          <button className={workspace === "database" ? "active" : ""} onClick={() => setWorkspace("database")}>Database</button>
+          <button className={workspace === "runtime" ? "active" : ""} onClick={() => setWorkspace("runtime")}>Runtime</button>
+          <button className={workspace === "qa" ? "active" : ""} onClick={() => setWorkspace("qa")}>QA</button>
+        </nav>
+      )}
+      {workspace === "dashboard" && <Dashboard onNavigate={setWorkspace} />}
       {workspace === "engineering" && <App />}
       {workspace === "security" && <WebSecurityWorkspace />}
       {workspace === "database" && <DatabaseWorkspace />}
