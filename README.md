@@ -28,6 +28,7 @@ CodeTwin ML is a local-first engineering intelligence desktop application. It co
 | Sandboxed QA/test execution | Planning/persistence foundation plus Windows suspended Job Object containment, write-restricted low-integrity primary-token launch, explicit stdio handle inheritance, bounded full-project hash-pinned mirroring, approval-bound project manifests, approval-bound declared external runtime/toolchain provenance, exact trusted-runner write/delete lock attestation, source/mirror write probing, resource limits, cancellation, sanitized environment, and bounded logs; public execution remains blocked until undeclared host reads are denied, desktop hardening, network isolation, and adversarial Windows validation are complete |
 | OpenMindAI Dataset catalog + action routing | Implemented foundation |
 | Local ML model package registry + action readiness routing | Implemented foundation with SHA-256/size verification and evaluation provenance |
+| Local ONNX classification inference adapter | Implemented bounded CPU adapter for packages declaring `utf8-bytes-v1`; no model weights are bundled |
 | Runtime telemetry / live process tracing | Planned |
 | Browser QA execution | Planned; passive discovery and execution planning do not imply browser execution |
 | ML inference execution adapters | Planned; registry installation does not imply prediction capability |

@@ -1,6 +1,8 @@
 import json
+import os
 import pathlib
 import sys
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -10,6 +12,18 @@ from codetwin_ml.main import process_line  # noqa: E402
 
 
 class ProtocolTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self._previous_model_cache = os.environ.get("CODETWIN_MODEL_CACHE")
+        os.environ["CODETWIN_MODEL_CACHE"] = str(pathlib.Path(self._temporary.name) / "models")
+
+    def tearDown(self) -> None:
+        if self._previous_model_cache is None:
+            os.environ.pop("CODETWIN_MODEL_CACHE", None)
+        else:
+            os.environ["CODETWIN_MODEL_CACHE"] = self._previous_model_cache
+        self._temporary.cleanup()
+
     def test_health(self) -> None:
         response = process_line(json.dumps({"id": "r1", "method": "health", "params": {}}))
         self.assertTrue(response["ok"])
@@ -25,7 +39,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(response["result"]["inference"], [])
         self.assertEqual(response["result"]["training"], [])
         self.assertTrue(response["result"]["models"]["registry"])
-        self.assertFalse(response["result"]["models"]["execution_implemented"])
+        self.assertTrue(response["result"]["models"]["execution_implemented"])
+        self.assertEqual(response["result"]["models"]["execution_ready"], 0)
         self.assertTrue(response["result"]["datasets"]["downloadable"])
         self.assertIn("repair_verification", response["result"]["datasets"]["actions"])
 
@@ -62,10 +77,10 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "invalid_request")
 
-    def test_model_inventory_is_empty_on_clean_checkout(self) -> None:
+    def test_model_inventory_is_empty_on_clean_cache(self) -> None:
         response = process_line(json.dumps({"id": "r6", "method": "models.list", "params": {}}))
         self.assertTrue(response["ok"])
-        self.assertFalse(response["result"]["execution_implemented"])
+        self.assertTrue(response["result"]["execution_implemented"])
         self.assertEqual(response["result"]["models"], [])
 
     def test_inference_plan_reports_missing_model_without_fabricating_prediction(self) -> None:
@@ -80,7 +95,7 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertTrue(response["ok"])
         self.assertEqual(response["result"]["status"], "model_unavailable")
-        self.assertFalse(response["result"]["execution_implemented"])
+        self.assertTrue(response["result"]["execution_implemented"])
         self.assertEqual(response["result"]["models"], [])
 
     def test_unknown_model_action_returns_structured_error(self) -> None:
@@ -95,6 +110,32 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "model_error")
+
+    def test_inference_run_without_model_returns_structured_error(self) -> None:
+        response = process_line(
+            json.dumps(
+                {
+                    "id": "r9",
+                    "method": "inference.run",
+                    "params": {"action": "security_analysis", "text": "eval(x)"},
+                }
+            )
+        )
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "inference_error")
+
+    def test_inference_run_requires_text_string(self) -> None:
+        response = process_line(
+            json.dumps(
+                {
+                    "id": "r10",
+                    "method": "inference.run",
+                    "params": {"action": "security_analysis", "text": 7},
+                }
+            )
+        )
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "invalid_request")
 
 
 if __name__ == "__main__":

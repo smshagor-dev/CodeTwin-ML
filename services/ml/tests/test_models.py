@@ -16,6 +16,7 @@ from codetwin_ml.models import (  # noqa: E402
     install_model,
     list_models,
     model_status,
+    resolve_model_for_inference,
     route_model,
 )
 
@@ -26,6 +27,7 @@ class ModelRegistryTests(unittest.TestCase):
         root: pathlib.Path,
         *,
         acceptance_required: bool = False,
+        executable: bool = True,
     ) -> pathlib.Path:
         package = root / "package"
         package.mkdir()
@@ -67,6 +69,18 @@ class ModelRegistryTests(unittest.TestCase):
                 "acceptance_required": acceptance_required,
             },
         }
+        if executable:
+            manifest["inference"] = {
+                "preprocessing": {
+                    "kind": "utf8-bytes-v1",
+                    "input_name": "input_ids",
+                    "max_bytes": 32,
+                },
+                "output": {
+                    "name": "logits",
+                    "labels": ["safe", "review"],
+                },
+            }
         (package / "model.json").write_text(json.dumps(manifest), encoding="utf-8")
         return package
 
@@ -76,17 +90,35 @@ class ModelRegistryTests(unittest.TestCase):
             model_root = root / "models"
             installed = install_model(self._package(root), model_root=model_root)
             self.assertTrue(installed["integrity_verified"])
-            self.assertFalse(installed["execution_supported"])
+            self.assertTrue(installed["execution_supported"])
 
             inventory = list_models(model_root=model_root)
             self.assertEqual(len(inventory["models"]), 1)
             self.assertTrue(inventory["models"][0]["ready"])
-            self.assertFalse(inventory["execution_implemented"])
+            self.assertTrue(inventory["execution_implemented"])
 
             route = route_model("security_analysis", model_root=model_root)
             self.assertTrue(route["ready"])
+            self.assertTrue(route["execution_ready"])
             self.assertEqual(route["models"][0]["id"], "openmindai-security-screen-v1")
-            self.assertFalse(route["execution_implemented"])
+            self.assertTrue(route["execution_implemented"])
+
+            model_path, metadata = resolve_model_for_inference(
+                "security_analysis", model_root=model_root
+            )
+            self.assertEqual(model_path.name, "1.0.0")
+            self.assertEqual(metadata["inference"]["output"]["labels"], ["safe", "review"])
+
+    def test_registry_only_package_remains_non_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            model_root = root / "models"
+            install_model(self._package(root, executable=False), model_root=model_root)
+            route = route_model("security_analysis", model_root=model_root)
+            self.assertTrue(route["ready"])
+            self.assertFalse(route["execution_ready"])
+            plan = inference_plan("security_analysis", model_root=model_root)
+            self.assertEqual(plan["status"], "model_ready_execution_pending")
 
     def test_tampered_artifact_is_not_ready(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -100,6 +132,7 @@ class ModelRegistryTests(unittest.TestCase):
             status = model_status("openmindai-security-screen-v1", model_root=model_root)
             self.assertTrue(status["installed"])
             self.assertFalse(status["ready"])
+            self.assertFalse(status["execution_ready"])
 
     def test_package_tamper_is_rejected_before_install(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -122,14 +155,14 @@ class ModelRegistryTests(unittest.TestCase):
             )
             self.assertEqual(installed["license"]["name"], "apache-2.0")
 
-    def test_inference_plan_never_claims_execution_ready(self) -> None:
+    def test_inference_plan_reports_execution_ready_only_for_contract_model(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             model_root = root / "models"
             install_model(self._package(root), model_root=model_root)
             plan = inference_plan("security_analysis", model_root=model_root)
-            self.assertEqual(plan["status"], "model_ready_execution_pending")
-            self.assertFalse(plan["execution_implemented"])
+            self.assertEqual(plan["status"], "ready")
+            self.assertTrue(plan["execution_implemented"])
             self.assertIn("code_security_vulnerability", plan["dataset_provenance"])
 
 

@@ -16,6 +16,10 @@ MODEL_SCHEMA_VERSION = 1
 MODEL_METADATA_FILE = "_codetwin_model.json"
 CHUNK_BYTES = 1024 * 1024
 SUPPORTED_BACKENDS = frozenset({"onnx-classification-v1", "onnx-seq2seq-v1"})
+EXECUTION_BACKENDS = frozenset({"onnx-classification-v1"})
+MAX_EXECUTION_INPUT_BYTES = 65_536
+MAX_EXECUTION_LABELS = 256
+MAX_ONNX_MODEL_BYTES = 512 * 1024 * 1024
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
@@ -103,6 +107,65 @@ def _validate_metrics(value: Any) -> dict[str, float]:
     return result
 
 
+def _validate_inference_contract(value: Any, backend: str, model_size: int) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if backend not in EXECUTION_BACKENDS:
+        raise ModelManifestError(f"backend does not support local execution yet: {backend}")
+    if model_size > MAX_ONNX_MODEL_BYTES:
+        raise ModelManifestError(
+            f"executable ONNX model exceeds the {MAX_ONNX_MODEL_BYTES}-byte limit"
+        )
+    if not isinstance(value, dict):
+        raise ModelManifestError("inference must be an object")
+
+    preprocessing = value.get("preprocessing")
+    output = value.get("output")
+    if not isinstance(preprocessing, dict) or not isinstance(output, dict):
+        raise ModelManifestError("inference requires preprocessing and output objects")
+    if preprocessing.get("kind") != "utf8-bytes-v1":
+        raise ModelManifestError("only utf8-bytes-v1 preprocessing is supported")
+    input_name = preprocessing.get("input_name")
+    max_bytes = preprocessing.get("max_bytes")
+    if not isinstance(input_name, str) or not input_name or len(input_name) > 128:
+        raise ModelManifestError("inference.preprocessing.input_name must be 1-128 characters")
+    if (
+        isinstance(max_bytes, bool)
+        or not isinstance(max_bytes, int)
+        or max_bytes < 1
+        or max_bytes > MAX_EXECUTION_INPUT_BYTES
+    ):
+        raise ModelManifestError(
+            f"inference.preprocessing.max_bytes must be between 1 and {MAX_EXECUTION_INPUT_BYTES}"
+        )
+
+    output_name = output.get("name")
+    labels = output.get("labels")
+    if not isinstance(output_name, str) or not output_name or len(output_name) > 128:
+        raise ModelManifestError("inference.output.name must be 1-128 characters")
+    if (
+        not isinstance(labels, list)
+        or len(labels) < 2
+        or len(labels) > MAX_EXECUTION_LABELS
+        or any(not isinstance(label, str) or not label or len(label) > 128 for label in labels)
+        or len(set(labels)) != len(labels)
+    ):
+        raise ModelManifestError(
+            f"inference.output.labels must contain 2-{MAX_EXECUTION_LABELS} unique labels"
+        )
+    return {
+        "preprocessing": {
+            "kind": "utf8-bytes-v1",
+            "input_name": input_name,
+            "max_bytes": max_bytes,
+        },
+        "output": {
+            "name": output_name,
+            "labels": list(labels),
+        },
+    }
+
+
 def validate_manifest(manifest: Any) -> dict[str, Any]:
     if not isinstance(manifest, dict):
         raise ModelManifestError("model manifest must be an object")
@@ -139,6 +202,7 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
     normalized_artifacts: list[dict[str, Any]] = []
     seen_paths: set[str] = set()
     model_paths: list[str] = []
+    model_size = 0
     for item in artifacts:
         if not isinstance(item, dict):
             raise ModelManifestError("model artifacts must be objects")
@@ -150,14 +214,15 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
         role = item.get("role")
         if not isinstance(role, str) or not role:
             raise ModelManifestError(f"artifact role is required for {path_text}")
-        if role == "model":
-            model_paths.append(path_text)
         size_bytes = item.get("size_bytes")
         sha256 = item.get("sha256")
         if isinstance(size_bytes, bool) or not isinstance(size_bytes, int) or size_bytes < 0:
             raise ModelManifestError(f"invalid artifact size for {path_text}")
         if not isinstance(sha256, str) or not _SHA256_PATTERN.fullmatch(sha256):
             raise ModelManifestError(f"invalid artifact sha256 for {path_text}")
+        if role == "model":
+            model_paths.append(path_text)
+            model_size = size_bytes
         normalized_artifacts.append(
             {"role": role, "path": path_text, "size_bytes": size_bytes, "sha256": sha256}
         )
@@ -165,6 +230,10 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
         raise ModelManifestError("artifacts must contain exactly one role=model entry")
     if backend.startswith("onnx-") and not model_paths[0].lower().endswith(".onnx"):
         raise ModelManifestError("ONNX backends require the role=model artifact to use a .onnx path")
+
+    normalized_inference = _validate_inference_contract(
+        manifest.get("inference"), backend, model_size
+    )
 
     evaluation = manifest.get("evaluation")
     if not isinstance(evaluation, dict) or evaluation.get("status") != "passed":
@@ -228,6 +297,7 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
         "backend": backend,
         "actions": list(actions),
         "artifacts": normalized_artifacts,
+        "inference": normalized_inference,
         "evaluation": {
             "status": "passed",
             "evaluated_at": evaluated_at,
@@ -275,6 +345,12 @@ def _package_digest(manifest: dict[str, Any]) -> str:
     return digest.hexdigest()
 
 
+def _execution_supported(metadata: dict[str, Any]) -> bool:
+    return metadata.get("backend") in EXECUTION_BACKENDS and isinstance(
+        metadata.get("inference"), dict
+    )
+
+
 def _public_model(metadata: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": metadata["id"],
@@ -286,8 +362,9 @@ def _public_model(metadata: dict[str, Any]) -> dict[str, Any]:
         "installed_at": metadata["installed_at"],
         "evaluation": metadata["evaluation"],
         "license": metadata["license"],
+        "inference": metadata.get("inference"),
         "integrity_verified": bool(metadata.get("integrity_verified", False)),
-        "execution_supported": False,
+        "execution_supported": _execution_supported(metadata),
     }
 
 
@@ -365,6 +442,8 @@ def _installed_ready(model_dir: Path, metadata: dict[str, Any]) -> bool:
         manifest = validate_manifest(metadata)
     except ModelError:
         return False
+    if manifest["id"] != model_dir.parent.name or manifest["version"] != model_dir.name:
+        return False
     if metadata.get("package_digest") != _package_digest(manifest):
         return False
     if metadata.get("integrity_verified") is not True:
@@ -380,7 +459,38 @@ def _installed_ready(model_dir: Path, metadata: dict[str, Any]) -> bool:
     return True
 
 
+def _ready_entries(model_root: Path | str | None = None) -> list[tuple[Path, dict[str, Any]]]:
+    root = Path(model_root) if model_root is not None else default_model_root()
+    entries: list[tuple[Path, dict[str, Any]]] = []
+    if not root.is_dir():
+        return entries
+    model_dirs = sorted(
+        (item for item in root.iterdir() if item.is_dir() and not item.is_symlink()),
+        key=lambda path: path.name,
+    )
+    for model_dir in model_dirs:
+        version_dirs = sorted(
+            (item for item in model_dir.iterdir() if item.is_dir() and not item.is_symlink()),
+            key=lambda path: path.name,
+        )
+        for version_dir in version_dirs:
+            metadata = _load_metadata(version_dir)
+            if not metadata or not _installed_ready(version_dir, metadata):
+                continue
+            normalized = validate_manifest(metadata)
+            normalized.update(
+                {
+                    "package_digest": metadata["package_digest"],
+                    "installed_at": metadata["installed_at"],
+                    "integrity_verified": True,
+                }
+            )
+            entries.append((version_dir, normalized))
+    return entries
+
+
 def list_models(*, model_root: Path | str | None = None) -> dict[str, Any]:
+    ready_by_path = {path: metadata for path, metadata in _ready_entries(model_root)}
     root = Path(model_root) if model_root is not None else default_model_root()
     models: list[dict[str, Any]] = []
     if root.is_dir():
@@ -394,26 +504,29 @@ def list_models(*, model_root: Path | str | None = None) -> dict[str, Any]:
                 key=lambda path: path.name,
             )
             for version_dir in version_dirs:
+                ready_metadata = ready_by_path.get(version_dir)
+                if ready_metadata is not None:
+                    public = _public_model(ready_metadata)
+                    public["ready"] = True
+                    models.append(public)
+                    continue
                 metadata = _load_metadata(version_dir)
                 if not metadata:
                     continue
-                ready = _installed_ready(version_dir, metadata)
-                public = (
-                    _public_model(metadata)
-                    if ready
-                    else {
+                models.append(
+                    {
                         "id": metadata.get("id", model_dir.name),
                         "version": metadata.get("version", version_dir.name),
                         "integrity_verified": False,
                         "execution_supported": False,
+                        "ready": False,
                     }
                 )
-                public["ready"] = ready
-                models.append(public)
     return {
         "schema_version": MODEL_SCHEMA_VERSION,
-        "execution_backends": sorted(SUPPORTED_BACKENDS),
-        "execution_implemented": False,
+        "package_backends": sorted(SUPPORTED_BACKENDS),
+        "execution_backends": sorted(EXECUTION_BACKENDS),
+        "execution_implemented": True,
         "models": models,
     }
 
@@ -432,8 +545,11 @@ def model_status(
         "model_id": model_id,
         "installed": bool(models),
         "ready": any(item.get("ready") for item in models),
+        "execution_ready": any(
+            item.get("ready") and item.get("execution_supported") for item in models
+        ),
         "models": models,
-        "execution_implemented": False,
+        "execution_implemented": True,
     }
 
 
@@ -451,23 +567,63 @@ def route_model(action: str, *, model_root: Path | str | None = None) -> dict[st
     return {
         "action": action,
         "ready": bool(routed),
+        "execution_ready": any(item.get("execution_supported") for item in routed),
         "models": routed,
-        "execution_implemented": False,
+        "execution_implemented": True,
     }
+
+
+def resolve_model_for_inference(
+    action: str,
+    *,
+    model_id: str | None = None,
+    model_version: str | None = None,
+    model_root: Path | str | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    catalog = load_catalog()
+    if action not in catalog["routes"]:
+        raise ModelError(f"unknown model action: {action}")
+    if model_id is not None:
+        _safe_id(model_id, "model_id")
+    if model_version is not None:
+        _safe_id(model_version, "model_version")
+
+    candidates = []
+    for path, metadata in _ready_entries(model_root):
+        if action not in metadata["actions"] or not _execution_supported(metadata):
+            continue
+        if model_id is not None and metadata["id"] != model_id:
+            continue
+        if model_version is not None and metadata["version"] != model_version:
+            continue
+        candidates.append((path, metadata))
+    if not candidates:
+        raise ModelError(f"no execution-ready model is installed for action: {action}")
+    if len(candidates) > 1:
+        raise ModelError(
+            "multiple execution-ready models match; specify both model_id and model_version"
+        )
+    return candidates[0]
 
 
 def inference_plan(action: str, *, model_root: Path | str | None = None) -> dict[str, Any]:
     model_route = route_model(action, model_root=model_root)
     dataset_catalog = load_catalog()
     dataset_ids = list(dataset_catalog["routes"][action])
+    if model_route["execution_ready"]:
+        status = "ready"
+    elif model_route["ready"]:
+        status = "model_ready_execution_pending"
+    else:
+        status = "model_unavailable"
     return {
         "action": action,
-        "status": "model_ready_execution_pending" if model_route["ready"] else "model_unavailable",
+        "status": status,
         "models": model_route["models"],
         "dataset_provenance": dataset_ids,
-        "execution_implemented": False,
+        "execution_implemented": True,
         "note": (
-            "Model packages are integrity-checked and carry evaluation provenance, but inference execution "
-            "is not enabled until a reviewed runtime adapter is implemented."
+            "Only integrity-checked models with an explicit bounded inference contract are execution-ready. "
+            "Evaluation metrics are package provenance and are not independently reproduced at runtime."
         ),
     }
