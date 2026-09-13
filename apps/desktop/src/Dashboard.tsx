@@ -14,7 +14,8 @@ type Data = { profile: Profile; graph: Graph; quality: Finding[]; security: Find
 
 type Props = { onNavigate: (destination: DashboardDestination) => void };
 const emptyProfile: Profile = { languages: [], frameworks: [], package_managers: [], build_systems: [], test_frameworks: [], databases: [], ci_providers: [], project_kinds: [] };
-const sevRank = (v: string) => ({ critical: 4, high: 3, medium: 2, low: 1 }[v.toLowerCase()] ?? 0);
+const severityRanks: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+const sevRank = (v: string) => severityRanks[v.toLowerCase()] ?? 0;
 const sevCount = (rows: Finding[], v: string) => rows.filter((row) => row.severity.toLowerCase() === v).length;
 const projectName = (path: string) => path.trim().replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).at(-1) ?? "Local project";
 const fmtTime = (value: string | null) => value ? new Date(value).toLocaleString() : "time unavailable";
