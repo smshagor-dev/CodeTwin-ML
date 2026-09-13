@@ -19,6 +19,23 @@ CodeTwin does not write the proposed bytes to the repository in this baseline. A
 
 Only the final condition transitions a plan to `verified`. A hash match alone cannot falsely resolve an analyzer finding.
 
+## Desktop Repair Lab
+
+The desktop exposes this lifecycle as a separate **Repair Lab** workspace. The workspace can:
+
+- open and index a project using the same persistent project identity as the Digital Twin;
+- list bounded existing findings that may be linked to a repair plan;
+- create, select, approve, reject, and verify repair plans;
+- list proposed file replacements and verification history;
+- load an active indexed source file into an editor only after the current filesystem bytes are re-checked against the persisted SHA-256 and byte size;
+- persist an edited full-file replacement as proposal data;
+- re-index after a user applies changes through an external trusted workflow;
+- display immutable per-change expected/observed verification hashes.
+
+Source loading is read-only. The query service rejects absolute or parent-traversing persisted paths, symlinked source files, project-root escapes, files larger than 1 MiB, non-UTF-8 input, and any current content that no longer matches the index. A stale editor buffer therefore cannot silently become a proposal precondition.
+
+The workspace intentionally has no **Apply patch**, shell, test, compiler, package-manager, hook, or language-server execution button. Approval means only that the proposal's base hashes still match; verification means only that a later indexed state matches the proposed hashes and, when linked, the original analyzer finding is resolved.
+
 ## Persistence
 
 Migration `0011_verified_repair_workflow.sql` adds:
