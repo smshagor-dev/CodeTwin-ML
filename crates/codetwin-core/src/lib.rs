@@ -4,6 +4,7 @@ pub mod domain;
 pub mod identity;
 pub mod impact_analysis;
 pub mod import_resolver;
+pub mod ml_inference;
 pub mod persistent_index;
 pub mod qa_discovery;
 pub mod qa_execution;
@@ -39,6 +40,10 @@ pub use impact_analysis::{
 };
 pub use import_resolver::{resolve_import, ResolvedImport};
 pub use lsp_enrichment::{LanguageServerConfig, LanguageServerKind};
+pub use ml_inference::{
+    MlFindingLinkRecord, MlInferenceError, MlInferenceObservation, MlInferenceRecord,
+    MlInferenceStore, MlScore,
+};
 pub use persistent_index::{IndexServiceError, ProjectIndexService};
 pub use qa_discovery::{
     QaArtifactRecord, QaDiscoveryError, QaDiscoveryRunRecord, QaDiscoveryRunSummary,
