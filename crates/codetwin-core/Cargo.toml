@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 database-analyzer = { path = "../database-analyzer" }
 lsp-enrichment = { path = "../lsp-enrichment" }
+qa-analyzer = { path = "../qa-analyzer" }
+qa-execution = { path = "../qa-execution" }
 rusqlite.workspace = true
 runtime-analyzer = { path = "../runtime-analyzer" }
 security-analyzer = { path = "../security-analyzer" }

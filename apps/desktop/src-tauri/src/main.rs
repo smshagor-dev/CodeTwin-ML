@@ -1,4 +1,5 @@
 mod database_commands;
+mod qa_commands;
 mod runtime_commands;
 
 use std::{
@@ -27,6 +28,9 @@ use database_commands::{
     list_database_rules, run_database_analysis,
 };
 use project_discovery::ProjectProfile;
+use qa_commands::{
+    list_qa_artifacts, list_qa_frameworks, qa_discovery_history, run_qa_discovery,
+};
 use runtime_commands::{
     list_runtime_artifacts, list_runtime_evidence, list_runtime_findings, list_runtime_rules,
     run_runtime_analysis, runtime_history,
@@ -582,6 +586,10 @@ fn main() {
             list_runtime_evidence,
             runtime_history,
             list_runtime_rules,
+            run_qa_discovery,
+            list_qa_artifacts,
+            list_qa_frameworks,
+            qa_discovery_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");

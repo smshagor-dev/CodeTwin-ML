@@ -6,6 +6,8 @@ members = [
   "crates/database-analyzer",
   "crates/lsp-enrichment",
   "crates/project-discovery",
+  "crates/qa-analyzer",
+  "crates/qa-execution",
   "crates/reference-indexer",
   "crates/runtime-analyzer",
   "crates/security-analyzer",

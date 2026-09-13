@@ -29,6 +29,18 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  windows-qa:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy -p qa-execution -p codetwin-core --all-targets -- -D warnings
+      - run: cargo test -p qa-execution -p codetwin-core
+
   python:
     runs-on: ubuntu-latest
     steps:
@@ -37,7 +49,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m unittest discover -s services/ml/tests -v
-      - run: python -m compileall -q services/ml/codetwin_ml
+      - run: python -m unittest discover -s services/security/tests -v
+      - run: python -m compileall -q services/ml/codetwin_ml services/security/codetwin_security
 
   frontend:
     runs-on: ubuntu-latest

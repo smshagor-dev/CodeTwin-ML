@@ -5,6 +5,8 @@ pub mod identity;
 pub mod impact_analysis;
 pub mod import_resolver;
 pub mod persistent_index;
+pub mod qa_discovery;
+pub mod qa_execution;
 pub mod quality_analysis;
 pub mod query_service;
 pub mod runtime_analysis;
@@ -38,6 +40,14 @@ pub use impact_analysis::{
 pub use import_resolver::{resolve_import, ResolvedImport};
 pub use lsp_enrichment::{LanguageServerConfig, LanguageServerKind};
 pub use persistent_index::{IndexServiceError, ProjectIndexService};
+pub use qa_discovery::{
+    QaArtifactRecord, QaDiscoveryError, QaDiscoveryRunRecord, QaDiscoveryRunSummary,
+    QaDiscoveryService, QaFrameworkSummary,
+};
+pub use qa_execution::{
+    QaExecutionAvailability, QaExecutionError, QaExecutionPlanRecord, QaExecutionProjectManifest,
+    QaExecutionService,
+};
 pub use quality_analysis::{
     CodeQualityService, FindingEvidenceRecord, QualityAnalysisError, QualityFindingRecord,
     QualityRuleRecord, QualityRunRecord, QualityRunSummary,

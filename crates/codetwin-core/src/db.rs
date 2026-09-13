@@ -12,6 +12,10 @@ const MIGRATION_0006: &str = include_str!("../migrations/0006_code_quality_analy
 const MIGRATION_0007: &str = include_str!("../migrations/0007_security_analysis.sql");
 const MIGRATION_0008: &str = include_str!("../migrations/0008_database_analysis.sql");
 const MIGRATION_0009: &str = include_str!("../migrations/0009_runtime_reliability.sql");
+const MIGRATION_0013: &str = include_str!("../migrations/0013_qa_test_discovery.sql");
+const MIGRATION_0014: &str = include_str!("../migrations/0014_qa_test_execution.sql");
+const MIGRATION_0015: &str = include_str!("../migrations/0015_qa_execution_manifest_binding.sql");
+const MIGRATION_0016: &str = include_str!("../migrations/0016_qa_external_read_provenance.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -58,6 +62,10 @@ impl Database {
         self.apply_migration(7, MIGRATION_0007)?;
         self.apply_migration(8, MIGRATION_0008)?;
         self.apply_migration(9, MIGRATION_0009)?;
+        self.apply_migration(13, MIGRATION_0013)?;
+        self.apply_migration(14, MIGRATION_0014)?;
+        self.apply_migration(15, MIGRATION_0015)?;
+        self.apply_migration(16, MIGRATION_0016)?;
         Ok(())
     }
 
@@ -94,12 +102,12 @@ mod tests {
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 18);
+        assert_eq!(count, 22);
     }
 
     #[test]
@@ -109,7 +117,18 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 9);
+        assert_eq!(count, 13);
+        for version in [13i64, 14, 15, 16] {
+            let applied: i64 = db
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+                    [version],
+                    |row| row.get(0),
+                )
+                .expect("query migration version");
+            assert_eq!(applied, 1);
+        }
     }
 
     #[test]
@@ -161,6 +180,88 @@ mod tests {
                 .expect("artifact schema");
             assert!(sql.contains("UNIQUE(project_id, path_identity)"));
         }
+        let qa_sql: String = db
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='qa_test_artifacts'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("QA artifact schema");
+        assert!(qa_sql.contains("UNIQUE(project_id, path_identity, framework, evidence_kind)"));
+    }
+
+    #[test]
+    fn qa_execution_schema_separates_plans_from_runs() {
+        let db = Database::open_in_memory().expect("open db");
+        let plan_sql: String = db
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='qa_execution_plans'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("plan schema");
+        assert!(plan_sql.contains("'blocked','planned','approved'"));
+        let run_sql: String = db
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='qa_execution_runs'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("run schema");
+        assert!(run_sql.contains("'timed_out'"));
+        assert!(run_sql.contains("'infrastructure_error'"));
+
+        let mut plan_columns = db
+            .connection()
+            .prepare("PRAGMA table_info(qa_execution_plans)")
+            .expect("plan columns");
+        let plan_columns = plan_columns
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("plan column rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("plan column list");
+        for expected in [
+            "approved_project_manifest_sha256",
+            "approved_project_manifest_json",
+            "approved_external_read_surface_sha256",
+            "approved_external_read_surface_json",
+        ] {
+            assert!(plan_columns.iter().any(|name| name == expected));
+        }
+
+        let mut run_columns = db
+            .connection()
+            .prepare("PRAGMA table_info(qa_execution_runs)")
+            .expect("run columns");
+        let run_columns = run_columns
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("run column rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("run column list");
+        for expected in ["project_manifest_sha256", "external_read_surface_sha256"] {
+            assert!(run_columns.iter().any(|name| name == expected));
+        }
+
+        let trigger_count: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (\
+                 'qa_execution_approval_requires_manifest',\
+                 'qa_execution_approved_manifest_immutable',\
+                 'qa_execution_run_manifest_matches_plan',\
+                 'qa_execution_approval_requires_external_surface',\
+                 'qa_execution_approved_external_surface_immutable',\
+                 'qa_execution_plan_spec_immutable',\
+                 'qa_execution_approved_provenance_immutable',\
+                 'qa_execution_run_external_surface_matches_plan')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("QA provenance triggers");
+        assert_eq!(trigger_count, 8);
     }
 
     #[test]
