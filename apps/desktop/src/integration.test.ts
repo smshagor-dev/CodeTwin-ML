@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { Dashboard } from "./Dashboard";
 import { DesktopRoot } from "./DesktopRoot";
-import { WorkspaceShell } from "./workspace/WorkspaceShell";
+import { WorkspaceShell, workspaceRoutePage } from "./workspace/WorkspaceShell";
 import { workspaceRoutes } from "./workspace/routes";
 
 describe("desktop integration surface", () => {
@@ -26,6 +26,12 @@ describe("desktop integration surface", () => {
     expect(source).not.toContain("Failed analyzers remain explicitly unavailable/incomplete.");
   });
 });
+
+  it("maps every required route to a production page", () => {
+    for (const route of workspaceRoutes) {
+      expect(workspaceRoutePage(route)).toBeTruthy();
+    }
+  });
 
   it("keeps every required primary route in the production shell", () => {
     const shellPath = fileURLToPath(new URL("./workspace/WorkspaceShell.tsx", import.meta.url));

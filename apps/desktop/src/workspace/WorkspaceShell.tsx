@@ -31,7 +31,7 @@ const navigation: Array<{ route: WorkspaceRoute; label: string; icon: IconName }
   { route: "support", label: "Support", icon: "support" },
 ];
 
-function routePage(route: WorkspaceRoute) {
+export function workspaceRoutePage(route: WorkspaceRoute) {
   switch (route) {
     case "dashboard": return <DashboardPage/>;
     case "projects": return <ProjectsPage/>;
@@ -256,7 +256,7 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
 
         {operation && <div className="ws-operation-banner" role="status"><span className="ws-spinner"/>{operation.stage}</div>}
         {toast && <div className={"ws-toast ws-toast-" + toast.tone} role={toast.tone === "error" ? "alert" : "status"}><span>{toast.message}</span><button aria-label="Dismiss notification" onClick={() => setToast(null)}><Icon name="close" size={16}/></button></div>}
-        <main className="ws-content">{loading ? <LoadingState label="Loading CodeTwin workspace…"/> : routePage(route)}</main>
+        <main className="ws-content">{loading ? <LoadingState label="Loading CodeTwin workspace…"/> : workspaceRoutePage(route)}</main>
       </section>
 
       <WebsiteComposer/>
