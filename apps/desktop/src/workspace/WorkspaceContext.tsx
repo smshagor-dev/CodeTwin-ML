@@ -229,9 +229,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, [activeProjectId, refreshWorkspace]);
 
   const savePreferences = useCallback(async (next: AppPreferences) => {
-    const saved = await workspaceApi.savePreferences(next);
-    setPreferences(saved);
-    setToast({ tone: "success", message: "Settings saved." });
+    try {
+      const saved = await workspaceApi.savePreferences(next);
+      setPreferences(saved);
+      setToast({ tone: "success", message: "Settings saved." });
+    } catch (error) {
+      setToast({ tone: "error", message: "Could not save settings: " + String(error) });
+    }
   }, []);
 
   const value = useMemo<WorkspaceContextValue>(() => ({

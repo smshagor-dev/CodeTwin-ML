@@ -4,7 +4,7 @@ import { validateWebsiteUrl, workspaceApi } from "./api";
 import { Icon, type IconName } from "./Icon";
 import { navigate, routeHref, type WorkspaceRoute } from "./routes";
 import type { WorkspaceSearchResult } from "./types";
-import { Modal, StatusBadge, formatDate } from "./ui";
+import { LoadingState, Modal, StatusBadge, formatDate } from "./ui";
 import { useWorkspace } from "./WorkspaceContext";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
@@ -196,7 +196,7 @@ function GlobalSearch() {
 }
 
 export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
-  const { preferences, savePreferences, activity, operation, toast, setToast, setActiveProjectId } = useWorkspace();
+  const { preferences, savePreferences, activity, operation, toast, setToast, setActiveProjectId, loading } = useWorkspace();
   const alertCount = useMemo(() => activity.filter((item) => ["failed", "offline", "degraded"].includes(item.status)).length, [activity]);
   const initials = preferences.display_name.trim().split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "U";
 
@@ -256,7 +256,7 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
 
         {operation && <div className="ws-operation-banner" role="status"><span className="ws-spinner"/>{operation.stage}</div>}
         {toast && <div className={"ws-toast ws-toast-" + toast.tone} role={toast.tone === "error" ? "alert" : "status"}><span>{toast.message}</span><button aria-label="Dismiss notification" onClick={() => setToast(null)}><Icon name="close" size={16}/></button></div>}
-        <main className="ws-content">{routePage(route)}</main>
+        <main className="ws-content">{loading ? <LoadingState label="Loading CodeTwin workspace…"/> : routePage(route)}</main>
       </section>
 
       <WebsiteComposer/>

@@ -37,7 +37,7 @@ export function ProjectsPage() {
   const [removing, setRemoving] = useState(false);
 
   useEffect(() => {
-    if (!selectedId && activeProjectId) setSelectedId(activeProjectId);
+    if (activeProjectId && selectedId !== activeProjectId) setSelectedId(activeProjectId);
   }, [activeProjectId, selectedId]);
 
   const visible = useMemo(() => {
