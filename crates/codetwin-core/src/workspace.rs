@@ -620,6 +620,30 @@ mod tests {
     }
 
     #[test]
+    fn websites_persist_across_database_reopen() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("workspace.sqlite3");
+        {
+            let database = Database::open(&path).expect("database");
+            WorkspaceService::new(&database)
+                .add_website(&WebsiteInput {
+                    url: "https://persist.example.com".to_string(),
+                    display_name: Some("Persistent website".to_string()),
+                    project_id: None,
+                })
+                .expect("add website");
+        }
+        {
+            let database = Database::open(&path).expect("reopen database");
+            let websites = WorkspaceService::new(&database)
+                .list_websites(None, 20)
+                .expect("list websites");
+            assert_eq!(websites.len(), 1);
+            assert_eq!(websites[0].display_name, "Persistent website");
+        }
+    }
+
+    #[test]
     fn project_listing_search_and_removal_use_existing_index_identity() {
         let database = Database::open_in_memory().expect("database");
         let root = tempdir().expect("project");

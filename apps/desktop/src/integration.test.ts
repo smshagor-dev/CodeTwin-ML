@@ -5,11 +5,15 @@ import { describe, expect, it } from "vitest";
 
 import { Dashboard } from "./Dashboard";
 import { DesktopRoot } from "./DesktopRoot";
+import { WorkspaceShell } from "./workspace/WorkspaceShell";
+import { workspaceRoutes } from "./workspace/routes";
 
 describe("desktop integration surface", () => {
   it("loads the dashboard and unified workspace shell", () => {
     expect(typeof Dashboard).toBe("function");
     expect(typeof DesktopRoot).toBe("function");
+    expect(typeof WorkspaceShell).toBe("function");
+    expect(workspaceRoutes).toHaveLength(12);
   });
 
   it("keeps failed evidence reads explicit instead of silently converting them to zero", () => {
@@ -22,3 +26,16 @@ describe("desktop integration surface", () => {
     expect(source).not.toContain("Failed analyzers remain explicitly unavailable/incomplete.");
   });
 });
+
+  it("keeps every required primary route in the production shell", () => {
+    const shellPath = fileURLToPath(new URL("./workspace/WorkspaceShell.tsx", import.meta.url));
+    const source = readFileSync(shellPath, "utf8");
+    for (const label of [
+      "Dashboard", "Projects", "Websites", "Agents", "Code Analysis", "Security",
+      "Testing", "Deployments", "Integrations", "Settings", "Documentation", "Support",
+    ]) {
+      expect(source).toContain('label: "' + label + '"');
+    }
+    expect(source).toContain("Global search");
+    expect(source).toContain("Toggle light or dark theme");
+  });
