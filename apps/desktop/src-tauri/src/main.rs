@@ -4,8 +4,10 @@ mod qa_commands;
 mod repair_commands;
 mod runtime_commands;
 mod workspace_commands;
+mod web_security_commands;
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -50,6 +52,12 @@ use runtime_commands::{
     run_runtime_analysis, runtime_history,
 };
 use tauri::Manager;
+use web_security_commands::{
+    cancel_web_security_scan, export_web_security_report, generate_web_security_report,
+    get_web_security_scan, list_web_security_endpoints, list_web_security_evidence,
+    list_web_security_findings, list_web_security_scans, start_web_security_scan,
+    update_web_security_finding_status,
+};
 use workspace_commands::{
     add_website, check_website, get_app_preferences, list_projects, list_websites, recent_activity,
     remove_project, remove_website, save_app_preferences, search_workspace, system_status,
@@ -64,6 +72,7 @@ struct AppState {
     quality_running: Arc<AtomicBool>,
     security_running: Arc<AtomicBool>,
     ml_running: Arc<AtomicBool>,
+    web_security_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 fn with_database<T>(
@@ -556,6 +565,7 @@ fn main() {
                 quality_running: Arc::new(AtomicBool::new(false)),
                 security_running: Arc::new(AtomicBool::new(false)),
                 ml_running: Arc::new(AtomicBool::new(false)),
+                web_security_cancellations: Arc::new(Mutex::new(HashMap::new())),
             });
             Ok(())
         })
@@ -647,6 +657,16 @@ fn main() {
             get_app_preferences,
             save_app_preferences,
             system_status,
+            start_web_security_scan,
+            cancel_web_security_scan,
+            get_web_security_scan,
+            list_web_security_scans,
+            list_web_security_endpoints,
+            list_web_security_findings,
+            list_web_security_evidence,
+            update_web_security_finding_status,
+            generate_web_security_report,
+            export_web_security_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");
