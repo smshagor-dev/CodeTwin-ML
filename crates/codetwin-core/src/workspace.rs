@@ -644,6 +644,33 @@ mod tests {
     }
 
     #[test]
+    fn indexed_projects_remain_visible_after_database_reopen() {
+        let project = tempdir().expect("project");
+        fs::write(
+            project.path().join("lib.ts"),
+            "export const persistedProject = true;",
+        )
+        .expect("fixture");
+        let storage = tempdir().expect("storage");
+        let database_path = storage.path().join("workspace.sqlite3");
+
+        let project_id = {
+            let database = Database::open(&database_path).expect("database");
+            ProjectIndexService::new(&database)
+                .index_project(project.path())
+                .expect("index")
+                .project_id
+        };
+
+        let reopened = Database::open(&database_path).expect("reopen");
+        let projects = WorkspaceService::new(&reopened)
+            .list_projects(None, 20)
+            .expect("projects");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].id, project_id);
+    }
+
+    #[test]
     fn project_listing_search_and_removal_use_existing_index_identity() {
         let database = Database::open_in_memory().expect("database");
         let root = tempdir().expect("project");
@@ -664,6 +691,8 @@ mod tests {
 
         let results = service.search("dashboardValue", 20).expect("search");
         assert!(results.iter().any(|result| result.kind == "symbol"));
+        assert!(service.search("   ", 20).expect("empty search").is_empty());
+        assert!(service.search(&"z".repeat(4096), 20).expect("long search").is_empty());
 
         assert!(service
             .remove_project(&summary.project_id)

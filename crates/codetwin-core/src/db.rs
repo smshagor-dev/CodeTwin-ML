@@ -110,7 +110,7 @@ mod tests {
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites')",
                 [],
                 |row| row.get(0),
             )
@@ -137,6 +137,40 @@ mod tests {
                 .expect("query migration version");
             assert_eq!(applied, 1);
         }
+    }
+
+    #[test]
+    fn upgrades_existing_v16_database_with_dashboard_workspace_schema() {
+        let file = NamedTempFile::new().expect("temp db");
+        {
+            let db = Database::open(file.path()).expect("create current db");
+            db.connection()
+                .execute_batch(
+                    "DROP TABLE websites;
+                     DELETE FROM schema_migrations WHERE version = 17;",
+                )
+                .expect("rewind dashboard migration");
+        }
+
+        let upgraded = Database::open(file.path()).expect("upgrade v16 db");
+        let website_table: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='websites'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("website table");
+        let migration: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 17",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration 17");
+        assert_eq!(website_table, 1);
+        assert_eq!(migration, 1);
     }
 
     #[test]
