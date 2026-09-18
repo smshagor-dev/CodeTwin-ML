@@ -54,7 +54,7 @@ pub fn run_active_checks(
             return Err(ScanError::Cancelled);
         }
         let mut chunk_results = Vec::new();
-        thread::scope(|scope| {
+        let chunk_state = thread::scope(|scope| {
             let mut handles = Vec::new();
             for task in chunk.iter().cloned() {
                 let requester = requester.clone();
@@ -65,12 +65,19 @@ pub fn run_active_checks(
                     probe_parameter(&policy, &requester, &config, &task, cancelled)
                 }));
             }
+            let mut cancelled_observed = false;
             for handle in handles {
-                if let Ok(Ok(mut observed)) = handle.join() {
-                    chunk_results.append(&mut observed);
+                match handle.join() {
+                    Ok(Ok(mut observed)) => chunk_results.append(&mut observed),
+                    Ok(Err(ScanError::Cancelled)) => cancelled_observed = true,
+                    Ok(Err(_)) | Err(_) => {}
                 }
             }
+            cancelled_observed
         });
+        if chunk_state || cancelled.load(Ordering::SeqCst) {
+            return Err(ScanError::Cancelled);
+        }
         findings.append(&mut chunk_results);
     }
 
@@ -685,7 +692,8 @@ fn send_payload(
         }
         requester.get(&url)
     } else {
-        let method = Method::from_bytes(endpoint.method.as_bytes()).unwrap_or(Method::POST);
+        let method = Method::from_bytes(endpoint.method.as_bytes())
+            .map_err(|_| RequestError::Http("unsupported HTTP method".to_string()))?;
         let mut serializer = url::form_urlencoded::Serializer::new(String::new());
         for name in &endpoint.parameter_names {
             serializer.append_pair(name, if name == parameter { payload } else { "" });
@@ -743,19 +751,31 @@ enum ReflectionContext {
 }
 
 fn reflection_context(body: &str, marker: &str) -> ReflectionContext {
-    let Some(index) = body.find(marker) else { return ReflectionContext::Text };
-    let start = index.saturating_sub(180);
-    let end = (index + marker.len() + 180).min(body.len());
-    let context = body[start..end].to_ascii_lowercase();
-    let before = &context[..context.find(&marker.to_ascii_lowercase()).unwrap_or(0)];
-    if (before.rfind("<script").is_some() && before.rfind("</script>").unwrap_or(0) < before.rfind("<script").unwrap_or(0))
-        || before.ends_with("="")
+    let Some(index) = body.find(marker) else {
+        return ReflectionContext::Text;
+    };
+    let marker_end = index + marker.len();
+    let prefix_reversed: String = body[..index].chars().rev().take(180).collect();
+    let prefix: String = prefix_reversed.chars().rev().collect();
+    let suffix: String = body[marker_end..].chars().take(180).collect();
+    let context = format!("{prefix}{marker}{suffix}").to_ascii_lowercase();
+    let marker_lower = marker.to_ascii_lowercase();
+    let before = context
+        .split_once(&marker_lower)
+        .map(|(before, _)| before)
+        .unwrap_or("");
+    let script_start = before.rfind("<script");
+    let script_end = before.rfind("</script>");
+    let inside_script = script_start.is_some()
+        && script_end.map(|end| end < script_start.unwrap_or(0)).unwrap_or(true);
+    if inside_script
+        || before.ends_with("=\\\"")
         || before.ends_with("='")
         || before.contains("onerror=")
         || before.contains("onclick=")
     {
         ReflectionContext::ScriptOrAttribute
-    } else if context.contains(&format!("<codetwin-xss-")) {
+    } else if context.contains("<codetwin-xss-") {
         ReflectionContext::HtmlMarkup
     } else {
         ReflectionContext::Text

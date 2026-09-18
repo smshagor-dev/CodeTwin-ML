@@ -87,7 +87,7 @@ impl ScopePolicy {
 
     pub fn assert_url(&self, url: &Url) -> Result<(), ScopeError> {
         if !matches!(url.scheme(), "http" | "https") {
-            return Err(ScopeError::OutsideScope(url.to_string()));
+            return Err(ScopeError::OutsideScope("URL scheme is outside the authorized HTTP(S) scope".to_string()));
         }
         if !url.username().is_empty() || url.password().is_some() {
             return Err(ScopeError::OutsideScope("credentials in URLs are forbidden".to_string()));
@@ -98,7 +98,7 @@ impl ScopePolicy {
             .trim_end_matches('.')
             .to_ascii_lowercase();
         if !self.host_allowed(&host) {
-            return Err(ScopeError::OutsideScope(url.to_string()));
+            return Err(ScopeError::OutsideScope("URL host is outside the authorized host scope".to_string()));
         }
         let port = url.port_or_known_default().ok_or_else(|| ScopeError::OutsideScope(url.to_string()))?;
         if port != self.target_port {
@@ -108,7 +108,7 @@ impl ScopePolicy {
             return Err(ScopeError::OutsideScope("HTTPS target cannot downgrade to HTTP".to_string()));
         }
         if !self.path_allowed(url.path()) {
-            return Err(ScopeError::OutsideScope(url.to_string()));
+            return Err(ScopeError::OutsideScope("URL path is outside the authorized path scope".to_string()));
         }
         Ok(())
     }

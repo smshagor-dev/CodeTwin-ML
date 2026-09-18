@@ -81,7 +81,7 @@ pub struct ScanConfig {
     pub checks: CheckConfig,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AuthContext {
     pub cookie_header: Option<String>,
     pub bearer_token: Option<String>,

@@ -127,9 +127,9 @@ fn redact_map(map: &mut Map<String, Value>) {
 }
 
 fn is_sensitive_name(name: &str) -> bool {
-    let normalized = name.to_ascii_lowercase().replace(['-', '_'], "");
+    let normalized = name.to_ascii_lowercase().replace('-', "").replace('_', "");
     SENSITIVE_KEYS.iter().any(|candidate| {
-        normalized.contains(&candidate.to_ascii_lowercase().replace(['-', '_'], ""))
+        normalized.contains(&candidate.to_ascii_lowercase().replace('-', "").replace('_', ""))
     })
 }
 
@@ -191,7 +191,7 @@ mod tests {
         let body = br#"{"user":"a","token":"super-secret","nested":{"password":"pw"}}"#;
         let text = redact_body(body);
         assert!(!text.contains("super-secret"));
-        assert!(!text.contains(""pw""));
+        assert!(!text.contains("\\\"pw\\\""));
         assert!(text.contains("<redacted>"));
     }
 }
