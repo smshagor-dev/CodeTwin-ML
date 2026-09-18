@@ -157,7 +157,7 @@ export async function importProjectPath(
   path: string,
   preferences: AppPreferences,
   onStage?: (stage: ImportStage) => void,
-): Promise<{ profile: ProjectProfile; index: IndexSummary }> {
+): Promise<{ profile: ProjectProfile; index: IndexSummary; postImportErrors: string[] }> {
   const normalizedPath = path.trim();
   if (!normalizedPath) throw new Error("Choose a project folder first.");
 
@@ -166,13 +166,22 @@ export async function importProjectPath(
   onStage?.("indexing");
   const index = await workspaceApi.indexProject(normalizedPath);
 
+  const postImportErrors: string[] = [];
   if (preferences.auto_run_security_on_import) {
     onStage?.("security");
-    await workspaceApi.runSecurity(index.project_id);
+    try {
+      await workspaceApi.runSecurity(index.project_id);
+    } catch (error) {
+      postImportErrors.push("security analysis: " + String(error));
+    }
   }
   if (preferences.auto_discover_tests_on_import) {
     onStage?.("testing");
-    await workspaceApi.runQaDiscovery(index.project_id);
+    try {
+      await workspaceApi.runQaDiscovery(index.project_id);
+    } catch (error) {
+      postImportErrors.push("QA discovery: " + String(error));
+    }
   }
-  return { profile, index };
+  return { profile, index, postImportErrors };
 }

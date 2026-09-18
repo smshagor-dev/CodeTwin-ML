@@ -143,10 +143,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       });
       await refreshWorkspace();
       setActiveProjectIdState(result.index.project_id);
-      setToast({
-        tone: "success",
-        message: "Project indexed successfully: " + result.index.delta.files_scanned + " files scanned.",
-      });
+      setToast(result.postImportErrors.length
+        ? {
+            tone: "error",
+            message: "Project indexed, but configured post-import work did not complete: " + result.postImportErrors.join("; "),
+          }
+        : {
+            tone: "success",
+            message: "Project indexed successfully: " + result.index.delta.files_scanned + " files scanned.",
+          });
     } catch (error) {
       setToast({ tone: "error", message: "Project import failed: " + String(error) });
     } finally {

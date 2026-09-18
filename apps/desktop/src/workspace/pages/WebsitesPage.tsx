@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Icon } from "../Icon";
 import type { WebsiteRecord } from "../types";
@@ -21,6 +21,16 @@ export function WebsitesPage() {
       ? requestedWebsite
       : websites[0]?.id ?? null,
   );
+  useEffect(() => {
+    const syncSelection = () => {
+      const requested = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("website");
+      if (requested && websites.some((website) => website.id === requested)) setSelectedId(requested);
+    };
+    syncSelection();
+    window.addEventListener("hashchange", syncSelection);
+    return () => window.removeEventListener("hashchange", syncSelection);
+  }, [websites]);
+
   const [checkingId, setCheckingId] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<WebsiteRecord | null>(null);
   const [removing, setRemoving] = useState(false);

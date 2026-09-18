@@ -45,3 +45,12 @@ describe("desktop integration surface", () => {
     expect(source).toContain("Global search");
     expect(source).toContain("Toggle light or dark theme");
   });
+
+  it("keeps destructive project and website actions behind confirmation dialogs", () => {
+    const projectSource = readFileSync(fileURLToPath(new URL("./workspace/pages/ProjectsPage.tsx", import.meta.url)), "utf8");
+    const websiteSource = readFileSync(fileURLToPath(new URL("./workspace/pages/WebsitesPage.tsx", import.meta.url)), "utf8");
+    expect(projectSource).toContain("<ConfirmDialog");
+    expect(projectSource).toContain("confirmRemove");
+    expect(websiteSource).toContain("<ConfirmDialog");
+    expect(websiteSource).toContain("confirmRemove");
+  });

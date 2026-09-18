@@ -82,12 +82,14 @@ export function DashboardPage() {
         <details className="ws-more-menu">
           <summary className="ws-action-button"><Icon name="more"/> More</summary>
           <div>
+            <button onClick={() => navigate("engineering")}>Engineering Workspace</button>
             <button onClick={() => navigate("web-security")}>Web Security Workspace</button>
             <button onClick={() => navigate("database")}>Database Analysis</button>
             <button onClick={() => navigate("runtime")}>Runtime Reliability</button>
             <button onClick={() => navigate("qa")}>QA Workspace</button>
             <button onClick={() => navigate("ml")}>ML Workspace</button>
             <button onClick={() => navigate("repair")}>Repair Lab</button>
+            <button onClick={() => navigate("repair-apply")}>Apply & Rollback</button>
           </div>
         </details>
       </section>

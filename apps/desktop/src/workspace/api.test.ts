@@ -82,6 +82,7 @@ describe("workspace API workflows", () => {
     const result = await importProjectPath("/work/repo", basePreferences, (stage) => stages.push(stage));
 
     expect(result.index.project_id).toBe("project-1");
+    expect(result.postImportErrors).toEqual([]);
     expect(invokeMock.mock.calls.map((call) => call[0])).toEqual(["discover_project", "index_project"]);
     expect(stages).toEqual(["discovering", "indexing"]);
   });
@@ -90,6 +91,39 @@ describe("workspace API workflows", () => {
     invokeMock.mockRejectedValueOnce(new Error("invalid project folder"));
     await expect(importProjectPath("/bad/project", basePreferences)).rejects.toThrow("invalid project folder");
     expect(invokeMock.mock.calls.map((call) => call[0])).toEqual(["discover_project"]);
+  });
+
+  it("keeps a successful index when optional post-import analysis fails", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "discover_project") return {
+        languages: [], frameworks: [], package_managers: [], build_systems: [],
+        test_frameworks: [], databases: [], ci_providers: [], project_kinds: [],
+      };
+      if (command === "index_project") return {
+        project_id: "project-post-import",
+        run_id: "run-post-import",
+        status: "completed",
+        delta: {
+          files_scanned: 2, files_added: 2, files_modified: 0, files_unchanged: 0,
+          files_deleted: 0, symbols_added: 2, symbols_updated: 0, symbols_removed: 0,
+          parse_errors: 0, skipped_files: 0,
+        },
+        graph_node_count: 4,
+        graph_edge_count: 1,
+        duration_ms: 5,
+      };
+      if (command === "run_security_analysis") throw new Error("security unavailable");
+      throw new Error("unexpected command " + command);
+    });
+
+    const result = await importProjectPath("/work/repo", {
+      ...basePreferences,
+      auto_run_security_on_import: true,
+    });
+
+    expect(result.index.project_id).toBe("project-post-import");
+    expect(result.postImportErrors).toHaveLength(1);
+    expect(result.postImportErrors[0]).toMatch(/security analysis/);
   });
 
   it("runs only explicitly enabled post-import analysis", async () => {
@@ -128,12 +162,13 @@ describe("workspace API workflows", () => {
       throw new Error("unexpected command " + command);
     });
 
-    await importProjectPath("/work/repo", {
+    const result = await importProjectPath("/work/repo", {
       ...basePreferences,
       auto_run_security_on_import: true,
       auto_discover_tests_on_import: true,
     });
 
+    expect(result.postImportErrors).toEqual([]);
     expect(invokeMock.mock.calls.map((call) => call[0])).toEqual([
       "discover_project",
       "index_project",

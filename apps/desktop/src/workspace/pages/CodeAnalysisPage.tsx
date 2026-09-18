@@ -11,6 +11,14 @@ export function CodeAnalysisPage() {
   const [files, setFiles] = useState<SourceFileRecord[]>([]);
   const [symbols, setSymbols] = useState<SymbolRecord[]>([]);
   const [query, setQuery] = useState(() => new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("q") ?? "");
+  useEffect(() => {
+    const syncQuery = () => {
+      setQuery(new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("q") ?? "");
+    };
+    window.addEventListener("hashchange", syncQuery);
+    return () => window.removeEventListener("hashchange", syncQuery);
+  }, []);
+
   const [kind, setKind] = useState("all");
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
