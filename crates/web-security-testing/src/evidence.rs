@@ -191,7 +191,7 @@ mod tests {
         let body = br#"{"user":"a","token":"super-secret","nested":{"password":"pw"}}"#;
         let text = redact_body(body);
         assert!(!text.contains("super-secret"));
-        assert!(!text.contains("\\\"pw\\\""));
+        assert!(!text.contains("pw"));
         assert!(text.contains("<redacted>"));
     }
 }

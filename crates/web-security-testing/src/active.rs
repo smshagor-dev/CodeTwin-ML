@@ -769,7 +769,7 @@ fn reflection_context(body: &str, marker: &str) -> ReflectionContext {
     let inside_script = script_start.is_some()
         && script_end.map(|end| end < script_start.unwrap_or(0)).unwrap_or(true);
     if inside_script
-        || before.ends_with("=\\\"")
+        || before.ends_with(r#"=""#)
         || before.ends_with("='")
         || before.contains("onerror=")
         || before.contains("onclick=")

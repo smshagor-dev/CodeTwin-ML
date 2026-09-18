@@ -94,7 +94,7 @@ impl ScopePolicy {
         }
         let host = url
             .host_str()
-            .ok_or_else(|| ScopeError::OutsideScope(url.to_string()))?
+            .ok_or_else(|| ScopeError::OutsideScope("URL is outside the authorized scope".to_string()))?
             .trim_end_matches('.')
             .to_ascii_lowercase();
         if !self.host_allowed(&host) {
@@ -115,7 +115,7 @@ impl ScopePolicy {
 
     pub fn resolve_and_pin(&self, url: &Url) -> Result<SocketAddr, ScopeError> {
         self.assert_url(url)?;
-        let host = url.host_str().ok_or_else(|| ScopeError::Resolution(url.to_string()))?;
+        let host = url.host_str().ok_or_else(|| ScopeError::Resolution("URL host is missing".to_string()))?;
         let port = url.port_or_known_default().ok_or_else(|| ScopeError::Resolution(url.to_string()))?;
         let addresses: Vec<SocketAddr> = (host, port)
             .to_socket_addrs()

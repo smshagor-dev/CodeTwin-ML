@@ -9,15 +9,15 @@ use std::{
 };
 
 use reqwest::{
-    blocking::Client,
+    blocking::{Client, RequestBuilder},
     header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE, LOCATION},
     Method,
 };
 use thiserror::Error;
 use url::Url;
 
-use crate::{AuthContext, ObservedResponse};
 use crate::scope::{ScopeError, ScopePolicy};
+use crate::{redact_url, AuthContext, ObservedResponse};
 
 #[derive(Debug, Error)]
 pub enum RequestError {
@@ -31,8 +31,8 @@ pub enum RequestError {
     Header(String),
     #[error("HTTP request failed: {0}")]
     Http(String),
-    #[error("response body could not be read: {0}")]
-    Body(String),
+    #[error("response body could not be read")]
+    Body,
 }
 
 #[derive(Clone)]
@@ -43,7 +43,10 @@ pub struct RequestBudget {
 
 impl RequestBudget {
     pub fn new(max: usize) -> Self {
-        Self { used: Arc::new(AtomicUsize::new(0)), max }
+        Self {
+            used: Arc::new(AtomicUsize::new(0)),
+            max,
+        }
     }
 
     pub fn claim(&self) -> Result<usize, RequestError> {
@@ -75,7 +78,12 @@ impl ScopedRequester {
         budget: RequestBudget,
         cancelled: Arc<AtomicBool>,
     ) -> Self {
-        Self { policy, auth, budget, cancelled }
+        Self {
+            policy,
+            auth,
+            budget,
+            cancelled,
+        }
     }
 
     pub fn budget(&self) -> &RequestBudget {
@@ -93,91 +101,174 @@ impl ScopedRequester {
         body: Option<&str>,
         extra_headers: &[(&str, &str)],
     ) -> Result<ObservedResponse, RequestError> {
-        if self.cancelled.load(Ordering::SeqCst) {
-            return Err(RequestError::Cancelled);
-        }
         self.policy.assert_url(url)?;
-        let pinned = self.policy.resolve_and_pin(url)?;
-        self.budget.claim()?;
-        if self.cancelled.load(Ordering::SeqCst) {
-            return Err(RequestError::Cancelled);
-        }
+        let custom_headers = parse_headers(&self.auth.custom_headers)?;
+        let extra_headers = parse_borrowed_headers(extra_headers)?;
+        let retry_safe = method == Method::GET || method == Method::HEAD || method == Method::OPTIONS;
+        let attempts = if retry_safe {
+            self.policy.config().retry_limit + 1
+        } else {
+            1
+        };
 
-        let client = client_for(&self.policy, url, pinned)?;
-        let mut request = client.request(method, url.clone());
-        if let Some(token) = self.auth.bearer_token.as_deref().filter(|value| !value.trim().is_empty()) {
-            request = request.bearer_auth(token.trim());
-        }
-        if let Some(cookie) = self.auth.cookie_header.as_deref().filter(|value| !value.trim().is_empty()) {
-            request = request.header("Cookie", cookie.trim());
-        }
-        for (name, value) in &self.auth.custom_headers {
-            if forbidden_user_header(name) {
-                return Err(RequestError::Header(format!("header {name} cannot be overridden")));
+        for attempt in 0..attempts {
+            if self.cancelled.load(Ordering::SeqCst) {
+                return Err(RequestError::Cancelled);
             }
-            let name = HeaderName::from_bytes(name.as_bytes())
-                .map_err(|error| RequestError::Header(error.to_string()))?;
-            let value = HeaderValue::from_str(value)
-                .map_err(|error| RequestError::Header(error.to_string()))?;
-            request = request.header(name, value);
-        }
-        for (name, value) in extra_headers {
-            let name = HeaderName::from_bytes(name.as_bytes())
-                .map_err(|error| RequestError::Header(error.to_string()))?;
-            let value = HeaderValue::from_str(value)
-                .map_err(|error| RequestError::Header(error.to_string()))?;
-            request = request.header(name, value);
-        }
-        if let Some(body) = body {
-            request = request.body(body.to_string());
+
+            // Resolve again for every attempt and pin the checked address into reqwest.
+            // This prevents redirects/DNS changes from bypassing the authorized network scope.
+            let pinned = self.policy.resolve_and_pin(url)?;
+            self.budget.claim()?;
+            if self.cancelled.load(Ordering::SeqCst) {
+                return Err(RequestError::Cancelled);
+            }
+
+            let client = client_for(&self.policy, url, pinned)?;
+            let request = build_request(
+                &client,
+                method.clone(),
+                url,
+                body,
+                &self.auth,
+                &custom_headers,
+                &extra_headers,
+            );
+
+            let started = Instant::now();
+            let response = match request.send() {
+                Ok(response) => response,
+                Err(_) if attempt + 1 < attempts => continue,
+                Err(_) => {
+                    return Err(RequestError::Http(format!(
+                        "transport failure for {}",
+                        redact_url(url)
+                    )));
+                }
+            };
+            let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+            return read_response(response, elapsed_ms, self.policy.config().response_limit_bytes);
         }
 
-        let started = Instant::now();
-        let mut response = request.send().map_err(|error| RequestError::Http(error.to_string()))?;
-        let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        let status = response.status().as_u16();
-        let headers = copy_headers(response.headers());
-        let content_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        let location = response
-            .headers()
-            .get(LOCATION)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        let max = self.policy.config().response_limit_bytes;
-        let mut body_bytes = Vec::with_capacity(max.min(65_536));
-        let mut limited = response.take(max as u64 + 1);
-        limited
-            .read_to_end(&mut body_bytes)
-            .map_err(|error| RequestError::Body(error.to_string()))?;
-        let truncated = body_bytes.len() > max;
-        if truncated {
-            body_bytes.truncate(max);
-        }
-        Ok(ObservedResponse {
-            status,
-            headers,
-            content_type,
-            location,
-            body: body_bytes,
-            elapsed_ms,
-            truncated,
-        })
+        Err(RequestError::Http(format!(
+            "transport failure for {}",
+            redact_url(url)
+        )))
     }
 }
 
+fn build_request(
+    client: &Client,
+    method: Method,
+    url: &Url,
+    body: Option<&str>,
+    auth: &AuthContext,
+    custom_headers: &[(HeaderName, HeaderValue)],
+    extra_headers: &[(HeaderName, HeaderValue)],
+) -> RequestBuilder {
+    let mut request = client.request(method, url.clone());
+    if let Some(token) = auth
+        .bearer_token
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        request = request.bearer_auth(token.trim());
+    }
+    if let Some(cookie) = auth
+        .cookie_header
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        request = request.header("Cookie", cookie.trim());
+    }
+    for (name, value) in custom_headers {
+        request = request.header(name.clone(), value.clone());
+    }
+    for (name, value) in extra_headers {
+        request = request.header(name.clone(), value.clone());
+    }
+    if let Some(body) = body {
+        request = request.body(body.to_string());
+    }
+    request
+}
+
+fn read_response(
+    response: reqwest::blocking::Response,
+    elapsed_ms: u64,
+    max: usize,
+) -> Result<ObservedResponse, RequestError> {
+    let status = response.status().as_u16();
+    let headers = copy_headers(response.headers());
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let mut body_bytes = Vec::with_capacity(max.min(65_536));
+    let mut limited = response.take(max as u64 + 1);
+    limited
+        .read_to_end(&mut body_bytes)
+        .map_err(|_| RequestError::Body)?;
+    let truncated = body_bytes.len() > max;
+    if truncated {
+        body_bytes.truncate(max);
+    }
+    Ok(ObservedResponse {
+        status,
+        headers,
+        content_type,
+        location,
+        body: body_bytes,
+        elapsed_ms,
+        truncated,
+    })
+}
+
 fn client_for(policy: &ScopePolicy, url: &Url, pinned: SocketAddr) -> Result<Client, RequestError> {
-    let host = url.host_str().ok_or_else(|| RequestError::Http("URL host is missing".to_string()))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| RequestError::Http("URL host is missing".to_string()))?;
     Client::builder()
         .timeout(Duration::from_millis(policy.config().timeout_ms))
         .redirect(reqwest::redirect::Policy::none())
         .user_agent("CodeTwin-Authorized-Security-Test/1.0")
         .resolve(host, pinned)
         .build()
-        .map_err(|error| RequestError::Http(error.to_string()))
+        .map_err(|_| RequestError::Http("HTTP client initialization failed".to_string()))
+}
+
+fn parse_headers(values: &[(String, String)]) -> Result<Vec<(HeaderName, HeaderValue)>, RequestError> {
+    values
+        .iter()
+        .map(|(name, value)| parse_header(name, value))
+        .collect()
+}
+
+fn parse_borrowed_headers(values: &[(&str, &str)]) -> Result<Vec<(HeaderName, HeaderValue)>, RequestError> {
+    values
+        .iter()
+        .map(|(name, value)| parse_header(name, value))
+        .collect()
+}
+
+fn parse_header(name: &str, value: &str) -> Result<(HeaderName, HeaderValue), RequestError> {
+    if forbidden_user_header(name) {
+        return Err(RequestError::Header(format!(
+            "header {} cannot be overridden",
+            name.trim()
+        )));
+    }
+    let name = HeaderName::from_bytes(name.trim().as_bytes())
+        .map_err(|_| RequestError::Header("invalid header name".to_string()))?;
+    let value = HeaderValue::from_str(value)
+        .map_err(|_| RequestError::Header("invalid header value".to_string()))?;
+    Ok((name, value))
 }
 
 fn copy_headers(headers: &HeaderMap) -> Vec<(String, String)> {
@@ -197,4 +288,18 @@ fn forbidden_user_header(name: &str) -> bool {
         name.trim().to_ascii_lowercase().as_str(),
         "host" | "content-length" | "transfer-encoding" | "connection"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RequestBudget, RequestError};
+
+    #[test]
+    fn request_budget_never_exceeds_limit() {
+        let budget = RequestBudget::new(2);
+        assert_eq!(budget.claim().expect("first"), 1);
+        assert_eq!(budget.claim().expect("second"), 2);
+        assert!(matches!(budget.claim(), Err(RequestError::BudgetExhausted)));
+        assert_eq!(budget.used(), 2);
+    }
 }
