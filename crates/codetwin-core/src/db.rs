@@ -20,6 +20,7 @@ const MIGRATION_0014: &str = include_str!("../migrations/0014_qa_test_execution.
 const MIGRATION_0015: &str = include_str!("../migrations/0015_qa_execution_manifest_binding.sql");
 const MIGRATION_0016: &str = include_str!("../migrations/0016_qa_external_read_provenance.sql");
 const MIGRATION_0017: &str = include_str!("../migrations/0017_dashboard_workspace.sql");
+const MIGRATION_0018: &str = include_str!("../migrations/0018_authorized_web_security.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -74,6 +75,7 @@ impl Database {
         self.apply_migration(15, MIGRATION_0015)?;
         self.apply_migration(16, MIGRATION_0016)?;
         self.apply_migration(17, MIGRATION_0017)?;
+        self.apply_migration(18, MIGRATION_0018)?;
         Ok(())
     }
 
@@ -110,12 +112,12 @@ mod tests {
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites','web_security_scans','web_security_endpoints','web_security_findings','web_security_evidence')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 31);
+        assert_eq!(count, 35);
     }
 
     #[test]
@@ -125,8 +127,8 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 17);
-        for version in [10i64, 11, 12, 13, 14, 15, 16, 17] {
+        assert_eq!(count, 18);
+        for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18] {
             let applied: i64 = db
                 .connection()
                 .query_row(
@@ -182,6 +184,38 @@ mod tests {
         assert_eq!(website_table, 1);
         assert_eq!(migration, 1);
         assert_eq!(indexes, 2);
+    }
+
+    #[test]
+    fn upgrades_existing_v17_database_with_authorized_web_security_schema() {
+        let file = NamedTempFile::new().expect("temp db");
+        {
+            let db = Database::open(file.path()).expect("create current db");
+            db.connection()
+                .execute_batch(
+                    "DROP TABLE web_security_evidence;
+                     DROP TABLE web_security_findings;
+                     DROP TABLE web_security_endpoints;
+                     DROP TABLE web_security_scans;
+                     DELETE FROM schema_migrations WHERE version = 18;",
+                )
+                .expect("rewind web security migration");
+        }
+
+        let upgraded = Database::open(file.path()).expect("upgrade v17 db");
+        let tables: i64 = upgraded.connection().query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
+             AND name IN ('web_security_scans','web_security_endpoints','web_security_findings','web_security_evidence')",
+            [],
+            |row| row.get(0),
+        ).expect("web security tables");
+        let migration: i64 = upgraded.connection().query_row(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 18",
+            [],
+            |row| row.get(0),
+        ).expect("migration 18");
+        assert_eq!(tables, 4);
+        assert_eq!(migration, 1);
     }
 
     #[test]
