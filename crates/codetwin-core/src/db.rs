@@ -169,8 +169,19 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("migration 17");
+        let indexes: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index'
+                   AND name IN ('idx_websites_project_updated','idx_websites_status_checked')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("website indexes");
         assert_eq!(website_table, 1);
         assert_eq!(migration, 1);
+        assert_eq!(indexes, 2);
     }
 
     #[test]

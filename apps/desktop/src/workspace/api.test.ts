@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const invokeMock = vi.hoisted(() => vi.fn());
+const openMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: openMock }));
 
-import { importProjectPath, validateWebsiteUrl } from "./api";
+import { chooseProjectFolder, importProjectPath, validateWebsiteUrl } from "./api";
 import type { AppPreferences } from "./types";
 
 const basePreferences: AppPreferences = {
@@ -16,7 +17,23 @@ const basePreferences: AppPreferences = {
 };
 
 describe("workspace API workflows", () => {
-  beforeEach(() => invokeMock.mockReset());
+  beforeEach(() => {
+    invokeMock.mockReset();
+    openMock.mockReset();
+  });
+
+  it("handles native folder selection and cancellation without indexing", async () => {
+    openMock.mockResolvedValueOnce(null);
+    await expect(chooseProjectFolder()).resolves.toBeNull();
+
+    openMock.mockResolvedValueOnce("/work/project");
+    await expect(chooseProjectFolder()).resolves.toBe("/work/project");
+    expect(openMock).toHaveBeenLastCalledWith(expect.objectContaining({
+      directory: true,
+      multiple: false,
+    }));
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
 
   it("validates website URLs before persistence", () => {
     expect(validateWebsiteUrl("")).toMatch(/Enter a website URL/);
@@ -67,6 +84,12 @@ describe("workspace API workflows", () => {
     expect(result.index.project_id).toBe("project-1");
     expect(invokeMock.mock.calls.map((call) => call[0])).toEqual(["discover_project", "index_project"]);
     expect(stages).toEqual(["discovering", "indexing"]);
+  });
+
+  it("stops cleanly when project discovery fails", async () => {
+    invokeMock.mockRejectedValueOnce(new Error("invalid project folder"));
+    await expect(importProjectPath("/bad/project", basePreferences)).rejects.toThrow("invalid project folder");
+    expect(invokeMock.mock.calls.map((call) => call[0])).toEqual(["discover_project"]);
   });
 
   it("runs only explicitly enabled post-import analysis", async () => {

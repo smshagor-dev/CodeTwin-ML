@@ -689,8 +689,26 @@ mod tests {
         assert_eq!(projects[0].file_count, 1);
         assert!(projects[0].symbol_count >= 1);
 
-        let results = service.search("dashboardValue", 20).expect("search");
-        assert!(results.iter().any(|result| result.kind == "symbol"));
+        let website = service
+            .add_website(&WebsiteInput {
+                url: "https://search.example.com/docs".to_string(),
+                display_name: Some("Dashboard documentation".to_string()),
+                project_id: Some(summary.project_id.clone()),
+            })
+            .expect("website");
+
+        let project_results = service
+            .search(&projects[0].display_name, 20)
+            .expect("project search");
+        assert!(project_results.iter().any(|result| result.kind == "project"));
+        let website_results = service
+            .search("Dashboard documentation", 20)
+            .expect("website search");
+        assert!(website_results.iter().any(|result| result.kind == "website"));
+        let file_results = service.search("main.ts", 20).expect("file search");
+        assert!(file_results.iter().any(|result| result.kind == "file"));
+        let symbol_results = service.search("dashboardValue", 20).expect("symbol search");
+        assert!(symbol_results.iter().any(|result| result.kind == "symbol"));
         assert!(service.search("   ", 20).expect("empty search").is_empty());
         assert!(service.search(&"z".repeat(4096), 20).expect("long search").is_empty());
 
@@ -698,6 +716,13 @@ mod tests {
             .remove_project(&summary.project_id)
             .expect("remove project"));
         assert!(service.list_projects(None, 20).expect("projects").is_empty());
+        let website_after_project_removal = service
+            .get_website(&website.id)
+            .expect("website lookup")
+            .expect("website remains");
+        assert_eq!(website_after_project_removal.project_id, None);
+        assert!(service.remove_website(&website.id).expect("remove website"));
+        assert!(service.list_websites(None, 20).expect("websites").is_empty());
     }
 
     #[test]

@@ -328,6 +328,15 @@ html[data-theme="dark"] .ws-search-kind { background: #222c56; color: #aab3ff; }
 .ws-toast button { color: white; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 6px; }
 .ws-toast button:hover { background: rgba(255,255,255,.13); }
 
+.ws-loading {
+  min-height: 260px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: var(--ws-muted);
+  font-size: 12px;
+}
 .ws-spinner {
   width: 16px;
   height: 16px;
