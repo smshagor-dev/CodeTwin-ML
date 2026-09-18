@@ -18,7 +18,7 @@ const MIGRATION_0012: &str = include_str!("../migrations/0012_repair_transaction
 const MIGRATION_0013: &str = include_str!("../migrations/0013_qa_test_discovery.sql");
 const MIGRATION_0014: &str = include_str!("../migrations/0014_qa_test_execution.sql");
 const MIGRATION_0015: &str = include_str!("../migrations/0015_qa_execution_manifest_binding.sql");
-const MIGRATION_0016: &str = include_str!("../migrations/0016_qa_external_read_provenance.sql");
+const MIGRATION_0016: &str = include_str!("../migrations/0016_qa_external_read_provenance.sql");\nconst MIGRATION_0017: &str = include_str!("../migrations/0017_dashboard_workspace.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -113,7 +113,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 30);
+        assert_eq!(count, 31);
     }
 
     #[test]
@@ -124,7 +124,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
         assert_eq!(count, 16);
-        for version in [10i64, 11, 12, 13, 14, 15, 16] {
+        for version in [10i64, 11, 12, 13, 14, 15, 16, 17] {
             let applied: i64 = db
                 .connection()
                 .query_row(

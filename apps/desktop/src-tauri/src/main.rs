@@ -2,7 +2,7 @@ mod database_commands;
 mod ml_commands;
 mod qa_commands;
 mod repair_commands;
-mod runtime_commands;
+mod runtime_commands;\nmod workspace_commands;
 
 use std::{
     path::PathBuf,
@@ -48,7 +48,7 @@ use runtime_commands::{
     list_runtime_artifacts, list_runtime_evidence, list_runtime_findings, list_runtime_rules,
     run_runtime_analysis, runtime_history,
 };
-use tauri::Manager;
+use tauri::Manager;\nuse workspace_commands::{\n    add_website, check_website, get_app_preferences, list_projects, list_websites, recent_activity,\n    remove_project, remove_website, save_app_preferences, search_workspace, system_status,\n    workspace_summary,\n};
 
 struct AppState {
     database: Mutex<Database>,
