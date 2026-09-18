@@ -152,9 +152,13 @@ function GlobalSearch() {
     if (result.project_id) setActiveProjectId(result.project_id);
     setOpen(false);
     setQuery("");
-    if (result.kind === "website") navigate("websites");
-    else if (result.kind === "file" || result.kind === "symbol") navigate("code-analysis");
-    else navigate("projects");
+    if (result.kind === "website") {
+      window.location.hash = "#/websites?website=" + encodeURIComponent(result.id);
+    } else if (result.kind === "file" || result.kind === "symbol") {
+      window.location.hash = "#/code-analysis?q=" + encodeURIComponent(result.title);
+    } else {
+      window.location.hash = "#/projects?project=" + encodeURIComponent(result.project_id ?? result.id);
+    }
   }
 
   return (
@@ -192,7 +196,7 @@ function GlobalSearch() {
 }
 
 export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
-  const { preferences, savePreferences, activity, operation, toast, setToast } = useWorkspace();
+  const { preferences, savePreferences, activity, operation, toast, setToast, setActiveProjectId } = useWorkspace();
   const alertCount = useMemo(() => activity.filter((item) => ["failed", "offline", "degraded"].includes(item.status)).length, [activity]);
   const initials = preferences.display_name.trim().split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "U";
 
@@ -232,7 +236,10 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
               <summary className="ws-icon-button" aria-label="Notifications"><Icon name="bell"/>{alertCount > 0 && <b>{Math.min(alertCount, 99)}</b>}</summary>
               <div className="ws-popover ws-notifications">
                 <h3>Recent activity</h3>
-                {activity.slice(0, 6).map((item) => <button key={item.id} onClick={() => item.project_id ? navigate("projects") : undefined}><span className={"ws-activity-dot ws-activity-" + item.kind}/><span><strong>{item.title}</strong><small>{item.detail} · {formatDate(item.occurred_at)}</small></span></button>)}
+                {activity.slice(0, 6).map((item) => <button key={item.id} onClick={() => {
+                  if (item.project_id) setActiveProjectId(item.project_id);
+                  navigate(item.kind === "website" ? "websites" : "projects");
+                }}><span className={"ws-activity-dot ws-activity-" + item.kind}/><span><strong>{item.title}</strong><small>{item.detail} · {formatDate(item.occurred_at)}</small></span></button>)}
                 {!activity.length && <p>No activity yet.</p>}
               </div>
             </details>

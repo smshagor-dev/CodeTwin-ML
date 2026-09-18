@@ -15,7 +15,12 @@ export function WebsitesPage() {
   } = useWorkspace();
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
-  const [selectedId, setSelectedId] = useState<string | null>(websites[0]?.id ?? null);
+  const requestedWebsite = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("website");
+  const [selectedId, setSelectedId] = useState<string | null>(
+    requestedWebsite && websites.some((website) => website.id === requestedWebsite)
+      ? requestedWebsite
+      : websites[0]?.id ?? null,
+  );
   const [checkingId, setCheckingId] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<WebsiteRecord | null>(null);
   const [removing, setRemoving] = useState(false);

@@ -149,7 +149,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       });
     } catch (error) {
       setToast({ tone: "error", message: "Project import failed: " + String(error) });
-      throw error;
     } finally {
       setOperation(null);
     }
@@ -164,7 +163,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setToast({ tone: "success", message: "Index refreshed for " + project.display_name + "." });
     } catch (error) {
       setToast({ tone: "error", message: "Re-index failed: " + String(error) });
-      throw error;
     } finally {
       setOperation(null);
     }
@@ -210,7 +208,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setToast({ tone: "success", message: "Static security analysis completed." });
     } catch (error) {
       setToast({ tone: "error", message: "Security analysis failed: " + String(error) });
-      throw error;
     } finally {
       setOperation(null);
     }
@@ -226,7 +223,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setToast({ tone: "success", message: "QA evidence discovery completed." });
     } catch (error) {
       setToast({ tone: "error", message: "QA discovery failed: " + String(error) });
-      throw error;
     } finally {
       setOperation(null);
     }

@@ -30,8 +30,10 @@ describe("workspace routing", () => {
 
   it("keeps advanced existing workspaces addressable without adding them to the primary sidebar", () => {
     expect(advancedRoutes).toContain("engineering");
+    expect(advancedRoutes).toContain("web-security");
     expect(advancedRoutes).toContain("database");
     expect(advancedRoutes).toContain("runtime");
+    expect(advancedRoutes).toContain("qa");
     expect(routeHref("repair-apply")).toBe("#/repair-apply");
   });
 });
