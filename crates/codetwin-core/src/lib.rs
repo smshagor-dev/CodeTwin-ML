@@ -22,6 +22,7 @@ pub mod semantic_resolution;
 pub mod semantic_service;
 pub mod symbol_reference;
 pub mod workspace;
+pub mod web_security;
 
 pub use database_analysis::{
     DatabaseAnalysisError, DatabaseAnalysisService, DatabaseArtifactRecord, DatabaseFindingRecord,
@@ -101,4 +102,10 @@ pub use symbol_reference::{
 pub use workspace::{
     normalize_website_url, AppPreferences, ProjectOverview, WebsiteInput, WebsiteRecord,
     WorkspaceActivity, WorkspaceError, WorkspaceSearchResult, WorkspaceService, WorkspaceSummary,
+};
+
+pub use web_security::{
+    AuthorizedWebSecurityStore, WebEndpointInput, WebEndpointRecord, WebEvidenceInput,
+    WebEvidenceRecord, WebFindingFilter, WebFindingInput, WebFindingRecord, WebScanCreate,
+    WebScanRecord, WebSecurityStoreError, WebSourceCorrelation,
 };
