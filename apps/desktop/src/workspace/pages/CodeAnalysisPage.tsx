@@ -10,7 +10,7 @@ export function CodeAnalysisPage() {
   const { projects, activeProjectId, setActiveProjectId, activeProject, reindexProject, operation, setToast } = useWorkspace();
   const [files, setFiles] = useState<SourceFileRecord[]>([]);
   const [symbols, setSymbols] = useState<SymbolRecord[]>([]);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(() => new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("q") ?? "");
   const [kind, setKind] = useState("all");
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -62,7 +62,7 @@ export function CodeAnalysisPage() {
   const selectedFile = files.find((file) => file.id === selectedFileId) ?? null;
 
   if (!projects.length) {
-    return <><PageHeader eyebrow="PERSISTED SOURCE INDEX" title="Code Analysis" description="Browse Tree-sitter files and symbols from the existing CodeTwin index."/ >
+    return <><PageHeader eyebrow="PERSISTED SOURCE INDEX" title="Code Analysis" description="Browse Tree-sitter files and symbols from the existing CodeTwin index."/>
       <EmptyState icon="code" title="Index a project first" description="Code Analysis reads the persistent project index. Add a local project folder from Projects or Dashboard."/></>;
   }
 

@@ -33,6 +33,7 @@ export function DashboardPage() {
     activity,
     systemStatus,
     activeProject,
+    setActiveProjectId,
     operation,
     setWebsiteComposerOpen,
     pickAndImportProject,
@@ -81,8 +82,10 @@ export function DashboardPage() {
         <details className="ws-more-menu">
           <summary className="ws-action-button"><Icon name="more"/> More</summary>
           <div>
+            <button onClick={() => navigate("web-security")}>Web Security Workspace</button>
             <button onClick={() => navigate("database")}>Database Analysis</button>
             <button onClick={() => navigate("runtime")}>Runtime Reliability</button>
+            <button onClick={() => navigate("qa")}>QA Workspace</button>
             <button onClick={() => navigate("ml")}>ML Workspace</button>
             <button onClick={() => navigate("repair")}>Repair Lab</button>
           </div>
@@ -102,7 +105,7 @@ export function DashboardPage() {
                       <td><strong>{website.display_name}</strong><small title={website.url}>{shortPath(website.url, 46)}</small></td>
                       <td><StatusBadge status={website.status}/></td>
                       <td>{formatDate(website.last_checked_at)}</td>
-                      <td><button className="ws-icon-button" aria-label={"View " + website.display_name} onClick={() => navigate("websites")}><Icon name="chevron"/></button></td>
+                      <td><button className="ws-icon-button" aria-label={"View " + website.display_name} onClick={() => { window.location.hash = "#/websites?website=" + encodeURIComponent(website.id); }}><Icon name="chevron"/></button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -123,7 +126,7 @@ export function DashboardPage() {
                       <td><strong>{project.display_name}</strong><small>{project.file_count} files · {project.symbol_count} symbols</small></td>
                       <td className="ws-mono" title={project.root_path}>{shortPath(project.root_path, 42)}</td>
                       <td>{formatDate(project.last_indexed_at)}</td>
-                      <td><button className="ws-icon-button" aria-label={"Open " + project.display_name} onClick={() => navigate("projects")}><Icon name="chevron"/></button></td>
+                      <td><button className="ws-icon-button" aria-label={"Open " + project.display_name} onClick={() => { setActiveProjectId(project.id); window.location.hash = "#/projects?project=" + encodeURIComponent(project.id); }}><Icon name="chevron"/></button></td>
                     </tr>
                   ))}
                 </tbody>

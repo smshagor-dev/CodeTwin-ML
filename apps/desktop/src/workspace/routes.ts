@@ -15,8 +15,10 @@ export const workspaceRoutes = [
 
 export const advancedRoutes = [
   "engineering",
+  "web-security",
   "database",
   "runtime",
+  "qa",
   "ml",
   "repair",
   "repair-apply",

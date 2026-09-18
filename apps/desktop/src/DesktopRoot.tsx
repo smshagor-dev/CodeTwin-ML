@@ -19,7 +19,7 @@ import "./repair-workspace.css";
 import "./runtime-workspace.css";
 import "./workspace/workspace.css";
 
-const advanced = new Set<AdvancedRoute>(["engineering", "database", "runtime", "ml", "repair", "repair-apply"]);
+const advanced = new Set<AdvancedRoute>(["engineering", "web-security", "database", "runtime", "qa", "ml", "repair", "repair-apply"]);
 
 function AdvancedWorkspace({ route }: { route: AdvancedRoute }) {
   return (
@@ -29,8 +29,10 @@ function AdvancedWorkspace({ route }: { route: AdvancedRoute }) {
         <span>Advanced CodeTwin workspace · {route.replaceAll("-", " ")}</span>
       </div>
       {route === "engineering" && <App/>}
+      {route === "web-security" && <WebSecurityWorkspace/>}
       {route === "database" && <DatabaseWorkspace/>}
       {route === "runtime" && <RuntimeWorkspace/>}
+      {route === "qa" && <QaWorkspace/>}
       {route === "ml" && <MLWorkspace/>}
       {route === "repair" && <RepairWorkspace/>}
       {route === "repair-apply" && <RepairApplicationWorkspace/>}
