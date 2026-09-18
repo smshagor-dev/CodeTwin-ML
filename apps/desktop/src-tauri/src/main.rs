@@ -3,6 +3,7 @@ mod ml_commands;
 mod qa_commands;
 mod repair_commands;
 mod runtime_commands;
+mod workspace_commands;
 
 use std::{
     path::PathBuf,
@@ -49,6 +50,11 @@ use runtime_commands::{
     run_runtime_analysis, runtime_history,
 };
 use tauri::Manager;
+use workspace_commands::{
+    add_website, check_website, get_app_preferences, list_projects, list_websites, recent_activity,
+    remove_project, remove_website, save_app_preferences, search_workspace, system_status,
+    workspace_summary,
+};
 
 struct AppState {
     database: Mutex<Database>,
@@ -536,6 +542,7 @@ fn list_security_rules(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
@@ -628,6 +635,18 @@ fn main() {
             rollback_repair_application,
             repair_application_history,
             list_repair_application_items,
+            list_projects,
+            remove_project,
+            list_websites,
+            add_website,
+            check_website,
+            remove_website,
+            workspace_summary,
+            recent_activity,
+            search_workspace,
+            get_app_preferences,
+            save_app_preferences,
+            system_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");

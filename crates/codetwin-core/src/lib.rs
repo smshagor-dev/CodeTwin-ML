@@ -21,6 +21,7 @@ pub mod semantic_query;
 pub mod semantic_resolution;
 pub mod semantic_service;
 pub mod symbol_reference;
+pub mod workspace;
 
 pub use database_analysis::{
     DatabaseAnalysisError, DatabaseAnalysisService, DatabaseArtifactRecord, DatabaseFindingRecord,
@@ -95,4 +96,9 @@ pub use semantic_service::{SemanticEnrichmentService, SemanticServiceError};
 pub use symbol_reference::{
     ReferenceRefreshSummary, SymbolReferenceError, SymbolReferenceObservationRecord,
     SymbolReferenceService,
+};
+
+pub use workspace::{
+    normalize_website_url, AppPreferences, ProjectOverview, WebsiteInput, WebsiteRecord,
+    WorkspaceActivity, WorkspaceError, WorkspaceSearchResult, WorkspaceService, WorkspaceSummary,
 };
