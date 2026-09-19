@@ -2,15 +2,16 @@ use std::collections::BTreeMap;
 use std::sync::{atomic::AtomicBool, Arc};
 
 use codetwin_core::{
-    Database, GuidedActivityRecord, GuidedFixPreparation, GuidedPlanItemInput, GuidedPlanItemRecord,
+    AuthorizedWebSecurityStore, Database, GuidedActivityRecord, GuidedFixPreparation,
+    GuidedPlanItemInput, GuidedPlanItemRecord,
     GuidedRetestRecord, GuidedRiskGraph, GuidedScanComparison, GuidedSecurityScorecard,
     GuidedSecuritySessionRecord, GuidedSecurityStore, GuidedSessionCreate, GuidedSourceCandidate,
 };
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use web_security_testing::{
-    prepare_guided_security, run_targeted_retest, AuthContext, ScanConfig, SecurityEnvironment,
-    TargetedRetestRequest,
+    prepare_guided_security, run_targeted_retest, ApplicationSourceHint, AuthContext, ScanConfig,
+    SecurityEnvironment, TargetedRetestRequest,
 };
 
 use crate::{with_database, AppState};
@@ -77,7 +78,32 @@ pub async fn prepare_guided_security_test(
             Arc::new(AtomicBool::new(false)),
         );
         match prepared {
-            Ok(prepared) => {
+            Ok(mut prepared) => {
+                if let Some(project_id) = request.project_id.as_deref() {
+                    let source_store = AuthorizedWebSecurityStore::new(&database);
+                    let mut correlated = 0usize;
+                    'groups: for group in &mut prepared.application_map.groups {
+                        for route in &mut group.routes {
+                            if correlated >= 500 {
+                                break 'groups;
+                            }
+                            correlated += 1;
+                            if let Ok(Some(source)) = source_store.correlate_source(
+                                Some(project_id),
+                                &route.url,
+                                route.parameters.first().map(String::as_str),
+                            ) {
+                                if source.confidence >= 0.50 {
+                                    route.source_hints.push(ApplicationSourceHint {
+                                        relative_path: source.relative_path,
+                                        symbol_name: source.symbol_name,
+                                        confidence: source.confidence,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
                 let preflight_json =
                     serde_json::to_string(&prepared.preflight).map_err(|error| error.to_string())?;
                 let map_json = serde_json::to_string(&prepared.application_map)
