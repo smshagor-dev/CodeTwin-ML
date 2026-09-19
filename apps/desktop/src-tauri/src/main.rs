@@ -4,6 +4,7 @@ mod ml_commands;
 mod qa_commands;
 mod repair_commands;
 mod runtime_commands;
+mod security_fix_commands;
 mod workspace_commands;
 mod web_security_commands;
 
@@ -60,6 +61,13 @@ use repair_commands::{
 use runtime_commands::{
     list_runtime_artifacts, list_runtime_evidence, list_runtime_findings, list_runtime_rules,
     run_runtime_analysis, runtime_history,
+};
+use security_fix_commands::{
+    analyze_security_fix_overlap, apply_security_fix, approve_security_fix,
+    evaluate_security_fix_eligibility, generate_security_fix_patch, get_security_fix_attempt,
+    list_security_fix_attempts, list_security_fix_events, list_security_fix_validation,
+    prepare_security_fix, propose_security_fix_replacement, review_security_fix,
+    rollback_security_fix, run_security_fix_validation,
 };
 use tauri::Manager;
 use web_security_commands::{
@@ -687,6 +695,20 @@ fn main() {
             retest_guided_security_finding,
             list_guided_security_retest_candidates,
             list_guided_security_retests,
+            evaluate_security_fix_eligibility,
+            prepare_security_fix,
+            generate_security_fix_patch,
+            propose_security_fix_replacement,
+            review_security_fix,
+            approve_security_fix,
+            get_security_fix_attempt,
+            list_security_fix_attempts,
+            list_security_fix_validation,
+            list_security_fix_events,
+            analyze_security_fix_overlap,
+            apply_security_fix,
+            rollback_security_fix,
+            run_security_fix_validation,
             start_web_security_scan,
             cancel_web_security_scan,
             get_web_security_scan,
