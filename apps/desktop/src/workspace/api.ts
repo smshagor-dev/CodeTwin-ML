@@ -13,7 +13,11 @@ import type {
   GuidedSecurityScorecard,
   GuidedSecuritySessionRecord,
   GuidedSourceCandidate,
+  FixEligibilityAssessment,
   IndexSummary,
+  MultiFindingOverlap,
+  PatchReview,
+  RepairSourceSnapshot,
   LanguageServerConfig,
   LanguageServerKind,
   ProjectOverview,
@@ -22,6 +26,12 @@ import type {
   QaDiscoveryRunRecord,
   QaFrameworkSummary,
   SecurityFindingRecord,
+  SecurityFixApplicationResult,
+  SecurityFixAttemptRecord,
+  SecurityFixEventRecord,
+  SecurityFixPreparation,
+  SecurityFixValidationRecord,
+  SecurityFixValidationRun,
   SecurityRunRecord,
   SourceFileRecord,
   SymbolRecord,
@@ -183,6 +193,61 @@ export const workspaceApi = {
   },
   listGuidedSecurityRetests(findingId: string, limit = 50) {
     return invoke<GuidedRetestRecord[]>("list_guided_security_retests", { findingId, limit });
+  },
+  evaluateSecurityFixEligibility(findingId: string) {
+    return invoke<FixEligibilityAssessment>("evaluate_security_fix_eligibility", { findingId });
+  },
+  prepareSecurityFix(findingId: string, allowAdditionalAttempt = false) {
+    return invoke<SecurityFixPreparation>("prepare_security_fix", {
+      findingId,
+      allowAdditionalAttempt,
+    });
+  },
+  generateSecurityFixPatch(attemptId: string) {
+    return invoke<PatchReview>("generate_security_fix_patch", { attemptId });
+  },
+  proposeSecurityFixReplacement(attemptId: string, fileId: string, proposedContent: string) {
+    return invoke<PatchReview>("propose_security_fix_replacement", {
+      attemptId,
+      fileId,
+      proposedContent,
+    });
+  },
+  reviewSecurityFix(attemptId: string) {
+    return invoke<PatchReview>("review_security_fix", { attemptId });
+  },
+  approveSecurityFix(attemptId: string, acceptCaution: boolean) {
+    return invoke<SecurityFixAttemptRecord>("approve_security_fix", {
+      attemptId,
+      acceptCaution,
+    });
+  },
+  getSecurityFixAttempt(attemptId: string) {
+    return invoke<SecurityFixAttemptRecord | null>("get_security_fix_attempt", { attemptId });
+  },
+  listSecurityFixAttempts(findingId: string, limit = 20) {
+    return invoke<SecurityFixAttemptRecord[]>("list_security_fix_attempts", { findingId, limit });
+  },
+  listSecurityFixValidation(attemptId: string, limit = 200) {
+    return invoke<SecurityFixValidationRecord[]>("list_security_fix_validation", { attemptId, limit });
+  },
+  listSecurityFixEvents(attemptId: string, limit = 200) {
+    return invoke<SecurityFixEventRecord[]>("list_security_fix_events", { attemptId, limit });
+  },
+  analyzeSecurityFixOverlap(findingIds: string[]) {
+    return invoke<MultiFindingOverlap>("analyze_security_fix_overlap", { findingIds });
+  },
+  applySecurityFix(attemptId: string) {
+    return invoke<SecurityFixApplicationResult>("apply_security_fix", { attemptId });
+  },
+  rollbackSecurityFix(attemptId: string) {
+    return invoke<SecurityFixApplicationResult>("rollback_security_fix", { attemptId });
+  },
+  runSecurityFixValidation(attemptId: string) {
+    return invoke<SecurityFixValidationRun>("run_security_fix_validation", { attemptId });
+  },
+  readRepairSource(fileId: string) {
+    return invoke<RepairSourceSnapshot>("read_repair_source", { fileId });
   },
   languageServers() {
     return invoke<LanguageServerConfig[]>("list_language_server_configs");
