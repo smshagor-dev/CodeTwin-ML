@@ -88,6 +88,7 @@ export function canApproveAndApplySecurityFix(
   if (busy || !attempt || !review) return false;
   if (attempt.status !== "patch_proposed") return false;
   if (review.attempt_id !== attempt.id) return false;
+  if (!attempt.patch_hash || attempt.patch_hash !== review.safety.patch_hash) return false;
   if (review.safety.classification === "REJECTED") return false;
   if (review.safety.classification === "CAUTION" && !acceptCaution) return false;
   return true;
