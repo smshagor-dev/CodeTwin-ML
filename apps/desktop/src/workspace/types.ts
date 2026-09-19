@@ -289,6 +289,9 @@ export type WebEndpointRecord = {
   depth: number;
   source: string;
   parameter_names: string[];
+  parameter_locations: Record<string, string>;
+  response_header_names: string[];
+  cookie_names: string[];
   content_type: string | null;
   status_code: number | null;
   redirect_to: string | null;
@@ -313,7 +316,9 @@ export type WebFindingRecord = {
   remediation: string;
   references: string[];
   source_file_id: string | null;
+  source_relative_path: string | null;
   source_symbol_id: string | null;
+  source_symbol_name: string | null;
   source_confidence: number | null;
   status: "open" | "resolved" | "accepted_risk" | "false_positive";
   first_detected: string;

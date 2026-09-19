@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
   AppPreferences,
@@ -220,4 +220,20 @@ export async function importProjectPath(
     }
   }
   return { profile, index, postImportErrors };
+}
+
+
+export async function chooseWebSecurityReportPath(
+  format: "markdown" | "json",
+): Promise<string | null> {
+  const extension = format === "json" ? "json" : "md";
+  const selected = await save({
+    title: "Export CodeTwin Security Report",
+    defaultPath: "codetwin-security-report." + extension,
+    filters: [{
+      name: format === "json" ? "JSON report" : "Markdown report",
+      extensions: [extension],
+    }],
+  });
+  return typeof selected === "string" ? selected : null;
 }
