@@ -747,6 +747,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 "campaign has no reviewed plan hash".into(),
             ));
         };
+        self.assert_plan_integrity(&campaign)?;
         if expected_plan_hash != plan_hash
             || expected_plan_hash.len() != 64
             || !expected_plan_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -788,6 +789,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 campaign.status
             )));
         }
+        self.assert_plan_integrity(&campaign)?;
         if campaign.approved_plan_hash != campaign.plan_hash {
             return Err(SecurityRemediationCampaignError::State(
                 "approved campaign plan identity is stale".into(),
@@ -1625,6 +1627,62 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    fn assert_plan_integrity(
+        &self,
+        campaign: &SecurityRemediationCampaignRecord,
+    ) -> Result<(), SecurityRemediationCampaignError> {
+        let Some(stored_hash) = campaign.plan_hash.as_deref() else {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign has no generated plan hash".into(),
+            ));
+        };
+        if sha256_hex(campaign.plan_json.as_bytes()) != stored_hash {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign plan payload changed since relationship analysis".into(),
+            ));
+        }
+        let plan: SecurityRemediationCampaignPlan = serde_json::from_str(&campaign.plan_json)?;
+        if plan.version != campaign.plan_revision
+            || plan.project_id != campaign.project_id
+            || plan.scan_id != campaign.scan_id
+            || plan.target_url != campaign.target_url
+            || plan.environment != campaign.environment
+            || plan.scope_sha256 != sha256_hex(campaign.scope_json.as_bytes())
+        {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign plan scope identity does not match the authorized campaign".into(),
+            ));
+        }
+
+        let findings = self.findings(&campaign.id)?;
+        if findings.len() != campaign.selected_count
+            || plan.ordered_findings.len() != campaign.selected_count
+            || plan.relationship_count != self.relationships(&campaign.id)?.len()
+        {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign plan membership or relationship set changed since analysis".into(),
+            ));
+        }
+        let expected = findings
+            .iter()
+            .map(|finding| SecurityRemediationPlanItem {
+                finding_id: finding.finding_id.clone(),
+                ordinal: finding.ordinal,
+                eligibility: finding.eligibility,
+                order_reason: finding.order_reason.clone(),
+                depends_on: finding.depends_on.clone(),
+                expected_affected: finding.expected_affected.clone(),
+                shared_root_primary_finding_id: finding.shared_root_primary_finding_id.clone(),
+            })
+            .collect::<Vec<_>>();
+        if plan.ordered_findings != expected {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign finding order or dependency plan changed since review".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn assert_scope_binding(
