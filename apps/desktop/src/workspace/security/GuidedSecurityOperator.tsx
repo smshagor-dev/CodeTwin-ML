@@ -697,8 +697,11 @@ export function GuidedSecurityOperator() {
             <div><strong>{scorecard.confirmed_findings}</strong><span>Confirmed</span></div>
             <div><strong>{scorecard.likely_findings}</strong><span>Likely</span></div>
             <div><strong>{scorecard.rejected_anomalies}</strong><span>Rejected/retest-passed</span></div>
-            <div><strong>{scorecard.planned_authorization_checks}</strong><span>Authorization checks planned</span></div>
-            <div><strong>{scorecard.planned_api_validation_checks}</strong><span>API validation checks planned</span></div>
+            <div><strong>{scorecard.authentication_context_supplied ? "Yes" : "No"}</strong><span>Authentication context supplied</span></div>
+            <div><strong>{scorecard.authenticated_endpoints_mapped}</strong><span>Authenticated boundaries mapped</span></div>
+            <div><strong>{scorecard.authorization_plan_coverage_percent.toFixed(1)}%</strong><span>Authorization plan coverage</span></div>
+            <div><strong>{scorecard.api_validation_plan_coverage_percent.toFixed(1)}%</strong><span>API validation plan coverage</span></div>
+            <div><strong>{scorecard.input_plan_coverage_percent.toFixed(1)}%</strong><span>Input-check plan coverage</span></div>
           </div>
           {session.status === "completed" && !scorecard.confirmed_findings && (
             <p className="ws-safe-note-text">No confirmed findings were detected within the tested scope. This does not mean the application is vulnerability-free.</p>
