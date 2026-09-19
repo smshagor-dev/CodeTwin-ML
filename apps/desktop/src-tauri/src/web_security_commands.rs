@@ -124,13 +124,9 @@ fn run_scan_background(
     let mut execution_config = request.config.clone();
 
     if let Some(session_id) = guided_session_id.as_deref() {
-        let selected_categories: std::collections::HashSet<String> = guided
-            .list_plan_items(session_id, 10_000)
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .filter(|item| item.selected)
-            .map(|item| item.category)
-            .collect();
+        let selected_categories = guided
+            .selected_plan_categories(session_id)
+            .map_err(|error| error.to_string())?;
         execution_config.checks.sql_injection &= selected_categories.contains("sql_injection");
         execution_config.checks.xss &= selected_categories.contains("xss");
         execution_config.checks.csrf &= selected_categories.contains("csrf");
@@ -147,13 +143,8 @@ fn run_scan_background(
         execution_config.scope.enable_timing_probes &=
             selected_categories.contains("sql_timing_indicator");
         let state_changing_selected = guided
-            .list_plan_items(session_id, 10_000)
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .any(|item| {
-                item.selected
-                    && matches!(item.method.as_str(), "POST" | "PUT" | "PATCH")
-            });
+            .has_selected_state_changing(session_id)
+            .map_err(|error| error.to_string())?;
         execution_config.scope.allow_non_idempotent_methods &= state_changing_selected;
     }
 
