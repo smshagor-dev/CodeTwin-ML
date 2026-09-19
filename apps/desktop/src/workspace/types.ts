@@ -658,6 +658,7 @@ export type SecurityFixAttemptRecord = {
   caution_acknowledged: boolean;
   approved_at: string | null;
   application_run_id: string | null;
+  retest_floor_rowid: number;
   validation_state: "not_executed" | "passed" | "failed" | "partial";
   retest_state:
     | "not_executed"
