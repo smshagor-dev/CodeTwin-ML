@@ -665,8 +665,20 @@ fn caution_patch_requires_and_persists_explicit_acknowledgement() {
     let prepared = service
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare");
-    let source = fs::read_to_string(&fixture.source_path).expect("source");
-    let cautious = source.replace(
+    service
+        .generate_patch(&prepared.attempt.id)
+        .expect("generate safe base proposal");
+    let repair_id = prepared.attempt.repair_id.as_deref().expect("repair");
+    let safe_proposal: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT proposed_content FROM repair_changes WHERE repair_id=?1 LIMIT 1",
+            [repair_id],
+            |row| row.get(0),
+        )
+        .expect("safe proposal");
+    let cautious = safe_proposal.replace(
         "}\n",
         "  try { audit(); } catch {}\n}\n",
     );
