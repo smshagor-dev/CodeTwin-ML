@@ -381,6 +381,7 @@ pub async fn retest_guided_security_finding(
                     "evidence_count": matching.iter().map(|finding| finding.evidence.len()).sum::<usize>(),
                     "requests_performed": outcome.requests_performed,
                     "responses_observed": outcome.responses_observed,
+                    "baseline_status": outcome.baseline_status,
                     "verification_completed": outcome.verification_completed,
                     "failure_reason": outcome.failure_reason,
                     "note": "Targeted retest used the minimum bounded detector family for this finding; authentication secrets were not persisted."
