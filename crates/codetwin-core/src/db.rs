@@ -150,10 +150,22 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE websites;
-                     DELETE FROM schema_migrations WHERE version = 17;",
+                    "DROP TABLE guided_security_fix_links;
+                     DROP TABLE guided_security_comparisons;
+                     DROP TABLE guided_security_retests;
+                     DROP TABLE guided_security_finding_lifecycle;
+                     DROP TABLE guided_security_source_candidates;
+                     DROP TABLE guided_security_activity;
+                     DROP TABLE guided_security_plan_items;
+                     DROP TABLE guided_security_sessions;
+                     DROP TABLE web_security_evidence;
+                     DROP TABLE web_security_findings;
+                     DROP TABLE web_security_endpoints;
+                     DROP TABLE web_security_scans;
+                     DROP TABLE websites;
+                     DELETE FROM schema_migrations WHERE version IN (17,18,19);",
                 )
-                .expect("rewind dashboard migration");
+                .expect("rewind dashboard and later migrations");
         }
 
         let upgraded = Database::open(file.path()).expect("upgrade v16 db");
@@ -195,13 +207,21 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE web_security_evidence;
+                    "DROP TABLE guided_security_fix_links;
+                     DROP TABLE guided_security_comparisons;
+                     DROP TABLE guided_security_retests;
+                     DROP TABLE guided_security_finding_lifecycle;
+                     DROP TABLE guided_security_source_candidates;
+                     DROP TABLE guided_security_activity;
+                     DROP TABLE guided_security_plan_items;
+                     DROP TABLE guided_security_sessions;
+                     DROP TABLE web_security_evidence;
                      DROP TABLE web_security_findings;
                      DROP TABLE web_security_endpoints;
                      DROP TABLE web_security_scans;
-                     DELETE FROM schema_migrations WHERE version = 18;",
+                     DELETE FROM schema_migrations WHERE version IN (18,19);",
                 )
-                .expect("rewind web security migration");
+                .expect("rewind web security and guided migrations");
         }
 
         let upgraded = Database::open(file.path()).expect("upgrade v17 db");
