@@ -269,7 +269,10 @@ fn probe_sqli(
             send_payload(requester, &task.endpoint, url, &task.parameter, true_payload),
             send_payload(requester, &task.endpoint, url, &task.parameter, false_payload),
         ) {
-            if similar_response(baseline, &true_repeat) && materially_different(baseline, &false_repeat) {
+            if similar_response(baseline, &true_repeat)
+                && materially_different(baseline, &false_repeat)
+                && similar_response(&false_response, &false_repeat)
+            {
                 confidence = "Confirmed";
                 evidence.push(response_evidence("boolean true repeat", &task.endpoint.method, url, &true_repeat));
                 evidence.push(response_evidence("boolean false repeat", &task.endpoint.method, url, &false_repeat));
@@ -664,48 +667,109 @@ fn send_payload(
     parameter: &str,
     payload: &str,
 ) -> Result<ObservedResponse, RequestError> {
-    if endpoint.method == "GET" {
-        let mut url = base.clone();
-        let pairs: Vec<(String, String)> = url
-            .query_pairs()
-            .map(|(name, value)| {
-                if name == parameter {
-                    (name.into_owned(), payload.to_string())
-                } else {
-                    (name.into_owned(), value.into_owned())
+    let location = endpoint
+        .parameter_locations
+        .get(parameter)
+        .map(String::as_str)
+        .unwrap_or_else(|| if endpoint.method == "GET" { "query" } else { "form" });
+
+    let method = Method::from_bytes(endpoint.method.as_bytes())
+        .map_err(|_| RequestError::Http("unsupported HTTP method".to_string()))?;
+
+    match location {
+        "query" => {
+            let mut url = base.clone();
+            let pairs: Vec<(String, String)> = url
+                .query_pairs()
+                .map(|(name, value)| {
+                    if name == parameter {
+                        (name.into_owned(), payload.to_string())
+                    } else {
+                        (name.into_owned(), value.into_owned())
+                    }
+                })
+                .collect();
+            url.set_query(None);
+            {
+                let mut query = url.query_pairs_mut();
+                let mut replaced = false;
+                for (name, value) in pairs {
+                    if name == parameter {
+                        replaced = true;
+                    }
+                    query.append_pair(&name, &value);
                 }
-            })
-            .collect();
-        url.set_query(None);
-        {
-            let mut query = url.query_pairs_mut();
-            let mut replaced = false;
-            for (name, value) in pairs {
-                if name == parameter {
-                    replaced = true;
+                if !replaced {
+                    query.append_pair(parameter, payload);
                 }
-                query.append_pair(&name, &value);
             }
-            if !replaced {
-                query.append_pair(parameter, payload);
+            requester.send(method, &url, None, &[])
+        }
+        "form" => {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            for name in &endpoint.parameter_names {
+                serializer.append_pair(name, if name == parameter { payload } else { "" });
             }
+            if !endpoint.parameter_names.iter().any(|name| name == parameter) {
+                serializer.append_pair(parameter, payload);
+            }
+            let body = serializer.finish();
+            requester.send(
+                method,
+                base,
+                Some(&body),
+                &[("Content-Type", "application/x-www-form-urlencoded")],
+            )
         }
-        requester.get(&url)
-    } else {
-        let method = Method::from_bytes(endpoint.method.as_bytes())
-            .map_err(|_| RequestError::Http("unsupported HTTP method".to_string()))?;
-        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-        for name in &endpoint.parameter_names {
-            serializer.append_pair(name, if name == parameter { payload } else { "" });
+        "json" => {
+            let mut object = serde_json::Map::new();
+            for name in &endpoint.parameter_names {
+                object.insert(
+                    name.clone(),
+                    serde_json::Value::String(if name == parameter { payload } else { "" }.to_string()),
+                );
+            }
+            if !object.contains_key(parameter) {
+                object.insert(parameter.to_string(), serde_json::Value::String(payload.to_string()));
+            }
+            let body = serde_json::Value::Object(object).to_string();
+            requester.send(
+                method,
+                base,
+                Some(&body),
+                &[("Content-Type", "application/json")],
+            )
         }
-        let body = serializer.finish();
-        requester.send(
-            method,
-            base,
-            Some(&body),
-            &[("Content-Type", "application/x-www-form-urlencoded")],
-        )
+        "header" => requester.send(method, base, None, &[(parameter, payload)]),
+        "path" => {
+            let url = replace_path_parameter(base, parameter, payload)
+                .ok_or_else(|| RequestError::Http("path parameter placeholder was not found".to_string()))?;
+            requester.send(method, &url, None, &[])
+        }
+        // Active mutation of authentication cookies is intentionally not performed.
+        "cookie" => Err(RequestError::Http(
+            "cookie parameter active probes are intentionally disabled".to_string(),
+        )),
+        _ => Err(RequestError::Http(
+            "unsupported parameter location".to_string(),
+        )),
     }
+}
+
+fn replace_path_parameter(base: &Url, parameter: &str, payload: &str) -> Option<Url> {
+    let encoded: String = url::form_urlencoded::byte_serialize(payload.as_bytes()).collect();
+    let raw = base.as_str();
+    let placeholders = [
+        format!("{{{parameter}}}"),
+        format!("%7B{parameter}%7D"),
+        format!("%7b{parameter}%7d"),
+    ];
+    for placeholder in placeholders {
+        if raw.contains(&placeholder) {
+            return Url::parse(&raw.replacen(&placeholder, &encoded, 1)).ok();
+        }
+    }
+    None
 }
 
 fn contains_sql_error(body: &[u8]) -> bool {
@@ -729,19 +793,59 @@ fn contains_sql_error(body: &[u8]) -> bool {
 }
 
 fn similar_response(left: &ObservedResponse, right: &ObservedResponse) -> bool {
-    if left.status != right.status {
+    if left.status != right.status || mime_type(left) != mime_type(right) {
         return false;
     }
-    let max = left.body.len().max(right.body.len()).max(1);
-    left.body.len().abs_diff(right.body.len()) * 100 / max <= 8
+    if body_hash(&left.body) == body_hash(&right.body) {
+        return true;
+    }
+    normalized_body(&left.body) == normalized_body(&right.body)
 }
 
 fn materially_different(left: &ObservedResponse, right: &ObservedResponse) -> bool {
-    if left.status != right.status {
+    if left.status != right.status || mime_type(left) != mime_type(right) {
         return true;
     }
-    let max = left.body.len().max(right.body.len()).max(1);
-    left.body.len().abs_diff(right.body.len()) * 100 / max >= 25
+    normalized_body(&left.body) != normalized_body(&right.body)
+}
+
+fn mime_type(response: &ObservedResponse) -> String {
+    response
+        .content_type
+        .as_deref()
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn normalized_body(body: &[u8]) -> String {
+    let text = String::from_utf8_lossy(body);
+    let mut output = String::with_capacity(text.len().min(65_536));
+    let mut in_digits = false;
+    let mut in_whitespace = false;
+    for character in text.chars().take(65_536) {
+        if character.is_ascii_digit() {
+            if !in_digits {
+                output.push('#');
+            }
+            in_digits = true;
+            in_whitespace = false;
+        } else if character.is_whitespace() {
+            if !in_whitespace {
+                output.push(' ');
+            }
+            in_digits = false;
+            in_whitespace = true;
+        } else {
+            output.push(character);
+            in_digits = false;
+            in_whitespace = false;
+        }
+    }
+    output
 }
 
 enum ReflectionContext {
