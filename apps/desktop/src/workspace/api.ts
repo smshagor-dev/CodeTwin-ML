@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
   AppPreferences,
@@ -20,6 +20,12 @@ import type {
   WorkspaceActivity,
   WorkspaceSearchResult,
   WorkspaceSummary,
+  WebEndpointRecord,
+  WebEvidenceRecord,
+  WebFindingFilter,
+  WebFindingRecord,
+  WebScanRecord,
+  WebScanStartRequest,
 } from "./types";
 
 export type ImportStage = "selecting" | "discovering" | "indexing" | "security" | "testing";
@@ -125,6 +131,36 @@ export const workspaceApi = {
   removeLanguageServer(kind: LanguageServerKind) {
     return invoke<boolean>("remove_language_server_config", { kind });
   },
+  startWebSecurityScan(request: WebScanStartRequest) {
+    return invoke<WebScanRecord>("start_web_security_scan", { request });
+  },
+  cancelWebSecurityScan(scanId: string) {
+    return invoke<boolean>("cancel_web_security_scan", { scanId });
+  },
+  getWebSecurityScan(scanId: string) {
+    return invoke<WebScanRecord | null>("get_web_security_scan", { scanId });
+  },
+  listWebSecurityScans(websiteId: string | null = null, projectId: string | null = null, limit = 100) {
+    return invoke<WebScanRecord[]>("list_web_security_scans", { websiteId, projectId, limit });
+  },
+  listWebSecurityEndpoints(scanId: string, limit = 500) {
+    return invoke<WebEndpointRecord[]>("list_web_security_endpoints", { scanId, limit });
+  },
+  listWebSecurityFindings(scanId: string, filter: WebFindingFilter, limit = 500) {
+    return invoke<WebFindingRecord[]>("list_web_security_findings", { scanId, filter, limit });
+  },
+  listWebSecurityEvidence(findingId: string, limit = 50) {
+    return invoke<WebEvidenceRecord[]>("list_web_security_evidence", { findingId, limit });
+  },
+  updateWebSecurityFindingStatus(findingId: string, status: string) {
+    return invoke<boolean>("update_web_security_finding_status", { findingId, status });
+  },
+  generateWebSecurityReport(scanId: string, format: "markdown" | "json") {
+    return invoke<string>("generate_web_security_report", { scanId, format });
+  },
+  exportWebSecurityReport(scanId: string, format: "markdown" | "json", path: string) {
+    return invoke<string>("export_web_security_report", { scanId, format, path });
+  },
 };
 
 export function validateWebsiteUrl(value: string): string | null {
@@ -184,4 +220,20 @@ export async function importProjectPath(
     }
   }
   return { profile, index, postImportErrors };
+}
+
+
+export async function chooseWebSecurityReportPath(
+  format: "markdown" | "json",
+): Promise<string | null> {
+  const extension = format === "json" ? "json" : "md";
+  const selected = await save({
+    title: "Export CodeTwin Security Report",
+    defaultPath: "codetwin-security-report." + extension,
+    filters: [{
+      name: format === "json" ? "JSON report" : "Markdown report",
+      extensions: [extension],
+    }],
+  });
+  return typeof selected === "string" ? selected : null;
 }

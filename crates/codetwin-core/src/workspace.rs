@@ -295,7 +295,9 @@ impl<'a> WorkspaceService<'a> {
         let website_count = count_query(connection, "SELECT COUNT(*) FROM websites")?;
         let security_scan_count = count_query(
             connection,
-            "SELECT COUNT(*) FROM analysis_runs WHERE run_kind = 'security_analysis'",
+            "SELECT
+               (SELECT COUNT(*) FROM analysis_runs WHERE run_kind = 'security_analysis')
+               + (SELECT COUNT(*) FROM web_security_scans)",
         )?;
         Ok(WorkspaceSummary {
             project_count,
@@ -307,7 +309,15 @@ impl<'a> WorkspaceService<'a> {
 
     pub fn recent_activity(&self, limit: usize) -> Result<Vec<WorkspaceActivity>, WorkspaceError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, kind, title, detail, status, occurred_at, project_id FROM (               SELECT 'project:' || p.id AS id, 'project' AS kind, p.display_name AS title,                      p.root_path AS detail, 'indexed' AS status,                      COALESCE(p.last_indexed_at, p.last_opened_at, p.updated_at, p.created_at) AS occurred_at,                      p.id AS project_id               FROM projects p               UNION ALL               SELECT 'website:' || w.id AS id, 'website' AS kind, w.display_name AS title,                      w.url AS detail, w.status AS status,                      COALESCE(w.last_checked_at, w.updated_at, w.created_at) AS occurred_at,                      w.project_id AS project_id               FROM websites w               UNION ALL               SELECT 'analysis:' || a.id AS id, 'analysis' AS kind, p.display_name AS title,                      REPLACE(a.run_kind, '_', ' ') AS detail, a.status AS status,                      COALESCE(a.finished_at, a.started_at, p.updated_at) AS occurred_at,                      a.project_id AS project_id               FROM analysis_runs a JOIN projects p ON p.id = a.project_id             ) ORDER BY occurred_at DESC LIMIT ?1",
+            "SELECT id, kind, title, detail, status, occurred_at, project_id FROM (               SELECT 'project:' || p.id AS id, 'project' AS kind, p.display_name AS title,                      p.root_path AS detail, 'indexed' AS status,                      COALESCE(p.last_indexed_at, p.last_opened_at, p.updated_at, p.created_at) AS occurred_at,                      p.id AS project_id               FROM projects p               UNION ALL               SELECT 'website:' || w.id AS id, 'website' AS kind, w.display_name AS title,                      w.url AS detail, w.status AS status,                      COALESCE(w.last_checked_at, w.updated_at, w.created_at) AS occurred_at,                      w.project_id AS project_id               FROM websites w               UNION ALL               SELECT 'analysis:' || a.id AS id, 'analysis' AS kind, p.display_name AS title,                      REPLACE(a.run_kind, '_', ' ') AS detail, a.status AS status,                      COALESCE(a.finished_at, a.started_at, p.updated_at) AS occurred_at,                      a.project_id AS project_id               FROM analysis_runs a JOIN projects p ON p.id = a.project_id
+               UNION ALL
+               SELECT 'web-security:' || s.id AS id, 'web_security' AS kind,
+                      s.target_url AS title, 'authorized web security' AS detail,
+                      s.status AS status,
+                      COALESCE(s.finished_at, s.started_at, s.created_at) AS occurred_at,
+                      s.project_id AS project_id
+               FROM web_security_scans s
+             ) ORDER BY occurred_at DESC LIMIT ?1",
         )?;
         let mapped = statement.query_map(
             [bounded_limit(limit, MAX_LIST_LIMIT) as i64],

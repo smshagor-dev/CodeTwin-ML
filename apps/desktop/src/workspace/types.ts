@@ -205,3 +205,139 @@ export type LanguageServerConfig = {
   initialization_options: unknown | null;
   enabled: boolean;
 };
+
+export type WebScopeConfig = {
+  target_url: string;
+  allowed_hostnames: string[];
+  allowed_subdomains: string[];
+  allowed_paths: string[];
+  excluded_paths: string[];
+  max_crawl_depth: number;
+  max_requests: number;
+  concurrency: number;
+  timeout_ms: number;
+  response_limit_bytes: number;
+  redirect_limit: number;
+  retry_limit: number;
+  active_testing: boolean;
+  allow_non_idempotent_methods: boolean;
+  allow_private_networks: boolean;
+  enable_timing_probes: boolean;
+  authorization_confirmed: boolean;
+};
+
+export type WebCheckConfig = {
+  sql_injection: boolean;
+  xss: boolean;
+  csrf: boolean;
+  open_redirect: boolean;
+  path_traversal: boolean;
+  ssrf_indicators: boolean;
+  template_command_indicators: boolean;
+  method_misconfiguration: boolean;
+  cors: boolean;
+  session: boolean;
+  access_control: boolean;
+  api_validation: boolean;
+};
+
+export type WebScanConfig = {
+  scope: WebScopeConfig;
+  checks: WebCheckConfig;
+};
+
+export type WebAuthContext = {
+  cookie_header: string | null;
+  bearer_token: string | null;
+  custom_headers: Array<[string, string]>;
+};
+
+export type WebScanStartRequest = {
+  website_id: string | null;
+  project_id: string | null;
+  config: WebScanConfig;
+  primary_auth: WebAuthContext;
+  secondary_auth: WebAuthContext | null;
+};
+
+export type WebScanRecord = {
+  id: string;
+  website_id: string | null;
+  project_id: string | null;
+  target_url: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  phase: "queued" | "discovering" | "crawling" | "passive_analysis" | "active_testing" | "correlating" | "completed" | "failed" | "cancelled";
+  authorization_confirmed: boolean;
+  scope_json: string;
+  config_json: string;
+  auth_metadata_json: string;
+  endpoints_discovered: number;
+  requests_performed: number;
+  findings_count: number;
+  last_error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  cancelled_at: string | null;
+};
+
+export type WebEndpointRecord = {
+  id: string;
+  scan_id: string;
+  url: string;
+  method: string;
+  depth: number;
+  source: string;
+  parameter_names: string[];
+  parameter_locations: Record<string, string>;
+  response_header_names: string[];
+  cookie_names: string[];
+  content_type: string | null;
+  status_code: number | null;
+  redirect_to: string | null;
+  created_at: string;
+};
+
+export type WebFindingRecord = {
+  id: string;
+  scan_id: string;
+  fingerprint: string;
+  category: string;
+  severity: "critical" | "high" | "medium" | "low" | "informational";
+  confidence: "Potential" | "Likely" | "Confirmed";
+  target: string;
+  endpoint_url: string;
+  method: string;
+  parameter_name: string | null;
+  title: string;
+  description: string;
+  reproduction_summary: string;
+  impact: string;
+  remediation: string;
+  references: string[];
+  source_file_id: string | null;
+  source_relative_path: string | null;
+  source_symbol_id: string | null;
+  source_symbol_name: string | null;
+  source_confidence: number | null;
+  status: "open" | "resolved" | "accepted_risk" | "false_positive";
+  first_detected: string;
+  last_detected: string;
+};
+
+export type WebEvidenceRecord = {
+  id: string;
+  finding_id: string;
+  summary: string;
+  request_metadata_json: string;
+  response_metadata_json: string;
+  created_at: string;
+};
+
+export type WebFindingFilter = {
+  severity: string | null;
+  category: string | null;
+  confidence: string | null;
+  endpoint: string | null;
+  status: string | null;
+};
