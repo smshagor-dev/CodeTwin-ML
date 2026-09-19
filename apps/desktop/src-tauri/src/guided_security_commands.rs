@@ -286,20 +286,6 @@ pub fn prepare_guided_security_fix(
 }
 
 #[tauri::command]
-pub fn update_guided_finding_lifecycle(
-    finding_id: String,
-    session_id: Option<String>,
-    lifecycle: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
-    with_database(&state, |database| {
-        GuidedSecurityStore::new(database)
-            .set_finding_lifecycle(&finding_id, session_id.as_deref(), &lifecycle)
-            .map_err(|error| error.to_string())
-    })
-}
-
-#[tauri::command]
 pub async fn retest_guided_security_finding(
     request: GuidedRetestRequest,
     state: tauri::State<'_, AppState>,
