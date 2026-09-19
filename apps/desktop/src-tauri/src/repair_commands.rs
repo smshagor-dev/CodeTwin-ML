@@ -176,7 +176,7 @@ pub(crate) async fn apply_repair_plan(
             .map_err(|error| error.to_string())?;
         if run.status == "applied" {
             GuidedSecurityStore::new(&database)
-                .sync_repair_application_state(&repair_id, "applied")
+                .sync_repair_application_state(&repair_id)
                 .map_err(|error| error.to_string())?;
         }
         Ok(run)
@@ -206,7 +206,7 @@ pub(crate) async fn rollback_repair_application(
             .map_err(|error| error.to_string())?;
         if run.status == "rolled_back" {
             GuidedSecurityStore::new(&database)
-                .sync_repair_application_state(&run.repair_id, "rolled_back")
+                .sync_repair_application_state(&run.repair_id)
                 .map_err(|error| error.to_string())?;
         }
         Ok(run)
