@@ -1151,3 +1151,152 @@ fn persistence_rejects_invalid_security_fix_lifecycle_transitions() {
         )
         .is_err(), "runtime verification state must not be set without the matching verified lifecycle");
 }
+
+
+#[test]
+fn patch_safety_rejects_removed_server_security_controls() {
+    for (category, source, proposed, endpoint) in [
+        (
+            "access_control",
+            "export function getObject(id: string, user: User) {\n  authorize(user, id);\n  return repository.find(id);\n}\n",
+            "export function getObject(id: string, user: User) {\n  return repository.find(id);\n}\n",
+            "/api/object",
+        ),
+        (
+            "csrf",
+            "export function postUpdate(token: string) {\n  csrf.validate(token);\n  return update();\n}\n",
+            "export function postUpdate(token: string) {\n  return update();\n}\n",
+            "/api/update",
+        ),
+        (
+            "api_input_validation",
+            "export function postInput(body: Input) {\n  validator.validate(body);\n  return save(body);\n}\n",
+            "export function postInput(body: Input) {\n  return save(body);\n}\n",
+            "/api/input",
+        ),
+    ] {
+        let fixture = fixture(
+            category,
+            endpoint,
+            Some(if category == "access_control" { "id" } else { "body" }),
+            "Likely",
+            "src/api/securityController.ts",
+            source,
+        );
+        let service = SecurityFixService::new(&fixture.database);
+        let prepared = service
+            .prepare_fix(&fixture.finding_id, false)
+            .expect("prepare control-removal fixture");
+        let review = service
+            .propose_replacement(&prepared.attempt.id, &fixture.file_id, proposed)
+            .expect("review control removal");
+        assert_eq!(
+            review.safety.classification,
+            PatchSafetyClass::Rejected,
+            "{category} control removal must be rejected"
+        );
+        assert!(review
+            .safety
+            .rejected_reasons
+            .iter()
+            .any(|reason| reason.contains("security control")));
+    }
+}
+
+#[test]
+fn patch_safety_rejects_large_test_deletion() {
+    let fixture = sql_fixture();
+    let test_path = fixture._root.path().join("tests/search.test.ts");
+    fs::create_dir_all(test_path.parent().expect("test parent")).expect("test dir");
+    fs::write(
+        &test_path,
+        "test('a',()=>expect(1).toBe(1));\n\
+         test('b',()=>expect(2).toBe(2));\n\
+         test('c',()=>expect(3).toBe(3));\n\
+         test('d',()=>expect(4).toBe(4));\n\
+         test('e',()=>expect(5).toBe(5));\n\
+         test('f',()=>expect(6).toBe(6));\n",
+    )
+    .expect("test file");
+    ProjectIndexService::new(&fixture.database)
+        .index_project(fixture._root.path())
+        .expect("reindex tests");
+    let test_file_id: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT id FROM files WHERE project_id=?1 AND relative_path='tests/search.test.ts' AND is_active=1",
+            [&fixture.project_id],
+            |row| row.get(0),
+        )
+        .expect("test file id");
+
+    let service = SecurityFixService::new(&fixture.database);
+    let prepared = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+    let review = service
+        .propose_replacement(
+            &prepared.attempt.id,
+            &test_file_id,
+            "test('kept',()=>expect(1).toBe(1));\n",
+        )
+        .expect("review test deletion");
+    assert_eq!(review.safety.classification, PatchSafetyClass::Rejected);
+    assert!(review
+        .safety
+        .rejected_reasons
+        .iter()
+        .any(|reason| reason.contains("more than half")));
+}
+
+#[test]
+fn patch_safety_rejects_excessive_file_spread() {
+    let fixture = sql_fixture();
+    for index in 0..4 {
+        let path = fixture
+            ._root
+            .path()
+            .join(format!("config/security-{index}.ts"));
+        fs::create_dir_all(path.parent().expect("config parent")).expect("config dir");
+        fs::write(&path, format!("export const setting{index} = false;\n"))
+            .expect("config file");
+    }
+    ProjectIndexService::new(&fixture.database)
+        .index_project(fixture._root.path())
+        .expect("reindex configs");
+
+    let service = SecurityFixService::new(&fixture.database);
+    let prepared = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+    let mut final_review = None;
+    for index in 0..4 {
+        let relative = format!("config/security-{index}.ts");
+        let file_id: String = fixture
+            .database
+            .connection()
+            .query_row(
+                "SELECT id FROM files WHERE project_id=?1 AND relative_path=?2 AND is_active=1",
+                rusqlite::params![fixture.project_id, relative],
+                |row| row.get(0),
+            )
+            .expect("config file id");
+        final_review = Some(
+            service
+                .propose_replacement(
+                    &prepared.attempt.id,
+                    &file_id,
+                    &format!("export const setting{index} = true;\n"),
+                )
+                .expect("review spread"),
+        );
+    }
+    let final_review = final_review.expect("final review");
+    assert_eq!(final_review.safety.classification, PatchSafetyClass::Rejected);
+    assert!(final_review
+        .safety
+        .rejected_reasons
+        .iter()
+        .any(|reason| reason.contains("bounded to")));
+}
