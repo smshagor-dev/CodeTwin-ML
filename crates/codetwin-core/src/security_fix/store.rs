@@ -88,6 +88,9 @@ impl<'a> SecurityFixService<'a> {
                 "rollback has not completed successfully".into(),
             ));
         }
+        if attempt.status == "rolled_back" {
+            return Ok(attempt);
+        }
 
         self.database.connection().execute(
             "UPDATE security_fix_attempts
