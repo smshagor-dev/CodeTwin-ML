@@ -2354,6 +2354,54 @@ mod tests {
     }
 
     #[test]
+    fn campaign_plan_approval_rejects_preapproval_payload_or_order_tampering() {
+        let (database, session_id, _, finding_a, finding_b) = fixture();
+        let service = SecurityRemediationCampaignService::new(&database);
+        let campaign = service
+            .create(&SecurityRemediationCampaignCreate {
+                session_id,
+                finding_ids: vec![finding_a.clone(), finding_b.clone()],
+            })
+            .expect("create");
+        let analyzed = service.analyze(&campaign.id).expect("analyze");
+        let reviewed_hash = analyzed.plan_hash.clone().expect("reviewed hash");
+
+        database
+            .connection()
+            .execute(
+                "UPDATE security_remediation_campaigns
+                 SET plan_json='{}' WHERE id=?1",
+                [&campaign.id],
+            )
+            .expect("simulate preapproval plan payload tampering");
+        let payload_error = service
+            .approve_plan(&campaign.id, &reviewed_hash)
+            .expect_err("tampered payload must fail approval");
+        assert!(payload_error.to_string().contains("payload changed"));
+
+        database
+            .connection()
+            .execute(
+                "UPDATE security_remediation_campaigns
+                 SET plan_json=?2 WHERE id=?1",
+                params![campaign.id, analyzed.plan_json],
+            )
+            .expect("restore reviewed plan payload");
+        database
+            .connection()
+            .execute(
+                "UPDATE security_remediation_campaign_findings
+                 SET ordinal=99 WHERE campaign_id=?1 AND finding_id=?2",
+                params![campaign.id, finding_a],
+            )
+            .expect("simulate preapproval order tampering");
+        let order_error = service
+            .approve_plan(&campaign.id, &reviewed_hash)
+            .expect_err("tampered persisted order must fail approval");
+        assert!(order_error.to_string().contains("order or dependency"));
+    }
+
+    #[test]
     fn approved_campaign_plan_rejects_order_and_plan_identity_tampering() {
         let (database, session_id, _, finding_a, finding_b) = fixture();
         let service = SecurityRemediationCampaignService::new(&database);
