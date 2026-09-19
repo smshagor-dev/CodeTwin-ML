@@ -35,6 +35,33 @@
   opacity: .82;
 }
 
+.repair-patch-preview {
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+}
+.repair-patch-preview summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.repair-patch-preview p {
+  margin: 8px 0;
+  opacity: .76;
+  font-size: .82rem;
+}
+.repair-patch-preview pre {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, .08);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: .78rem/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
 .repair-editor {
   width: 100%;
   min-height: 420px;

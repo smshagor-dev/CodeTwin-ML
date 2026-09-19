@@ -2,7 +2,9 @@ mod active;
 mod discover;
 mod evidence;
 mod passive;
+mod operator;
 mod request;
+mod retest;
 mod scope;
 
 use std::collections::{BTreeMap, HashMap};
@@ -15,7 +17,15 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use evidence::{body_hash, fingerprint, redact_body, redact_headers, redact_url, response_evidence};
+pub use operator::{
+    apply_approved_execution_policy, build_application_map, build_test_plan, preflight,
+    prepare_guided_security, ApplicationGroup, ApplicationMap, ApplicationRoute,
+    ApplicationSourceHint, ApprovedExecutionPolicy, AuthenticationMode, GuidedPreflight,
+    GuidedPreparation,
+    GuidedTestPlan, OperationRisk, PlannedOperation, SecurityEnvironment, TestingDepth,
+};
 pub use request::{RequestBudget, RequestError, ScopedRequester};
+pub use retest::{run_targeted_retest, TargetedRetestOutcome, TargetedRetestRequest};
 pub use scope::{normalize_url, ScopeError, ScopePolicy};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -100,6 +110,36 @@ impl AuthContext {
                 .filter(|name| !name.is_empty())
                 .collect(),
         }
+    }
+
+    pub(crate) fn redaction_values(&self) -> Vec<String> {
+        let mut values = Vec::new();
+        if let Some(value) = self
+            .cookie_header
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            values.push(value.to_string());
+        }
+        if let Some(value) = self
+            .bearer_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            values.push(value.to_string());
+        }
+        values.extend(
+            self.custom_headers
+                .iter()
+                .map(|(_, value)| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        );
+        values.sort();
+        values.dedup();
+        values
     }
 }
 
@@ -212,6 +252,7 @@ pub struct ObservedResponse {
     pub body: Vec<u8>,
     pub elapsed_ms: u64,
     pub truncated: bool,
+    pub(crate) redaction_secrets: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -297,13 +338,15 @@ pub fn run_authorized_scan(
             });
         };
         let active_findings = active::run_active_checks(
-            &policy,
-            &requester,
-            secondary_auth,
-            config,
-            &discovery.endpoints,
-            &discovery.responses,
-            Arc::clone(&cancelled),
+            active::ActiveCheckContext {
+                policy: &policy,
+                requester: &requester,
+                secondary_auth,
+                config,
+                endpoints: &discovery.endpoints,
+                baselines: &discovery.responses,
+                cancelled: Arc::clone(&cancelled),
+            },
             &mut active_progress,
         )?;
         findings.extend(active_findings);

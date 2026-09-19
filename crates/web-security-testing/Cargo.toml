@@ -13,3 +13,5 @@ thiserror.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+codetwin-core = { path = "../codetwin-core" }
+tempfile.workspace = true

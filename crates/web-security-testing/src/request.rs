@@ -103,6 +103,11 @@ impl ScopedRequester {
     ) -> Result<ObservedResponse, RequestError> {
         self.policy.assert_url(url)?;
         let attach_credentials = self.policy.credentials_allowed_for(url);
+        let redaction_secrets = if attach_credentials {
+            self.auth.redaction_values()
+        } else {
+            Vec::new()
+        };
         let custom_headers = if attach_credentials {
             parse_headers(&self.auth.custom_headers)?
         } else {
@@ -152,7 +157,12 @@ impl ScopedRequester {
                 }
             };
             let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-            return read_response(response, elapsed_ms, self.policy.config().response_limit_bytes);
+            return read_response(
+                response,
+                elapsed_ms,
+                self.policy.config().response_limit_bytes,
+                redaction_secrets.clone(),
+            );
         }
 
         Err(RequestError::Http(format!(
@@ -200,6 +210,7 @@ fn read_response(
     response: reqwest::blocking::Response,
     elapsed_ms: u64,
     max: usize,
+    redaction_secrets: Vec<String>,
 ) -> Result<ObservedResponse, RequestError> {
     let status = response.status().as_u16();
     let headers = copy_headers(response.headers());
@@ -230,6 +241,7 @@ fn read_response(
         body: body_bytes,
         elapsed_ms,
         truncated,
+        redaction_secrets,
     })
 }
 

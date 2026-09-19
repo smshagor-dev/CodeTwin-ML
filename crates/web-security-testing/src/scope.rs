@@ -247,6 +247,7 @@ fn is_unique_local_v6(ip: Ipv6Addr) -> bool {
 mod tests {
     use super::{normalize_url, ScopePolicy};
     use crate::ScopeConfig;
+    use url::Url;
 
     fn config() -> ScopeConfig {
         ScopeConfig {
@@ -281,6 +282,13 @@ mod tests {
             .normalize_and_assert("http://localhost:8080/app/users")
             .expect("target");
         assert!(policy.credentials_allowed_for(&target));
+
+        let mut alternate = config();
+        alternate.allowed_hostnames.push("127.0.0.1".into());
+        let alternate_policy = ScopePolicy::new(alternate).expect("alternate scope");
+        let sibling = Url::parse("http://127.0.0.1:8080/app/users").expect("sibling");
+        assert!(alternate_policy.assert_url(&sibling).is_ok());
+        assert!(!alternate_policy.credentials_allowed_for(&sibling));
     }
 
     #[test]

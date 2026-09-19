@@ -11,10 +11,20 @@ use reqwest::Method;
 use url::Url;
 
 use crate::{
-    body_hash, fingerprint, response_evidence, response_header, AuthContext, EndpointObservation,
+    body_hash, fingerprint, operator::check_applicable, response_evidence, response_header, AuthContext, EndpointObservation,
     FindingObservation, ObservedResponse, RequestError, ScanConfig, ScanError, ScopePolicy,
     ScopedRequester,
 };
+
+pub(crate) struct ActiveCheckContext<'a> {
+    pub policy: &'a ScopePolicy,
+    pub requester: &'a ScopedRequester,
+    pub secondary_auth: Option<&'a AuthContext>,
+    pub config: &'a ScanConfig,
+    pub endpoints: &'a [EndpointObservation],
+    pub baselines: &'a HashMap<String, ObservedResponse>,
+    pub cancelled: Arc<AtomicBool>,
+}
 
 #[derive(Clone)]
 struct ProbeTask {
@@ -23,16 +33,19 @@ struct ProbeTask {
     parameter: String,
 }
 
-pub fn run_active_checks(
-    policy: &ScopePolicy,
-    requester: &ScopedRequester,
-    secondary_auth: Option<&AuthContext>,
-    config: &ScanConfig,
-    endpoints: &[EndpointObservation],
-    baselines: &HashMap<String, ObservedResponse>,
-    cancelled: Arc<AtomicBool>,
+pub(crate) fn run_active_checks(
+    context: ActiveCheckContext<'_>,
     on_progress: &mut impl FnMut(usize),
 ) -> Result<Vec<FindingObservation>, ScanError> {
+    let ActiveCheckContext {
+        policy,
+        requester,
+        secondary_auth,
+        config,
+        endpoints,
+        baselines,
+        cancelled,
+    } = context;
     let mut findings = Vec::new();
     let mut tasks = Vec::new();
     for endpoint in endpoints {
@@ -174,10 +187,10 @@ fn probe_parameter(
     let marker = short_marker(&task.endpoint.url, &task.parameter);
     let mut findings = Vec::new();
 
-    if config.checks.sql_injection {
+    if config.checks.sql_injection && check_applicable(&task.endpoint, &task.parameter, "sql_injection") {
         findings.extend(probe_sqli(requester, policy, task, &endpoint_url, &baseline, config, &marker)?);
     }
-    if config.checks.xss {
+    if config.checks.xss && check_applicable(&task.endpoint, &task.parameter, "xss") {
         if let Some(finding) = probe_xss(requester, policy, task, &endpoint_url, &baseline, &marker)? {
             findings.push(finding);
         }
@@ -197,12 +210,12 @@ fn probe_parameter(
             findings.push(finding);
         }
     }
-    if config.checks.template_command_indicators {
+    if config.checks.template_command_indicators && check_applicable(&task.endpoint, &task.parameter, "template_injection") {
         if let Some(finding) = probe_template_indicator(requester, policy, task, &endpoint_url, &baseline, &marker)? {
             findings.push(finding);
         }
     }
-    if config.checks.api_validation {
+    if config.checks.api_validation && check_applicable(&task.endpoint, &task.parameter, "api_validation") {
         if let Some(finding) = probe_input_validation(requester, policy, task, &endpoint_url, &baseline, &marker)? {
             findings.push(finding);
         }
@@ -329,30 +342,49 @@ fn probe_sqli(
 
     if config.scope.enable_timing_probes {
         let timing_payload = "1' OR SLEEP(1)-- ";
-        match send_payload(requester, &task.endpoint, url, &task.parameter, timing_payload) {
-            Ok(timed) if timed.elapsed_ms >= baseline.elapsed_ms.saturating_add(850) && timed.elapsed_ms >= 900 => {
-                findings.push(FindingObservation {
-                    category: "sql_injection".into(),
-                    severity: "medium".into(),
-                    confidence: "Potential".into(),
-                    target: policy.target().to_string(),
-                    endpoint: task.endpoint.url.clone(),
-                    method: task.endpoint.method.clone(),
-                    parameter: Some(task.parameter.clone()),
-                    title: "Controlled SQL timing anomaly observed".into(),
-                    description: "An explicitly enabled one-second timing probe took materially longer than the baseline. Network/server variance can produce false positives, so this is not marked confirmed.".into(),
-                    reproduction_summary: "Repeat a bounded one-second timing probe under stable conditions and compare multiple baselines before treating the signal as SQL injection.".into(),
-                    impact: "A reproducible database-controlled delay can indicate that input reaches executable SQL syntax.".into(),
-                    remediation: "Use parameterized queries and validate the affected query construction.".into(),
-                    references: vec!["CWE-89".into()],
-                    evidence: vec![
-                        response_evidence("baseline timing", &task.endpoint.method, url, baseline),
-                        response_evidence(&format!("timing probe {marker}"), &task.endpoint.method, url, &timed),
-                    ],
-                });
-            }
+        let control = match send_payload(requester, &task.endpoint, url, &task.parameter, "1") {
+            Ok(value) => value,
+            Err(RequestError::BudgetExhausted) => return Ok(findings),
             Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
-            _ => {}
+            Err(_) => return Ok(findings),
+        };
+        let first = match send_payload(requester, &task.endpoint, url, &task.parameter, timing_payload) {
+            Ok(value) => value,
+            Err(RequestError::BudgetExhausted) => return Ok(findings),
+            Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
+            Err(_) => return Ok(findings),
+        };
+        let second = match send_payload(requester, &task.endpoint, url, &task.parameter, timing_payload) {
+            Ok(value) => value,
+            Err(RequestError::BudgetExhausted) => return Ok(findings),
+            Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
+            Err(_) => return Ok(findings),
+        };
+        let control_ceiling = baseline.elapsed_ms.max(control.elapsed_ms);
+        let first_delayed = first.elapsed_ms >= control_ceiling.saturating_add(800) && first.elapsed_ms >= 900;
+        let second_delayed = second.elapsed_ms >= control_ceiling.saturating_add(800) && second.elapsed_ms >= 900;
+        if first_delayed && second_delayed {
+            findings.push(FindingObservation {
+                category: "sql_injection".into(),
+                severity: "medium".into(),
+                confidence: "Potential".into(),
+                target: policy.target().to_string(),
+                endpoint: task.endpoint.url.clone(),
+                method: task.endpoint.method.clone(),
+                parameter: Some(task.parameter.clone()),
+                title: "Repeatable controlled SQL timing anomaly observed".into(),
+                description: "Two explicitly enabled one-second timing probes were both materially slower than the baseline and a separate non-delay control request. Timing remains Potential because server and network variance can still create false positives.".into(),
+                reproduction_summary: "Compare a baseline, a non-delay control request, and at least two bounded one-second timing requests under stable conditions. Timing evidence alone is never marked Confirmed.".into(),
+                impact: "A repeatable database-controlled delay can indicate that input reaches executable SQL syntax.".into(),
+                remediation: "Use parameterized queries and validate the affected query construction.".into(),
+                references: vec!["CWE-89".into()],
+                evidence: vec![
+                    response_evidence("baseline timing", &task.endpoint.method, url, baseline),
+                    response_evidence("non-delay timing control", &task.endpoint.method, url, &control),
+                    response_evidence(&format!("timing probe {marker} first"), &task.endpoint.method, url, &first),
+                    response_evidence(&format!("timing probe {marker} repeat"), &task.endpoint.method, url, &second),
+                ],
+            });
         }
     }
     Ok(findings)
@@ -980,6 +1012,7 @@ mod tests {
             body: body.as_bytes().to_vec(),
             elapsed_ms: 10,
             truncated: false,
+            redaction_secrets: Vec::new(),
         }
     }
 
