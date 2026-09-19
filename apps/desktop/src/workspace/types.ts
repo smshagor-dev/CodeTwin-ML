@@ -415,6 +415,11 @@ export type GuidedApplicationRoute = {
   status_code: number | null;
   cookies: string[];
   authentication_boundary: boolean;
+  source_hints: Array<{
+    relative_path: string;
+    symbol_name: string | null;
+    confidence: number;
+  }>;
 };
 
 export type GuidedApplicationMap = {
