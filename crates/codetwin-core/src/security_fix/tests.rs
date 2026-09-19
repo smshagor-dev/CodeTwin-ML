@@ -1725,3 +1725,100 @@ fn regression_test_plan_selects_relevant_existing_test_without_inventing_new_fil
                 && item.targets.iter().any(|target| target.ends_with("tests/searchController.test.ts"))
         }));
 }
+
+
+#[test]
+fn applied_retest_floor_cannot_be_lowered_or_rebound() {
+    let (fixture, attempt_id, repair_id) = approved_sql_attempt();
+    GuidedSecurityStore::new(&fixture.database)
+        .record_retest(GuidedRetestInput {
+            finding_id: &fixture.finding_id,
+            session_id: None,
+            status: "unable_to_verify",
+            original_confidence: "Likely",
+            observed_confidence: None,
+            requests_performed: 1,
+            detail_json: r#"{"fixture":"pre-apply-floor"}"#,
+        })
+        .expect("pre-apply retest");
+    let backups = tempdir().expect("backups");
+    let run = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply");
+    let applied = SecurityFixService::new(&fixture.database)
+        .record_application(&attempt_id, &run.id)
+        .expect("record application");
+    assert!(applied.retest_floor_rowid > 0);
+
+    assert!(fixture
+        .database
+        .connection()
+        .execute(
+            "UPDATE security_fix_attempts SET retest_floor_rowid=0 WHERE id=?1",
+            [&attempt_id],
+        )
+        .is_err());
+    assert!(fixture
+        .database
+        .connection()
+        .execute(
+            "UPDATE security_fix_attempts SET application_run_id=NULL WHERE id=?1",
+            [&attempt_id],
+        )
+        .is_err());
+}
+
+#[test]
+fn failed_security_approval_rolls_back_underlying_repair_approval_atomically() {
+    let fixture = sql_fixture();
+    let service = SecurityFixService::new(&fixture.database);
+    let prepared = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+    let review = service
+        .generate_patch(&prepared.attempt.id)
+        .expect("review");
+    let repair_id = prepared.attempt.repair_id.as_deref().expect("repair");
+
+    fixture
+        .database
+        .connection()
+        .execute_batch(
+            "CREATE TRIGGER test_reject_security_fix_approval
+             BEFORE UPDATE OF status ON security_fix_attempts
+             WHEN NEW.status='approved'
+             BEGIN
+               SELECT RAISE(ABORT, 'injected approval failure');
+             END;",
+        )
+        .expect("install injected failure");
+
+    assert!(service
+        .approve_attempt(
+            &prepared.attempt.id,
+            &review.safety.patch_hash,
+            false,
+        )
+        .is_err());
+
+    let repair_status: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT status FROM repair_plans WHERE id=?1",
+            [repair_id],
+            |row| row.get(0),
+        )
+        .expect("repair status");
+    let attempt_status: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT status FROM security_fix_attempts WHERE id=?1",
+            [&prepared.attempt.id],
+            |row| row.get(0),
+        )
+        .expect("attempt status");
+    assert_eq!(repair_status, "draft");
+    assert_eq!(attempt_status, "patch_proposed");
+}
