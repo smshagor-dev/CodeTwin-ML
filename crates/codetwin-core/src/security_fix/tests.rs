@@ -1300,3 +1300,272 @@ fn patch_safety_rejects_excessive_file_spread() {
         .iter()
         .any(|reason| reason.contains("bounded to")));
 }
+
+
+fn add_overlapping_sql_finding(fixture: &Fixture, suffix: &str) -> String {
+    let scan_id: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT scan_id FROM web_security_findings WHERE id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("scan id");
+    let web = AuthorizedWebSecurityStore::new(&fixture.database);
+    let finding = web
+        .record_finding(
+            &scan_id,
+            &WebFindingInput {
+                fingerprint: format!("overlap-{suffix}"),
+                category: "sql_injection".into(),
+                severity: "high".into(),
+                confidence: "Likely".into(),
+                target: "http://127.0.0.1:3000".into(),
+                endpoint_url: format!("http://127.0.0.1:3000/api/search?q={suffix}"),
+                method: "GET".into(),
+                parameter_name: Some("q".into()),
+                title: format!("Overlapping SQL finding {suffix}"),
+                description: "Same local source path, separate runtime observation.".into(),
+                reproduction_summary: "Local fixture.".into(),
+                impact: "Query manipulation.".into(),
+                remediation: "Use parameter binding.".into(),
+                references: Vec::new(),
+                source: None,
+            },
+        )
+        .expect("overlapping finding");
+    web.record_evidence(
+        &finding.id,
+        &WebEvidenceInput {
+            summary: "runtime evidence".into(),
+            request_metadata_json: "{}".into(),
+            response_metadata_json: "{}".into(),
+        },
+    )
+    .expect("overlapping evidence");
+    finding.id
+}
+
+#[test]
+fn approval_rejects_wrong_displayed_expected_patch_hash() {
+    let fixture = sql_fixture();
+    let service = SecurityFixService::new(&fixture.database);
+    let prepared = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+    let review = service
+        .generate_patch(&prepared.attempt.id)
+        .expect("review");
+
+    let wrong_hash = if review.safety.patch_hash.starts_with('a') {
+        "b".repeat(64)
+    } else {
+        "a".repeat(64)
+    };
+    assert!(matches!(
+        service.approve_attempt(&prepared.attempt.id, &wrong_hash, false),
+        Err(SecurityFixError::StaleApproval)
+    ));
+    assert_eq!(
+        service
+            .get_attempt(&prepared.attempt.id)
+            .expect("attempt")
+            .expect("attempt exists")
+            .status,
+        "patch_proposed"
+    );
+}
+
+#[test]
+fn approval_rejects_patch_file_base_and_proposed_hash_changes_after_display() {
+    for mutation in ["patch_content", "file_list", "base_hash", "proposed_hash"] {
+        let fixture = sql_fixture();
+        let service = SecurityFixService::new(&fixture.database);
+        let prepared = service
+            .prepare_fix(&fixture.finding_id, false)
+            .expect("prepare");
+        let displayed = service
+            .generate_patch(&prepared.attempt.id)
+            .expect("displayed review");
+        let repair_id = prepared.attempt.repair_id.as_deref().expect("repair");
+
+        match mutation {
+            "patch_content" => {
+                let current: String = fixture
+                    .database
+                    .connection()
+                    .query_row(
+                        "SELECT proposed_content FROM repair_changes WHERE repair_id=?1 LIMIT 1",
+                        [repair_id],
+                        |row| row.get(0),
+                    )
+                    .expect("proposal");
+                let changed = format!("{current}\n// changed after preview\n");
+                service
+                    .propose_replacement(&prepared.attempt.id, &fixture.file_id, &changed)
+                    .expect("changed proposal");
+            }
+            "file_list" => {
+                let (base_hash, proposed_hash, proposed_content, proposed_size): (
+                    String,
+                    String,
+                    String,
+                    i64,
+                ) = fixture
+                    .database
+                    .connection()
+                    .query_row(
+                        "SELECT base_content_hash,proposed_content_hash,proposed_content,proposed_byte_size
+                         FROM repair_changes WHERE repair_id=?1 LIMIT 1",
+                        [repair_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .expect("change");
+                fixture
+                    .database
+                    .connection()
+                    .execute(
+                        "INSERT INTO repair_changes(
+                            id,repair_id,file_id,relative_path,base_content_hash,
+                            proposed_content_hash,proposed_content,proposed_byte_size
+                         ) VALUES ('preview-extra',?1,?2,'src/api/preview-extra.ts',?3,?4,?5,?6)",
+                        rusqlite::params![
+                            repair_id,
+                            fixture.file_id,
+                            base_hash,
+                            proposed_hash,
+                            proposed_content,
+                            proposed_size
+                        ],
+                    )
+                    .expect("insert extra file");
+            }
+            "base_hash" => {
+                fixture
+                    .database
+                    .connection()
+                    .execute(
+                        "UPDATE repair_changes SET base_content_hash=lower(hex(randomblob(32)))
+                         WHERE repair_id=?1",
+                        [repair_id],
+                    )
+                    .expect("mutate base hash");
+            }
+            "proposed_hash" => {
+                fixture
+                    .database
+                    .connection()
+                    .execute(
+                        "UPDATE repair_changes SET proposed_content_hash=lower(hex(randomblob(32)))
+                         WHERE repair_id=?1",
+                        [repair_id],
+                    )
+                    .expect("mutate proposed hash");
+            }
+            _ => unreachable!(),
+        }
+
+        assert!(
+            matches!(
+                service.approve_attempt(
+                    &prepared.attempt.id,
+                    &displayed.safety.patch_hash,
+                    false,
+                ),
+                Err(SecurityFixError::StaleApproval)
+            ),
+            "displayed approval must become stale after {mutation}"
+        );
+    }
+}
+
+#[test]
+fn approval_rejects_wrong_attempt_id_and_preapproval_finding_project_substitution() {
+    let fixture = sql_fixture();
+    let service = SecurityFixService::new(&fixture.database);
+    let prepared = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+    let review = service
+        .generate_patch(&prepared.attempt.id)
+        .expect("review");
+
+    assert!(matches!(
+        service.approve_attempt(
+            "secfix_nonexistent_attempt",
+            &review.safety.patch_hash,
+            false,
+        ),
+        Err(SecurityFixError::AttemptNotFound(_))
+    ));
+
+    let other_finding = add_overlapping_sql_finding(&fixture, "other-finding");
+    fixture
+        .database
+        .connection()
+        .execute(
+            "UPDATE security_fix_attempts SET finding_id=?2 WHERE id=?1",
+            rusqlite::params![prepared.attempt.id, other_finding],
+        )
+        .expect("preapproval finding substitution");
+    assert!(matches!(
+        service.approve_attempt(
+            &prepared.attempt.id,
+            &review.safety.patch_hash,
+            false,
+        ),
+        Err(SecurityFixError::StaleApproval)
+    ));
+
+    fixture
+        .database
+        .connection()
+        .execute(
+            "UPDATE security_fix_attempts SET finding_id=?2 WHERE id=?1",
+            rusqlite::params![prepared.attempt.id, fixture.finding_id],
+        )
+        .expect("restore finding");
+    let other_root = tempdir().expect("other project");
+    fs::write(other_root.path().join("other.ts"), "export const other = true;\n")
+        .expect("other source");
+    let other_project = ProjectIndexService::new(&fixture.database)
+        .index_project(other_root.path())
+        .expect("other project");
+    fixture
+        .database
+        .connection()
+        .execute(
+            "UPDATE security_fix_attempts SET project_id=?2 WHERE id=?1",
+            rusqlite::params![prepared.attempt.id, other_project.project_id],
+        )
+        .expect("preapproval project substitution");
+    assert!(matches!(
+        service.approve_attempt(
+            &prepared.attempt.id,
+            &review.safety.patch_hash,
+            false,
+        ),
+        Err(SecurityFixError::StaleApproval)
+    ));
+}
+
+#[test]
+fn approved_attempt_identity_rejects_project_mutation_too() {
+    let (fixture, attempt_id, _) = approved_sql_attempt();
+    let other_root = tempdir().expect("other project");
+    fs::write(other_root.path().join("other.ts"), "export const other = true;\n")
+        .expect("other source");
+    let other_project = ProjectIndexService::new(&fixture.database)
+        .index_project(other_root.path())
+        .expect("other project");
+
+    assert!(fixture
+        .database
+        .connection()
+        .execute(
+            "UPDATE security_fix_attempts SET project_id=?2 WHERE id=?1",
+            rusqlite::params![attempt_id, other_project.project_id],
+        )
+        .is_err());
+}
