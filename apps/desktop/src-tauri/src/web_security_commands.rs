@@ -8,9 +8,9 @@ use std::{
 };
 
 use codetwin_core::{
-    AuthorizedWebSecurityStore, Database, WebEndpointInput, WebEndpointRecord, WebEvidenceInput,
-    WebEvidenceRecord, WebFindingFilter, WebFindingInput, WebFindingRecord, WebScanCreate,
-    WebScanRecord,
+    AuthorizedWebSecurityStore, Database, GuidedSecurityStore, WebEndpointInput, WebEndpointRecord,
+    WebEvidenceInput, WebEvidenceRecord, WebFindingFilter, WebFindingInput, WebFindingRecord,
+    WebScanCreate, WebScanRecord,
 };
 use serde::Deserialize;
 use web_security_testing::{
@@ -27,6 +27,8 @@ pub struct WebScanStartRequest {
     #[serde(default)]
     pub primary_auth: AuthContext,
     pub secondary_auth: Option<AuthContext>,
+    #[serde(default)]
+    pub guided_session_id: Option<String>,
 }
 
 #[tauri::command]
@@ -44,6 +46,19 @@ pub fn start_web_security_scan(
     }))
     .map_err(|error| error.to_string())?;
 
+    if let Some(session_id) = request.guided_session_id.as_deref() {
+        with_database(&state, |database| {
+            GuidedSecurityStore::new(database)
+                .assert_execution_allowed(
+                    session_id,
+                    &request.config.scope.target_url,
+                    &config_json,
+                )
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })?;
+    }
+
     let scan = with_database(&state, |database| {
         AuthorizedWebSecurityStore::new(database)
             .create_scan(&WebScanCreate {
@@ -57,6 +72,15 @@ pub fn start_web_security_scan(
             })
             .map_err(|error| error.to_string())
     })?;
+
+    if let Some(session_id) = request.guided_session_id.as_deref() {
+        with_database(&state, |database| {
+            GuidedSecurityStore::new(database)
+                .link_scan(session_id, &scan.id)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })?;
+    }
 
     let cancelled = Arc::new(AtomicBool::new(false));
     {
@@ -94,6 +118,9 @@ fn run_scan_background(
 ) -> Result<(), String> {
     let database = Database::open(database_path).map_err(|error| error.to_string())?;
     let store = AuthorizedWebSecurityStore::new(&database);
+    let guided = GuidedSecurityStore::new(&database);
+    let guided_session_id = request.guided_session_id.clone();
+    let mut last_guided_phase = String::new();
 
     let outcome = run_authorized_scan(
         &request.config,
@@ -118,6 +145,22 @@ fn run_scan_background(
                 progress.requests_performed,
                 progress.findings_observed,
             );
+            if let Some(session_id) = guided_session_id.as_deref() {
+                if last_guided_phase != phase {
+                    last_guided_phase = phase.to_string();
+                    let _ = guided.append_activity(
+                        session_id,
+                        "phase_changed",
+                        phase,
+                        &format!("Guided security execution entered phase {}.", phase.replace('_', " ")),
+                        &serde_json::json!({
+                            "endpoints_discovered": progress.endpoints_discovered,
+                            "requests_performed": progress.requests_performed,
+                            "findings_observed": progress.findings_observed,
+                        }).to_string(),
+                    );
+                }
+            }
         },
     );
 
@@ -181,6 +224,10 @@ fn run_scan_background(
                     )
                     .map_err(|error| error.to_string())?;
                 persisted_findings += 1;
+                if let Some(session_id) = guided_session_id.as_deref() {
+                    let _ = guided.set_finding_lifecycle(&persisted.id, Some(session_id), "open");
+                    let _ = guided.correlate_source_candidates(&persisted.id, 5);
+                }
                 for evidence in finding.evidence {
                     store
                         .record_evidence(
@@ -205,16 +252,32 @@ fn run_scan_background(
                     persisted_findings,
                 )
                 .map_err(|error| error.to_string())?;
+            if let Some(session_id) = guided_session_id.as_deref() {
+                guided
+                    .update_from_scan(session_id, "completed", "completed", None)
+                    .map_err(|error| error.to_string())?;
+            }
             Ok(())
         }
         Err(ScanError::Cancelled) => {
             store.cancel_scan(scan_id).map_err(|error| error.to_string())?;
+            if let Some(session_id) = guided_session_id.as_deref() {
+                let _ = guided.update_from_scan(session_id, "cancelled", "cancelled", None);
+            }
             Ok(())
         }
         Err(error) => {
             store
                 .fail_scan(scan_id, &error.to_string())
                 .map_err(|store_error| store_error.to_string())?;
+            if let Some(session_id) = guided_session_id.as_deref() {
+                let _ = guided.update_from_scan(
+                    session_id,
+                    "failed",
+                    "failed",
+                    Some(&error.to_string()),
+                );
+            }
             Err(error.to_string())
         }
     }
