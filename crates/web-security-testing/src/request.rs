@@ -38,6 +38,7 @@ pub enum RequestError {
 #[derive(Clone)]
 pub struct RequestBudget {
     used: Arc<AtomicUsize>,
+    responses_observed: Arc<AtomicUsize>,
     max: usize,
 }
 
@@ -45,6 +46,7 @@ impl RequestBudget {
     pub fn new(max: usize) -> Self {
         Self {
             used: Arc::new(AtomicUsize::new(0)),
+            responses_observed: Arc::new(AtomicUsize::new(0)),
             max,
         }
     }
@@ -60,6 +62,14 @@ impl RequestBudget {
 
     pub fn used(&self) -> usize {
         self.used.load(Ordering::SeqCst)
+    }
+
+    pub fn responses_observed(&self) -> usize {
+        self.responses_observed.load(Ordering::SeqCst)
+    }
+
+    fn record_response(&self) {
+        self.responses_observed.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -157,12 +167,16 @@ impl ScopedRequester {
                 }
             };
             let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-            return read_response(
+            let observed = read_response(
                 response,
                 elapsed_ms,
                 self.policy.config().response_limit_bytes,
                 redaction_secrets.clone(),
             );
+            if observed.is_ok() {
+                self.budget.record_response();
+            }
+            return observed;
         }
 
         Err(RequestError::Http(format!(
@@ -316,5 +330,6 @@ mod tests {
         assert_eq!(budget.claim().expect("second"), 2);
         assert!(matches!(budget.claim(), Err(RequestError::BudgetExhausted)));
         assert_eq!(budget.used(), 2);
+        assert_eq!(budget.responses_observed(), 0);
     }
 }
