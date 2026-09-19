@@ -66,6 +66,13 @@ pub struct GuidedPreflight {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ApplicationSourceHint {
+    pub relative_path: String,
+    pub symbol_name: Option<String>,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ApplicationRoute {
     pub url: String,
     pub method: String,
@@ -76,6 +83,8 @@ pub struct ApplicationRoute {
     pub status_code: Option<u16>,
     pub cookies: Vec<String>,
     pub authentication_boundary: bool,
+    #[serde(default)]
+    pub source_hints: Vec<ApplicationSourceHint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -243,6 +252,7 @@ pub fn build_application_map(endpoints: &[EndpointObservation]) -> ApplicationMa
             status_code: endpoint.status_code,
             cookies: endpoint.cookie_names.clone(),
             authentication_boundary: authenticated,
+            source_hints: Vec::new(),
         });
     }
 
