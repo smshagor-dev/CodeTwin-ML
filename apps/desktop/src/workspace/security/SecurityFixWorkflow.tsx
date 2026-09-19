@@ -185,6 +185,7 @@ export function SecurityFixWorkflow({
     try {
       const approved = await workspaceApi.approveSecurityFix(
         attempt.id,
+        review.safety.patch_hash,
         acceptCaution,
       );
       setAttempt(approved);
