@@ -985,8 +985,8 @@ mod tests {
 
     #[test]
     fn boolean_differential_requires_material_difference() {
-        let base = response(200, &"A".repeat(100));
-        let similar = response(200, &"B".repeat(103));
+        let base = response(200, "search result id=123 count=45");
+        let similar = response(200, "search   result id=987 count=12");
         let different = response(403, "denied");
         assert!(similar_response(&base, &similar));
         assert!(materially_different(&base, &different));
