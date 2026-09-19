@@ -390,6 +390,11 @@ export function SecurityFixWorkflow({
                 ))}
               </div>
               <p><strong>Security regression:</strong> {testPlan.regression_test_proposal}</p>
+              <p>
+                <strong>Regression test generation:</strong>{" "}
+                {testPlan.regression_generation_status.replaceAll("_", " ")}
+              </p>
+              <p className="ws-form-help">{testPlan.regression_generation_reason}</p>
               <p><strong>Targeted retest:</strong> {testPlan.security_retest}</p>
               {!testPlan.qa_execution_available && (
                 <p className="ws-security-fix-warning">
