@@ -247,7 +247,7 @@ impl<'a> SecurityFixService<'a> {
         };
         if !matches!(
             attempt.status.as_str(),
-            "applied" | "verification_pending" | "validation_failed"
+            "applied" | "verification_pending" | "validation_failed" | "unable_to_verify"
         ) {
             return Ok(Some(attempt));
         }
