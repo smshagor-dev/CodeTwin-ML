@@ -315,7 +315,8 @@ impl<'a> SecurityFixService<'a> {
             .query_row(
                 "SELECT id,finding_id,session_id,project_id,repair_id,attempt_number,eligibility,
                         category,status,root_cause_json,strategy_json,test_plan_json,patch_hash,
-                        safety_class,safety_json,approved_patch_hash,approved_files_json,approved_at,
+                        safety_class,safety_json,approved_patch_hash,approved_files_json,
+                        approved_safety_class,caution_acknowledged,approved_at,
                         application_run_id,validation_state,retest_state,static_before_json,
                         static_after_json,created_at,updated_at
                  FROM security_fix_attempts WHERE id=?1",
@@ -334,7 +335,8 @@ impl<'a> SecurityFixService<'a> {
         let mut statement = self.database.connection().prepare(
             "SELECT id,finding_id,session_id,project_id,repair_id,attempt_number,eligibility,
                     category,status,root_cause_json,strategy_json,test_plan_json,patch_hash,
-                    safety_class,safety_json,approved_patch_hash,approved_files_json,approved_at,
+                    safety_class,safety_json,approved_patch_hash,approved_files_json,
+                    approved_safety_class,caution_acknowledged,approved_at,
                     application_run_id,validation_state,retest_state,static_before_json,
                     static_after_json,created_at,updated_at
              FROM security_fix_attempts WHERE finding_id=?1
@@ -400,7 +402,8 @@ impl<'a> SecurityFixService<'a> {
             .query_row(
                 "SELECT id,finding_id,session_id,project_id,repair_id,attempt_number,eligibility,
                         category,status,root_cause_json,strategy_json,test_plan_json,patch_hash,
-                        safety_class,safety_json,approved_patch_hash,approved_files_json,approved_at,
+                        safety_class,safety_json,approved_patch_hash,approved_files_json,
+                        approved_safety_class,caution_acknowledged,approved_at,
                         application_run_id,validation_state,retest_state,static_before_json,
                         static_after_json,created_at,updated_at
                  FROM security_fix_attempts WHERE finding_id=?1
@@ -520,14 +523,21 @@ fn map_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecurityFixAttemptRe
         },
         approved_patch_hash: row.get(15)?,
         approved_files_json: row.get(16)?,
-        approved_at: row.get(17)?,
-        application_run_id: row.get(18)?,
-        validation_state: row.get(19)?,
-        retest_state: row.get(20)?,
-        static_before_json: row.get(21)?,
-        static_after_json: row.get(22)?,
-        created_at: row.get(23)?,
-        updated_at: row.get(24)?,
+        approved_safety_class: row
+            .get::<_, Option<String>>(17)?
+            .as_deref()
+            .map(PatchSafetyClass::parse)
+            .transpose()
+            .map_err(|error| sqlite_conversion_error(17, error.to_string()))?,
+        caution_acknowledged: row.get::<_, i64>(18)? != 0,
+        approved_at: row.get(19)?,
+        application_run_id: row.get(20)?,
+        validation_state: row.get(21)?,
+        retest_state: row.get(22)?,
+        static_before_json: row.get(23)?,
+        static_after_json: row.get(24)?,
+        created_at: row.get(25)?,
+        updated_at: row.get(26)?,
     })
 }
 
