@@ -1643,26 +1643,21 @@ fn plan_coverage(
     session_id: &str,
     categories: &[&str],
 ) -> Result<f64, GuidedSecurityError> {
-    if categories.is_empty() {
-        return Ok(0.0);
-    }
-    let placeholders = std::iter::repeat("?")
-        .take(categories.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql = format!(
-        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN selected=1 THEN 1 ELSE 0 END),0)
-         FROM guided_security_plan_items
-         WHERE session_id=?1 AND category IN ({placeholders})"
-    );
-    let mut parameters: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(categories.len() + 1);
-    parameters.push(&session_id);
+    let mut total = 0i64;
+    let mut selected = 0i64;
     for category in categories {
-        parameters.push(category);
+        let (category_total, category_selected): (i64, i64) = database
+            .connection()
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN selected=1 THEN 1 ELSE 0 END),0)
+                 FROM guided_security_plan_items
+                 WHERE session_id=?1 AND category=?2",
+                params![session_id, category],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+        total += category_total;
+        selected += category_selected;
     }
-    let (total, selected): (i64, i64) = database
-        .connection()
-        .query_row(&sql, parameters.as_slice(), |row| Ok((row.get(0)?, row.get(1)?)))?;
     if total <= 0 {
         return Ok(0.0);
     }
