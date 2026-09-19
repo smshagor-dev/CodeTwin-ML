@@ -24,6 +24,15 @@ export function guidedConfigFor(
   const config = defaultWebScanConfig(targetUrl);
   config.scope.authorization_confirmed = false;
   config.scope.active_testing = true;
+  config.scope.excluded_paths = [
+    "/logout",
+    "/signout",
+    "/payment",
+    "/delete",
+    "/email/send",
+    "/webhook/production",
+    "/admin/destructive",
+  ];
   config.scope.allow_private_networks = environment === "local" || environment === "development";
   config.scope.allow_non_idempotent_methods = false;
   config.scope.enable_timing_probes = false;
@@ -46,8 +55,14 @@ export function guidedConfigFor(
   }
 
   if (environment === "authorized_production") {
+    config.scope.max_crawl_depth = Math.min(config.scope.max_crawl_depth, 2);
     config.scope.max_requests = Math.min(config.scope.max_requests, 350);
     config.scope.concurrency = Math.min(config.scope.concurrency, 2);
+    config.scope.timeout_ms = Math.min(config.scope.timeout_ms, 5_000);
+    config.scope.response_limit_bytes = Math.min(config.scope.response_limit_bytes, 512_000);
+    config.scope.redirect_limit = Math.min(config.scope.redirect_limit, 3);
+    config.scope.retry_limit = 0;
+    config.scope.allow_private_networks = false;
     config.scope.allow_non_idempotent_methods = false;
     config.scope.enable_timing_probes = false;
   }
@@ -65,6 +80,30 @@ export function validateGuidedConfig(
   }
   if (environment === "authorized_production" && config.scope.enable_timing_probes) {
     return "Developer Mode keeps timing probes disabled for authorized production.";
+  }
+  if (environment === "authorized_production" && config.scope.max_crawl_depth > 2) {
+    return "Authorized production Developer Mode is capped at crawl depth 2.";
+  }
+  if (environment === "authorized_production" && config.scope.max_requests > 350) {
+    return "Authorized production Developer Mode is capped at 350 requests.";
+  }
+  if (environment === "authorized_production" && config.scope.concurrency > 2) {
+    return "Authorized production Developer Mode is capped at concurrency 2.";
+  }
+  if (environment === "authorized_production" && config.scope.timeout_ms > 5_000) {
+    return "Authorized production Developer Mode is capped at a 5000 ms request timeout.";
+  }
+  if (environment === "authorized_production" && config.scope.response_limit_bytes > 512_000) {
+    return "Authorized production Developer Mode is capped at 512000 response bytes.";
+  }
+  if (environment === "authorized_production" && config.scope.redirect_limit > 3) {
+    return "Authorized production Developer Mode is capped at three redirects.";
+  }
+  if (environment === "authorized_production" && config.scope.retry_limit > 0) {
+    return "Authorized production Developer Mode does not retry requests automatically.";
+  }
+  if (environment === "authorized_production" && config.scope.allow_private_networks) {
+    return "Authorized production Developer Mode cannot enable private-network targeting.";
   }
   return null;
 }
