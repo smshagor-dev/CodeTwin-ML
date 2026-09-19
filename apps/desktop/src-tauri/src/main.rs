@@ -41,7 +41,6 @@ use guided_security_commands::{
     list_guided_security_retest_candidates, list_guided_security_retests,
     list_guided_security_sessions, prepare_guided_security_fix,
     prepare_guided_security_test, retest_guided_security_finding,
-    update_guided_finding_lifecycle,
 };
 use ml_commands::{
     link_ml_finding, list_ml_finding_links, ml_inference_history, ml_inference_plan, ml_models,
@@ -685,7 +684,6 @@ fn main() {
             guided_security_risk_graph,
             compare_guided_security_scans,
             prepare_guided_security_fix,
-            update_guided_finding_lifecycle,
             retest_guided_security_finding,
             list_guided_security_retest_candidates,
             list_guided_security_retests,
