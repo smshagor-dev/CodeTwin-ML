@@ -1,16 +1,80 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use codetwin_core::{
     Database, GuidedSecurityStore, RepairApplicationItemRecord, RepairApplicationRunRecord,
     RepairApplicationService,
     RepairChangeRecord, RepairFindingRecord, RepairPlanRecord, RepairSourceSnapshot,
     RepairVerificationItemRecord, RepairVerificationRunRecord, RepairWorkspaceQueryService,
-    SecurityFixService, VerifiedRepairService,
+    SecurityFixAttemptRecord, SecurityFixService, VerifiedRepairService,
 };
 
 use super::{with_database, AppState};
 
 pub(crate) static REPAIR_APPLICATION_RUNNING: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn finalize_security_fix_application(
+    database: &Database,
+    attempt_id: &str,
+    repair_id: &str,
+    application: &RepairApplicationRunRecord,
+    backup_root: &Path,
+) -> Result<SecurityFixAttemptRecord, String> {
+    let service = SecurityFixService::new(database);
+    let bookkeeping = (|| -> Result<SecurityFixAttemptRecord, String> {
+        let attempt = service
+            .record_application(attempt_id, &application.id)
+            .map_err(|error| error.to_string())?;
+        GuidedSecurityStore::new(database)
+            .sync_repair_application_state(repair_id)
+            .map_err(|error| error.to_string())?;
+        Ok(attempt)
+    })();
+
+    match bookkeeping {
+        Ok(attempt) => Ok(attempt),
+        Err(bookkeeping_error) => {
+            let rollback = RepairApplicationService::new(database)
+                .rollback_application(&application.id, backup_root);
+            match rollback {
+                Ok(rollback) if rollback.status == "rolled_back" => {
+                    let current = service
+                        .get_attempt(attempt_id)
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| "security fix attempt disappeared after rollback".to_string())?;
+                    if current.application_run_id.as_deref() == Some(application.id.as_str()) {
+                        service
+                            .record_rollback(attempt_id, &application.id)
+                            .map_err(|error| {
+                                format!(
+                                    "{bookkeeping_error}; patch was rolled back but security-fix rollback bookkeeping failed: {error}"
+                                )
+                            })?;
+                    }
+                    GuidedSecurityStore::new(database)
+                        .sync_repair_application_state(repair_id)
+                        .map_err(|error| {
+                            format!(
+                                "{bookkeeping_error}; patch was rolled back but guided lifecycle recovery failed: {error}"
+                            )
+                        })?;
+                    Err(format!(
+                        "{bookkeeping_error}; the applied patch was automatically rolled back"
+                    ))
+                }
+                Ok(rollback) => Err(format!(
+                    "{bookkeeping_error}; automatic rollback did not complete successfully (status: {})",
+                    rollback.status
+                )),
+                Err(rollback_error) => Err(format!(
+                    "{bookkeeping_error}; automatic rollback failed: {rollback_error}"
+                )),
+            }
+        }
+    }
+}
 
 #[tauri::command]
 pub(crate) fn create_repair_plan(
@@ -190,17 +254,22 @@ pub(crate) async fn apply_repair_plan(
                 .map_err(|error| error.to_string())?;
         }
         let run = RepairApplicationService::new(&database)
-            .apply_plan(&repair_id, backup_root)
+            .apply_plan(&repair_id, &backup_root)
             .map_err(|error| error.to_string())?;
         if run.status == "applied" {
             if let Some(attempt) = security_fix.as_ref() {
-                SecurityFixService::new(&database)
-                    .record_application(&attempt.id, &run.id)
+                finalize_security_fix_application(
+                    &database,
+                    &attempt.id,
+                    &repair_id,
+                    &run,
+                    &backup_root,
+                )?;
+            } else {
+                GuidedSecurityStore::new(&database)
+                    .sync_repair_application_state(&repair_id)
                     .map_err(|error| error.to_string())?;
             }
-            GuidedSecurityStore::new(&database)
-                .sync_repair_application_state(&repair_id)
-                .map_err(|error| error.to_string())?;
         }
         Ok(run)
     })
