@@ -1261,6 +1261,106 @@ fn remediation_campaign_blocks_overlapping_approved_patch_after_prior_source_mut
     );
 }
 
+#[test]
+fn remediation_campaign_blocks_rollback_when_verified_dependent_relies_on_applied_fix() {
+    let fixture = sql_fixture();
+    let second_id = add_overlapping_sql_finding(&fixture, "campaign-rollback-dependency");
+    let scan_id: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT scan_id FROM web_security_findings WHERE id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("scan id");
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (
+                'campaign-rollback-session',?1,'http://127.0.0.1:3000','local',
+                'standard','none','completed',1,'{}',?2
+             )",
+            rusqlite::params![fixture.project_id, scan_id],
+        )
+        .expect("guided campaign session");
+
+    let campaigns = SecurityRemediationCampaignService::new(&fixture.database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-rollback-session".into(),
+            finding_ids: vec![fixture.finding_id.clone(), second_id.clone()],
+        })
+        .expect("campaign");
+    let analyzed = campaigns.analyze(&campaign.id).expect("analyze");
+    campaigns
+        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+        .expect("approve");
+    campaigns.start(&campaign.id).expect("start");
+
+    let members = campaigns.findings(&campaign.id).expect("members");
+    let dependent = members
+        .iter()
+        .find(|finding| !finding.depends_on.is_empty())
+        .expect("overlap analysis must create an ordered dependency")
+        .clone();
+    let prerequisite_id = dependent.depends_on[0].clone();
+
+    let fixes = SecurityFixService::new(&fixture.database);
+    let prepared = fixes
+        .prepare_fix(&prerequisite_id, false)
+        .expect("prepare prerequisite");
+    let review = fixes.generate_patch(&prepared.attempt.id).expect("review prerequisite");
+    fixes
+        .approve_attempt(
+            &prepared.attempt.id,
+            &review.safety.patch_hash,
+            review.safety.classification == PatchSafetyClass::Caution,
+        )
+        .expect("approve prerequisite");
+    let repair_id = fixes
+        .assert_application_allowed(&prepared.attempt.id)
+        .expect("prerequisite allowed");
+    let backups = tempdir().expect("campaign rollback prerequisite backups");
+    let application = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply prerequisite");
+    fixes
+        .record_application(&prepared.attempt.id, &application.id)
+        .expect("record prerequisite application");
+    campaigns.sync(&campaign.id).expect("sync prerequisite");
+
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_retests(
+                id,finding_id,session_id,status,original_confidence,
+                observed_confidence,requests_performed,detail_json
+             ) VALUES (
+                'campaign-dependent-retest',?1,'campaign-rollback-session',
+                'retest_passed','Likely','Likely',2,'{}'
+             )",
+            [&dependent.finding_id],
+        )
+        .expect("persist dependent targeted retest");
+    campaigns.sync(&campaign.id).expect("sync verified dependent");
+
+    let assessment = campaigns
+        .rollback_assessment(&campaign.id, &prerequisite_id)
+        .expect("rollback assessment");
+    assert!(!assessment.allowed);
+    assert!(assessment
+        .blocking_findings
+        .iter()
+        .any(|finding_id| finding_id == &dependent.finding_id));
+    assert!(assessment.reason.contains("depend"));
+}
+
 #[cfg(unix)]
 #[test]
 fn approved_security_fix_rejects_symlink_substitution_before_application() {
