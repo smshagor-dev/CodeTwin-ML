@@ -1951,3 +1951,52 @@ html[data-theme="dark"] .ws-security-fix-warning {
   .ws-security-campaign-before-after > div { grid-template-columns: 1fr; }
   .ws-security-campaign-regressions > div { grid-template-columns: 1fr; }
 }
+
+.ws-security-campaign-rollback-list {
+  margin-top: 10px;
+  padding: 9px;
+  border: 1px solid var(--ws-border);
+  border-radius: 8px;
+  background: var(--ws-surface);
+}
+.ws-security-campaign-rollback-list > summary {
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 700;
+}
+.ws-security-campaign-rollback-list > p {
+  margin: 5px 0 8px;
+  color: var(--ws-muted);
+  font-size: 7px;
+  line-height: 1.45;
+}
+.ws-security-campaign-rollback-list > div {
+  display: grid;
+  gap: 6px;
+}
+.ws-security-campaign-rollback-list article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px;
+  border: 1px solid var(--ws-border);
+  border-radius: 6px;
+}
+.ws-security-campaign-rollback-list article span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.ws-security-campaign-rollback-list article strong { font-size: 8px; }
+.ws-security-campaign-rollback-list article small {
+  color: var(--ws-muted);
+  font-size: 7px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 700px) {
+  .ws-security-campaign-rollback-list article {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
