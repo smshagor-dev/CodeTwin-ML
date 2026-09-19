@@ -2083,6 +2083,18 @@ mod tests {
                  );",
             )
             .expect("fixture");
+        let web = crate::AuthorizedWebSecurityStore::new(&database);
+        for finding_id in ["campaign-finding-a", "campaign-finding-b"] {
+            web.record_evidence(
+                finding_id,
+                &crate::WebEvidenceInput {
+                    summary: "campaign runtime evidence".into(),
+                    request_metadata_json: "{}".into(),
+                    response_metadata_json: "{}".into(),
+                },
+            )
+            .expect("campaign evidence");
+        }
         (
             database,
             "campaign-session".into(),
@@ -2175,6 +2187,87 @@ mod tests {
                 &json!({"cookie": "session=secret"})
             )
             .is_err());
+    }
+
+    #[test]
+    fn paused_campaign_persists_and_resumes_after_database_reopen() {
+        let file = tempfile::NamedTempFile::new().expect("campaign database file");
+        let campaign_id;
+        {
+            let database = Database::open(file.path()).expect("persistent campaign database");
+            database
+                .connection()
+                .execute_batch(
+                    "INSERT INTO projects(id,root_path,display_name)
+                     VALUES ('persistent-project','/tmp/codetwin-persistent','persistent');
+                     INSERT INTO web_security_scans(
+                        id,project_id,target_url,status,phase,authorization_confirmed,
+                        scope_json,config_json,auth_metadata_json
+                     ) VALUES (
+                        'persistent-scan','persistent-project','http://127.0.0.1:34001',
+                        'completed','completed',1,'{}','{}','{}'
+                     );
+                     INSERT INTO guided_security_sessions(
+                        id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                        authorization_confirmed,config_json,scan_id
+                     ) VALUES (
+                        'persistent-session','persistent-project','http://127.0.0.1:34001',
+                        'local','standard','none','completed',1,'{}','persistent-scan'
+                     );
+                     INSERT INTO web_security_findings(
+                        id,scan_id,fingerprint,category,severity,confidence,target,
+                        endpoint_url,method,title,description,reproduction_summary,
+                        impact,remediation,references_json
+                     ) VALUES (
+                        'persistent-finding','persistent-scan','persistent-fp','xss',
+                        'medium','Likely','http://127.0.0.1:34001',
+                        'http://127.0.0.1:34001/render?q=a','GET',
+                        'Persistent XSS','fixture','fixture','fixture','use safe text rendering','[]'
+                     );",
+                )
+                .expect("persistent fixture");
+            crate::AuthorizedWebSecurityStore::new(&database)
+                .record_evidence(
+                    "persistent-finding",
+                    &crate::WebEvidenceInput {
+                        summary: "persistent runtime evidence".into(),
+                        request_metadata_json: "{}".into(),
+                        response_metadata_json: "{}".into(),
+                    },
+                )
+                .expect("persistent evidence");
+
+            let service = SecurityRemediationCampaignService::new(&database);
+            let campaign = service
+                .create(&SecurityRemediationCampaignCreate {
+                    session_id: "persistent-session".into(),
+                    finding_ids: vec!["persistent-finding".into()],
+                })
+                .expect("create persistent campaign");
+            campaign_id = campaign.id.clone();
+            let analyzed = service.analyze(&campaign.id).expect("analyze persistent campaign");
+            service
+                .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+                .expect("approve persistent campaign");
+            service.start(&campaign.id).expect("start persistent campaign");
+            let paused = service.pause(&campaign.id).expect("pause persistent campaign");
+            assert_eq!(paused.status, "PAUSED");
+        }
+
+        let reopened = Database::open(file.path()).expect("reopen campaign database");
+        let service = SecurityRemediationCampaignService::new(&reopened);
+        let persisted = service
+            .get(&campaign_id)
+            .expect("read persisted campaign")
+            .expect("campaign persists");
+        assert_eq!(persisted.status, "PAUSED");
+        let resumed = service.resume(&campaign_id).expect("resume after reopen");
+        assert_eq!(resumed.status, "IN_PROGRESS");
+        assert!(service
+            .events(&campaign_id, 50)
+            .expect("persistent events")
+            .iter()
+            .any(|event| event.event_type == "campaign_resumed"));
     }
 
     #[test]
