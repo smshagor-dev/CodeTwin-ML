@@ -15,10 +15,18 @@ use web_security_testing::{
     ScopeConfig, SecurityEnvironment,
 };
 
+#[derive(Debug, Clone)]
+struct RecordedRequest {
+    method: String,
+    target: String,
+    authorization: Option<String>,
+    cookie: Option<String>,
+}
+
 struct LocalLab {
     base_url: String,
     stop: Arc<AtomicBool>,
-    requests: Arc<Mutex<Vec<String>>>,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -98,7 +106,7 @@ impl Drop for LocalLab {
     }
 }
 
-fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<String>>>) {
+fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut buffer = [0u8; 16_384];
     let Ok(read) = stream.read(&mut buffer) else {
@@ -109,8 +117,15 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<String>>>) {
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
     let target = parts.next().unwrap_or("/");
+    let authorization = request_header(&request, "authorization");
+    let cookie = request_header(&request, "cookie");
     if let Ok(mut history) = requests.lock() {
-        history.push(format!("{method} {target}"));
+        history.push(RecordedRequest {
+            method: method.to_string(),
+            target: target.to_string(),
+            authorization: authorization.clone(),
+            cookie,
+        });
     }
 
     let url = Url::parse(&format!("http://localhost{target}"))
@@ -143,11 +158,14 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<String>>>) {
 <a href="/safe?q=hello">safe</a>
 <a href="/escape">escape</a>
 <a href="/object?id=1">object</a>
+<a href="/role-object?id=1">role object</a>
 <a href="/openapi.json">api</a>
 <a href="/static-sql?q=hello">static sql-looking text</a>
 <a href="/escaped?q=hello">escaped reflection</a>
 <a href="/redirect-safe?next=/home">safe redirect</a>
 <a href="/generic500?q=hello">generic error</a>
+<a href="/slow?q=hello">slow but normal</a>
+<a href="/missing?q=hello">ordinary 404</a>
 <form action="/update" method="post"><input name="display_name"></form>
 </body></html>"#,
         ),
@@ -252,6 +270,24 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<String>>>) {
             &[("Content-Type", "text/plain")],
             "Something went wrong. Reference ID 500.",
         ),
+        "/slow" => {
+            thread::sleep(Duration::from_millis(120));
+            respond(
+                &mut stream,
+                "200 OK",
+                &[("Content-Type", "text/html")],
+                "<html><body>normal delayed response</body></html>",
+            );
+        }
+        "/missing" => {
+            let q = query.get("q").map(String::as_str).unwrap_or("unknown");
+            respond(
+                &mut stream,
+                "404 Not Found",
+                &[("Content-Type", "text/plain")],
+                &format!("not found: {q}"),
+            );
+        }
         "/escape" => respond(
             &mut stream,
             "302 Found",
@@ -264,18 +300,47 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<String>>>) {
             &[("Content-Type", "application/json")],
             r#"{"id":1,"name":"shared-test-object"}"#,
         ),
+        "/role-object" => {
+            let body = match authorization.as_deref() {
+                Some("Bearer secondary-secret-token") => {
+                    r#"{"id":1,"role":"secondary","visible":"limited"}"#
+                }
+                Some("Bearer primary-secret-token") => {
+                    r#"{"id":1,"role":"primary","visible":"owner"}"#
+                }
+                _ => r#"{"id":1,"role":"anonymous","visible":"public"}"#,
+            };
+            respond(
+                &mut stream,
+                "200 OK",
+                &[("Content-Type", "application/json")],
+                body,
+            );
+        }
         "/openapi.json" => respond(
             &mut stream,
             "200 OK",
             &[("Content-Type", "application/json")],
             r#"{"openapi":"3.0.0","paths":{"/api/items":{"get":{"parameters":[{"name":"id","in":"query"}]}}}}"#,
         ),
-        "/api/items" => respond(
-            &mut stream,
-            "200 OK",
-            &[("Content-Type", "application/json")],
-            r#"{"items":[]}"#,
-        ),
+        "/api/items" => {
+            let id = query.get("id").map(String::as_str).unwrap_or("");
+            if id.starts_with("CODETWIN_INVALID_") {
+                respond(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    &[("Content-Type", "application/json")],
+                    r#"{"error":"validation path crashed"}"#,
+                );
+            } else {
+                respond(
+                    &mut stream,
+                    "200 OK",
+                    &[("Content-Type", "application/json")],
+                    r#"{"items":[]}"#,
+                );
+            }
+        }
         "/update" => respond(
             &mut stream,
             "200 OK",
@@ -289,6 +354,16 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<String>>>) {
             "not found",
         ),
     }
+}
+
+fn request_header(request: &str, name: &str) -> Option<String> {
+    request.lines().skip(1).find_map(|line| {
+        let (header_name, value) = line.split_once(':')?;
+        header_name
+            .trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| value.trim().to_string())
+    })
 }
 
 fn respond(stream: &mut TcpStream, status: &str, headers: &[(&str, &str)], body: &str) {
@@ -337,6 +412,10 @@ fn authorized_local_lab_detects_representative_findings_without_scope_escape() {
     assert!(categories.contains("csrf"));
     assert!(categories.contains("cors"));
     assert!(categories.contains("access_control"));
+    assert!(categories.contains("api_input_validation"));
+    assert!(!outcome.findings.iter().any(|finding| {
+        finding.category == "access_control" && finding.endpoint.contains("/role-object")
+    }));
     assert!(outcome
         .endpoints
         .iter()
@@ -355,6 +434,29 @@ fn authorized_local_lab_detects_representative_findings_without_scope_escape() {
     let serialized = serde_json::to_string(&outcome.findings).expect("findings JSON");
     assert!(!serialized.contains("primary-secret-token"));
     assert!(!serialized.contains("secondary-secret-token"));
+
+    let history = lab.requests.lock().expect("requests");
+    let role_requests: Vec<_> = history
+        .iter()
+        .filter(|request| request.target.starts_with("/role-object"))
+        .collect();
+    assert!(role_requests.iter().any(|request| {
+        request.authorization.as_deref() == Some("Bearer primary-secret-token")
+    }));
+    assert!(role_requests.iter().any(|request| {
+        request.authorization.as_deref() == Some("Bearer secondary-secret-token")
+    }));
+    assert!(history.iter().all(|request| {
+        request
+            .authorization
+            .as_deref()
+            .is_none_or(|value| {
+                value == "Bearer primary-secret-token" || value == "Bearer secondary-secret-token"
+            })
+    }));
+    assert!(history.iter().all(|request| {
+        request.cookie.as_deref().is_none_or(|value| !value.contains("secondary-secret-token"))
+    }));
 }
 
 
@@ -414,6 +516,9 @@ fn suspicious_but_safe_negative_fixtures_are_not_confirmed() {
                     || finding.endpoint.contains("/escaped")
                     || finding.endpoint.contains("/redirect-safe")
                     || finding.endpoint.contains("/generic500")
+                    || finding.endpoint.contains("/slow")
+                    || finding.endpoint.contains("/missing")
+                    || finding.endpoint.contains("/role-object")
                     || finding.endpoint.contains("/safe"))
         })
         .collect();
@@ -433,6 +538,32 @@ fn suspicious_but_safe_negative_fixtures_are_not_confirmed() {
     }));
     assert!(!outcome.findings.iter().any(|finding| {
         finding.category == "api_input_validation" && finding.endpoint.contains("/generic500")
+    }));
+    assert!(!outcome.findings.iter().any(|finding| {
+        finding.category == "access_control" && finding.endpoint.contains("/role-object")
+    }));
+    assert!(!outcome.findings.iter().any(|finding| {
+        finding.confidence == "Confirmed" && finding.endpoint.contains("/missing")
+    }));
+}
+
+#[test]
+fn ordinary_slow_endpoint_does_not_become_timing_confirmation() {
+    let lab = LocalLab::start();
+    let mut config = lab.config(220);
+    config.scope.enable_timing_probes = true;
+    let outcome = run_authorized_scan(
+        &config,
+        &AuthContext::default(),
+        None,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .expect("timing scan");
+    assert!(!outcome.findings.iter().any(|finding| {
+        finding.endpoint.contains("/slow")
+            && finding.category == "sql_injection"
+            && finding.title.to_ascii_lowercase().contains("timing")
     }));
 }
 
@@ -463,5 +594,7 @@ fn request_limit_is_hard_bounded() {
     )
     .expect("bounded scan");
     assert!(outcome.requests_performed <= 3);
-    assert!(lab.requests.lock().expect("requests").len() <= 3);
+    let history = lab.requests.lock().expect("requests");
+    assert!(history.len() <= 3);
+    assert!(history.iter().all(|request| !request.method.is_empty()));
 }
