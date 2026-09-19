@@ -385,10 +385,12 @@ fn authorized_local_lab_detects_representative_findings_without_scope_escape() {
     let lab = LocalLab::start();
     let cancelled = Arc::new(AtomicBool::new(false));
     let primary = AuthContext {
+        cookie_header: Some("session=primary-cookie-secret".to_string()),
         bearer_token: Some("primary-secret-token".to_string()),
         ..AuthContext::default()
     };
     let secondary = AuthContext {
+        cookie_header: Some("session=secondary-cookie-secret".to_string()),
         bearer_token: Some("secondary-secret-token".to_string()),
         ..AuthContext::default()
     };
@@ -434,6 +436,8 @@ fn authorized_local_lab_detects_representative_findings_without_scope_escape() {
     let serialized = serde_json::to_string(&outcome.findings).expect("findings JSON");
     assert!(!serialized.contains("primary-secret-token"));
     assert!(!serialized.contains("secondary-secret-token"));
+    assert!(!serialized.contains("primary-cookie-secret"));
+    assert!(!serialized.contains("secondary-cookie-secret"));
 
     let history = lab.requests.lock().expect("requests");
     let role_requests: Vec<_> = history
@@ -442,9 +446,19 @@ fn authorized_local_lab_detects_representative_findings_without_scope_escape() {
         .collect();
     assert!(role_requests.iter().any(|request| {
         request.authorization.as_deref() == Some("Bearer primary-secret-token")
+            && request.cookie.as_deref() == Some("session=primary-cookie-secret")
     }));
     assert!(role_requests.iter().any(|request| {
         request.authorization.as_deref() == Some("Bearer secondary-secret-token")
+            && request.cookie.as_deref() == Some("session=secondary-cookie-secret")
+    }));
+    assert!(!role_requests.iter().any(|request| {
+        request.authorization.as_deref() == Some("Bearer primary-secret-token")
+            && request.cookie.as_deref() == Some("session=secondary-cookie-secret")
+    }));
+    assert!(!role_requests.iter().any(|request| {
+        request.authorization.as_deref() == Some("Bearer secondary-secret-token")
+            && request.cookie.as_deref() == Some("session=primary-cookie-secret")
     }));
     assert!(history.iter().all(|request| {
         request
@@ -455,7 +469,10 @@ fn authorized_local_lab_detects_representative_findings_without_scope_escape() {
             })
     }));
     assert!(history.iter().all(|request| {
-        request.cookie.as_deref().is_none_or(|value| !value.contains("secondary-secret-token"))
+        request.cookie.as_deref().is_none_or(|value| {
+            value == "session=primary-cookie-secret"
+                || value == "session=secondary-cookie-secret"
+        })
     }));
 }
 
