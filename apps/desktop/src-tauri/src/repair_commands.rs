@@ -44,14 +44,33 @@ pub(crate) fn finalize_security_fix_application(
                         .get_attempt(attempt_id)
                         .map_err(|error| error.to_string())?
                         .ok_or_else(|| "security fix attempt disappeared after rollback".to_string())?;
-                    if current.application_run_id.as_deref() == Some(application.id.as_str()) {
-                        service
-                            .record_rollback(attempt_id, &application.id)
-                            .map_err(|error| {
-                                format!(
-                                    "{bookkeeping_error}; patch was rolled back but security-fix rollback bookkeeping failed: {error}"
+                    match current.application_run_id.as_deref() {
+                        Some(run_id) if run_id == application.id => {
+                            service
+                                .record_rollback(attempt_id, &application.id)
+                                .map_err(|error| {
+                                    format!(
+                                        "{bookkeeping_error}; patch was rolled back but security-fix rollback bookkeeping failed: {error}"
+                                    )
+                                })?;
+                        }
+                        None if current.status == "approved" => {
+                            service
+                                .record_application_recovery_rollback(
+                                    attempt_id,
+                                    &application.id,
                                 )
-                            })?;
+                                .map_err(|error| {
+                                    format!(
+                                        "{bookkeeping_error}; patch was rolled back but recovery bookkeeping failed: {error}"
+                                    )
+                                })?;
+                        }
+                        _ => {
+                            return Err(format!(
+                                "{bookkeeping_error}; patch was rolled back but the security-fix attempt is in an unexpected recovery state"
+                            ));
+                        }
                     }
                     GuidedSecurityStore::new(database)
                         .sync_repair_application_state(repair_id)
