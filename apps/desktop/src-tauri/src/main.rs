@@ -1,4 +1,5 @@
 mod database_commands;
+mod guided_security_commands;
 mod ml_commands;
 mod qa_commands;
 mod repair_commands;
@@ -16,7 +17,8 @@ use std::{
 };
 
 use codetwin_core::{
-    AuthorizedWebSecurityStore, CodeQualityService, CodeSecurityService, Database, FindingEvidenceRecord, GraphNeighborhood,
+    AuthorizedWebSecurityStore, CodeQualityService, CodeSecurityService, Database, FindingEvidenceRecord,
+    GraphNeighborhood, GuidedSecurityStore,
     GraphSummary, ImpactAnalysisService, ImpactReport, ImportReferenceRecord, IndexRunRecord,
     IndexSummary, LanguageServerConfig, LanguageServerConfigService, LanguageServerKind,
     ProjectIndexService, ProjectQueryService, QualityFindingRecord, QualityRuleRecord,
@@ -31,6 +33,14 @@ use codetwin_core::{
 use database_commands::{
     database_history, list_database_artifacts, list_database_evidence, list_database_findings,
     list_database_rules, run_database_analysis,
+};
+use guided_security_commands::{
+    approve_guided_security_plan, compare_guided_security_scans,
+    correlate_guided_security_sources, get_guided_security_session, guided_security_risk_graph,
+    guided_security_scorecard, list_guided_security_activity, list_guided_security_plan_items,
+    list_guided_security_retests, list_guided_security_sessions, prepare_guided_security_fix,
+    prepare_guided_security_test, retest_guided_security_finding,
+    update_guided_finding_lifecycle,
 };
 use ml_commands::{
     link_ml_finding, list_ml_finding_links, ml_inference_history, ml_inference_plan, ml_models,
@@ -560,6 +570,9 @@ fn main() {
             AuthorizedWebSecurityStore::new(&database)
                 .recover_interrupted_scans()
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
+            GuidedSecurityStore::new(&database)
+                .recover_interrupted_sessions()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
             app.manage(AppState {
                 database: Mutex::new(database),
                 database_path,
@@ -660,6 +673,20 @@ fn main() {
             get_app_preferences,
             save_app_preferences,
             system_status,
+            prepare_guided_security_test,
+            approve_guided_security_plan,
+            get_guided_security_session,
+            list_guided_security_sessions,
+            list_guided_security_plan_items,
+            list_guided_security_activity,
+            correlate_guided_security_sources,
+            guided_security_scorecard,
+            guided_security_risk_graph,
+            compare_guided_security_scans,
+            prepare_guided_security_fix,
+            update_guided_finding_lifecycle,
+            retest_guided_security_finding,
+            list_guided_security_retests,
             start_web_security_scan,
             cancel_web_security_scan,
             get_web_security_scan,
