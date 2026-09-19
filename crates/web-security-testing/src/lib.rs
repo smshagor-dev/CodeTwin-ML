@@ -2,6 +2,7 @@ mod active;
 mod discover;
 mod evidence;
 mod passive;
+mod operator;
 mod request;
 mod scope;
 
@@ -15,6 +16,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use evidence::{body_hash, fingerprint, redact_body, redact_headers, redact_url, response_evidence};
+pub use operator::{
+    build_application_map, build_test_plan, preflight, prepare_guided_security, ApplicationGroup,
+    ApplicationMap, ApplicationRoute, AuthenticationMode, GuidedPreflight, GuidedPreparation,
+    GuidedTestPlan, OperationRisk, PlannedOperation, SecurityEnvironment, TestingDepth,
+};
 pub use request::{RequestBudget, RequestError, ScopedRequester};
 pub use scope::{normalize_url, ScopeError, ScopePolicy};
 
