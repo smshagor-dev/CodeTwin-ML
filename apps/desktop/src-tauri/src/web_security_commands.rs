@@ -14,7 +14,8 @@ use codetwin_core::{
 };
 use serde::Deserialize;
 use web_security_testing::{
-    run_authorized_scan, AuthContext, ScanConfig, ScanError, ScanPhase, ScopePolicy,
+    apply_approved_execution_policy, run_authorized_scan, ApprovedExecutionPolicy, AuthContext,
+    ScanConfig, ScanError, ScanPhase, ScopePolicy,
 };
 
 use crate::{with_database, AppState};
@@ -127,25 +128,16 @@ fn run_scan_background(
         let selected_categories = guided
             .selected_plan_categories(session_id)
             .map_err(|error| error.to_string())?;
-        execution_config.checks.sql_injection &= selected_categories.contains("sql_injection");
-        execution_config.checks.xss &= selected_categories.contains("xss");
-        execution_config.checks.csrf &= selected_categories.contains("csrf");
-        execution_config.checks.open_redirect &= selected_categories.contains("open_redirect");
-        execution_config.checks.path_traversal &= selected_categories.contains("path_traversal");
-        execution_config.checks.ssrf_indicators &= selected_categories.contains("ssrf");
-        execution_config.checks.template_command_indicators &=
-            selected_categories.contains("template_injection");
-        execution_config.checks.api_validation &= selected_categories.contains("api_validation");
-        execution_config.checks.access_control &= selected_categories.contains("access_control");
-        let http_policy = selected_categories.contains("http_policy");
-        execution_config.checks.cors &= http_policy;
-        execution_config.checks.method_misconfiguration &= http_policy;
-        execution_config.scope.enable_timing_probes &=
-            selected_categories.contains("sql_timing_indicator");
         let state_changing_selected = guided
             .has_selected_state_changing(session_id)
             .map_err(|error| error.to_string())?;
-        execution_config.scope.allow_non_idempotent_methods &= state_changing_selected;
+        execution_config = apply_approved_execution_policy(
+            &execution_config,
+            &ApprovedExecutionPolicy {
+                selected_categories,
+                state_changing_selected,
+            },
+        );
     }
 
     let outcome = run_authorized_scan(
