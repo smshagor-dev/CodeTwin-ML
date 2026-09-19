@@ -2452,6 +2452,74 @@ mod tests {
     }
 
     #[test]
+    fn campaign_preserves_still_vulnerable_and_unable_to_verify_outcomes() {
+        let (database, session_id, _, finding_a, finding_b) = fixture();
+        let service = SecurityRemediationCampaignService::new(&database);
+        let campaign = service
+            .create(&SecurityRemediationCampaignCreate {
+                session_id: session_id.clone(),
+                finding_ids: vec![finding_a.clone(), finding_b.clone()],
+            })
+            .expect("create");
+        let analyzed = service.analyze(&campaign.id).expect("analyze");
+        service
+            .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+            .expect("approve");
+        service.start(&campaign.id).expect("start");
+
+        let guided = crate::GuidedSecurityStore::new(&database);
+        guided
+            .record_retest(crate::GuidedRetestInput {
+                finding_id: &finding_a,
+                session_id: Some(&session_id),
+                status: "still_vulnerable",
+                original_confidence: "Likely",
+                observed_confidence: Some("Likely"),
+                requests_performed: 2,
+                detail_json: r#"{"fixture":"campaign-still-vulnerable"}"#,
+            })
+            .expect("still vulnerable retest");
+        guided
+            .record_retest(crate::GuidedRetestInput {
+                finding_id: &finding_b,
+                session_id: Some(&session_id),
+                status: "unable_to_verify",
+                original_confidence: "Likely",
+                observed_confidence: None,
+                requests_performed: 2,
+                detail_json: r#"{"fixture":"campaign-unable"}"#,
+            })
+            .expect("unable retest");
+
+        service.sync(&campaign.id).expect("sync failure outcomes");
+        let findings = service.findings(&campaign.id).expect("campaign findings");
+        assert_eq!(
+            findings
+                .iter()
+                .find(|finding| finding.finding_id == finding_a)
+                .expect("A")
+                .status,
+            "STILL_VULNERABLE"
+        );
+        assert_eq!(
+            findings
+                .iter()
+                .find(|finding| finding.finding_id == finding_b)
+                .expect("B")
+                .status,
+            "UNABLE_TO_VERIFY"
+        );
+
+        let summary = service.summary(&campaign.id).expect("summary");
+        assert_eq!(summary.verified_fixed, 0);
+        assert_eq!(summary.still_vulnerable, 1);
+        assert_eq!(summary.unable_to_verify, 1);
+        assert_eq!(summary.queued_or_in_progress, 0);
+        let completed = service.complete(&campaign.id).expect("factual completion");
+        assert_eq!(completed.status, "COMPLETED_WITH_UNRESOLVED_FINDINGS");
+    }
+
+    #[test]
     fn campaign_completion_with_unresolved_findings_is_factual() {
         let (database, session_id, _, finding_a, _) = fixture();
         let service = SecurityRemediationCampaignService::new(&database);
