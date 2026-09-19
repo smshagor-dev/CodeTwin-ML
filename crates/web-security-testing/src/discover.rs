@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -51,12 +51,21 @@ pub fn crawl(
             Err(crate::RequestError::Cancelled) => return Err(ScanError::Cancelled),
             Err(_) => continue,
         };
-        let mut endpoint = EndpointObservation {
+        let parameter_names = query_parameters(&url);
+        let parameter_locations = parameter_names
+            .iter()
+            .map(|name| (name.clone(), "query".to_string()))
+            .collect();
+        let (response_header_names, cookie_names) = response_inventory(&response);
+        let endpoint = EndpointObservation {
             url: url.to_string(),
             method: "GET".to_string(),
             depth,
             source,
-            parameter_names: query_parameters(&url),
+            parameter_names,
+            parameter_locations,
+            response_header_names,
+            cookie_names,
             content_type: response.content_type.clone(),
             status_code: Some(response.status),
             redirect_to: response.location.clone(),
@@ -93,13 +102,21 @@ pub fn crawl(
                     }
                     let forms = extract_forms(&url, &body);
                     for form in forms {
+                        let parameter_locations = form
+                            .parameters
+                            .iter()
+                            .map(|name| (name.clone(), if form.method == "GET" { "query" } else { "form" }.to_string()))
+                            .collect();
                         let form_endpoint = EndpointObservation {
                             url: form.action.to_string(),
                             method: form.method.clone(),
                             depth: depth + 1,
                             source: "form".to_string(),
                             parameter_names: form.parameters.clone(),
-                            content_type: None,
+                            parameter_locations,
+                            response_header_names: Vec::new(),
+                            cookie_names: Vec::new(),
+                            content_type: if form.method == "GET" { None } else { Some("application/x-www-form-urlencoded".to_string()) },
                             status_code: None,
                             redirect_to: None,
                         };
@@ -118,15 +135,25 @@ pub fn crawl(
                             add_endpoint(
                                 &mut endpoints,
                                 &mut endpoint_keys,
-                                EndpointObservation {
-                                    url: next.to_string(),
-                                    method: "GET".to_string(),
-                                    depth: depth + 1,
-                                    source: "javascript_reference".to_string(),
-                                    parameter_names: query_parameters(&next),
-                                    content_type: None,
-                                    status_code: None,
-                                    redirect_to: None,
+                                {
+                                    let parameter_names = query_parameters(&next);
+                                    let parameter_locations = parameter_names
+                                        .iter()
+                                        .map(|name| (name.clone(), "query".to_string()))
+                                        .collect();
+                                    EndpointObservation {
+                                        url: next.to_string(),
+                                        method: "GET".to_string(),
+                                        depth: depth + 1,
+                                        source: "javascript_reference".to_string(),
+                                        parameter_names,
+                                        parameter_locations,
+                                        response_header_names: Vec::new(),
+                                        cookie_names: Vec::new(),
+                                        content_type: None,
+                                        status_code: None,
+                                        redirect_to: None,
+                                    }
                                 },
                             );
                         }
@@ -338,27 +365,25 @@ fn discover_openapi(
         return;
     }
     let Some(paths) = value.get("paths").and_then(|value| value.as_object()) else { return };
-    for (path, methods) in paths.iter().take(500) {
+    for (path, path_item) in paths.iter().take(500) {
         let Ok(url) = base.join(path) else { continue };
         if policy.assert_url(&url).is_err() {
             continue;
         }
-        let Some(methods) = methods.as_object() else { continue };
+        let Some(methods) = path_item.as_object() else { continue };
         for (method, operation) in methods {
             let method_upper = method.to_ascii_uppercase();
             if !matches!(method_upper.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "HEAD") {
                 continue;
             }
-            let parameters = operation
-                .get("parameters")
-                .and_then(|value| value.as_array())
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(|value| value.get("name").and_then(|name| name.as_str()).map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
+
+            let mut parameter_locations = BTreeMap::new();
+            collect_parameter_array(path_item.get("parameters"), &mut parameter_locations);
+            collect_parameter_array(operation.get("parameters"), &mut parameter_locations);
+            let request_content_type = collect_request_body_parameters(operation, &mut parameter_locations);
+
+            let mut parameter_names: Vec<String> = parameter_locations.keys().cloned().collect();
+            parameter_names.sort();
             add_endpoint(
                 endpoints,
                 keys,
@@ -367,14 +392,87 @@ fn discover_openapi(
                     method: method_upper,
                     depth: depth + 1,
                     source: "openapi".to_string(),
-                    parameter_names: parameters,
-                    content_type: Some("application/json".to_string()),
+                    parameter_names,
+                    parameter_locations,
+                    response_header_names: Vec::new(),
+                    cookie_names: Vec::new(),
+                    content_type: request_content_type,
                     status_code: None,
                     redirect_to: None,
                 },
             );
         }
     }
+}
+
+fn collect_parameter_array(
+    value: Option<&serde_json::Value>,
+    output: &mut BTreeMap<String, String>,
+) {
+    let Some(values) = value.and_then(|value| value.as_array()) else { return };
+    for parameter in values.iter().take(256) {
+        let Some(name) = parameter.get("name").and_then(|value| value.as_str()) else { continue };
+        let location = parameter
+            .get("in")
+            .and_then(|value| value.as_str())
+            .unwrap_or("query")
+            .to_ascii_lowercase();
+        if matches!(location.as_str(), "query" | "path" | "header" | "cookie") {
+            output.insert(name.to_string(), location);
+        }
+    }
+}
+
+fn collect_request_body_parameters(
+    operation: &serde_json::Value,
+    output: &mut BTreeMap<String, String>,
+) -> Option<String> {
+    let content = operation
+        .get("requestBody")
+        .and_then(|value| value.get("content"))
+        .and_then(|value| value.as_object())?;
+
+    for (content_type, location) in [
+        ("application/json", "json"),
+        ("application/x-www-form-urlencoded", "form"),
+        ("multipart/form-data", "form"),
+    ] {
+        let Some(media) = content.get(content_type) else { continue };
+        if let Some(properties) = media
+            .get("schema")
+            .and_then(|value| value.get("properties"))
+            .and_then(|value| value.as_object())
+        {
+            for name in properties.keys().take(256) {
+                output.insert(name.clone(), location.to_string());
+            }
+        }
+        return Some(content_type.to_string());
+    }
+    None
+}
+
+fn response_inventory(response: &ObservedResponse) -> (Vec<String>, Vec<String>) {
+    let mut header_names: Vec<String> = response
+        .headers
+        .iter()
+        .map(|(name, _)| name.to_ascii_lowercase())
+        .collect();
+    header_names.sort();
+    header_names.dedup();
+
+    let mut cookie_names: Vec<String> = response
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("set-cookie"))
+        .filter_map(|(_, value)| value.split('=').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect();
+    cookie_names.sort();
+    cookie_names.dedup();
+    (header_names, cookie_names)
 }
 
 #[cfg(test)]
