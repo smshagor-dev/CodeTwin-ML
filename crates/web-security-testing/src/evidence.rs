@@ -86,7 +86,11 @@ pub fn redact_body(body: &[u8]) -> String {
     for key in SENSITIVE_KEYS {
         output = redact_assignment(&output, key);
     }
-    output
+    output = redact_prefixed_token(&output, "Bearer ", true);
+    for prefix in ["ghp_", "github_pat_", "sk-"] {
+        output = redact_prefixed_token(&output, prefix, false);
+    }
+    redact_jwt_like_tokens(&output)
 }
 
 pub fn body_hash(body: &[u8]) -> String {
@@ -168,6 +172,62 @@ fn redact_assignment(input: &str, key: &str) -> String {
     output
 }
 
+fn redact_prefixed_token(input: &str, prefix: &str, keep_prefix: bool) -> String {
+    let lower = input.to_ascii_lowercase();
+    let needle = prefix.to_ascii_lowercase();
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0usize;
+    while let Some(relative) = lower[cursor..].find(&needle) {
+        let start = cursor + relative;
+        let token_start = start + prefix.len();
+        output.push_str(&input[cursor..start]);
+        if keep_prefix {
+            output.push_str(&input[start..token_start]);
+        }
+        output.push_str("<redacted>");
+        let mut end = token_start;
+        while end < input.len() {
+            let byte = input.as_bytes()[end];
+            if byte.is_ascii_whitespace()
+                || matches!(byte, b'"' | b'\'' | b'<' | b'>' | b',' | b';' | b'&' | b')' | b']')
+            {
+                break;
+            }
+            end += 1;
+        }
+        cursor = end;
+    }
+    output.push_str(&input[cursor..]);
+    output
+}
+
+fn redact_jwt_like_tokens(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    for part in input.split_inclusive(char::is_whitespace) {
+        let trimmed = part.trim_end_matches(char::is_whitespace);
+        let suffix = &part[trimmed.len()..];
+        let core = trimmed.trim_matches(|character: char| {
+            matches!(character, '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';')
+        });
+        let jwt_like = core.len() >= 32
+            && core.starts_with("eyJ")
+            && core.matches('.').count() == 2
+            && core
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'));
+        if jwt_like {
+            let prefix_len = trimmed.find(core).unwrap_or(0);
+            output.push_str(&trimmed[..prefix_len]);
+            output.push_str("<redacted>");
+            output.push_str(&trimmed[prefix_len + core.len()..]);
+        } else {
+            output.push_str(trimmed);
+        }
+        output.push_str(suffix);
+    }
+    output
+}
+
 fn truncate(value: &str, max: usize) -> String {
     let mut chars = value.chars();
     let prefix: String = chars.by_ref().take(max).collect();
@@ -193,5 +253,14 @@ mod tests {
         assert!(!text.contains("super-secret"));
         assert!(!text.contains("pw"));
         assert!(text.contains("<redacted>"));
+
+        let obvious = redact_body(
+            b"Authorization: Bearer abc.def.ghi ghp_abcdefghijklmnopqrstuvwxyz github_pat_longvalue sk-secretvalue eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturevalue",
+        );
+        assert!(!obvious.contains("abc.def.ghi"));
+        assert!(!obvious.contains("ghp_abcdefghijklmnopqrstuvwxyz"));
+        assert!(!obvious.contains("github_pat_longvalue"));
+        assert!(!obvious.contains("sk-secretvalue"));
+        assert!(!obvious.contains("eyJhbGci"));
     }
 }
