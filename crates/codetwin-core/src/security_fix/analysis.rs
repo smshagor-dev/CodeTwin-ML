@@ -734,7 +734,11 @@ pub(crate) fn build_strategy(
     FixStrategy {
         category: finding.category.clone(),
         change_summary: summary.into(),
-        rationale: format!("{rationale} Observed runtime detail: {}", bounded_text(&finding.description, 600)),
+        rationale: format!(
+            "{rationale} Observed runtime detail: {} Existing remediation guidance: {}",
+            bounded_text(&finding.description, 600),
+            bounded_text(&finding.remediation, 600),
+        ),
         likely_files,
         expected_behavior: expected.into(),
         compatibility_risks: risks,
