@@ -16,6 +16,7 @@ pub mod repair_workflow;
 pub mod repair_workspace;
 pub mod runtime_analysis;
 pub mod security_analysis;
+pub mod security_campaign;
 pub mod security_fix;
 pub mod semantic_config;
 pub mod semantic_domain;
@@ -89,6 +90,15 @@ pub use runtime_analysis::{
 pub use security_analysis::{
     CodeSecurityService, SecurityAnalysisError, SecurityFindingRecord, SecurityRuleRecord,
     SecurityRunRecord, SecurityRunSummary,
+};
+pub use security_campaign::{
+    SecurityRemediationBeforeAfterItem, SecurityRemediationCampaignCreate,
+    SecurityRemediationCampaignError, SecurityRemediationCampaignEventRecord,
+    SecurityRemediationCampaignFindingRecord, SecurityRemediationCampaignPlan,
+    SecurityRemediationCampaignRecord, SecurityRemediationCampaignService,
+    SecurityRemediationCampaignSummary, SecurityRemediationDebtView,
+    SecurityRemediationPlanItem, SecurityRemediationRegressionTracking,
+    SecurityRemediationRelationshipRecord,
 };
 pub use security_fix::{
     FixEligibility, FixEligibilityAssessment, FixStrategy, MultiFindingOverlap, PatchReview,
