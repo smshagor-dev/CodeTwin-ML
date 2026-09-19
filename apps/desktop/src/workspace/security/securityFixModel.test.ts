@@ -68,6 +68,7 @@ function attempt(
     caution_acknowledged: false,
     approved_at: null,
     application_run_id: null,
+    retest_floor_rowid: 0,
     validation_state: "not_executed",
     retest_state: retestState,
     static_before_json: "{}",
