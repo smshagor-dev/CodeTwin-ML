@@ -137,9 +137,10 @@ export function SecurityFixWorkflow({
 
   async function generatePatch() {
     if (!attempt || !beginMutation("Generating bounded patch")) return;
+    const attemptId = attempt.id;
     setError(null);
     try {
-      const next = await workspaceApi.generateSecurityFixPatch(attempt.id);
+      const next = await workspaceApi.generateSecurityFixPatch(attemptId);
       setReview(next);
       await refreshAttempt(attemptId);
     } catch (value) {
@@ -176,10 +177,11 @@ export function SecurityFixWorkflow({
       || proposedContent === source.content
       || !beginMutation("Analyzing patch safety")
     ) return;
+    const attemptId = attempt.id;
     setError(null);
     try {
       const next = await workspaceApi.proposeSecurityFixReplacement(
-        attempt.id,
+        attemptId,
         source.file_id,
         proposedContent,
       );
@@ -236,7 +238,7 @@ export function SecurityFixWorkflow({
       setHistory(await workspaceApi.listSecurityFixAttempts(finding.id, 20));
     } catch (value) {
       setError(String(value));
-      await refreshAttempt(attempt.id).catch(() => undefined);
+      await refreshAttempt(attemptId).catch(() => undefined);
     } finally {
       finishMutation();
     }
