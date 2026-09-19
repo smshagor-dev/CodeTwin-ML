@@ -244,6 +244,7 @@ impl<'a> GuidedSecurityStore<'a> {
         let target = Url::parse(input.target_url.trim())
             .map_err(|error| GuidedSecurityError::InvalidConfig(error.to_string()))?;
         let config_value: serde_json::Value = serde_json::from_str(&input.config_json)?;
+        reject_sensitive_json(&config_value, "guided scan config")?;
         if config_value
             .pointer("/scope/authorization_confirmed")
             .and_then(serde_json::Value::as_bool)
@@ -285,9 +286,14 @@ impl<'a> GuidedSecurityStore<'a> {
         &self,
         input: PreparationCompletion<'_>,
     ) -> Result<GuidedSecuritySessionRecord, GuidedSecurityError> {
-        serde_json::from_str::<serde_json::Value>(input.preflight_json)?;
-        serde_json::from_str::<serde_json::Value>(input.application_map_json)?;
-        serde_json::from_str::<serde_json::Value>(input.plan_json)?;
+        let preflight_value =
+            serde_json::from_str::<serde_json::Value>(input.preflight_json)?;
+        let application_map_value =
+            serde_json::from_str::<serde_json::Value>(input.application_map_json)?;
+        let plan_value = serde_json::from_str::<serde_json::Value>(input.plan_json)?;
+        reject_sensitive_json(&preflight_value, "guided preflight")?;
+        reject_sensitive_json(&application_map_value, "guided application map")?;
+        reject_sensitive_json(&plan_value, "guided test plan")?;
         let current = self
             .get_session(input.session_id)?
             .ok_or_else(|| GuidedSecurityError::SessionNotFound(input.session_id.to_string()))?;
@@ -648,7 +654,8 @@ impl<'a> GuidedSecurityStore<'a> {
         message: &str,
         detail_json: &str,
     ) -> Result<GuidedActivityRecord, GuidedSecurityError> {
-        serde_json::from_str::<serde_json::Value>(detail_json)?;
+        let detail_value = serde_json::from_str::<serde_json::Value>(detail_json)?;
+        reject_sensitive_json(&detail_value, "guided activity")?;
         let session_exists: bool = self.database.connection().query_row(
             "SELECT EXISTS(SELECT 1 FROM guided_security_sessions WHERE id=?1)",
             [session_id],
@@ -979,7 +986,8 @@ impl<'a> GuidedSecurityStore<'a> {
                 "unsupported retest status".to_string(),
             ));
         }
-        serde_json::from_str::<serde_json::Value>(input.detail_json)?;
+        let detail_value = serde_json::from_str::<serde_json::Value>(input.detail_json)?;
+        reject_sensitive_json(&detail_value, "guided retest")?;
         let id = self.random_id("guideretest")?;
         self.database.connection().execute(
             "INSERT INTO guided_security_retests(
@@ -1518,6 +1526,49 @@ struct FindingContext {
     remediation: String,
 }
 
+fn reject_sensitive_json(
+    value: &serde_json::Value,
+    context: &str,
+) -> Result<(), GuidedSecurityError> {
+    fn visit(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(map) => map.iter().any(|(key, value)| {
+                let normalized = key
+                    .trim()
+                    .to_ascii_lowercase()
+                    .replace('-', "_");
+                matches!(
+                    normalized.as_str(),
+                    "authorization"
+                        | "proxy_authorization"
+                        | "cookie"
+                        | "set_cookie"
+                        | "cookie_header"
+                        | "bearer_token"
+                        | "api_key"
+                        | "x_api_key"
+                        | "password"
+                        | "passwd"
+                        | "secret"
+                        | "token"
+                        | "access_token"
+                        | "refresh_token"
+                        | "session_token"
+                ) || visit(value)
+            }),
+            serde_json::Value::Array(items) => items.iter().any(visit),
+            _ => false,
+        }
+    }
+
+    if visit(value) {
+        return Err(GuidedSecurityError::InvalidConfig(format!(
+            "{context} must not persist authentication or secret material"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_session_input(input: &GuidedSessionCreate) -> Result<(), GuidedSecurityError> {
     if !input.authorization_confirmed {
         return Err(GuidedSecurityError::InvalidConfig(
@@ -1742,6 +1793,28 @@ mod tests {
             authorization_confirmed: true,
             config_json: r#"{"scope":{"authorization_confirmed":true}}"#.into(),
         }
+    }
+
+    #[test]
+    fn guided_persistence_rejects_secret_bearing_json() {
+        let database = Database::open_in_memory().expect("database");
+        let store = GuidedSecurityStore::new(&database);
+        let mut input = create();
+        input.config_json =
+            r#"{"scope":{"authorization_confirmed":true},"bearer_token":"should-not-persist"}"#
+                .into();
+        assert!(store.create_session(&input).is_err());
+
+        let session = store.create_session(&create()).expect("session");
+        assert!(store
+            .append_activity(
+                &session.id,
+                "test",
+                "preflight",
+                "sensitive detail rejected",
+                r#"{"cookie":"session=should-not-persist"}"#,
+            )
+            .is_err());
     }
 
     #[test]
