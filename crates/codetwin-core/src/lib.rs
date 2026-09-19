@@ -44,8 +44,8 @@ pub use identity::{
 pub use guided_security::{
     GuidedActivityRecord, GuidedFixPreparation, GuidedPlanItemInput, GuidedPlanItemRecord,
     GuidedRetestRecord, GuidedRiskEdge, GuidedRiskGraph, GuidedRiskNode, GuidedScanComparison,
-    GuidedSecurityError, GuidedSecurityScorecard, GuidedSecuritySessionRecord, GuidedSecurityStore,
-    GuidedSessionCreate, GuidedSourceCandidate,
+    GuidedRetestInput, GuidedSecurityError, GuidedSecurityScorecard, GuidedSecuritySessionRecord,
+    GuidedSecurityStore, GuidedSessionCreate, GuidedSourceCandidate, PreparationCompletion,
 };
 pub use impact_analysis::{
     ImpactAnalysisError, ImpactAnalysisService, ImpactReport, ImpactedFileRecord,
