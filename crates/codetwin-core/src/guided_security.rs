@@ -1459,6 +1459,29 @@ impl<'a> GuidedSecurityStore<'a> {
         })
     }
 
+    pub fn retest_candidate_finding_ids(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, GuidedSecurityError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT finding_id
+             FROM guided_security_finding_lifecycle
+             WHERE session_id=?1 AND state='fix_applied'
+             ORDER BY updated_at, finding_id
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(
+            params![session_id, bounded_limit(limit) as i64],
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut output = Vec::new();
+        for row in rows {
+            output.push(row?);
+        }
+        Ok(output)
+    }
+
     pub fn sync_repair_application_state(
         &self,
         repair_id: &str,
