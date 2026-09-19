@@ -433,6 +433,19 @@ pub async fn retest_guided_security_finding(
 }
 
 #[tauri::command]
+pub fn list_guided_security_retest_candidates(
+    session_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    with_database(&state, |database| {
+        GuidedSecurityStore::new(database)
+            .retest_candidate_finding_ids(&session_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
 pub fn list_guided_security_retests(
     finding_id: String,
     limit: usize,
