@@ -4,8 +4,9 @@ use std::sync::{atomic::AtomicBool, Arc};
 use codetwin_core::{
     AuthorizedWebSecurityStore, Database, GuidedActivityRecord, GuidedFixPreparation,
     GuidedPlanItemInput, GuidedPlanItemRecord,
-    GuidedRetestRecord, GuidedRiskGraph, GuidedScanComparison, GuidedSecurityScorecard,
-    GuidedSecuritySessionRecord, GuidedSecurityStore, GuidedSessionCreate, GuidedSourceCandidate,
+    GuidedRetestInput, GuidedRetestRecord, GuidedRiskGraph, GuidedScanComparison,
+    GuidedSecurityScorecard, GuidedSecuritySessionRecord, GuidedSecurityStore, GuidedSessionCreate,
+    GuidedSourceCandidate, PreparationCompletion,
 };
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
@@ -132,14 +133,14 @@ pub async fn prepare_guided_security_test(
                     })
                     .collect();
                 store
-                    .complete_preparation(
-                        &session_id,
-                        &preflight_json,
-                        &map_json,
-                        &plan_json,
-                        prepared.mapping_requests,
-                        &plan_items,
-                    )
+                    .complete_preparation(PreparationCompletion {
+                        session_id: &session_id,
+                        preflight_json: &preflight_json,
+                        application_map_json: &map_json,
+                        plan_json: &plan_json,
+                        mapping_requests: prepared.mapping_requests,
+                        plan_items: &plan_items,
+                    })
                     .map_err(|error| error.to_string())
             }
             Err(error) => {
@@ -396,15 +397,15 @@ pub async fn retest_guided_security_finding(
                 })
                 .to_string();
                 store
-                    .record_retest(
-                        &request.finding_id,
-                        session_id.as_deref(),
+                    .record_retest(GuidedRetestInput {
+                        finding_id: &request.finding_id,
+                        session_id: session_id.as_deref(),
                         status,
-                        &original_confidence,
-                        observed_confidence.as_deref(),
-                        outcome.requests_performed,
-                        &detail,
-                    )
+                        original_confidence: &original_confidence,
+                        observed_confidence: observed_confidence.as_deref(),
+                        requests_performed: outcome.requests_performed,
+                        detail_json: &detail,
+                    })
                     .map_err(|error| error.to_string())
             }
             Err(error) => {
@@ -414,15 +415,15 @@ pub async fn retest_guided_security_finding(
                 })
                 .to_string();
                 store
-                    .record_retest(
-                        &request.finding_id,
-                        session_id.as_deref(),
-                        "unable_to_verify",
-                        &original_confidence,
-                        None,
-                        0,
-                        &detail,
-                    )
+                    .record_retest(GuidedRetestInput {
+                        finding_id: &request.finding_id,
+                        session_id: session_id.as_deref(),
+                        status: "unable_to_verify",
+                        original_confidence: &original_confidence,
+                        observed_confidence: None,
+                        requests_performed: 0,
+                        detail_json: &detail,
+                    })
                     .map_err(|store_error| store_error.to_string())
             }
         }
