@@ -86,8 +86,10 @@ CREATE TABLE guided_security_retests (
   finding_id TEXT NOT NULL REFERENCES web_security_findings(id) ON DELETE CASCADE,
   session_id TEXT REFERENCES guided_security_sessions(id) ON DELETE SET NULL,
   status TEXT NOT NULL CHECK(status IN ('retest_passed','still_vulnerable','unable_to_verify')),
-  original_confidence TEXT NOT NULL,
-  observed_confidence TEXT,
+  original_confidence TEXT NOT NULL
+    CHECK(original_confidence IN ('Potential','Likely','Confirmed')),
+  observed_confidence TEXT
+    CHECK(observed_confidence IS NULL OR observed_confidence IN ('Potential','Likely','Confirmed')),
   requests_performed INTEGER NOT NULL DEFAULT 0 CHECK(requests_performed >= 0),
   detail_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
