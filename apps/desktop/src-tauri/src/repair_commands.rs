@@ -10,7 +10,7 @@ use codetwin_core::{
 
 use super::{with_database, AppState};
 
-static REPAIR_APPLICATION_RUNNING: AtomicBool = AtomicBool::new(false);
+pub(crate) static REPAIR_APPLICATION_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 pub(crate) fn create_repair_plan(
