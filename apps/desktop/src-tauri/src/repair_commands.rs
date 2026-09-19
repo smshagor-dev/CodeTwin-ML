@@ -370,3 +370,84 @@ pub(crate) fn list_repair_application_items(
             .map_err(|error| error.to_string())
     })
 }
+
+
+#[cfg(test)]
+mod security_fix_boundary_tests {
+    use super::*;
+
+    fn boundary_database() -> Database {
+        let database = Database::open_in_memory().expect("database");
+        database
+            .connection()
+            .execute_batch(
+                "INSERT INTO projects(id,root_path,display_name)
+                 VALUES ('project-boundary','/tmp/codetwin-boundary','boundary');
+                 INSERT INTO web_security_scans(
+                    id,project_id,target_url,status,phase,authorization_confirmed,
+                    scope_json,config_json,auth_metadata_json
+                 ) VALUES (
+                    'scan-boundary','project-boundary','http://127.0.0.1:3000',
+                    'completed','completed',1,'{}','{}','{}'
+                 );
+                 INSERT INTO web_security_findings(
+                    id,scan_id,fingerprint,category,severity,confidence,target,
+                    endpoint_url,method,title,description,reproduction_summary,
+                    impact,remediation,references_json
+                 ) VALUES (
+                    'finding-boundary','scan-boundary','fp-boundary','sql_injection',
+                    'high','Likely','http://127.0.0.1:3000',
+                    'http://127.0.0.1:3000/search?q=hello','GET',
+                    'SQL injection','runtime evidence','local reproduction',
+                    'test impact','parameterize query','[]'
+                 );
+                 INSERT INTO repair_plans(
+                    id,project_id,title,rationale,status
+                 ) VALUES (
+                    'repair-security','project-boundary','security repair',
+                    'guided security fix','draft'
+                 );
+                 INSERT INTO repair_plans(
+                    id,project_id,title,rationale,status
+                 ) VALUES (
+                    'repair-ordinary','project-boundary','ordinary repair',
+                    'ordinary repair','draft'
+                 );
+                 INSERT INTO security_fix_attempts(
+                    id,finding_id,project_id,repair_id,attempt_number,eligibility,
+                    category,status,root_cause_json,strategy_json,test_plan_json
+                 ) VALUES (
+                    'attempt-boundary','finding-boundary','project-boundary',
+                    'repair-security',1,'AUTO_FIX_CANDIDATE','sql_injection',
+                    'prepared','[]','{}','{}'
+                 );",
+            )
+            .expect("boundary fixture");
+        database
+    }
+
+    #[test]
+    fn generic_repair_plan_mutation_is_blocked_for_security_fix_links() {
+        let database = boundary_database();
+        for action in ["approved", "rejected", "verified"] {
+            let error = reject_generic_security_fix_plan_mutation(
+                &database,
+                "repair-security",
+                action,
+            )
+            .expect_err("security-linked generic mutation must be blocked");
+            assert!(error.contains("Guided Security Fix & Verify"));
+        }
+    }
+
+    #[test]
+    fn ordinary_repair_plan_mutation_boundary_remains_open() {
+        let database = boundary_database();
+        reject_generic_security_fix_plan_mutation(
+            &database,
+            "repair-ordinary",
+            "approved",
+        )
+        .expect("ordinary repair plan remains supported");
+    }
+}
