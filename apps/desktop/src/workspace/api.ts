@@ -3,6 +3,16 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
   AppPreferences,
+  GuidedActivityRecord,
+  GuidedFixPreparation,
+  GuidedPlanItemRecord,
+  GuidedRetestRecord,
+  GuidedRiskGraph,
+  GuidedScanComparison,
+  GuidedSecurityPrepareRequest,
+  GuidedSecurityScorecard,
+  GuidedSecuritySessionRecord,
+  GuidedSourceCandidate,
   IndexSummary,
   LanguageServerConfig,
   LanguageServerKind,
@@ -121,6 +131,58 @@ export const workspaceApi = {
   },
   qaHistory(projectId: string, limit = 50) {
     return invoke<QaDiscoveryRunRecord[]>("qa_discovery_history", { projectId, limit });
+  },
+  prepareGuidedSecurityTest(request: GuidedSecurityPrepareRequest) {
+    return invoke<GuidedSecuritySessionRecord>("prepare_guided_security_test", { request });
+  },
+  approveGuidedSecurityPlan(sessionId: string) {
+    return invoke<GuidedSecuritySessionRecord>("approve_guided_security_plan", { sessionId });
+  },
+  getGuidedSecuritySession(sessionId: string) {
+    return invoke<GuidedSecuritySessionRecord | null>("get_guided_security_session", { sessionId });
+  },
+  listGuidedSecuritySessions(projectId: string | null = null, limit = 100) {
+    return invoke<GuidedSecuritySessionRecord[]>("list_guided_security_sessions", { projectId, limit });
+  },
+  listGuidedSecurityPlanItems(sessionId: string, limit = 1000) {
+    return invoke<GuidedPlanItemRecord[]>("list_guided_security_plan_items", { sessionId, limit });
+  },
+  listGuidedSecurityActivity(sessionId: string, limit = 500) {
+    return invoke<GuidedActivityRecord[]>("list_guided_security_activity", { sessionId, limit });
+  },
+  correlateGuidedSecuritySources(findingId: string, limit = 5) {
+    return invoke<GuidedSourceCandidate[]>("correlate_guided_security_sources", { findingId, limit });
+  },
+  guidedSecurityScorecard(sessionId: string) {
+    return invoke<GuidedSecurityScorecard>("guided_security_scorecard", { sessionId });
+  },
+  guidedSecurityRiskGraph(sessionId: string) {
+    return invoke<GuidedRiskGraph>("guided_security_risk_graph", { sessionId });
+  },
+  compareGuidedSecurityScans(sessionId: string | null, previousScanId: string, currentScanId: string) {
+    return invoke<GuidedScanComparison>("compare_guided_security_scans", {
+      sessionId,
+      previousScanId,
+      currentScanId,
+    });
+  },
+  prepareGuidedSecurityFix(findingId: string) {
+    return invoke<GuidedFixPreparation>("prepare_guided_security_fix", { findingId });
+  },
+  updateGuidedFindingLifecycle(findingId: string, sessionId: string | null, lifecycle: string) {
+    return invoke<void>("update_guided_finding_lifecycle", { findingId, sessionId, lifecycle });
+  },
+  retestGuidedSecurityFinding(findingId: string, primaryAuth: import("./types").WebAuthContext, secondaryAuth: import("./types").WebAuthContext | null) {
+    return invoke<GuidedRetestRecord>("retest_guided_security_finding", {
+      request: {
+        finding_id: findingId,
+        primary_auth: primaryAuth,
+        secondary_auth: secondaryAuth,
+      },
+    });
+  },
+  listGuidedSecurityRetests(findingId: string, limit = 50) {
+    return invoke<GuidedRetestRecord[]>("list_guided_security_retests", { findingId, limit });
   },
   languageServers() {
     return invoke<LanguageServerConfig[]>("list_language_server_configs");
