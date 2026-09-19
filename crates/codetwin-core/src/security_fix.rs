@@ -341,6 +341,38 @@ pub(crate) fn to_usize(value: i64) -> usize {
     usize::try_from(value).unwrap_or_default()
 }
 
+pub(crate) fn contains_sensitive_text(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    if lower.contains("authorization: bearer ")
+        || lower.contains("cookie:")
+        || lower.contains("set-cookie:")
+        || lower.contains("bearer ")
+        || lower.contains("session=")
+        || lower.contains("github_pat_")
+        || lower.contains("ghp_")
+        || lower.contains("sk-proj-")
+        || lower.contains("sk_live_")
+    {
+        return true;
+    }
+    value.split_whitespace().any(|part| {
+        let token = part.trim_matches(|ch: char| {
+            !ch.is_ascii_alphanumeric() && !matches!(ch, '-' | '_' | '.')
+        });
+        token.starts_with("eyJ")
+            && token.split('.').count() == 3
+            && token.len() >= 24
+    })
+}
+
+pub(crate) fn redact_sensitive_summary(value: &str, max: usize) -> String {
+    if contains_sensitive_text(value) {
+        "[redacted: sensitive validation output]".to_string()
+    } else {
+        bounded_text(value, max)
+    }
+}
+
 pub(crate) fn reject_sensitive_json(value: &serde_json::Value) -> Result<(), SecurityFixError> {
     fn visit(value: &serde_json::Value) -> bool {
         match value {
@@ -350,6 +382,7 @@ pub(crate) fn reject_sensitive_json(value: &serde_json::Value) -> Result<(), Sec
                     key.as_str(),
                     "authorization"
                         | "cookie"
+                        | "cookie_header"
                         | "set_cookie"
                         | "bearer_token"
                         | "api_key"
@@ -360,9 +393,11 @@ pub(crate) fn reject_sensitive_json(value: &serde_json::Value) -> Result<(), Sec
                         | "refresh_token"
                         | "session_token"
                         | "custom_headers"
+                        | "credentials"
                 ) || visit(value)
             }),
             serde_json::Value::Array(values) => values.iter().any(visit),
+            serde_json::Value::String(value) => contains_sensitive_text(value),
             _ => false,
         }
     }
