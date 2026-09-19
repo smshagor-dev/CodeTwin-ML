@@ -90,6 +90,10 @@ impl<'a> SecurityFixService<'a> {
         let attempt = self
             .get_attempt(attempt_id)?
             .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))?;
+        let repair_id = attempt
+            .repair_id
+            .as_deref()
+            .ok_or(SecurityFixError::PatchGenerationUnavailable)?;
         let changes = VerifiedRepairService::new(self.database)
             .list_changes(repair_id, MAX_PATCH_FILES + 1)
             .map_err(|error| SecurityFixError::Repair(error.to_string()))?;
