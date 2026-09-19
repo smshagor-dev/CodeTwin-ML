@@ -1002,3 +1002,123 @@ fn secret_storage_rejects_jwt_bearer_cookie_and_redacts_validation_output() {
     assert!(!persisted.contains("private-cookie-value"));
     assert!(!persisted.contains("top-secret-value"));
 }
+
+
+#[test]
+fn overlapping_findings_require_fresh_hashes_and_do_not_share_approval() {
+    let fixture = sql_fixture();
+    let scan_id: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT scan_id FROM web_security_findings WHERE id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("scan id");
+    let web = AuthorizedWebSecurityStore::new(&fixture.database);
+    let second = web
+        .record_finding(
+            &scan_id,
+            &WebFindingInput {
+                fingerprint: "second-overlapping-sqli".into(),
+                category: "sql_injection".into(),
+                severity: "high".into(),
+                confidence: "Likely".into(),
+                target: "http://127.0.0.1:3000".into(),
+                endpoint_url: "http://127.0.0.1:3000/api/search?q=second".into(),
+                method: "GET".into(),
+                parameter_name: Some("q".into()),
+                title: "Second overlapping SQL finding".into(),
+                description: "Same source region, separate runtime observation.".into(),
+                reproduction_summary: "Local fixture.".into(),
+                impact: "Query structure manipulation.".into(),
+                remediation: "Parameterize query.".into(),
+                references: Vec::new(),
+                source: None,
+            },
+        )
+        .expect("second finding");
+    web.record_evidence(
+        &second.id,
+        &WebEvidenceInput {
+            summary: "second runtime evidence".into(),
+            request_metadata_json: "{}".into(),
+            response_metadata_json: "{}".into(),
+        },
+    )
+    .expect("second evidence");
+
+    let service = SecurityFixService::new(&fixture.database);
+    let overlap = service
+        .analyze_multi_finding_overlap(&[
+            fixture.finding_id.clone(),
+            second.id.clone(),
+        ])
+        .expect("overlap");
+    assert!(overlap.requires_combined_review);
+    assert!(overlap
+        .overlapping_files
+        .iter()
+        .any(|path| path.ends_with("src/api/searchController.ts")));
+
+    let first = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare A");
+    service.generate_patch(&first.attempt.id).expect("patch A");
+    service
+        .approve_attempt(&first.attempt.id, false)
+        .expect("approve A");
+
+    let second_fix = service
+        .prepare_fix(&second.id, false)
+        .expect("prepare B");
+    service
+        .generate_patch(&second_fix.attempt.id)
+        .expect("patch B");
+    service
+        .approve_attempt(&second_fix.attempt.id, false)
+        .expect("approve B");
+    let second_repair = service
+        .assert_application_allowed(&second_fix.attempt.id)
+        .expect("B allowed");
+
+    let backups = tempdir().expect("B backups");
+    let run = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&second_repair, backups.path())
+        .expect("apply B");
+    assert_eq!(run.status, "applied");
+    service
+        .record_application(&second_fix.attempt.id, &run.id)
+        .expect("record B");
+
+    assert!(
+        matches!(
+            service.assert_application_allowed(&first.attempt.id),
+            Err(SecurityFixError::StaleApproval)
+        ),
+        "A approval must become stale after B changes the overlapping source"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn approved_security_fix_rejects_symlink_substitution_before_application() {
+    use std::os::unix::fs::symlink;
+
+    let (fixture, attempt_id, _) = approved_sql_attempt();
+    let outside = tempdir().expect("outside");
+    let outside_file = outside.path().join("outside.ts");
+    fs::write(&outside_file, "export const outside = true;\n").expect("outside file");
+    fs::remove_file(&fixture.source_path).expect("remove approved source");
+    symlink(&outside_file, &fixture.source_path).expect("substitute symlink");
+
+    assert!(
+        matches!(
+            SecurityFixService::new(&fixture.database)
+                .assert_application_allowed(&attempt_id),
+            Err(SecurityFixError::StaleApproval)
+        ),
+        "symlink substitution must fail before repair application"
+    );
+}
