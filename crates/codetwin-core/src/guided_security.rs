@@ -1485,11 +1485,27 @@ impl<'a> GuidedSecurityStore<'a> {
     pub fn sync_repair_application_state(
         &self,
         repair_id: &str,
-        application_status: &str,
     ) -> Result<Option<String>, GuidedSecurityError> {
-        let next = match application_status {
-            "applied" => "fix_applied",
-            "rolled_back" => "fix_proposed",
+        let persisted: Option<(String, String)> = self
+            .database
+            .connection()
+            .query_row(
+                "SELECT rar.status, rp.status
+                 FROM repair_application_runs rar
+                 JOIN repair_plans rp ON rp.id=rar.repair_id
+                 WHERE rar.repair_id=?1
+                 ORDER BY rar.created_at DESC, rar.id DESC
+                 LIMIT 1",
+                [repair_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((application_status, plan_status)) = persisted else {
+            return Ok(None);
+        };
+        let next = match (application_status.as_str(), plan_status.as_str()) {
+            ("applied", "applied") => "fix_applied",
+            ("rolled_back", "draft") => "fix_proposed",
             _ => return Ok(None),
         };
         let link = self
@@ -2126,9 +2142,26 @@ mod tests {
             .set_finding_lifecycle(&finding_id, Some(&session.id), "fix_proposed")
             .expect("fix proposed");
 
+        database
+            .connection()
+            .execute(
+                "UPDATE repair_plans SET status='applied' WHERE id='repair-fix'",
+                [],
+            )
+            .expect("mark repair applied");
+        database
+            .connection()
+            .execute(
+                "INSERT INTO repair_application_runs(
+                    id,repair_id,project_id,status,changes_total,changes_applied,
+                    rollback_performed,backup_dir_name,completed_at
+                 ) VALUES ('application-fix','repair-fix','project-fix','applied',1,1,0,'backup',CURRENT_TIMESTAMP)",
+                [],
+            )
+            .expect("application run");
         assert_eq!(
             store
-                .sync_repair_application_state("repair-fix", "applied")
+                .sync_repair_application_state("repair-fix")
                 .expect("sync applied")
                 .as_deref(),
             Some(finding_id.as_str())
@@ -2143,8 +2176,24 @@ mod tests {
             .expect("applied lifecycle");
         assert_eq!(applied, "fix_applied");
 
+        database
+            .connection()
+            .execute(
+                "UPDATE repair_plans SET status='draft' WHERE id='repair-fix'",
+                [],
+            )
+            .expect("repair draft after rollback");
+        database
+            .connection()
+            .execute(
+                "UPDATE repair_application_runs
+                 SET status='rolled_back', rollback_performed=1, changes_applied=0
+                 WHERE id='application-fix'",
+                [],
+            )
+            .expect("application rollback");
         store
-            .sync_repair_application_state("repair-fix", "rolled_back")
+            .sync_repair_application_state("repair-fix")
             .expect("sync rollback");
         let rolled_back: String = database
             .connection()
