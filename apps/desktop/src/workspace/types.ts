@@ -621,6 +621,8 @@ export type SecurityFixTestPlan = {
   qa_execution_reason: string;
   security_retest: string;
   regression_test_proposal: string;
+  regression_generation_status: "EXISTING_TEST_SELECTED" | "RECOMMENDATION_ONLY";
+  regression_generation_reason: string;
 };
 
 export type SecurityFixAttemptRecord = {
