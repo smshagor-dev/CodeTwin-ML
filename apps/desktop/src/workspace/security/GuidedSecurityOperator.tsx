@@ -602,6 +602,13 @@ export function GuidedSecurityOperator() {
                       <b>{route.method}</b>
                       <p><strong>{shortPath(route.url, 72)}</strong><small>{route.source}{route.authentication_boundary ? " · auth boundary" : ""}</small>
                         {!!route.parameters.length && <em>{route.parameters.join(", ")}</em>}
+                        {!!route.source_hints.length && (
+                          <em>Source: {route.source_hints.map((hint) =>
+                            hint.relative_path
+                            + (hint.symbol_name ? " → " + hint.symbol_name : "")
+                            + " (" + Math.round(hint.confidence * 100) + "% heuristic)"
+                          ).join(", ")}</em>
+                        )}
                       </p>
                     </div>
                   ))}
