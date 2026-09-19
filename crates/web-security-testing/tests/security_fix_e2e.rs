@@ -1406,6 +1406,7 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
     service
         .approve_attempt(
             &prepared.attempt.id,
+            &review.safety.patch_hash,
             review.safety.classification == PatchSafetyClass::Caution,
         )
         .expect("approve");
