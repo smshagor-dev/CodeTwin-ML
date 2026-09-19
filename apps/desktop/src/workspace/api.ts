@@ -35,6 +35,7 @@ import type {
   SecurityRemediationDebtView,
   SecurityRemediationRegressionTracking,
   SecurityRemediationRelationshipRecord,
+  SecurityRemediationRollbackAssessment,
   SecurityFixApplicationResult,
   SecurityFixAttemptRecord,
   SecurityFixEventRecord,
@@ -276,6 +277,12 @@ export const workspaceApi = {
   securityRemediationCampaignRegressionTracking(campaignId: string) {
     return invoke<SecurityRemediationRegressionTracking[]>("security_remediation_campaign_regression_tracking", {
       campaignId,
+    });
+  },
+  assessSecurityRemediationCampaignRollback(campaignId: string, findingId: string) {
+    return invoke<SecurityRemediationRollbackAssessment>("assess_security_remediation_campaign_rollback", {
+      campaignId,
+      findingId,
     });
   },
   securityRemediationCampaignDebt(campaignId: string) {
