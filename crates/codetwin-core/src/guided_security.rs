@@ -164,9 +164,13 @@ pub struct GuidedSecurityScorecard {
     pub rejected_anomalies: usize,
     pub by_severity: BTreeMap<String, usize>,
     pub authentication_context_supplied: bool,
+    pub authenticated_endpoints_mapped: usize,
     pub planned_authorization_checks: usize,
+    pub authorization_plan_coverage_percent: f64,
     pub planned_api_validation_checks: usize,
+    pub api_validation_plan_coverage_percent: f64,
     pub planned_input_checks: usize,
+    pub input_plan_coverage_percent: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1133,9 +1137,32 @@ impl<'a> GuidedSecurityStore<'a> {
                 rejected_anomalies: 0,
                 by_severity: BTreeMap::new(),
                 authentication_context_supplied: false,
+                authenticated_endpoints_mapped: mapped_auth_endpoints(&session.application_map_json),
                 planned_authorization_checks: count_plan(self.database, session_id, "access_control")?,
+                authorization_plan_coverage_percent: plan_coverage(
+                    self.database,
+                    session_id,
+                    &["access_control"],
+                )?,
                 planned_api_validation_checks: count_plan(self.database, session_id, "api_validation")?,
+                api_validation_plan_coverage_percent: plan_coverage(
+                    self.database,
+                    session_id,
+                    &["api_validation"],
+                )?,
                 planned_input_checks: count_input_plan(self.database, session_id)?,
+                input_plan_coverage_percent: plan_coverage(
+                    self.database,
+                    session_id,
+                    &[
+                        "sql_injection",
+                        "xss",
+                        "path_traversal",
+                        "ssrf",
+                        "template_injection",
+                        "api_validation",
+                    ],
+                )?,
             });
         };
         let endpoints_mapped: i64 = self.database.connection().query_row(
@@ -1206,9 +1233,32 @@ impl<'a> GuidedSecurityStore<'a> {
             rejected_anomalies: rejected.max(0) as usize,
             by_severity,
             authentication_context_supplied: auth_supplied,
+            authenticated_endpoints_mapped: mapped_auth_endpoints(&session.application_map_json),
             planned_authorization_checks: count_plan(self.database, session_id, "access_control")?,
+            authorization_plan_coverage_percent: plan_coverage(
+                self.database,
+                session_id,
+                &["access_control"],
+            )?,
             planned_api_validation_checks: count_plan(self.database, session_id, "api_validation")?,
+            api_validation_plan_coverage_percent: plan_coverage(
+                self.database,
+                session_id,
+                &["api_validation"],
+            )?,
             planned_input_checks: count_input_plan(self.database, session_id)?,
+            input_plan_coverage_percent: plan_coverage(
+                self.database,
+                session_id,
+                &[
+                    "sql_injection",
+                    "xss",
+                    "path_traversal",
+                    "ssrf",
+                    "template_injection",
+                    "api_validation",
+                ],
+            )?,
         })
     }
 
@@ -1579,6 +1629,44 @@ fn bounded_limit(limit: usize) -> usize {
 
 fn bounded_text(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
+}
+
+fn mapped_auth_endpoints(application_map_json: &str) -> usize {
+    serde_json::from_str::<serde_json::Value>(application_map_json)
+        .ok()
+        .and_then(|value| value.get("authenticated_endpoint_count").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0) as usize
+}
+
+fn plan_coverage(
+    database: &Database,
+    session_id: &str,
+    categories: &[&str],
+) -> Result<f64, GuidedSecurityError> {
+    if categories.is_empty() {
+        return Ok(0.0);
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(categories.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN selected=1 THEN 1 ELSE 0 END),0)
+         FROM guided_security_plan_items
+         WHERE session_id=?1 AND category IN ({placeholders})"
+    );
+    let mut parameters: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(categories.len() + 1);
+    parameters.push(&session_id);
+    for category in categories {
+        parameters.push(category);
+    }
+    let (total, selected): (i64, i64) = database
+        .connection()
+        .query_row(&sql, parameters.as_slice(), |row| Ok((row.get(0)?, row.get(1)?)))?;
+    if total <= 0 {
+        return Ok(0.0);
+    }
+    Ok(((selected.max(0) as f64 / total as f64) * 1000.0).round() / 10.0)
 }
 
 fn count_plan(
