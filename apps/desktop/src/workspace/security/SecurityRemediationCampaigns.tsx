@@ -12,6 +12,7 @@ import type {
   SecurityRemediationDebtView,
   SecurityRemediationRegressionTracking,
   SecurityRemediationRelationshipRecord,
+  SecurityRemediationRollbackAssessment,
   GuidedSecuritySessionRecord,
   WebFindingRecord,
 } from "../types";
@@ -71,6 +72,7 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
   const [beforeAfter, setBeforeAfter] = useState<SecurityRemediationBeforeAfterItem[]>([]);
   const [regressions, setRegressions] = useState<SecurityRemediationRegressionTracking[]>([]);
   const [debt, setDebt] = useState<SecurityRemediationDebtView>(EMPTY_DEBT);
+  const [rollbackAssessments, setRollbackAssessments] = useState<Record<string, SecurityRemediationRollbackAssessment | null>>({});
   const [assessments, setAssessments] = useState<Record<string, FixEligibilityAssessment>>({});
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filters, setFilters] = useState<CampaignFindingFilters>(EMPTY_FILTERS);
@@ -110,6 +112,21 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
     setBeforeAfter(nextBeforeAfter);
     setRegressions(nextRegressions);
     setDebt(nextDebt);
+    const rollbackEntries = await Promise.all(
+      nextFindings
+        .filter((item) => item.active_attempt_id)
+        .map(async (item) => {
+          try {
+            return [
+              item.finding_id,
+              await workspaceApi.assessSecurityRemediationCampaignRollback(campaignId, item.finding_id),
+            ] as const;
+          } catch {
+            return [item.finding_id, null] as const;
+          }
+        }),
+    );
+    setRollbackAssessments(Object.fromEntries(rollbackEntries));
     return nextCampaign;
   }, []);
 
@@ -206,6 +223,7 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
   const currentWebFinding = current
     ? findings.find((finding) => finding.id === current.finding_id) ?? null
     : null;
+  const currentRollback = current ? rollbackAssessments[current.finding_id] ?? null : null;
 
   function toggleFinding(findingId: string) {
     setSelected((currentSelection) => {
@@ -275,6 +293,25 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
         skipReason.trim(),
       );
       setSkipReason("");
+      await refreshCampaign(campaign.id, true);
+    } catch (value) {
+      setError(String(value));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function rollbackSelected(finding: SecurityRemediationCampaignFindingRecord) {
+    if (!campaign || busy) return;
+    const assessment = rollbackAssessments[finding.finding_id];
+    if (!assessment?.allowed || !assessment.attempt_id) {
+      setError(assessment?.reason ?? "Rollback safety has not been established for this campaign finding.");
+      return;
+    }
+    setBusy("Rolling back selected Fix & Verify application");
+    setError(null);
+    try {
+      await workspaceApi.rollbackSecurityFix(assessment.attempt_id);
       await refreshCampaign(campaign.id, true);
     } catch (value) {
       setError(String(value));
@@ -644,6 +681,8 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
             <SecurityFixWorkflow
               finding={currentWebFinding}
               onRetest={() => onRetest(currentWebFinding)}
+              rollbackAllowed={currentRollback?.allowed ?? true}
+              rollbackBlockedReason={currentRollback?.allowed === false ? currentRollback.reason : null}
             />
           ) : (
             <p className="ws-form-error">The campaign finding is no longer present in the loaded scan result.</p>
@@ -705,6 +744,37 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
             })}
           </div>
         </section>
+      )}
+
+      {!terminal && campaignFindings.some((item) => item.active_attempt_id) && (
+        <details className="ws-security-campaign-rollback-list">
+          <summary>Rollback selected applied fix</summary>
+          <p>
+            Rollback always uses the individual Fix & Verify / RepairApplicationService path.
+            Campaign dependencies can block an earlier rollback when later verified/applied work depends on it.
+          </p>
+          <div>
+            {campaignFindings.filter((item) => item.active_attempt_id).map((item) => {
+              const assessment = rollbackAssessments[item.finding_id];
+              const source = findings.find((finding) => finding.id === item.finding_id);
+              return (
+                <article key={item.finding_id}>
+                  <span>
+                    <strong>{source?.title ?? item.finding_id}</strong>
+                    <small>{assessment?.reason ?? "Assessing rollback dependencies…"}</small>
+                  </span>
+                  <button
+                    className="ws-button ws-button-danger-ghost"
+                    disabled={Boolean(busy) || !assessment?.allowed}
+                    onClick={() => void rollbackSelected(item)}
+                  >
+                    Rollback Selected Fix
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        </details>
       )}
 
       <div className="ws-guided-view-toggle">
