@@ -160,12 +160,15 @@ impl<'a> SecurityFixService<'a> {
         let updated = self.database.connection().execute(
             "UPDATE security_fix_attempts
              SET status='approved',approved_patch_hash=?2,approved_files_json=?3,
+                 approved_safety_class=?4,caution_acknowledged=?5,
                  approved_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
              WHERE id=?1 AND status='patch_proposed' AND patch_hash=?2",
             params![
                 attempt_id,
                 review.safety.patch_hash,
                 serde_json::to_string(&approved_files)?,
+                review.safety.classification.as_db(),
+                i64::from(accept_caution),
             ],
         )?;
         if updated != 1 {
@@ -204,6 +207,12 @@ impl<'a> SecurityFixService<'a> {
             .approved_files_json
             .as_deref()
             .ok_or(SecurityFixError::AttemptNotApproved)?;
+        let approved_safety = attempt
+            .approved_safety_class
+            .ok_or(SecurityFixError::AttemptNotApproved)?;
+        if approved_safety == PatchSafetyClass::Caution && !attempt.caution_acknowledged {
+            return Err(SecurityFixError::AttemptNotApproved);
+        }
         let repair_id = attempt
             .repair_id
             .as_deref()
@@ -226,6 +235,12 @@ impl<'a> SecurityFixService<'a> {
         }
         let current_hash = patch_hash(&changes);
         let current_files = approved_file_identity(&changes);
+        let current_safety = self.analyze_patch_safety(&attempt, &changes)?;
+        if current_safety.classification != approved_safety
+            || current_safety.classification == PatchSafetyClass::Rejected
+        {
+            return Err(SecurityFixError::StaleApproval);
+        }
         let approved_files: Vec<BTreeMap<String, String>> =
             serde_json::from_str(approved_files_json)?;
         if current_hash != approved_patch || current_files != approved_files {
