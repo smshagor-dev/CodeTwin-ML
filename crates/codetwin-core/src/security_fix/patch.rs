@@ -473,11 +473,12 @@ impl<'a> SecurityFixService<'a> {
                 }
             }
             if attempt.category == "xss"
-                && (additions.contains(".innerhtml")
-                    || additions.contains("dangerouslysetinnerhtml"))
+                && !is_test_path(&change.relative_path)
+                && (new_lower.contains(".innerhtml")
+                    || new_lower.contains("dangerouslysetinnerhtml"))
             {
                 rejected_reasons.push(
-                    "XSS remediation introduces or preserves an unsafe rendering sink in changed lines."
+                    "XSS remediation leaves an unsafe rendering sink in the proposed application source."
                         .into(),
                 );
             }
