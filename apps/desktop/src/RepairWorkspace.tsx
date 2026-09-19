@@ -91,6 +91,31 @@ type RepairVerificationItemRecord = {
 
 const MAX_PROPOSED_BYTES = 1_048_576;
 
+function buildPatchPreview(before: string, after: string, maxOutputLines = 320): string {
+  const beforeLines = before.split("\n");
+  const afterLines = after.split("\n");
+  const output: string[] = [];
+  const max = Math.max(beforeLines.length, afterLines.length);
+
+  for (let index = 0; index < max && output.length < maxOutputLines; index += 1) {
+    const previous = beforeLines[index];
+    const next = afterLines[index];
+    if (previous === next) {
+      if (output.length && output[output.length - 1] !== " … unchanged lines omitted …") {
+        output.push(" … unchanged lines omitted …");
+      }
+      continue;
+    }
+    if (previous !== undefined) output.push("- " + previous);
+    if (next !== undefined && output.length < maxOutputLines) output.push("+ " + next);
+  }
+
+  if (output.length >= maxOutputLines) {
+    output.push("… patch preview truncated; full proposed file remains visible above …");
+  }
+  return output.join("\n");
+}
+
 export function RepairWorkspace() {
   const [path, setPath] = useState("");
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -384,6 +409,9 @@ export function RepairWorkspace() {
   }
 
   const proposedBytes = new TextEncoder().encode(proposedContent).length;
+  const patchPreview = source && proposedContent !== source.content
+    ? buildPatchPreview(source.content, proposedContent)
+    : "";
   const editable = selectedPlan?.status === "draft";
   const verifiable = selectedPlan?.status === "approved" || selectedPlan?.status === "applied";
 
@@ -516,6 +544,13 @@ export function RepairWorkspace() {
                         <textarea className="repair-editor" value={proposedContent} onChange={(event) => setProposedContent(event.target.value)} spellCheck={false} />
                       </label>
                       <p className={proposedBytes > MAX_PROPOSED_BYTES ? "error" : "muted"}>{proposedBytes.toLocaleString()} / {MAX_PROPOSED_BYTES.toLocaleString()} UTF-8 bytes</p>
+                      {patchPreview && (
+                        <details className="repair-patch-preview" open>
+                          <summary>Review patch before approval</summary>
+                          <p>Plain-text preview only. The base SHA-256 is still rechecked before approval and again before application.</p>
+                          <pre>{patchPreview}</pre>
+                        </details>
+                      )}
                       <button onClick={() => void saveReplacement()} disabled={busy || proposedBytes > MAX_PROPOSED_BYTES || proposedContent === source.content}>Save replacement proposal</button>
                     </>
                   )}
