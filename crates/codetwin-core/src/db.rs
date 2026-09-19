@@ -22,6 +22,7 @@ const MIGRATION_0016: &str = include_str!("../migrations/0016_qa_external_read_p
 const MIGRATION_0017: &str = include_str!("../migrations/0017_dashboard_workspace.sql");
 const MIGRATION_0018: &str = include_str!("../migrations/0018_authorized_web_security.sql");
 const MIGRATION_0019: &str = include_str!("../migrations/0019_guided_security_operator.sql");
+const MIGRATION_0020: &str = include_str!("../migrations/0020_security_fix_verify.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -78,6 +79,7 @@ impl Database {
         self.apply_migration(17, MIGRATION_0017)?;
         self.apply_migration(18, MIGRATION_0018)?;
         self.apply_migration(19, MIGRATION_0019)?;
+        self.apply_migration(20, MIGRATION_0020)?;
         Ok(())
     }
 
@@ -114,12 +116,12 @@ mod tests {
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites','web_security_scans','web_security_endpoints','web_security_findings','web_security_evidence','guided_security_sessions','guided_security_plan_items','guided_security_activity','guided_security_source_candidates','guided_security_finding_lifecycle','guided_security_retests','guided_security_comparisons','guided_security_fix_links')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites','web_security_scans','web_security_endpoints','web_security_findings','web_security_evidence','guided_security_sessions','guided_security_plan_items','guided_security_activity','guided_security_source_candidates','guided_security_finding_lifecycle','guided_security_retests','guided_security_comparisons','guided_security_fix_links','security_fix_attempts','security_fix_validation_results','security_fix_events')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 43);
+        assert_eq!(count, 46);
     }
 
     #[test]
@@ -129,8 +131,8 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 19);
-        for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19] {
+        assert_eq!(count, 20);
+        for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20] {
             let applied: i64 = db
                 .connection()
                 .query_row(
@@ -150,7 +152,10 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE guided_security_fix_links;
+                    "DROP TABLE security_fix_events;
+                     DROP TABLE security_fix_validation_results;
+                     DROP TABLE security_fix_attempts;
+                     DROP TABLE guided_security_fix_links;
                      DROP TABLE guided_security_comparisons;
                      DROP TABLE guided_security_retests;
                      DROP TABLE guided_security_finding_lifecycle;
@@ -163,7 +168,7 @@ mod tests {
                      DROP TABLE web_security_endpoints;
                      DROP TABLE web_security_scans;
                      DROP TABLE websites;
-                     DELETE FROM schema_migrations WHERE version IN (17,18,19);",
+                     DELETE FROM schema_migrations WHERE version IN (17,18,19,20);",
                 )
                 .expect("rewind dashboard and later migrations");
         }
@@ -207,7 +212,10 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE guided_security_fix_links;
+                    "DROP TABLE security_fix_events;
+                     DROP TABLE security_fix_validation_results;
+                     DROP TABLE security_fix_attempts;
+                     DROP TABLE guided_security_fix_links;
                      DROP TABLE guided_security_comparisons;
                      DROP TABLE guided_security_retests;
                      DROP TABLE guided_security_finding_lifecycle;
@@ -219,7 +227,7 @@ mod tests {
                      DROP TABLE web_security_findings;
                      DROP TABLE web_security_endpoints;
                      DROP TABLE web_security_scans;
-                     DELETE FROM schema_migrations WHERE version IN (18,19);",
+                     DELETE FROM schema_migrations WHERE version IN (18,19,20);",
                 )
                 .expect("rewind web security and guided migrations");
         }
@@ -247,7 +255,10 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE guided_security_fix_links;
+                    "DROP TABLE security_fix_events;
+                     DROP TABLE security_fix_validation_results;
+                     DROP TABLE security_fix_attempts;
+                     DROP TABLE guided_security_fix_links;
                      DROP TABLE guided_security_comparisons;
                      DROP TABLE guided_security_retests;
                      DROP TABLE guided_security_finding_lifecycle;
@@ -255,7 +266,7 @@ mod tests {
                      DROP TABLE guided_security_activity;
                      DROP TABLE guided_security_plan_items;
                      DROP TABLE guided_security_sessions;
-                     DELETE FROM schema_migrations WHERE version = 19;",
+                     DELETE FROM schema_migrations WHERE version IN (19,20);",
                 )
                 .expect("rewind guided security migration");
         }
@@ -316,6 +327,135 @@ mod tests {
             .expect("persisted guided session");
         assert_eq!(migration_after_reopen, 1);
         assert_eq!(persisted, 1);
+    }
+
+    #[test]
+    fn upgrades_existing_v19_database_with_security_fix_history_and_reopens() {
+        let file = NamedTempFile::new().expect("temp db");
+        {
+            let db = Database::open(file.path()).expect("create current db");
+            db.connection()
+                .execute_batch(
+                    "DROP TABLE security_fix_events;
+                     DROP TABLE security_fix_validation_results;
+                     DROP TABLE security_fix_attempts;
+                     DELETE FROM schema_migrations WHERE version = 20;",
+                )
+                .expect("rewind security fix migration");
+            db.connection()
+                .execute(
+                    "INSERT INTO web_security_scans(
+                        id,target_url,status,phase,authorization_confirmed,
+                        scope_json,config_json,auth_metadata_json
+                     ) VALUES ('scan-v19','http://localhost:3000','completed','completed',1,'{}','{}','{}')",
+                    [],
+                )
+                .expect("persist v19 scan");
+        }
+
+        let upgraded = Database::open(file.path()).expect("upgrade v19 db");
+        let tables: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
+                 AND name IN ('security_fix_attempts','security_fix_validation_results','security_fix_events')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("security fix tables");
+        let migration: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 20",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration 20");
+        let scan_count: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM web_security_scans WHERE id='scan-v19'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("v19 evidence preserved");
+        assert_eq!(tables, 3);
+        assert_eq!(migration, 1);
+        assert_eq!(scan_count, 1);
+        drop(upgraded);
+
+        let reopened = Database::open(file.path()).expect("reopen upgraded v20 db");
+        let migration_after_reopen: i64 = reopened
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 20",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration 20 after reopen");
+        assert_eq!(migration_after_reopen, 1);
+    }
+
+    #[test]
+    fn security_fix_schema_constrains_history_and_has_no_secret_columns() {
+        let db = Database::open_in_memory().expect("database");
+        let indexes: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN (
+                    'idx_security_fix_attempts_finding',
+                    'idx_security_fix_attempts_project_status',
+                    'idx_security_fix_validation_attempt',
+                    'idx_security_fix_events_attempt'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("security fix indexes");
+        assert_eq!(indexes, 4);
+
+        let attempt_sql: String = db
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='security_fix_attempts'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("security fix attempt schema");
+        assert!(attempt_sql.contains("'AUTO_FIX_CANDIDATE','GUIDED_FIX_CANDIDATE','MANUAL_REMEDIATION','INSUFFICIENT_EVIDENCE'"));
+        assert!(attempt_sql.contains("'FIX_VERIFIED','STILL_VULNERABLE','UNABLE_TO_VERIFY','REGRESSION_DETECTED'"));
+        assert!(attempt_sql.contains("UNIQUE(finding_id, attempt_number)"));
+
+        for table in [
+            "security_fix_attempts",
+            "security_fix_validation_results",
+            "security_fix_events",
+        ] {
+            let mut statement = db
+                .connection()
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .expect("security fix columns");
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("security fix column rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("security fix columns");
+            assert!(columns.iter().all(|column| {
+                !matches!(
+                    column.as_str(),
+                    "cookie"
+                        | "cookie_header"
+                        | "authorization"
+                        | "bearer_token"
+                        | "api_key"
+                        | "password"
+                        | "secret"
+                        | "token"
+                        | "access_token"
+                        | "refresh_token"
+                )
+            }));
+        }
     }
 
     #[test]
