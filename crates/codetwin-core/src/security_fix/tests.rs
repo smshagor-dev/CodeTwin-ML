@@ -1882,3 +1882,47 @@ fn validation_can_retry_after_unable_to_verify_without_skipping_runtime_verifica
     );
     assert_ne!(retried.status, "fix_verified");
 }
+
+
+#[test]
+fn bookkeeping_failure_recovery_records_rolled_back_application_without_stranding_approval() {
+    let (fixture, attempt_id, repair_id) = approved_sql_attempt();
+    let service = SecurityFixService::new(&fixture.database);
+    let backups = tempdir().expect("backups");
+
+    let run = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply");
+    assert_eq!(run.status, "applied");
+
+    let rolled = RepairApplicationService::new(&fixture.database)
+        .rollback_application(&run.id, backups.path())
+        .expect("automatic rollback");
+    assert_eq!(rolled.status, "rolled_back");
+
+    let recovered = service
+        .record_application_recovery_rollback(&attempt_id, &run.id)
+        .expect("record recovery rollback");
+    assert_eq!(recovered.status, "rolled_back");
+    assert_eq!(recovered.application_run_id.as_deref(), Some(run.id.as_str()));
+    assert_eq!(recovered.retest_state, "not_executed");
+
+    GuidedSecurityStore::new(&fixture.database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync guided lifecycle");
+    let lifecycle: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT state FROM guided_security_finding_lifecycle WHERE finding_id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("guided lifecycle");
+    assert_eq!(lifecycle, "fix_proposed");
+
+    let events = service.events(&attempt_id, 100).expect("events");
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "application_bookkeeping_rollback"));
+}
