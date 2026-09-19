@@ -170,6 +170,15 @@ pub struct SecurityRemediationRegressionTracking {
     pub execution_status: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SecurityRemediationRollbackAssessment {
+    pub finding_id: String,
+    pub attempt_id: Option<String>,
+    pub allowed: bool,
+    pub blocking_findings: Vec<String>,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct SecurityRemediationDebtView {
     pub unresolved_total: usize,
@@ -1341,6 +1350,94 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 })
             })
             .collect()
+    }
+
+    pub fn rollback_assessment(
+        &self,
+        campaign_id: &str,
+        finding_id: &str,
+    ) -> Result<SecurityRemediationRollbackAssessment, SecurityRemediationCampaignError> {
+        let campaign = self.require_campaign(campaign_id)?;
+        self.assert_scope_binding(&campaign)?;
+        let finding = self.require_finding(campaign_id, finding_id)?;
+        let Some(attempt_id) = finding.active_attempt_id.as_deref() else {
+            return Ok(SecurityRemediationRollbackAssessment {
+                finding_id: finding_id.into(),
+                attempt_id: None,
+                allowed: false,
+                blocking_findings: Vec::new(),
+                reason: "No campaign-linked applied Fix & Verify attempt is available to roll back.".into(),
+            });
+        };
+        let fix = SecurityFixService::new(self.database);
+        let Some(attempt) = fix.get_attempt(attempt_id)? else {
+            return Ok(SecurityRemediationRollbackAssessment {
+                finding_id: finding_id.into(),
+                attempt_id: Some(attempt_id.into()),
+                allowed: false,
+                blocking_findings: Vec::new(),
+                reason: "The campaign-linked Fix & Verify attempt no longer exists.".into(),
+            });
+        };
+        if attempt.application_run_id.is_none() || attempt.status == "rolled_back" {
+            return Ok(SecurityRemediationRollbackAssessment {
+                finding_id: finding_id.into(),
+                attempt_id: Some(attempt.id),
+                allowed: false,
+                blocking_findings: Vec::new(),
+                reason: "The selected finding has no currently applied repair to roll back.".into(),
+            });
+        }
+
+        let all = self.findings(campaign_id)?;
+        let mut blocking = Vec::new();
+        for dependent in all {
+            if dependent.finding_id == finding_id || !dependent.depends_on.iter().any(|id| id == finding_id) {
+                continue;
+            }
+            let dependent_applied = if let Some(dependent_attempt_id) = dependent.active_attempt_id.as_deref() {
+                fix.get_attempt(dependent_attempt_id)?
+                    .is_some_and(|value| value.application_run_id.is_some() && value.status != "rolled_back")
+            } else {
+                false
+            };
+            if dependent_applied
+                || matches!(
+                    dependent.status.as_str(),
+                    "VERIFIED"
+                        | "VALIDATING"
+                        | "RETESTING"
+                        | "STILL_VULNERABLE"
+                        | "UNABLE_TO_VERIFY"
+                        | "REGRESSION_DETECTED"
+                )
+            {
+                blocking.push(dependent.finding_id);
+            }
+        }
+        blocking.sort();
+        blocking.dedup();
+
+        if blocking.is_empty() {
+            Ok(SecurityRemediationRollbackAssessment {
+                finding_id: finding_id.into(),
+                attempt_id: Some(attempt.id),
+                allowed: true,
+                blocking_findings: Vec::new(),
+                reason: "No later campaign outcome currently depends on this applied fix. Rollback still uses the individual Fix & Verify / RepairApplicationService path and preserves history.".into(),
+            })
+        } else {
+            Ok(SecurityRemediationRollbackAssessment {
+                finding_id: finding_id.into(),
+                attempt_id: Some(attempt.id),
+                allowed: false,
+                blocking_findings: blocking.clone(),
+                reason: format!(
+                    "Rollback is blocked because {} later campaign finding(s) depend on this fix. Roll back or re-plan dependent work first.",
+                    blocking.len()
+                ),
+            })
+        }
     }
 
     pub fn security_debt(
