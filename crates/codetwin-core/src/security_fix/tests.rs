@@ -641,13 +641,35 @@ fn fix_verified_cannot_be_forged_by_status_or_validation_only() {
     );
     assert!(direct.is_err(), "persistence must reject direct FIX_VERIFIED");
 
+    GuidedSecurityStore::new(&fixture.database)
+        .record_retest(GuidedRetestInput {
+            finding_id: &fixture.finding_id,
+            session_id: None,
+            status: "retest_passed",
+            original_confidence: "Likely",
+            observed_confidence: None,
+            requests_performed: 4,
+            detail_json: r#"{"fixture":"pre-apply-retest-must-not-count"}"#,
+        })
+        .expect("persist pre-apply retest");
+    let pre_apply_rowid: i64 = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT MAX(rowid) FROM guided_security_retests WHERE finding_id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("pre-apply retest row");
+
     let backups = tempdir().expect("backups");
     let run = RepairApplicationService::new(&fixture.database)
         .apply_plan(&repair_id, backups.path())
         .expect("apply");
-    service
+    let applied = service
         .record_application(&attempt_id, &run.id)
         .expect("record application");
+    assert!(applied.retest_floor_rowid >= pre_apply_rowid);
     service
         .add_validation_result(
             &attempt_id,
@@ -678,6 +700,19 @@ fn fix_verified_cannot_be_forged_by_status_or_validation_only() {
         validation_only.is_err(),
         "tests/static validation without a post-apply runtime retest must not forge FIX_VERIFIED"
     );
+
+    assert!(
+        service
+            .sync_retest_result(&fixture.finding_id, "retest_passed")
+            .is_err(),
+        "a pre-apply retest row must not satisfy the post-apply runtime invariant"
+    );
+    let after_failed_service_transition = service
+        .get_attempt(&attempt_id)
+        .expect("attempt")
+        .expect("attempt exists");
+    assert_eq!(after_failed_service_transition.status, "verification_pending");
+    assert_eq!(after_failed_service_transition.retest_state, "not_executed");
 }
 
 #[test]
