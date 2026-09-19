@@ -6,7 +6,7 @@ use codetwin_core::{
     GuidedPlanItemInput, GuidedPlanItemRecord,
     GuidedRetestInput, GuidedRetestRecord, GuidedRiskGraph, GuidedScanComparison,
     GuidedSecurityScorecard, GuidedSecuritySessionRecord, GuidedSecurityStore, GuidedSessionCreate,
-    GuidedSourceCandidate, PreparationCompletion,
+    GuidedSourceCandidate, PreparationCompletion, SecurityFixService,
 };
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
@@ -382,7 +382,7 @@ pub async fn retest_guided_security_finding(
                     "note": "Targeted retest used the minimum bounded detector family for this finding; authentication secrets were not persisted."
                 })
                 .to_string();
-                store
+                let record = store
                     .record_retest(GuidedRetestInput {
                         finding_id: &request.finding_id,
                         session_id: session_id.as_deref(),
@@ -392,7 +392,11 @@ pub async fn retest_guided_security_finding(
                         requests_performed: outcome.requests_performed,
                         detail_json: &detail,
                     })
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                SecurityFixService::new(&database)
+                    .sync_retest_result(&request.finding_id, status)
+                    .map_err(|error| error.to_string())?;
+                Ok(record)
             }
             Err(error) => {
                 let detail = serde_json::json!({
@@ -400,7 +404,7 @@ pub async fn retest_guided_security_finding(
                     "note": "Retest failed safely; CodeTwin did not increase request budget or testing aggression."
                 })
                 .to_string();
-                store
+                let record = store
                     .record_retest(GuidedRetestInput {
                         finding_id: &request.finding_id,
                         session_id: session_id.as_deref(),
@@ -410,7 +414,11 @@ pub async fn retest_guided_security_finding(
                         requests_performed: 0,
                         detail_json: &detail,
                     })
-                    .map_err(|store_error| store_error.to_string())
+                    .map_err(|store_error| store_error.to_string())?;
+                SecurityFixService::new(&database)
+                    .sync_retest_result(&request.finding_id, "unable_to_verify")
+                    .map_err(|error| error.to_string())?;
+                Ok(record)
             }
         }
     })
