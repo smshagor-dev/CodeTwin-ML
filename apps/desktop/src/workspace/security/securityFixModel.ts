@@ -109,11 +109,15 @@ export function securityFixActions(attempt: SecurityFixAttemptRecord | null) {
     ),
     rollback: Boolean(
       attempt?.application_run_id
-      && (
-        status === "validation_failed"
-        || status === "still_vulnerable"
-        || attempt.retest_state === "REGRESSION_DETECTED"
-      ),
+      && status !== "rolled_back"
+      && [
+        "applied",
+        "validation_failed",
+        "verification_pending",
+        "fix_verified",
+        "still_vulnerable",
+        "unable_to_verify",
+      ].includes(status ?? ""),
     ),
     revise: status === "still_vulnerable",
   };
