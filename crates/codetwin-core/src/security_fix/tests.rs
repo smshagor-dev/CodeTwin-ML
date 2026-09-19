@@ -584,3 +584,344 @@ fn configuration_finding_without_in_project_target_is_manual() {
     assert_eq!(assessment.finding_id, fixture.finding_id);
     assert!(!fixture.project_id.is_empty());
 }
+
+
+fn approved_sql_attempt() -> (Fixture, String, String) {
+    let fixture = sql_fixture();
+    let service = SecurityFixService::new(&fixture.database);
+    let prepared = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare approved fixture");
+    service
+        .generate_patch(&prepared.attempt.id)
+        .expect("generate approved fixture patch");
+    service
+        .approve_attempt(&prepared.attempt.id, false)
+        .expect("approve fixture patch");
+    let repair_id = prepared
+        .attempt
+        .repair_id
+        .clone()
+        .expect("repair id");
+    (fixture, prepared.attempt.id, repair_id)
+}
+
+#[test]
+fn fix_verified_cannot_be_forged_by_status_or_validation_only() {
+    let (fixture, attempt_id, repair_id) = approved_sql_attempt();
+    let service = SecurityFixService::new(&fixture.database);
+
+    let direct = fixture.database.connection().execute(
+        "UPDATE security_fix_attempts
+         SET status='fix_verified',retest_state='FIX_VERIFIED'
+         WHERE id=?1",
+        [&attempt_id],
+    );
+    assert!(direct.is_err(), "persistence must reject direct FIX_VERIFIED");
+
+    let backups = tempdir().expect("backups");
+    let run = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply");
+    service
+        .record_application(&attempt_id, &run.id)
+        .expect("record application");
+    service
+        .add_validation_result(
+            &attempt_id,
+            ValidationResultInput {
+                command_label: "repository tests",
+                runner_kind: "fixture",
+                targets: &[],
+                status: "PASS",
+                exit_code: Some(0),
+                duration_ms: Some(1),
+                classification: "NONE",
+                stdout_summary: "pass",
+                stderr_summary: "",
+            },
+        )
+        .expect("validation");
+    service
+        .complete_validation(&attempt_id)
+        .expect("complete validation");
+
+    let validation_only = fixture.database.connection().execute(
+        "UPDATE security_fix_attempts
+         SET status='fix_verified',retest_state='FIX_VERIFIED'
+         WHERE id=?1",
+        [&attempt_id],
+    );
+    assert!(
+        validation_only.is_err(),
+        "tests/static validation without a post-apply runtime retest must not forge FIX_VERIFIED"
+    );
+}
+
+#[test]
+fn caution_patch_requires_and_persists_explicit_acknowledgement() {
+    let fixture = sql_fixture();
+    let service = SecurityFixService::new(&fixture.database);
+    let prepared = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+    let source = fs::read_to_string(&fixture.source_path).expect("source");
+    let cautious = source.replace(
+        "}\n",
+        "  try { audit(); } catch {}\n}\n",
+    );
+    let review = service
+        .propose_replacement(&prepared.attempt.id, &fixture.file_id, &cautious)
+        .expect("caution review");
+    assert_eq!(review.safety.classification, PatchSafetyClass::Caution);
+    assert!(matches!(
+        service.approve_attempt(&prepared.attempt.id, false),
+        Err(SecurityFixError::CautionAcknowledgementRequired)
+    ));
+
+    let approved = service
+        .approve_attempt(&prepared.attempt.id, true)
+        .expect("approve caution");
+    assert_eq!(
+        approved.approved_safety_class,
+        Some(PatchSafetyClass::Caution)
+    );
+    assert!(approved.caution_acknowledged);
+    assert!(service
+        .assert_application_allowed(&prepared.attempt.id)
+        .is_ok());
+}
+
+#[test]
+fn approval_rejects_patch_hash_base_hash_proposed_hash_and_file_set_substitution() {
+    for mutation in ["proposed_hash", "base_hash", "delete_file", "add_file"] {
+        let (fixture, attempt_id, repair_id) = approved_sql_attempt();
+        let service = SecurityFixService::new(&fixture.database);
+        match mutation {
+            "proposed_hash" => {
+                fixture
+                    .database
+                    .connection()
+                    .execute(
+                        "UPDATE repair_changes
+                         SET proposed_content_hash=lower(hex(randomblob(32)))
+                         WHERE repair_id=?1",
+                        [&repair_id],
+                    )
+                    .expect("tamper proposed hash");
+            }
+            "base_hash" => {
+                fixture
+                    .database
+                    .connection()
+                    .execute(
+                        "UPDATE repair_changes
+                         SET base_content_hash=lower(hex(randomblob(32)))
+                         WHERE repair_id=?1",
+                        [&repair_id],
+                    )
+                    .expect("tamper base hash");
+            }
+            "delete_file" => {
+                fixture
+                    .database
+                    .connection()
+                    .execute("DELETE FROM repair_changes WHERE repair_id=?1", [&repair_id])
+                    .expect("delete approved file");
+            }
+            "add_file" => {
+                let (base_hash, proposed_hash, proposed_content, proposed_size): (
+                    String,
+                    String,
+                    String,
+                    i64,
+                ) = fixture
+                    .database
+                    .connection()
+                    .query_row(
+                        "SELECT base_content_hash,proposed_content_hash,proposed_content,proposed_byte_size
+                         FROM repair_changes WHERE repair_id=?1 LIMIT 1",
+                        [&repair_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .expect("approved change");
+                fixture
+                    .database
+                    .connection()
+                    .execute(
+                        "INSERT INTO repair_changes(
+                            id,repair_id,file_id,relative_path,base_content_hash,
+                            proposed_content_hash,proposed_content,proposed_byte_size
+                         ) VALUES ('tampered-extra',?1,?2,'src/api/unapproved-extra.ts',?3,?4,?5,?6)",
+                        rusqlite::params![
+                            repair_id,
+                            fixture.file_id,
+                            base_hash,
+                            proposed_hash,
+                            proposed_content,
+                            proposed_size
+                        ],
+                    )
+                    .expect("add unapproved file");
+            }
+            _ => unreachable!(),
+        }
+
+        assert!(
+            matches!(
+                service.assert_application_allowed(&attempt_id),
+                Err(SecurityFixError::StaleApproval)
+            ),
+            "approval must not survive {mutation} substitution"
+        );
+    }
+}
+
+#[test]
+fn approved_attempt_identity_and_safety_fields_are_immutable() {
+    let (fixture, attempt_id, _) = approved_sql_attempt();
+    for statement in [
+        "UPDATE security_fix_attempts SET finding_id='different' WHERE id=?1",
+        "UPDATE security_fix_attempts SET patch_hash=lower(hex(randomblob(32))) WHERE id=?1",
+        "UPDATE security_fix_attempts SET safety_class='CAUTION' WHERE id=?1",
+        "UPDATE security_fix_attempts SET approved_patch_hash=lower(hex(randomblob(32))) WHERE id=?1",
+        "UPDATE security_fix_attempts SET caution_acknowledged=1 WHERE id=?1",
+    ] {
+        assert!(
+            fixture
+                .database
+                .connection()
+                .execute(statement, [&attempt_id])
+                .is_err(),
+            "approved attempt identity mutation must be rejected: {statement}"
+        );
+    }
+}
+
+#[test]
+fn patch_safety_rejects_high_risk_generated_or_proposed_changes() {
+    let cases = [
+        (
+            "tls",
+            "\nprocess.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';\n",
+            "TLS",
+        ),
+        ("eval", "\neval(userInput);\n", "evaluation"),
+        (
+            "shell",
+            "\nconst cp = require('child_process'); cp.exec(userInput);\n",
+            "process",
+        ),
+        (
+            "html",
+            "\nview.dangerouslySetInnerHTML = { __html: q };\n",
+            "HTML",
+        ),
+        (
+            "cors",
+            "\nres.setHeader('Access-Control-Allow-Origin', '*');\n",
+            "CORS",
+        ),
+        (
+            "secret",
+            "\nconst api_key = 'super-secret-value';\n",
+            "secret",
+        ),
+    ];
+
+    for (name, addition, expected) in cases {
+        let fixture = sql_fixture();
+        let service = SecurityFixService::new(&fixture.database);
+        let prepared = service
+            .prepare_fix(&fixture.finding_id, false)
+            .expect("prepare safety fixture");
+        let proposed = fs::read_to_string(&fixture.source_path).expect("source") + addition;
+        let review = service
+            .propose_replacement(&prepared.attempt.id, &fixture.file_id, &proposed)
+            .expect("review unsafe proposal");
+        assert_eq!(
+            review.safety.classification,
+            PatchSafetyClass::Rejected,
+            "{name} patch must be rejected"
+        );
+        assert!(
+            review
+                .safety
+                .rejected_reasons
+                .iter()
+                .any(|reason| reason.to_ascii_lowercase().contains(&expected.to_ascii_lowercase())),
+            "{name} rejection should explain the {expected} risk"
+        );
+    }
+}
+
+#[test]
+fn sql_fake_fixes_using_concatenation_or_manual_escaping_are_rejected() {
+    for proposed in [
+        "export async function getSearch(q: string) {\n  return db.query('SELECT * FROM products WHERE name = ' + q);\n}\n",
+        "export async function getSearch(q: string) {\n  const safe = q.replace(\"'\", \"''\");\n  return db.query('SELECT * FROM products WHERE name = ' + safe);\n}\n",
+    ] {
+        let fixture = sql_fixture();
+        let service = SecurityFixService::new(&fixture.database);
+        let prepared = service
+            .prepare_fix(&fixture.finding_id, false)
+            .expect("prepare");
+        let review = service
+            .propose_replacement(&prepared.attempt.id, &fixture.file_id, proposed)
+            .expect("review fake SQL fix");
+        assert_eq!(review.safety.classification, PatchSafetyClass::Rejected);
+        assert!(review
+            .safety
+            .rejected_reasons
+            .iter()
+            .any(|reason| reason.contains("parameter binding")));
+    }
+}
+
+#[test]
+fn validation_and_event_records_cannot_be_rewritten() {
+    let fixture = sql_fixture();
+    let service = SecurityFixService::new(&fixture.database);
+    let prepared = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+    let validation = service
+        .add_validation_result(
+            &prepared.attempt.id,
+            ValidationResultInput {
+                command_label: "fixture",
+                runner_kind: "fixture",
+                targets: &[],
+                status: "NOT_EXECUTED",
+                exit_code: None,
+                duration_ms: None,
+                classification: "INFRASTRUCTURE_FAILURE",
+                stdout_summary: "",
+                stderr_summary: "unavailable",
+            },
+        )
+        .expect("validation");
+    let event = service
+        .events(&prepared.attempt.id, 20)
+        .expect("events")
+        .into_iter()
+        .next()
+        .expect("event");
+
+    assert!(fixture
+        .database
+        .connection()
+        .execute(
+            "UPDATE security_fix_validation_results SET status='PASS' WHERE id=?1",
+            [&validation.id],
+        )
+        .is_err());
+    assert!(fixture
+        .database
+        .connection()
+        .execute(
+            "UPDATE security_fix_events SET message='rewritten' WHERE id=?1",
+            [&event.id],
+        )
+        .is_err());
+}
