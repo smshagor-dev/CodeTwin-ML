@@ -174,7 +174,7 @@ WHEN OLD.status <> NEW.status AND NOT (
     'fix_verified','still_vulnerable','unable_to_verify','rolled_back'
   )) OR
   (OLD.status = 'unable_to_verify' AND NEW.status IN (
-    'fix_verified','still_vulnerable','validation_failed','rolled_back'
+    'verification_pending','fix_verified','still_vulnerable','validation_failed','rolled_back'
   )) OR
   (OLD.status = 'still_vulnerable' AND NEW.status = 'rolled_back') OR
   (OLD.status = 'fix_verified' AND NEW.status = 'rolled_back')
