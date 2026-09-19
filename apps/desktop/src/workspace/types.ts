@@ -502,9 +502,13 @@ export type GuidedSecurityScorecard = {
   rejected_anomalies: number;
   by_severity: Record<string, number>;
   authentication_context_supplied: boolean;
+  authenticated_endpoints_mapped: number;
   planned_authorization_checks: number;
+  authorization_plan_coverage_percent: number;
   planned_api_validation_checks: number;
+  api_validation_plan_coverage_percent: number;
   planned_input_checks: number;
+  input_plan_coverage_percent: number;
 };
 
 export type GuidedRiskGraph = {
