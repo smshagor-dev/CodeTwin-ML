@@ -1,7 +1,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use codetwin_core::{
-    Database, RepairApplicationItemRecord, RepairApplicationRunRecord, RepairApplicationService,
+    Database, GuidedSecurityStore, RepairApplicationItemRecord, RepairApplicationRunRecord,
+    RepairApplicationService,
     RepairChangeRecord, RepairFindingRecord, RepairPlanRecord, RepairSourceSnapshot,
     RepairVerificationItemRecord, RepairVerificationRunRecord, RepairWorkspaceQueryService,
     VerifiedRepairService,
@@ -170,9 +171,15 @@ pub(crate) async fn apply_repair_plan(
     }
     let task = tauri::async_runtime::spawn_blocking(move || {
         let database = Database::open(&database_path).map_err(|error| error.to_string())?;
-        RepairApplicationService::new(&database)
+        let run = RepairApplicationService::new(&database)
             .apply_plan(&repair_id, backup_root)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        if run.status == "applied" {
+            GuidedSecurityStore::new(&database)
+                .sync_repair_application_state(&repair_id, "applied")
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(run)
     })
     .await;
     REPAIR_APPLICATION_RUNNING.store(false, Ordering::SeqCst);
@@ -194,9 +201,15 @@ pub(crate) async fn rollback_repair_application(
     }
     let task = tauri::async_runtime::spawn_blocking(move || {
         let database = Database::open(&database_path).map_err(|error| error.to_string())?;
-        RepairApplicationService::new(&database)
+        let run = RepairApplicationService::new(&database)
             .rollback_application(&run_id, backup_root)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        if run.status == "rolled_back" {
+            GuidedSecurityStore::new(&database)
+                .sync_repair_application_state(&run.repair_id, "rolled_back")
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(run)
     })
     .await;
     REPAIR_APPLICATION_RUNNING.store(false, Ordering::SeqCst);
