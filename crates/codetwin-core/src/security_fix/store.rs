@@ -34,17 +34,28 @@ impl<'a> SecurityFixService<'a> {
             )));
         }
 
+        let retest_floor_rowid: i64 = self.database.connection().query_row(
+            "SELECT COALESCE(MAX(rowid),0)
+             FROM guided_security_retests
+             WHERE finding_id=?1",
+            [&attempt.finding_id],
+            |row| row.get(0),
+        )?;
         self.database.connection().execute(
             "UPDATE security_fix_attempts
-             SET status='applied',application_run_id=?2,validation_state='not_executed',
-                 retest_state='not_executed',updated_at=CURRENT_TIMESTAMP WHERE id=?1",
-            params![attempt_id, application_run_id],
+             SET status='applied',application_run_id=?2,retest_floor_rowid=?3,
+                 validation_state='not_executed',retest_state='not_executed',
+                 updated_at=CURRENT_TIMESTAMP WHERE id=?1",
+            params![attempt_id, application_run_id, retest_floor_rowid],
         )?;
         self.append_event(
             attempt_id,
             "patch_applied",
             "Approved patch was applied by the existing transactional repair subsystem. Repository validation and targeted security retest are pending.",
-            &json!({"application_run_id": application_run_id}).to_string(),
+            &json!({
+                "application_run_id": application_run_id,
+                "retest_floor_rowid": retest_floor_rowid,
+            }).to_string(),
         )?;
         self.get_attempt(attempt_id)?
             .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))
@@ -318,7 +329,7 @@ impl<'a> SecurityFixService<'a> {
                         safety_class,safety_json,approved_patch_hash,approved_files_json,
                         approved_safety_class,caution_acknowledged,approved_at,
                         application_run_id,validation_state,retest_state,static_before_json,
-                        static_after_json,created_at,updated_at
+                        static_after_json,created_at,updated_at,retest_floor_rowid
                  FROM security_fix_attempts WHERE id=?1",
                 [attempt_id],
                 map_attempt,
@@ -339,7 +350,7 @@ impl<'a> SecurityFixService<'a> {
                         safety_class,safety_json,approved_patch_hash,approved_files_json,
                         approved_safety_class,caution_acknowledged,approved_at,
                         application_run_id,validation_state,retest_state,static_before_json,
-                        static_after_json,created_at,updated_at
+                        static_after_json,created_at,updated_at,retest_floor_rowid
                  FROM security_fix_attempts WHERE repair_id=?1 LIMIT 1",
                 [repair_id],
                 map_attempt,
@@ -360,7 +371,7 @@ impl<'a> SecurityFixService<'a> {
                         safety_class,safety_json,approved_patch_hash,approved_files_json,
                         approved_safety_class,caution_acknowledged,approved_at,
                         application_run_id,validation_state,retest_state,static_before_json,
-                        static_after_json,created_at,updated_at
+                        static_after_json,created_at,updated_at,retest_floor_rowid
                  FROM security_fix_attempts WHERE application_run_id=?1 LIMIT 1",
                 [application_run_id],
                 map_attempt,
@@ -380,7 +391,7 @@ impl<'a> SecurityFixService<'a> {
                     safety_class,safety_json,approved_patch_hash,approved_files_json,
                     approved_safety_class,caution_acknowledged,approved_at,
                     application_run_id,validation_state,retest_state,static_before_json,
-                    static_after_json,created_at,updated_at
+                    static_after_json,created_at,updated_at,retest_floor_rowid
              FROM security_fix_attempts WHERE finding_id=?1
              ORDER BY attempt_number DESC LIMIT ?2",
         )?;
@@ -447,7 +458,7 @@ impl<'a> SecurityFixService<'a> {
                         safety_class,safety_json,approved_patch_hash,approved_files_json,
                         approved_safety_class,caution_acknowledged,approved_at,
                         application_run_id,validation_state,retest_state,static_before_json,
-                        static_after_json,created_at,updated_at
+                        static_after_json,created_at,updated_at,retest_floor_rowid
                  FROM security_fix_attempts WHERE finding_id=?1
                  ORDER BY attempt_number DESC LIMIT 1",
                 [finding_id],
@@ -586,6 +597,7 @@ fn map_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecurityFixAttemptRe
         static_after_json: row.get(24)?,
         created_at: row.get(25)?,
         updated_at: row.get(26)?,
+        retest_floor_rowid: row.get(27)?,
     })
 }
 
