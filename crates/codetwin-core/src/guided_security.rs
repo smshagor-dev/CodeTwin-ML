@@ -1005,14 +1005,32 @@ impl<'a> GuidedSecurityStore<'a> {
                 bounded_text(input.detail_json, 64_000),
             ],
         )?;
-        self.set_finding_lifecycle(input.finding_id, input.session_id, input.status)?;
+        let lifecycle_before = self
+            .database
+            .connection()
+            .query_row(
+                "SELECT state FROM guided_security_finding_lifecycle WHERE finding_id=?1",
+                [input.finding_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let lifecycle_transitioned = lifecycle_before.as_deref() == Some("fix_applied");
+        if lifecycle_transitioned {
+            self.set_finding_lifecycle(input.finding_id, input.session_id, input.status)?;
+        }
         if let Some(session_id) = input.session_id {
             self.append_activity(
                 session_id,
                 "finding_retested",
                 "retest",
                 &format!("Finding retest completed with status {}.", input.status),
-                &json!({"finding_id": input.finding_id, "requests_performed": input.requests_performed}).to_string(),
+                &json!({
+                    "finding_id": input.finding_id,
+                    "requests_performed": input.requests_performed,
+                    "lifecycle_before": lifecycle_before,
+                    "lifecycle_transitioned": lifecycle_transitioned,
+                })
+                .to_string(),
             )?;
         }
         self.database.connection().query_row(
@@ -2139,6 +2157,9 @@ mod tests {
         store.approve_session(&session.id).expect("approved");
         store.link_scan(&session.id, &scan_id).expect("link scan");
 
+        store
+            .set_finding_lifecycle(&finding_id, Some(&session.id), "fix_applied")
+            .expect("mark fix applied");
         let retest = store
             .record_retest(GuidedRetestInput {
                 finding_id: &finding_id,
@@ -2165,6 +2186,51 @@ mod tests {
             )
             .expect("lifecycle");
         assert_eq!(lifecycle, "retest_passed");
+
+        let original: (String, String) = database
+            .connection()
+            .query_row(
+                "SELECT confidence,status FROM web_security_findings WHERE id=?1",
+                [&finding_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("original finding");
+        assert_eq!(original, ("Likely".to_string(), "open".to_string()));
+    }
+
+    #[test]
+    fn retest_before_fix_application_preserves_open_lifecycle() {
+        let database = Database::open_in_memory().expect("database");
+        let store = GuidedSecurityStore::new(&database);
+        let (_, finding_id) = create_scan_with_finding(
+            &database,
+            "http://localhost:3000/search?q=hello",
+            "Likely",
+        );
+        store
+            .set_finding_lifecycle(&finding_id, None, "open")
+            .expect("open lifecycle");
+        store
+            .record_retest(GuidedRetestInput {
+                finding_id: &finding_id,
+                session_id: None,
+                status: "still_vulnerable",
+                original_confidence: "Likely",
+                observed_confidence: Some("Likely"),
+                requests_performed: 2,
+                detail_json: r#"{"note":"diagnostic retest"}"#,
+            })
+            .expect("diagnostic retest");
+        let lifecycle: String = database
+            .connection()
+            .query_row(
+                "SELECT state FROM guided_security_finding_lifecycle WHERE finding_id=?1",
+                [&finding_id],
+                |row| row.get(0),
+            )
+            .expect("lifecycle");
+        assert_eq!(lifecycle, "open");
+        assert_eq!(store.list_retests(&finding_id, 10).expect("history").len(), 1);
     }
 
     #[test]
