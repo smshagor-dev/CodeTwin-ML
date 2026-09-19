@@ -27,6 +27,7 @@ CREATE TABLE security_fix_attempts (
   caution_acknowledged INTEGER NOT NULL DEFAULT 0 CHECK(caution_acknowledged IN (0,1)),
   approved_at TEXT,
   application_run_id TEXT REFERENCES repair_application_runs(id) ON DELETE SET NULL,
+  retest_floor_rowid INTEGER NOT NULL DEFAULT 0 CHECK(retest_floor_rowid >= 0),
   validation_state TEXT NOT NULL DEFAULT 'not_executed'
     CHECK(validation_state IN ('not_executed','passed','failed','partial')),
   static_before_json TEXT NOT NULL DEFAULT '{}',
@@ -119,10 +120,9 @@ WHEN NEW.status = 'fix_verified' AND (
   NOT EXISTS (
     SELECT 1
     FROM guided_security_retests gr
-    JOIN repair_application_runs rar ON rar.id = NEW.application_run_id
     WHERE gr.finding_id = NEW.finding_id
       AND gr.status = 'retest_passed'
-      AND gr.created_at >= COALESCE(rar.completed_at, rar.created_at)
+      AND gr.rowid > NEW.retest_floor_rowid
   ) OR
   EXISTS (
     SELECT 1
