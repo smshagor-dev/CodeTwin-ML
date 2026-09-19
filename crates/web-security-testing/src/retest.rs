@@ -21,6 +21,9 @@ pub struct TargetedRetestRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TargetedRetestOutcome {
     pub requests_performed: usize,
+    pub responses_observed: usize,
+    pub verification_completed: bool,
+    pub failure_reason: Option<String>,
     pub findings: Vec<FindingObservation>,
 }
 
@@ -43,12 +46,18 @@ pub fn run_targeted_retest(
     if !matches!(method.as_str(), "GET" | "HEAD" | "POST" | "PUT" | "PATCH") {
         return Ok(TargetedRetestOutcome {
             requests_performed: 0,
+            responses_observed: 0,
+            verification_completed: false,
+            failure_reason: Some("unsupported HTTP method for targeted retest".into()),
             findings: Vec::new(),
         });
     }
     if !matches!(method.as_str(), "GET" | "HEAD") && !targeted.scope.allow_non_idempotent_methods {
         return Ok(TargetedRetestOutcome {
             requests_performed: 0,
+            responses_observed: 0,
+            verification_completed: false,
+            failure_reason: Some("state-changing targeted retest is disabled by the approved scope".into()),
             findings: Vec::new(),
         });
     }
@@ -123,10 +132,45 @@ pub fn run_targeted_retest(
         &mut ignored_progress,
     )?;
 
+    let responses_observed = budget.responses_observed();
+    let minimum_responses = minimum_responses_for(&request.category);
+    let identity_missing = request.category == "access_control" && secondary_auth.is_none();
+    let verification_completed =
+        !identity_missing && responses_observed >= minimum_responses;
+    let failure_reason = if identity_missing {
+        Some("targeted authorization verification requires the approved secondary test identity".into())
+    } else if verification_completed {
+        None
+    } else {
+        Some(format!(
+            "targeted retest observed only {responses_observed} successful response(s); at least {minimum_responses} are required for this detector family"
+        ))
+    };
+
     Ok(TargetedRetestOutcome {
         requests_performed: budget.used(),
+        responses_observed,
+        verification_completed,
+        failure_reason,
         findings,
     })
+}
+
+fn minimum_responses_for(category: &str) -> usize {
+    match category {
+        "sql_injection" => 4,
+        "xss"
+        | "open_redirect"
+        | "path_traversal"
+        | "ssrf"
+        | "template_injection"
+        | "cors"
+        | "http_method"
+        | "access_control"
+        | "api_input_validation"
+        | "api_validation" => 2,
+        _ => 2,
+    }
 }
 
 fn checks_for(category: &str) -> CheckConfig {
@@ -169,6 +213,13 @@ fn normalized_key(url: &Url) -> String {
 #[cfg(test)]
 mod tests {
     use super::checks_for;
+
+    #[test]
+    fn detector_families_require_enough_observed_responses() {
+        assert_eq!(super::minimum_responses_for("sql_injection"), 4);
+        assert_eq!(super::minimum_responses_for("xss"), 2);
+        assert_eq!(super::minimum_responses_for("access_control"), 2);
+    }
 
     #[test]
     fn targeted_retest_enables_only_requested_detector_family() {
