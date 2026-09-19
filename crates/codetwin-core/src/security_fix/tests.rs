@@ -5,8 +5,8 @@ use tempfile::{tempdir, TempDir};
 use super::*;
 use crate::{
     AuthorizedWebSecurityStore, GuidedRetestInput, GuidedSecurityStore, ProjectIndexService,
-    QaDiscoveryService,
-    RepairApplicationService, WebEvidenceInput, WebFindingInput, WebScanCreate,
+    QaDiscoveryService, RepairApplicationService, SecurityRemediationCampaignCreate,
+    SecurityRemediationCampaignService, WebEvidenceInput, WebFindingInput, WebScanCreate,
 };
 
 struct Fixture {
@@ -1155,6 +1155,109 @@ fn overlapping_findings_require_fresh_hashes_and_do_not_share_approval() {
             Err(SecurityFixError::StaleApproval)
         ),
         "A approval must become stale after B changes the overlapping source"
+    );
+}
+
+#[test]
+fn remediation_campaign_blocks_overlapping_approved_patch_after_prior_source_mutation() {
+    let fixture = sql_fixture();
+    let second_id = add_overlapping_sql_finding(&fixture, "campaign-overlap");
+    let scan_id: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT scan_id FROM web_security_findings WHERE id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("scan id");
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (
+                'campaign-overlap-session',?1,'http://127.0.0.1:3000','local',
+                'standard','none','completed',1,'{}',?2
+             )",
+            rusqlite::params![fixture.project_id, scan_id],
+        )
+        .expect("guided campaign session");
+
+    let campaigns = SecurityRemediationCampaignService::new(&fixture.database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-overlap-session".into(),
+            finding_ids: vec![fixture.finding_id.clone(), second_id.clone()],
+        })
+        .expect("campaign");
+    let analyzed = campaigns.analyze(&campaign.id).expect("analyze campaign overlap");
+    let relationships = campaigns
+        .relationships(&campaign.id)
+        .expect("campaign relationships");
+    assert!(relationships.iter().any(|relationship| {
+        matches!(
+            relationship.relationship.as_str(),
+            "SHARED_ROOT_CAUSE" | "SOURCE_OVERLAP" | "POTENTIAL_CONFLICT"
+        )
+    }));
+    campaigns
+        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("plan hash"))
+        .expect("approve campaign");
+    campaigns.start(&campaign.id).expect("start campaign");
+
+    let fixes = SecurityFixService::new(&fixture.database);
+    let first = fixes
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare first");
+    let first_review = fixes.generate_patch(&first.attempt.id).expect("first patch");
+    fixes
+        .approve_attempt(
+            &first.attempt.id,
+            &first_review.safety.patch_hash,
+            first_review.safety.classification == PatchSafetyClass::Caution,
+        )
+        .expect("approve first");
+
+    let second = fixes
+        .prepare_fix(&second_id, false)
+        .expect("prepare second");
+    let second_review = fixes.generate_patch(&second.attempt.id).expect("second patch");
+    fixes
+        .approve_attempt(
+            &second.attempt.id,
+            &second_review.safety.patch_hash,
+            second_review.safety.classification == PatchSafetyClass::Caution,
+        )
+        .expect("approve second");
+    let second_repair = fixes
+        .assert_application_allowed(&second.attempt.id)
+        .expect("second application allowed");
+
+    let backups = tempdir().expect("overlap campaign backups");
+    let application = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&second_repair, backups.path())
+        .expect("apply second overlapping fix");
+    fixes
+        .record_application(&second.attempt.id, &application.id)
+        .expect("record second application");
+
+    assert!(matches!(
+        fixes.assert_application_allowed(&first.attempt.id),
+        Err(SecurityFixError::StaleApproval)
+    ));
+    campaigns.sync(&campaign.id).expect("sync campaign overlap");
+    let first_member = campaigns
+        .findings(&campaign.id)
+        .expect("campaign findings")
+        .into_iter()
+        .find(|finding| finding.finding_id == fixture.finding_id)
+        .expect("first campaign finding");
+    assert_eq!(
+        first_member.status, "BLOCKED",
+        "campaign must not silently rebase or apply an overlapping stale approval"
     );
 }
 
