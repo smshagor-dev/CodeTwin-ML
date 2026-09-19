@@ -12,8 +12,9 @@ use std::{
 };
 
 use codetwin_core::{
-    AuthorizedWebSecurityStore, Database, GuidedRetestInput, GuidedSecurityStore,
-    ProjectIndexService, RepairApplicationService, SecurityFixService, ValidationResultInput,
+    AuthorizedWebSecurityStore, Database, FixEligibility, GuidedRetestInput, GuidedSecurityStore,
+    PatchSafetyClass, ProjectIndexService, RepairApplicationService, SecurityFixService,
+    ValidationResultInput,
     WebEndpointInput, WebEvidenceInput, WebFindingInput, WebFindingRecord, WebScanCreate,
 };
 use tempfile::tempdir;
@@ -493,16 +494,21 @@ fn apply_generated_fix(
     let prepared = service
         .prepare_fix(&finding.id, false)
         .expect("prepare security fix");
-    assert_eq!(format!("{:?}", prepared.eligibility.result), "AutoFixCandidate");
+    assert_eq!(prepared.eligibility.result, FixEligibility::AutoFixCandidate);
     assert!(prepared.root_causes[0].confidence >= 0.82);
 
     let review = service
         .generate_patch(&prepared.attempt.id)
         .expect("generate bounded patch");
-    let safety = format!("{:?}", review.safety.classification);
-    assert!(matches!(safety.as_str(), "SafeToReview" | "Caution"));
+    assert!(matches!(
+        review.safety.classification,
+        PatchSafetyClass::SafeToReview | PatchSafetyClass::Caution
+    ));
     service
-        .approve_attempt(&prepared.attempt.id, safety == "Caution")
+        .approve_attempt(
+            &prepared.attempt.id,
+            review.safety.classification == PatchSafetyClass::Caution,
+        )
         .expect("approve exact patch");
     let repair_id = service
         .assert_application_allowed(&prepared.attempt.id)
@@ -572,6 +578,11 @@ fn targeted_retest_and_sync(
     )
     .expect("targeted retest");
     assert!(retest.requests_performed > 0);
+    assert!(
+        retest.verification_completed,
+        "targeted verification must have enough successful responses: {:?}",
+        retest.failure_reason
+    );
     let matching = retest
         .findings
         .iter()
@@ -749,8 +760,8 @@ fn xss_fix_verify_preserves_text_and_ambiguous_context_is_not_auto_patched() {
         .evaluate_eligibility(&ambiguous.id)
         .expect("ambiguous eligibility");
     assert!(matches!(
-        format!("{:?}", assessment.result).as_str(),
-        "GuidedFixCandidate" | "ManualRemediation"
+        assessment.result,
+        FixEligibility::GuidedFixCandidate | FixEligibility::ManualRemediation
     ));
     let prepared = SecurityFixService::new(&database)
         .prepare_fix(&ambiguous.id, false)
@@ -805,8 +816,8 @@ fn idor_guided_fix_verify_uses_two_local_identities_and_server_side_patch() {
         .prepare_fix(&finding.id, false)
         .expect("prepare authorization fix");
     assert_eq!(
-        format!("{:?}", prepared.eligibility.result),
-        "GuidedFixCandidate"
+        prepared.eligibility.result,
+        FixEligibility::GuidedFixCandidate
     );
     assert!(prepared.root_causes[0]
         .relative_path
@@ -822,8 +833,8 @@ fn idor_guided_fix_verify_uses_two_local_identities_and_server_side_patch() {
     let review = service
         .propose_replacement(&prepared.attempt.id, &file_id, safe_patch)
         .expect("review guided authorization patch");
-    assert_ne!(format!("{:?}", review.safety.classification), "Rejected");
-    let caution = format!("{:?}", review.safety.classification) == "Caution";
+    assert_ne!(review.safety.classification, PatchSafetyClass::Rejected);
+    let caution = review.safety.classification == PatchSafetyClass::Caution;
     service
         .approve_attempt(&prepared.attempt.id, caution)
         .expect("approve guided patch");
