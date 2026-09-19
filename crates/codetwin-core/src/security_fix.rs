@@ -186,6 +186,8 @@ pub struct SecurityFixTestPlan {
     pub qa_execution_reason: String,
     pub security_retest: String,
     pub regression_test_proposal: String,
+    pub regression_generation_status: String,
+    pub regression_generation_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
