@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { workspaceApi } from "../api";
 import type {
@@ -41,6 +41,19 @@ export function SecurityFixWorkflow({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [limitReached, setLimitReached] = useState(false);
+  const mutationLock = useRef(false);
+
+  function beginMutation(label: string): boolean {
+    if (mutationLock.current) return false;
+    mutationLock.current = true;
+    setBusy(label);
+    return true;
+  }
+
+  function finishMutation() {
+    mutationLock.current = false;
+    setBusy(null);
+  }
 
   const refreshAttempt = useCallback(async (attemptId: string) => {
     const current = await workspaceApi.getSecurityFixAttempt(attemptId);
@@ -94,7 +107,7 @@ export function SecurityFixWorkflow({
   }, [finding.id]);
 
   async function prepare(allowAdditionalAttempt = false) {
-    setBusy("Analyzing source");
+    if (!beginMutation("Analyzing source")) return;
     setError(null);
     try {
       const value = await workspaceApi.prepareSecurityFix(
@@ -118,31 +131,29 @@ export function SecurityFixWorkflow({
         setLimitReached(true);
       }
     } finally {
-      setBusy(null);
+      finishMutation();
     }
   }
 
   async function generatePatch() {
-    if (!attempt) return;
-    setBusy("Generating bounded patch");
+    if (!attempt || !beginMutation("Generating bounded patch")) return;
     setError(null);
     try {
       const next = await workspaceApi.generateSecurityFixPatch(attempt.id);
       setReview(next);
-      await refreshAttempt(attempt.id);
+      await refreshAttempt(attemptId);
     } catch (value) {
       setError(
         String(value)
         + " Use Edit Plan for a developer-guided replacement when automatic generation is not safe.",
       );
     } finally {
-      setBusy(null);
+      finishMutation();
     }
   }
 
   async function openEditor() {
-    if (!attempt?.root_causes[0]) return;
-    setBusy("Loading hash-verified source");
+    if (!attempt?.root_causes[0] || !beginMutation("Loading hash-verified source")) return;
     setError(null);
     try {
       const snapshot = await workspaceApi.readRepairSource(
@@ -154,13 +165,17 @@ export function SecurityFixWorkflow({
     } catch (value) {
       setError(String(value));
     } finally {
-      setBusy(null);
+      finishMutation();
     }
   }
 
   async function reviewEditedPlan() {
-    if (!attempt || !source || proposedContent === source.content) return;
-    setBusy("Analyzing patch safety");
+    if (
+      !attempt
+      || !source
+      || proposedContent === source.content
+      || !beginMutation("Analyzing patch safety")
+    ) return;
     setError(null);
     try {
       const next = await workspaceApi.proposeSecurityFixReplacement(
@@ -170,27 +185,36 @@ export function SecurityFixWorkflow({
       );
       setReview(next);
       setEditing(false);
-      await refreshAttempt(attempt.id);
+      await refreshAttempt(attemptId);
     } catch (value) {
       setError(String(value));
     } finally {
-      setBusy(null);
+      finishMutation();
     }
   }
 
   async function approveAndApply() {
-    if (!attempt || !review || review.safety.classification === "REJECTED") return;
-    setBusy("Approving exact patch");
+    if (
+      !canApproveAndApplySecurityFix(attempt, review, acceptCaution, false)
+      || !attempt
+      || !review
+      || !beginMutation("Approving exact patch")
+    ) return;
+    const attemptId = attempt.id;
+    const expectedPatchHash = review.safety.patch_hash;
     setError(null);
     try {
       const approved = await workspaceApi.approveSecurityFix(
-        attempt.id,
-        review.safety.patch_hash,
+        attemptId,
+        expectedPatchHash,
         acceptCaution,
       );
+      if (approved.id !== attemptId || approved.approved_patch_hash !== expectedPatchHash) {
+        throw new Error("Approval identity changed while the patch was being approved.");
+      }
       setAttempt(approved);
       setBusy("Applying approved patch");
-      const applied = await workspaceApi.applySecurityFix(attempt.id);
+      const applied = await workspaceApi.applySecurityFix(attemptId);
       setAttempt(applied.attempt);
       if (applied.application.status !== "applied") {
         setError(
@@ -200,52 +224,62 @@ export function SecurityFixWorkflow({
             ? " — " + applied.application.error_message
             : ""),
         );
-        await refreshAttempt(attempt.id);
+        await refreshAttempt(attemptId);
         return;
       }
 
       setBusy("Running selected repository validation");
-      const validation = await workspaceApi.runSecurityFixValidation(attempt.id);
+      const validation = await workspaceApi.runSecurityFixValidation(attemptId);
       setAttempt(validation.attempt);
       setValidations(validation.results);
-      setEvents(await workspaceApi.listSecurityFixEvents(attempt.id, 200));
+      setEvents(await workspaceApi.listSecurityFixEvents(attemptId, 200));
       setHistory(await workspaceApi.listSecurityFixAttempts(finding.id, 20));
     } catch (value) {
       setError(String(value));
       await refreshAttempt(attempt.id).catch(() => undefined);
     } finally {
-      setBusy(null);
+      finishMutation();
     }
   }
 
   async function retest() {
-    if (!attempt) return;
-    setBusy("Running targeted security retest");
+    if (!attempt || !beginMutation("Running targeted security retest")) return;
+    const attemptId = attempt.id;
     setError(null);
     try {
       await onRetest();
-      await refreshAttempt(attempt.id);
+      await refreshAttempt(attemptId);
     } catch (value) {
       setError(String(value));
     } finally {
-      setBusy(null);
+      finishMutation();
     }
   }
 
   async function rollback() {
-    if (!attempt?.application_run_id) return;
-    setBusy("Rolling back approved fix");
+    if (!attempt?.application_run_id || !beginMutation("Rolling back approved fix")) return;
+    const attemptId = attempt.id;
     setError(null);
     try {
-      const result = await workspaceApi.rollbackSecurityFix(attempt.id);
+      const result = await workspaceApi.rollbackSecurityFix(attemptId);
       setAttempt(result.attempt);
-      setEvents(await workspaceApi.listSecurityFixEvents(attempt.id, 200));
+      setEvents(await workspaceApi.listSecurityFixEvents(attemptId, 200));
       setHistory(await workspaceApi.listSecurityFixAttempts(finding.id, 20));
     } catch (value) {
       setError(String(value));
     } finally {
-      setBusy(null);
+      finishMutation();
     }
+  }
+
+  async function selectAttempt(attemptId: string) {
+    if (mutationLock.current) return;
+    setReview(null);
+    setPreparation(null);
+    setSource(null);
+    setEditing(false);
+    setAcceptCaution(false);
+    await refreshAttempt(attemptId);
   }
 
   function closeReview() {
@@ -423,7 +457,11 @@ export function SecurityFixWorkflow({
               >
                 Edit Plan
               </button>
-              <button className="ws-button ws-button-secondary" onClick={closeReview}>
+              <button
+                  className="ws-button ws-button-secondary"
+                  disabled={Boolean(busy)}
+                  onClick={closeReview}
+                >
                 Cancel
               </button>
             </div>
@@ -540,7 +578,11 @@ export function SecurityFixWorkflow({
                 >
                   Edit Plan
                 </button>
-                <button className="ws-button ws-button-secondary" onClick={closeReview}>
+                <button
+                  className="ws-button ws-button-secondary"
+                  disabled={Boolean(busy)}
+                  onClick={closeReview}
+                >
                   Cancel
                 </button>
               </div>
@@ -665,7 +707,11 @@ export function SecurityFixWorkflow({
               <summary>Previous attempts</summary>
               <div className="ws-security-fix-attempts">
                 {history.map((item) => (
-                  <button key={item.id} onClick={() => void refreshAttempt(item.id)}>
+                  <button
+                    key={item.id}
+                    disabled={Boolean(busy)}
+                    onClick={() => void selectAttempt(item.id)}
+                  >
                     <strong>Attempt #{item.attempt_number}</strong>
                     <span>{securityFixDisplayStatus(item)}</span>
                     <small>{formatDate(item.updated_at)}</small>
