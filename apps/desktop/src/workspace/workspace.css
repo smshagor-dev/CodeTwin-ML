@@ -1306,6 +1306,8 @@ html[data-theme="dark"] .ws-guided-authorization { background: #2b2517; border-c
 }
 .ws-guided-progress span[data-state="done"] { background: #eaf8f1; border-color: #b9e9d1; color: #087a4c; }
 .ws-guided-progress span[data-state="current"] { background: #eef1ff; border-color: #aeb8ff; color: #3f50cd; }
+.ws-guided-progress span[data-state="failed"] { background: #fdecee; border-color: #f0bec4; color: #bc3542; }
+.ws-guided-progress span[data-state="cancelled"] { background: #faf4df; border-color: #dfd4b2; color: #8c6914; }
 html[data-theme="dark"] .ws-guided-progress span[data-state="done"] { background: #142a22; border-color: #285d48; color: #73d7a9; }
 html[data-theme="dark"] .ws-guided-progress span[data-state="current"] { background: #222b4e; border-color: #45528b; color: #bdc4ff; }
 
@@ -1325,6 +1327,19 @@ html[data-theme="dark"] .ws-guided-progress span[data-state="current"] { backgro
   font-size: 9px;
 }
 .ws-guided-runtime b { color: var(--ws-text); font-size: 8px; }
+.ws-guided-runtime-warning {
+  margin: 10px 0 0;
+  padding: 9px 10px;
+  border: 1px solid #dfd4b2;
+  border-radius: 7px;
+  background: #faf4df;
+  color: #755a18;
+  font-size: 8px;
+  line-height: 1.5;
+}
+.ws-guided-runtime-warning p { margin: 0; }
+.ws-guided-runtime-warning p + p { margin-top: 5px; }
+html[data-theme="dark"] .ws-guided-runtime-warning { background: #2b2517; border-color: #695829; color: #e6cb80; }
 
 .ws-guided-scorecard {
   display: grid;
