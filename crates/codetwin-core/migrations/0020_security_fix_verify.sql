@@ -22,6 +22,9 @@ CREATE TABLE security_fix_attempts (
   safety_json TEXT NOT NULL DEFAULT '{}',
   approved_patch_hash TEXT,
   approved_files_json TEXT,
+  approved_safety_class TEXT
+    CHECK(approved_safety_class IS NULL OR approved_safety_class IN ('SAFE_TO_REVIEW','CAUTION')),
+  caution_acknowledged INTEGER NOT NULL DEFAULT 0 CHECK(caution_acknowledged IN (0,1)),
   approved_at TEXT,
   application_run_id TEXT REFERENCES repair_application_runs(id) ON DELETE SET NULL,
   validation_state TEXT NOT NULL DEFAULT 'not_executed'
@@ -72,3 +75,82 @@ CREATE TABLE security_fix_events (
 );
 CREATE INDEX idx_security_fix_events_attempt
   ON security_fix_events(attempt_id, sequence);
+
+
+-- Approval identity becomes immutable once approval has been recorded. Lifecycle
+-- fields may continue to advance, but a different finding, patch, file set,
+-- safety result, or base/proposed identity can never reuse the approval.
+CREATE TRIGGER security_fix_attempt_approval_identity_immutable
+BEFORE UPDATE ON security_fix_attempts
+WHEN OLD.approved_at IS NOT NULL AND (
+  NEW.finding_id IS NOT OLD.finding_id OR
+  NEW.session_id IS NOT OLD.session_id OR
+  NEW.project_id IS NOT OLD.project_id OR
+  NEW.repair_id IS NOT OLD.repair_id OR
+  NEW.attempt_number IS NOT OLD.attempt_number OR
+  NEW.eligibility IS NOT OLD.eligibility OR
+  NEW.category IS NOT OLD.category OR
+  NEW.root_cause_json IS NOT OLD.root_cause_json OR
+  NEW.strategy_json IS NOT OLD.strategy_json OR
+  NEW.test_plan_json IS NOT OLD.test_plan_json OR
+  NEW.patch_hash IS NOT OLD.patch_hash OR
+  NEW.safety_class IS NOT OLD.safety_class OR
+  NEW.safety_json IS NOT OLD.safety_json OR
+  NEW.approved_patch_hash IS NOT OLD.approved_patch_hash OR
+  NEW.approved_files_json IS NOT OLD.approved_files_json OR
+  NEW.approved_safety_class IS NOT OLD.approved_safety_class OR
+  NEW.caution_acknowledged IS NOT OLD.caution_acknowledged OR
+  NEW.approved_at IS NOT OLD.approved_at OR
+  NEW.static_before_json IS NOT OLD.static_before_json OR
+  NEW.created_at IS NOT OLD.created_at
+)
+BEGIN
+  SELECT RAISE(ABORT, 'approved security fix identity is immutable');
+END;
+
+-- FIX_VERIFIED is a persistence invariant, not a UI convention. It requires a
+-- successful targeted runtime retest after the applied repair plus no blocking
+-- patch-introduced/unknown validation regression.
+CREATE TRIGGER security_fix_verified_requires_retest
+BEFORE UPDATE OF status, retest_state ON security_fix_attempts
+WHEN NEW.status = 'fix_verified' AND (
+  NEW.retest_state <> 'FIX_VERIFIED' OR
+  NEW.application_run_id IS NULL OR
+  NOT EXISTS (
+    SELECT 1
+    FROM guided_security_retests gr
+    JOIN repair_application_runs rar ON rar.id = NEW.application_run_id
+    WHERE gr.finding_id = NEW.finding_id
+      AND gr.status = 'retest_passed'
+      AND gr.created_at >= COALESCE(rar.completed_at, rar.created_at)
+  ) OR
+  EXISTS (
+    SELECT 1
+    FROM security_fix_validation_results vr
+    WHERE vr.attempt_id = NEW.id
+      AND vr.status = 'FAIL'
+      AND vr.classification IN ('PATCH_INTRODUCED_FAILURE','UNKNOWN')
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'FIX_VERIFIED requires a successful post-apply targeted retest and no blocking regression');
+END;
+
+CREATE TRIGGER security_fix_verified_insert_guard
+BEFORE INSERT ON security_fix_attempts
+WHEN NEW.status = 'fix_verified' OR NEW.retest_state = 'FIX_VERIFIED'
+BEGIN
+  SELECT RAISE(ABORT, 'FIX_VERIFIED cannot be inserted directly');
+END;
+
+CREATE TRIGGER security_fix_validation_results_immutable
+BEFORE UPDATE ON security_fix_validation_results
+BEGIN
+  SELECT RAISE(ABORT, 'security fix validation history is immutable');
+END;
+
+CREATE TRIGGER security_fix_events_immutable
+BEFORE UPDATE ON security_fix_events
+BEGIN
+  SELECT RAISE(ABORT, 'security fix event history is immutable');
+END;
