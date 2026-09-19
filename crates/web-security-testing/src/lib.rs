@@ -4,6 +4,7 @@ mod evidence;
 mod passive;
 mod operator;
 mod request;
+mod retest;
 mod scope;
 
 use std::collections::{BTreeMap, HashMap};
@@ -22,6 +23,7 @@ pub use operator::{
     GuidedTestPlan, OperationRisk, PlannedOperation, SecurityEnvironment, TestingDepth,
 };
 pub use request::{RequestBudget, RequestError, ScopedRequester};
+pub use retest::{run_targeted_retest, TargetedRetestOutcome, TargetedRetestRequest};
 pub use scope::{normalize_url, ScopeError, ScopePolicy};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
