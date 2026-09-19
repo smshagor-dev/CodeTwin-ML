@@ -163,6 +163,13 @@ describe("Guided Security Fix & Verify frontend lifecycle", () => {
       ...review("SAFE_TO_REVIEW"),
       attempt_id: "other-attempt",
     }, false, false)).toBe(false);
+    expect(canApproveAndApplySecurityFix(proposed, {
+      ...review("SAFE_TO_REVIEW"),
+      safety: {
+        ...review("SAFE_TO_REVIEW").safety,
+        patch_hash: "b".repeat(64),
+      },
+    }, false, false)).toBe(false);
     expect(canApproveAndApplySecurityFix(proposed, review("SAFE_TO_REVIEW"), false, true)).toBe(false);
   });
 
