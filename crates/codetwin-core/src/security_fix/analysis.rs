@@ -265,6 +265,25 @@ impl<'a> SecurityFixService<'a> {
             None
         };
 
+        if let Some(repair) = repair.as_ref() {
+            self.database.connection().execute(
+                "INSERT INTO guided_security_fix_links(finding_id, repair_id, state)
+                 VALUES (?1,?2,'fix_proposed')
+                 ON CONFLICT(finding_id) DO UPDATE SET
+                    repair_id=excluded.repair_id,
+                    state='fix_proposed',
+                    updated_at=CURRENT_TIMESTAMP",
+                params![finding.finding_id, repair.id],
+            )?;
+            GuidedSecurityStore::new(self.database)
+                .set_finding_lifecycle(
+                    &finding.finding_id,
+                    finding.session_id.as_deref(),
+                    "fix_proposed",
+                )
+                .map_err(|error| SecurityFixError::Guided(error.to_string()))?;
+        }
+
         let id = self.random_id("secfix")?;
         self.database.connection().execute(
             "INSERT INTO security_fix_attempts(
