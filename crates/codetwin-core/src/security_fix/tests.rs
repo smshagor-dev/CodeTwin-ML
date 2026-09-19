@@ -937,3 +937,68 @@ fn validation_and_event_records_cannot_be_rewritten() {
         )
         .is_err());
 }
+
+
+#[test]
+fn secret_storage_rejects_jwt_bearer_cookie_and_redacts_validation_output() {
+    let fixture = sql_fixture();
+    let service = SecurityFixService::new(&fixture.database);
+    let prepared = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+
+    for detail in [
+        r#"{"note":"Bearer top-secret-value"}"#,
+        r#"{"note":"session=private-cookie-value"}"#,
+        r#"{"note":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0LXVzZXIifQ.signature123456"}"#,
+    ] {
+        assert!(
+            service
+                .append_event(&prepared.attempt.id, "unsafe", "safe message", detail)
+                .is_err(),
+            "secret-shaped detail must be rejected"
+        );
+    }
+    assert!(service
+        .append_event(
+            &prepared.attempt.id,
+            "unsafe",
+            "Authorization: Bearer top-secret-value",
+            "{}",
+        )
+        .is_err());
+
+    let validation = service
+        .add_validation_result(
+            &prepared.attempt.id,
+            ValidationResultInput {
+                command_label: "fixture output",
+                runner_kind: "fixture",
+                targets: &[],
+                status: "FAIL",
+                exit_code: Some(1),
+                duration_ms: Some(1),
+                classification: "UNKNOWN",
+                stdout_summary: "Cookie: session=private-cookie-value",
+                stderr_summary: "Authorization: Bearer top-secret-value",
+            },
+        )
+        .expect("validation output is redacted rather than rejected");
+    assert_eq!(
+        validation.stdout_summary,
+        "[redacted: sensitive validation output]"
+    );
+    assert_eq!(
+        validation.stderr_summary,
+        "[redacted: sensitive validation output]"
+    );
+
+    let persisted = serde_json::to_string(
+        &service
+            .validation_results(&prepared.attempt.id, 20)
+            .expect("validation history"),
+    )
+    .expect("serialize history");
+    assert!(!persisted.contains("private-cookie-value"));
+    assert!(!persisted.contains("top-secret-value"));
+}
