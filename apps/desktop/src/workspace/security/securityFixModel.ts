@@ -45,8 +45,10 @@ export function securityFixStage(
 }
 
 export function securityFixDisplayStatus(attempt: SecurityFixAttemptRecord): string {
-  if (attempt.status === "fix_verified" && attempt.retest_state === "FIX_VERIFIED") {
-    return "Fix Verified";
+  if (attempt.status === "fix_verified") {
+    return attempt.retest_state === "FIX_VERIFIED"
+      ? "Fix Verified"
+      : "Verification State Invalid";
   }
   if (attempt.retest_state === "STILL_VULNERABLE") return "Still Vulnerable";
   if (attempt.retest_state === "UNABLE_TO_VERIFY") {
