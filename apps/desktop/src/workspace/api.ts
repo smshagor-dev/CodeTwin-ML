@@ -169,9 +169,6 @@ export const workspaceApi = {
   prepareGuidedSecurityFix(findingId: string) {
     return invoke<GuidedFixPreparation>("prepare_guided_security_fix", { findingId });
   },
-  updateGuidedFindingLifecycle(findingId: string, sessionId: string | null, lifecycle: string) {
-    return invoke<void>("update_guided_finding_lifecycle", { findingId, sessionId, lifecycle });
-  },
   retestGuidedSecurityFinding(findingId: string, primaryAuth: import("./types").WebAuthContext, secondaryAuth: import("./types").WebAuthContext | null) {
     return invoke<GuidedRetestRecord>("retest_guided_security_finding", {
       request: {
