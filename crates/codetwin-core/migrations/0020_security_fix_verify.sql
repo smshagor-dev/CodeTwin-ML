@@ -162,7 +162,7 @@ WHEN OLD.status <> NEW.status AND NOT (
   (OLD.status = 'prepared' AND NEW.status IN ('patch_proposed','rejected')) OR
   (OLD.status = 'patch_proposed' AND NEW.status IN ('approved','rejected')) OR
   (OLD.status = 'rejected' AND NEW.status = 'patch_proposed') OR
-  (OLD.status = 'approved' AND NEW.status = 'applied') OR
+  (OLD.status = 'approved' AND NEW.status IN ('applied','rolled_back')) OR
   (OLD.status = 'applied' AND NEW.status IN (
     'validation_failed','verification_pending','fix_verified',
     'still_vulnerable','unable_to_verify','rolled_back'
@@ -204,14 +204,17 @@ WHEN (
   NEW.retest_floor_rowid IS NOT OLD.retest_floor_rowid
 ) AND NOT (
   OLD.status = 'approved' AND
-  NEW.status = 'applied' AND
+  NEW.status IN ('applied','rolled_back') AND
   NEW.application_run_id IS NOT NULL AND
   EXISTS (
     SELECT 1
     FROM repair_application_runs rar
     WHERE rar.id = NEW.application_run_id
       AND rar.repair_id = NEW.repair_id
-      AND rar.status = 'applied'
+      AND rar.status = CASE
+        WHEN NEW.status = 'applied' THEN 'applied'
+        ELSE 'rolled_back'
+      END
   ) AND
   NEW.retest_floor_rowid = (
     SELECT COALESCE(MAX(gr.rowid), 0)
