@@ -173,17 +173,13 @@ fn build_request(
 ) -> RequestBuilder {
     let mut request = client.request(method, url.clone());
     if let Some(token) = auth
-        .and_then(|auth| auth.bearer_token
-        .as_deref()
-        .as_deref())
+        .and_then(|auth| auth.bearer_token.as_deref())
         .filter(|value| !value.trim().is_empty())
     {
         request = request.bearer_auth(token.trim());
     }
     if let Some(cookie) = auth
-        .and_then(|auth| auth.cookie_header
-        .as_deref()
-        .as_deref())
+        .and_then(|auth| auth.cookie_header.as_deref())
         .filter(|value| !value.trim().is_empty())
     {
         request = request.header("Cookie", cookie.trim());
