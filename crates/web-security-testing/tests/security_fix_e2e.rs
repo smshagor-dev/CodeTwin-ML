@@ -1403,6 +1403,35 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
         })
         .expect("XSS finding");
 
+    database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (?1,?2,?3,'local','standard','none','completed',1,?4,?5)",
+            rusqlite::params![
+                "campaign-regression-session",
+                index.project_id,
+                config.scope.target_url,
+                serde_json::to_string(&config).expect("config json"),
+                finding.scan_id,
+            ],
+        )
+        .expect("campaign regression session");
+    let campaigns = SecurityRemediationCampaignService::new(&database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-regression-session".into(),
+            finding_ids: vec![finding.id.clone()],
+        })
+        .expect("regression campaign");
+    let analyzed = campaigns.analyze(&campaign.id).expect("analyze regression campaign");
+    campaigns
+        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("campaign hash"))
+        .expect("approve regression campaign");
+    campaigns.start(&campaign.id).expect("start regression campaign");
+
     let service = SecurityFixService::new(&database);
     let prepared = service
         .prepare_fix(&finding.id, false)
@@ -1502,6 +1531,17 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
     assert_eq!(final_attempt.retest_state, "REGRESSION_DETECTED");
     assert_eq!(final_attempt.status, "validation_failed");
     assert_ne!(final_attempt.status, "fix_verified");
+
+    let campaign_state = campaigns.sync(&campaign.id).expect("sync regression campaign");
+    assert_eq!(campaign_state.status, "BLOCKED");
+    let member = campaigns
+        .findings(&campaign.id)
+        .expect("regression campaign findings")
+        .into_iter()
+        .next()
+        .expect("regression campaign member");
+    assert_eq!(member.status, "REGRESSION_DETECTED");
+    assert_eq!(campaigns.summary(&campaign.id).expect("summary").verified_fixed, 0);
 }
 
 
