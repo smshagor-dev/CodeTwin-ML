@@ -74,6 +74,7 @@ const campaignFinding = (
   order_reason: "",
   depends_on: [],
   expected_affected: [],
+  retest_floor_rowid: 0,
   active_attempt_id: null,
   skip_reason: null,
   created_at: "",
