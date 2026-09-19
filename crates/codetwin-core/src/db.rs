@@ -516,14 +516,18 @@ mod tests {
         let preserved: i64 = upgraded
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM security_fix_attempts WHERE id='attempt-v20'",
+                "SELECT
+                    (SELECT COUNT(*) FROM web_security_scans WHERE id='scan-v20') +
+                    (SELECT COUNT(*) FROM web_security_findings WHERE id='finding-v20') +
+                    (SELECT COUNT(*) FROM guided_security_sessions WHERE id='session-v20') +
+                    (SELECT COUNT(*) FROM security_fix_attempts WHERE id='attempt-v20')",
                 [],
                 |row| row.get(0),
             )
-            .expect("schema-20 fix attempt preserved");
+            .expect("schema-20 security evidence and fix history preserved");
         assert_eq!(tables, 4);
         assert_eq!(migration, 1);
-        assert_eq!(preserved, 1);
+        assert_eq!(preserved, 4);
         drop(upgraded);
 
         let reopened = Database::open(file.path()).expect("reopen upgraded v21 db");
