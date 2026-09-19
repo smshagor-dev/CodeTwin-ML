@@ -1122,3 +1122,32 @@ fn approved_security_fix_rejects_symlink_substitution_before_application() {
         "symlink substitution must fail before repair application"
     );
 }
+
+
+#[test]
+fn persistence_rejects_invalid_security_fix_lifecycle_transitions() {
+    let fixture = sql_fixture();
+    let service = SecurityFixService::new(&fixture.database);
+    let prepared = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+
+    assert!(fixture
+        .database
+        .connection()
+        .execute(
+            "UPDATE security_fix_attempts SET status='approved' WHERE id=?1",
+            [&prepared.attempt.id],
+        )
+        .is_err(), "prepared must not skip patch review");
+
+    assert!(fixture
+        .database
+        .connection()
+        .execute(
+            "UPDATE security_fix_attempts
+             SET retest_state='FIX_VERIFIED' WHERE id=?1",
+            [&prepared.attempt.id],
+        )
+        .is_err(), "runtime verification state must not be set without the matching verified lifecycle");
+}
