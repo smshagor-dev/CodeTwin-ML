@@ -11,7 +11,7 @@ use reqwest::Method;
 use url::Url;
 
 use crate::{
-    body_hash, fingerprint, response_evidence, response_header, AuthContext, EndpointObservation,
+    body_hash, fingerprint, operator::check_applicable, response_evidence, response_header, AuthContext, EndpointObservation,
     FindingObservation, ObservedResponse, RequestError, ScanConfig, ScanError, ScopePolicy,
     ScopedRequester,
 };
@@ -174,10 +174,10 @@ fn probe_parameter(
     let marker = short_marker(&task.endpoint.url, &task.parameter);
     let mut findings = Vec::new();
 
-    if config.checks.sql_injection {
+    if config.checks.sql_injection && check_applicable(&task.endpoint, &task.parameter, "sql_injection") {
         findings.extend(probe_sqli(requester, policy, task, &endpoint_url, &baseline, config, &marker)?);
     }
-    if config.checks.xss {
+    if config.checks.xss && check_applicable(&task.endpoint, &task.parameter, "xss") {
         if let Some(finding) = probe_xss(requester, policy, task, &endpoint_url, &baseline, &marker)? {
             findings.push(finding);
         }
@@ -197,12 +197,12 @@ fn probe_parameter(
             findings.push(finding);
         }
     }
-    if config.checks.template_command_indicators {
+    if config.checks.template_command_indicators && check_applicable(&task.endpoint, &task.parameter, "template_injection") {
         if let Some(finding) = probe_template_indicator(requester, policy, task, &endpoint_url, &baseline, &marker)? {
             findings.push(finding);
         }
     }
-    if config.checks.api_validation {
+    if config.checks.api_validation && check_applicable(&task.endpoint, &task.parameter, "api_validation") {
         if let Some(finding) = probe_input_validation(requester, policy, task, &endpoint_url, &baseline, &marker)? {
             findings.push(finding);
         }
