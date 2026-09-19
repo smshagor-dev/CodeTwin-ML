@@ -1030,7 +1030,11 @@ mod tests {
         AuthorizedWebSecurityStore, WebEndpointInput, WebEvidenceInput, WebFindingFilter,
         WebFindingInput, WebScanCreate,
     };
-    use crate::Database;
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use crate::{Database, ProjectIndexService};
 
     fn create() -> WebScanCreate {
         WebScanCreate {
@@ -1126,6 +1130,87 @@ mod tests {
             1
         );
         assert_eq!(store.list_scans(None, None, 20).expect("history").len(), 1);
+    }
+
+    #[test]
+    fn interrupted_scans_are_recovered_as_failed() {
+        let database = Database::open_in_memory().expect("database");
+        let store = AuthorizedWebSecurityStore::new(&database);
+        let scan = store.create_scan(&create()).expect("scan");
+        store
+            .update_progress(&scan.id, "running", "active_testing", 4, 9, 1)
+            .expect("progress");
+        assert_eq!(store.recover_interrupted_scans().expect("recover"), 1);
+        let recovered = store.get_scan(&scan.id).expect("scan lookup").expect("scan");
+        assert_eq!(recovered.status, "failed");
+        assert_eq!(recovered.phase, "failed");
+        assert!(recovered.last_error.as_deref().is_some_and(|value| value.contains("restarted")));
+    }
+
+    #[test]
+    fn endpoint_filter_and_first_detection_history_are_persistent() {
+        let database = Database::open_in_memory().expect("database");
+        let store = AuthorizedWebSecurityStore::new(&database);
+        let first_scan = store.create_scan(&create()).expect("first scan");
+        let finding_input = WebFindingInput {
+            fingerprint: "stable-fingerprint".to_string(),
+            category: "xss".to_string(),
+            severity: "medium".to_string(),
+            confidence: "Likely".to_string(),
+            target: first_scan.target_url.clone(),
+            endpoint_url: "http://localhost:8080/search?q=a".to_string(),
+            method: "GET".to_string(),
+            parameter_name: Some("q".to_string()),
+            title: "Reflection".to_string(),
+            description: "bounded evidence".to_string(),
+            reproduction_summary: "repeat marker".to_string(),
+            impact: "context dependent".to_string(),
+            remediation: "encode output".to_string(),
+            references: vec!["CWE-79".to_string()],
+            source: None,
+        };
+        let first = store.record_finding(&first_scan.id, &finding_input).expect("first finding");
+        let second_scan = store.create_scan(&create()).expect("second scan");
+        let second = store.record_finding(&second_scan.id, &finding_input).expect("second finding");
+        assert_eq!(first.first_detected, second.first_detected);
+
+        let filtered = store
+            .list_findings(
+                &second_scan.id,
+                &WebFindingFilter {
+                    endpoint: Some("SEARCH?Q".to_string()),
+                    ..WebFindingFilter::default()
+                },
+                20,
+            )
+            .expect("filtered findings");
+        assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn source_correlation_is_heuristic_and_uses_the_existing_index() {
+        let project = tempdir().expect("project");
+        fs::create_dir_all(project.path().join("src")).expect("src");
+        fs::write(
+            project.path().join("src/search.ts"),
+            "export function search(query: string) { return query; }",
+        )
+        .expect("source");
+
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(project.path())
+            .expect("index project");
+        let correlated = AuthorizedWebSecurityStore::new(&database)
+            .correlate_source(
+                Some(&summary.project_id),
+                "http://localhost:8080/api/search?q=a",
+                Some("query"),
+            )
+            .expect("correlate")
+            .expect("correlation");
+        assert!(correlated.relative_path.ends_with("search.ts"));
+        assert!(correlated.confidence < 1.0);
     }
 
     #[test]

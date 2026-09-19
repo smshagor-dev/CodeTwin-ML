@@ -219,6 +219,65 @@ mod tests {
     }
 
     #[test]
+    fn authorized_web_security_schema_has_bounded_inventory_and_finding_constraints() {
+        let db = Database::open_in_memory().expect("database");
+        let endpoint_columns = db
+            .connection()
+            .prepare("PRAGMA table_info(web_security_endpoints)")
+            .expect("endpoint columns")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("endpoint column rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("endpoint columns");
+        for expected in [
+            "parameter_locations_json",
+            "response_header_names_json",
+            "cookie_names_json",
+        ] {
+            assert!(endpoint_columns.iter().any(|name| name == expected));
+        }
+
+        let index_count: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN (
+                    'idx_web_security_scans_website_created',
+                    'idx_web_security_scans_project_created',
+                    'idx_web_security_scans_status_created',
+                    'idx_web_security_endpoints_scan_method',
+                    'idx_web_security_findings_scan_severity',
+                    'idx_web_security_findings_endpoint',
+                    'idx_web_security_evidence_finding'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("web security indexes");
+        assert_eq!(index_count, 7);
+
+        let scan_sql: String = db
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='web_security_scans'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("scan schema");
+        assert!(scan_sql.contains("authorization_confirmed = 1"));
+
+        let finding_sql: String = db
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='web_security_findings'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("finding schema");
+        assert!(finding_sql.contains("'Potential','Likely','Confirmed'"));
+        assert!(finding_sql.contains("'critical','high','medium','low','informational'"));
+    }
+
+    #[test]
     fn ml_inference_schema_does_not_store_raw_input_text() {
         let db = Database::open_in_memory().expect("open db");
         let mut statement = db
