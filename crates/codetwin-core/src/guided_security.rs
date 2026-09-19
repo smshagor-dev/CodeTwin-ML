@@ -1631,7 +1631,9 @@ fn boundary_for_category(category: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{GuidedPlanItemInput, GuidedSecurityStore, GuidedSessionCreate};
-    use crate::Database;
+    use crate::{
+        AuthorizedWebSecurityStore, Database, WebFindingInput, WebScanCreate,
+    };
 
     fn create() -> GuidedSessionCreate {
         GuidedSessionCreate {
@@ -1710,6 +1712,128 @@ mod tests {
         assert!(store
             .complete_preparation(&session.id, "{}", "{}", "{}", 0, &[item])
             .is_err());
+    }
+
+    fn create_scan_with_finding(
+        database: &Database,
+        endpoint: &str,
+        confidence: &str,
+    ) -> (String, String) {
+        let web = AuthorizedWebSecurityStore::new(database);
+        let scan = web
+            .create_scan(&WebScanCreate {
+                website_id: None,
+                project_id: None,
+                target_url: "http://localhost:3000".into(),
+                authorization_confirmed: true,
+                scope_json: r#"{"target_url":"http://localhost:3000"}"#.into(),
+                config_json: r#"{"scope":{"authorization_confirmed":true}}"#.into(),
+                auth_metadata_json: r#"{"primary":{"cookie_supplied":false,"bearer_supplied":false,"custom_header_names":[]}}"#.into(),
+            })
+            .expect("scan");
+        let finding = web
+            .record_finding(
+                &scan.id,
+                &WebFindingInput {
+                    fingerprint: format!("fingerprint-{endpoint}"),
+                    category: "sql_injection".into(),
+                    severity: "high".into(),
+                    confidence: confidence.into(),
+                    target: "http://localhost:3000".into(),
+                    endpoint_url: endpoint.into(),
+                    method: "GET".into(),
+                    parameter_name: Some("q".into()),
+                    title: "Possible SQL injection".into(),
+                    description: "test observation".into(),
+                    reproduction_summary: "bounded control comparison".into(),
+                    impact: "test impact".into(),
+                    remediation: "parameterize query".into(),
+                    references: vec!["CWE-89".into()],
+                    source: None,
+                },
+            )
+            .expect("finding");
+        (scan.id, finding.id)
+    }
+
+    #[test]
+    fn finding_lifecycle_and_retest_history_are_persistent() {
+        let database = Database::open_in_memory().expect("database");
+        let store = GuidedSecurityStore::new(&database);
+        let (scan_id, finding_id) = create_scan_with_finding(
+            &database,
+            "http://localhost:3000/search?q=hello",
+            "Likely",
+        );
+        let session = store.create_session(&create()).expect("session");
+        store
+            .complete_preparation(&session.id, "{}", "{}", "{}", 1, &[])
+            .expect("prepared");
+        store.approve_session(&session.id).expect("approved");
+        store.link_scan(&session.id, &scan_id).expect("link scan");
+
+        let retest = store
+            .record_retest(
+                &finding_id,
+                Some(&session.id),
+                "retest_passed",
+                "Likely",
+                None,
+                3,
+                r#"{"control":"no anomaly"}"#,
+            )
+            .expect("retest");
+        assert_eq!(retest.status, "retest_passed");
+        assert_eq!(retest.requests_performed, 3);
+        let history = store.list_retests(&finding_id, 10).expect("history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, retest.id);
+
+        let lifecycle: String = database
+            .connection()
+            .query_row(
+                "SELECT state FROM guided_security_finding_lifecycle WHERE finding_id=?1",
+                [&finding_id],
+                |row| row.get(0),
+            )
+            .expect("lifecycle");
+        assert_eq!(lifecycle, "retest_passed");
+    }
+
+    #[test]
+    fn scan_comparison_reports_new_resolved_and_confidence_changes() {
+        let database = Database::open_in_memory().expect("database");
+        let store = GuidedSecurityStore::new(&database);
+        let (previous_scan, _) = create_scan_with_finding(
+            &database,
+            "http://localhost:3000/search?q=hello",
+            "Potential",
+        );
+        let (current_scan, _) = create_scan_with_finding(
+            &database,
+            "http://localhost:3000/search?q=hello",
+            "Confirmed",
+        );
+
+        let comparison = store
+            .compare_scans(None, &previous_scan, &current_scan)
+            .expect("comparison");
+        let value: serde_json::Value =
+            serde_json::from_str(&comparison.comparison_json).expect("comparison json");
+        assert_eq!(
+            value["changed_confidence"]
+                .as_array()
+                .expect("changed confidence")
+                .len(),
+            1
+        );
+        assert_eq!(
+            value["persistent_findings"]
+                .as_array()
+                .expect("persistent")
+                .len(),
+            1
+        );
     }
 
     #[test]
