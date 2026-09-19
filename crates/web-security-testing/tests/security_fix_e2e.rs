@@ -148,6 +148,22 @@ fn handle_source_backed(mut stream: TcpStream, project_root: &Path) {
 </body></html>"#,
         ),
         "/api/search" => handle_search(&mut stream, project_root, &query),
+        "/api/auth-search" => {
+            if authorization.as_deref() == Some("Bearer user-a-token") {
+                handle_search(&mut stream, project_root, &query);
+            } else {
+                respond(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &[("Content-Type", "application/json")],
+                    r#"{"error":"authentication required"}"#,
+                );
+            }
+        }
+        "/api/slow-search" => {
+            thread::sleep(Duration::from_millis(250));
+            handle_search(&mut stream, project_root, &query);
+        }
         "/api/render" => handle_render(&mut stream, project_root, &query, false),
         "/api/render-ambiguous" => handle_render(&mut stream, project_root, &query, true),
         "/api/object" => handle_object(
@@ -1485,4 +1501,117 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
     assert_eq!(final_attempt.retest_state, "REGRESSION_DETECTED");
     assert_eq!(final_attempt.status, "validation_failed");
     assert_ne!(final_attempt.status, "fix_verified");
+}
+
+
+#[test]
+fn targeted_retest_transport_scope_and_auth_failures_never_verify() {
+    let project = tempdir().expect("project");
+    write_project(project.path());
+    let lab = SourceBackedLab::start(project.path().to_path_buf());
+    let base = lab.config();
+
+    let request_for = |endpoint_url: String, category: &str| TargetedRetestRequest {
+        endpoint_url,
+        method: "GET".into(),
+        parameter_name: Some("q".into()),
+        parameter_location: Some("query".into()),
+        category: category.into(),
+    };
+
+    let auth_failure = run_targeted_retest(
+        &base,
+        &AuthContext::default(),
+        None,
+        &request_for(format!("{}/api/auth-search?q=hello", lab.base_url), "sql_injection"),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("auth-failure retest");
+    assert_eq!(auth_failure.baseline_status, Some(401));
+    assert!(!auth_failure.verification_completed);
+    assert!(auth_failure
+        .failure_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("authentication/authorization")));
+
+    let missing_secondary = run_targeted_retest(
+        &base,
+        &primary_auth(),
+        None,
+        &TargetedRetestRequest {
+            endpoint_url: format!("{}/api/object?id=a", lab.base_url),
+            method: "GET".into(),
+            parameter_name: Some("id".into()),
+            parameter_location: Some("query".into()),
+            category: "access_control".into(),
+        },
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("missing-secondary retest");
+    assert!(!missing_secondary.verification_completed);
+    assert!(missing_secondary
+        .failure_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("secondary test identity")));
+
+    let mut timeout_config = base.clone();
+    timeout_config.scope.timeout_ms = 30;
+    let timed_out = run_targeted_retest(
+        &timeout_config,
+        &primary_auth(),
+        None,
+        &request_for(format!("{}/api/slow-search?q=hello", lab.base_url), "sql_injection"),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("timeout retest outcome");
+    assert!(timed_out.requests_performed > 0);
+    assert_eq!(timed_out.responses_observed, 0);
+    assert_eq!(timed_out.baseline_status, None);
+    assert!(!timed_out.verification_completed);
+
+    let mut tls_config = base.clone();
+    tls_config.scope.target_url = lab.base_url.replacen("http://", "https://", 1) + "/";
+    let tls_endpoint = format!(
+        "{}/api/search?q=hello",
+        lab.base_url.replacen("http://", "https://", 1)
+    );
+    let tls_failed = run_targeted_retest(
+        &tls_config,
+        &primary_auth(),
+        None,
+        &request_for(tls_endpoint, "sql_injection"),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("TLS failure retest outcome");
+    assert!(tls_failed.requests_performed > 0);
+    assert_eq!(tls_failed.responses_observed, 0);
+    assert!(!tls_failed.verification_completed);
+
+    let mut refused_config = base.clone();
+    refused_config.scope.target_url = "http://127.0.0.1:9/".into();
+    let refused = run_targeted_retest(
+        &refused_config,
+        &AuthContext::default(),
+        None,
+        &request_for(
+            "http://127.0.0.1:9/api/search?q=hello".into(),
+            "sql_injection",
+        ),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("connection-refused retest outcome");
+    assert!(refused.requests_performed > 0);
+    assert_eq!(refused.responses_observed, 0);
+    assert!(!refused.verification_completed);
+
+    let mut scope_config = base.clone();
+    scope_config.scope.allowed_paths = vec!["/api/search".into()];
+    let scope_rejected = run_targeted_retest(
+        &scope_config,
+        &primary_auth(),
+        None,
+        &request_for(format!("{}/api/render?q=hello", lab.base_url), "xss"),
+        Arc::new(AtomicBool::new(false)),
+    );
+    assert!(matches!(scope_rejected, Err(web_security_testing::ScanError::Scope(_))));
 }
