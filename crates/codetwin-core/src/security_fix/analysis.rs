@@ -555,6 +555,7 @@ impl<'a> SecurityFixService<'a> {
             },
         ];
 
+        let mut relevant_test_selected = false;
         for artifact in artifacts {
             if artifact.artifact_kind != "test_file" {
                 continue;
@@ -573,6 +574,7 @@ impl<'a> SecurityFixService<'a> {
                 || lower.contains("auth")
                 || lower.contains("integration");
             if relevant {
+                relevant_test_selected = true;
                 targeted.push(SelectedValidation {
                     label: format!("{}: {}", artifact.framework, artifact.relative_path),
                     runner_kind: artifact.framework,
@@ -604,6 +606,16 @@ impl<'a> SecurityFixService<'a> {
                     .unwrap_or_default()
             ),
             regression_test_proposal: regression_test_suggestion(&finding.category),
+            regression_generation_status: if relevant_test_selected {
+                "EXISTING_TEST_SELECTED".into()
+            } else {
+                "RECOMMENDATION_ONLY".into()
+            },
+            regression_generation_reason: if relevant_test_selected {
+                "CodeTwin selected existing discovered tests related to the changed module/security boundary instead of inventing a new test location.".into()
+            } else {
+                "No existing test file/framework location could be inferred safely enough for source modification. CodeTwin provides the minimal defensive regression recommendation and records repository execution as unsupported/NOT EXECUTED when the trusted QA backend is unavailable.".into()
+            },
         })
     }
 }
