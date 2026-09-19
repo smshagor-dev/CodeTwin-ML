@@ -1441,6 +1441,62 @@ impl<'a> GuidedSecurityStore<'a> {
         })
     }
 
+    pub fn sync_repair_application_state(
+        &self,
+        repair_id: &str,
+        application_status: &str,
+    ) -> Result<Option<String>, GuidedSecurityError> {
+        let next = match application_status {
+            "applied" => "fix_applied",
+            "rolled_back" => "fix_proposed",
+            _ => return Ok(None),
+        };
+        let link = self
+            .database
+            .connection()
+            .query_row(
+                "SELECT g.finding_id, gl.session_id
+                 FROM guided_security_fix_links g
+                 LEFT JOIN guided_security_finding_lifecycle gl ON gl.finding_id=g.finding_id
+                 WHERE g.repair_id=?1",
+                [repair_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?;
+        let Some((finding_id, session_id)) = link else {
+            return Ok(None);
+        };
+
+        self.database.connection().execute(
+            "UPDATE guided_security_fix_links
+             SET state=?2, updated_at=CURRENT_TIMESTAMP
+             WHERE repair_id=?1",
+            params![repair_id, next],
+        )?;
+        self.set_finding_lifecycle(&finding_id, session_id.as_deref(), next)?;
+        if let Some(session_id) = session_id.as_deref() {
+            let (event_type, message) = if next == "fix_applied" {
+                (
+                    "fix_applied",
+                    "Approved repair application completed; targeted retest is still required.",
+                )
+            } else {
+                (
+                    "fix_rolled_back",
+                    "Repair application was rolled back; finding returned to fix-proposed state.",
+                )
+            };
+            self.append_activity(
+                session_id,
+                event_type,
+                "remediation",
+                message,
+                &json!({"finding_id": finding_id, "repair_id": repair_id}).to_string(),
+            )?;
+        }
+        Ok(Some(finding_id))
+    }
+
     fn finding_snapshot(
         &self,
         scan_id: &str,
@@ -1966,6 +2022,98 @@ mod tests {
             )
             .expect("finding");
         (scan.id, finding.id)
+    }
+
+    #[test]
+    fn repair_application_state_drives_guided_fix_lifecycle() {
+        let database = Database::open_in_memory().expect("database");
+        database
+            .connection()
+            .execute(
+                "INSERT INTO projects(id,root_path,display_name)
+                 VALUES ('project-fix','/tmp/project-fix','Fix Project')",
+                [],
+            )
+            .expect("project");
+        let store = GuidedSecurityStore::new(&database);
+        let (scan_id, finding_id) = create_scan_with_finding(
+            &database,
+            "http://localhost:3000/search?q=hello",
+            "Likely",
+        );
+        database
+            .connection()
+            .execute(
+                "UPDATE web_security_scans SET project_id='project-fix' WHERE id=?1",
+                [&scan_id],
+            )
+            .expect("associate project");
+        let session = store.create_session(&GuidedSessionCreate {
+            project_id: Some("project-fix".into()),
+            ..create()
+        }).expect("session");
+        store
+            .complete_preparation(PreparationCompletion {
+                session_id: &session.id,
+                preflight_json: "{}",
+                application_map_json: "{}",
+                plan_json: "{}",
+                mapping_requests: 1,
+                plan_items: &[],
+            })
+            .expect("prepared");
+        store.approve_session(&session.id).expect("approved");
+        store.link_scan(&session.id, &scan_id).expect("linked");
+
+        database
+            .connection()
+            .execute(
+                "INSERT INTO repair_plans(id,project_id,title,rationale,status)
+                 VALUES ('repair-fix','project-fix','repair','test','approved')",
+                [],
+            )
+            .expect("repair plan");
+        database
+            .connection()
+            .execute(
+                "INSERT INTO guided_security_fix_links(finding_id,repair_id,state)
+                 VALUES (?1,'repair-fix','fix_proposed')",
+                [&finding_id],
+            )
+            .expect("guided fix link");
+        store
+            .set_finding_lifecycle(&finding_id, Some(&session.id), "fix_proposed")
+            .expect("fix proposed");
+
+        assert_eq!(
+            store
+                .sync_repair_application_state("repair-fix", "applied")
+                .expect("sync applied")
+                .as_deref(),
+            Some(finding_id.as_str())
+        );
+        let applied: String = database
+            .connection()
+            .query_row(
+                "SELECT state FROM guided_security_finding_lifecycle WHERE finding_id=?1",
+                [&finding_id],
+                |row| row.get(0),
+            )
+            .expect("applied lifecycle");
+        assert_eq!(applied, "fix_applied");
+
+        store
+            .sync_repair_application_state("repair-fix", "rolled_back")
+            .expect("sync rollback");
+        let rolled_back: String = database
+            .connection()
+            .query_row(
+                "SELECT state FROM guided_security_finding_lifecycle WHERE finding_id=?1",
+                [&finding_id],
+                |row| row.get(0),
+            )
+            .expect("rolled back lifecycle");
+        assert_eq!(rolled_back, "fix_proposed");
     }
 
     #[test]
