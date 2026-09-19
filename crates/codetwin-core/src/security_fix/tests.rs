@@ -161,7 +161,7 @@ fn sql_injection_fix_uses_parameter_binding_and_exact_approval_hash() {
     assert!(!review.unified_diff.contains("quote escaping"));
 
     let approved = service
-        .approve_attempt(&prepared.attempt.id, false)
+        .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false)
         .expect("approve");
     assert_eq!(approved.status, "approved");
     assert_eq!(approved.patch_hash, approved.approved_patch_hash);
@@ -216,7 +216,7 @@ fn dangerous_patch_is_rejected_and_cannot_be_approved() {
     assert_eq!(review.safety.classification, PatchSafetyClass::Rejected);
     assert!(!review.safety.rejected_reasons.is_empty());
     assert!(matches!(
-        service.approve_attempt(&prepared.attempt.id, false),
+        service.approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false),
         Err(SecurityFixError::AttemptNotApprovable(_))
     ));
 }
@@ -592,11 +592,11 @@ fn approved_sql_attempt() -> (Fixture, String, String) {
     let prepared = service
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare approved fixture");
-    service
+    let review = service
         .generate_patch(&prepared.attempt.id)
         .expect("generate approved fixture patch");
     service
-        .approve_attempt(&prepared.attempt.id, false)
+        .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false)
         .expect("approve fixture patch");
     let repair_id = prepared
         .attempt
@@ -687,12 +687,12 @@ fn caution_patch_requires_and_persists_explicit_acknowledgement() {
         .expect("caution review");
     assert_eq!(review.safety.classification, PatchSafetyClass::Caution);
     assert!(matches!(
-        service.approve_attempt(&prepared.attempt.id, false),
+        service.approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false),
         Err(SecurityFixError::CautionAcknowledgementRequired)
     ));
 
     let approved = service
-        .approve_attempt(&prepared.attempt.id, true)
+        .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, true)
         .expect("approve caution");
     assert_eq!(
         approved.approved_safety_class,
@@ -1065,19 +1065,19 @@ fn overlapping_findings_require_fresh_hashes_and_do_not_share_approval() {
     let first = service
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare A");
-    service.generate_patch(&first.attempt.id).expect("patch A");
+    let review_a = service.generate_patch(&first.attempt.id).expect("patch A");
     service
-        .approve_attempt(&first.attempt.id, false)
+        .approve_attempt(&first.attempt.id, &review_a.safety.patch_hash, false)
         .expect("approve A");
 
     let second_fix = service
         .prepare_fix(&second.id, false)
         .expect("prepare B");
-    service
+    let review_b = service
         .generate_patch(&second_fix.attempt.id)
         .expect("patch B");
     service
-        .approve_attempt(&second_fix.attempt.id, false)
+        .approve_attempt(&second_fix.attempt.id, &review_b.safety.patch_hash, false)
         .expect("approve B");
     let second_repair = service
         .assert_application_allowed(&second_fix.attempt.id)
