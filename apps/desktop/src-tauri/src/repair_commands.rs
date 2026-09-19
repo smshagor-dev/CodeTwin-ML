@@ -32,6 +32,21 @@ fn reject_generic_security_fix_plan_mutation(
     Ok(())
 }
 
+pub(crate) fn finalize_security_fix_rollback(
+    database: &Database,
+    attempt_id: &str,
+    repair_id: &str,
+    application: &RepairApplicationRunRecord,
+) -> Result<SecurityFixAttemptRecord, String> {
+    let attempt = SecurityFixService::new(database)
+        .record_rollback(attempt_id, &application.id)
+        .map_err(|error| error.to_string())?;
+    GuidedSecurityStore::new(database)
+        .sync_repair_application_state(repair_id)
+        .map_err(|error| error.to_string())?;
+    Ok(attempt)
+}
+
 pub(crate) fn finalize_security_fix_application(
     database: &Database,
     attempt_id: &str,
@@ -325,18 +340,31 @@ pub(crate) async fn rollback_repair_application(
         let security_fix = SecurityFixService::new(&database)
             .attempt_for_application_run(&run_id)
             .map_err(|error| error.to_string())?;
-        let run = RepairApplicationService::new(&database)
-            .rollback_application(&run_id, backup_root)
-            .map_err(|error| error.to_string())?;
+        let applications = RepairApplicationService::new(&database);
+        let persisted = applications
+            .get_run(&run_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "repair application not found".to_string())?;
+        let run = if persisted.status == "rolled_back" {
+            persisted
+        } else {
+            applications
+                .rollback_application(&run_id, &backup_root)
+                .map_err(|error| error.to_string())?
+        };
         if run.status == "rolled_back" {
             if let Some(attempt) = security_fix.as_ref() {
-                SecurityFixService::new(&database)
-                    .record_rollback(&attempt.id, &run.id)
+                finalize_security_fix_rollback(
+                    &database,
+                    &attempt.id,
+                    &run.repair_id,
+                    &run,
+                )?;
+            } else {
+                GuidedSecurityStore::new(&database)
+                    .sync_repair_application_state(&run.repair_id)
                     .map_err(|error| error.to_string())?;
             }
-            GuidedSecurityStore::new(&database)
-                .sync_repair_application_state(&run.repair_id)
-                .map_err(|error| error.to_string())?;
         }
         Ok(run)
     })
