@@ -23,6 +23,7 @@ const MIGRATION_0017: &str = include_str!("../migrations/0017_dashboard_workspac
 const MIGRATION_0018: &str = include_str!("../migrations/0018_authorized_web_security.sql");
 const MIGRATION_0019: &str = include_str!("../migrations/0019_guided_security_operator.sql");
 const MIGRATION_0020: &str = include_str!("../migrations/0020_security_fix_verify.sql");
+const MIGRATION_0021: &str = include_str!("../migrations/0021_security_remediation_campaigns.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -80,6 +81,7 @@ impl Database {
         self.apply_migration(18, MIGRATION_0018)?;
         self.apply_migration(19, MIGRATION_0019)?;
         self.apply_migration(20, MIGRATION_0020)?;
+        self.apply_migration(21, MIGRATION_0021)?;
         Ok(())
     }
 
@@ -116,12 +118,14 @@ mod tests {
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites','web_security_scans','web_security_endpoints','web_security_findings','web_security_evidence','guided_security_sessions','guided_security_plan_items','guided_security_activity','guided_security_source_candidates','guided_security_finding_lifecycle','guided_security_retests','guided_security_comparisons','guided_security_fix_links','security_fix_attempts','security_fix_validation_results','security_fix_events')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites','web_security_scans','web_security_endpoints','web_security_findings','web_security_evidence','guided_security_sessions','guided_security_plan_items','guided_security_activity','guided_security_source_candidates','guided_security_finding_lifecycle','guided_security_retests','guided_security_comparisons','guided_security_fix_links','security_fix_attempts','security_fix_validation_results','security_fix_events',
+                              'security_remediation_campaigns','security_remediation_campaign_findings',
+                              'security_remediation_campaign_relationships','security_remediation_campaign_events')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 46);
+        assert_eq!(count, 50);
     }
 
     #[test]
@@ -131,8 +135,8 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 20);
-        for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20] {
+        assert_eq!(count, 21);
+        for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] {
             let applied: i64 = db
                 .connection()
                 .query_row(
@@ -152,7 +156,11 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE security_fix_events;
+                    "DROP TABLE security_remediation_campaign_events;
+                     DROP TABLE security_remediation_campaign_relationships;
+                     DROP TABLE security_remediation_campaign_findings;
+                     DROP TABLE security_remediation_campaigns;
+                     DROP TABLE security_fix_events;
                      DROP TABLE security_fix_validation_results;
                      DROP TABLE security_fix_attempts;
                      DROP TABLE guided_security_fix_links;
@@ -168,7 +176,7 @@ mod tests {
                      DROP TABLE web_security_endpoints;
                      DROP TABLE web_security_scans;
                      DROP TABLE websites;
-                     DELETE FROM schema_migrations WHERE version IN (17,18,19,20);",
+                     DELETE FROM schema_migrations WHERE version IN (17,18,19,20,21);",
                 )
                 .expect("rewind dashboard and later migrations");
         }
@@ -212,7 +220,11 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE security_fix_events;
+                    "DROP TABLE security_remediation_campaign_events;
+                     DROP TABLE security_remediation_campaign_relationships;
+                     DROP TABLE security_remediation_campaign_findings;
+                     DROP TABLE security_remediation_campaigns;
+                     DROP TABLE security_fix_events;
                      DROP TABLE security_fix_validation_results;
                      DROP TABLE security_fix_attempts;
                      DROP TABLE guided_security_fix_links;
@@ -227,7 +239,7 @@ mod tests {
                      DROP TABLE web_security_findings;
                      DROP TABLE web_security_endpoints;
                      DROP TABLE web_security_scans;
-                     DELETE FROM schema_migrations WHERE version IN (18,19,20);",
+                     DELETE FROM schema_migrations WHERE version IN (18,19,20,21);",
                 )
                 .expect("rewind web security and guided migrations");
         }
@@ -255,7 +267,11 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE security_fix_events;
+                    "DROP TABLE security_remediation_campaign_events;
+                     DROP TABLE security_remediation_campaign_relationships;
+                     DROP TABLE security_remediation_campaign_findings;
+                     DROP TABLE security_remediation_campaigns;
+                     DROP TABLE security_fix_events;
                      DROP TABLE security_fix_validation_results;
                      DROP TABLE security_fix_attempts;
                      DROP TABLE guided_security_fix_links;
@@ -266,7 +282,7 @@ mod tests {
                      DROP TABLE guided_security_activity;
                      DROP TABLE guided_security_plan_items;
                      DROP TABLE guided_security_sessions;
-                     DELETE FROM schema_migrations WHERE version IN (19,20);",
+                     DELETE FROM schema_migrations WHERE version IN (19,20,21);",
                 )
                 .expect("rewind guided security migration");
         }
@@ -336,10 +352,14 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE security_fix_events;
+                    "DROP TABLE security_remediation_campaign_events;
+                     DROP TABLE security_remediation_campaign_relationships;
+                     DROP TABLE security_remediation_campaign_findings;
+                     DROP TABLE security_remediation_campaigns;
+                     DROP TABLE security_fix_events;
                      DROP TABLE security_fix_validation_results;
                      DROP TABLE security_fix_attempts;
-                     DELETE FROM schema_migrations WHERE version = 20;",
+                     DELETE FROM schema_migrations WHERE version IN (20,21);",
                 )
                 .expect("rewind security fix migration");
             db.connection()
@@ -420,6 +440,101 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("migration 20 after reopen");
+        assert_eq!(migration_after_reopen, 1);
+    }
+
+    #[test]
+    fn upgrades_existing_v20_database_with_remediation_campaign_schema_and_preserves_fix_history() {
+        let file = NamedTempFile::new().expect("temp db");
+        {
+            let db = Database::open(file.path()).expect("create current db");
+            db.connection()
+                .execute_batch(
+                    "INSERT INTO projects(id,root_path,display_name)
+                     VALUES ('project-v20','/tmp/codetwin-v20','v20');
+                     INSERT INTO web_security_scans(
+                        id,project_id,target_url,status,phase,authorization_confirmed,
+                        scope_json,config_json,auth_metadata_json
+                     ) VALUES (
+                        'scan-v20','project-v20','http://localhost:3000','completed','completed',
+                        1,'{}','{}','{}'
+                     );
+                     INSERT INTO web_security_findings(
+                        id,scan_id,fingerprint,category,severity,confidence,target,
+                        endpoint_url,method,title,description,reproduction_summary,
+                        impact,remediation,references_json
+                     ) VALUES (
+                        'finding-v20','scan-v20','fp-v20','sql_injection','high','Likely',
+                        'http://localhost:3000','http://localhost:3000/search?q=a','GET',
+                        'v20 finding','fixture','fixture','fixture','parameterize','[]'
+                     );
+                     INSERT INTO guided_security_sessions(
+                        id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                        authorization_confirmed,config_json,scan_id
+                     ) VALUES (
+                        'session-v20','project-v20','http://localhost:3000','local','standard',
+                        'none','completed',1,'{}','scan-v20'
+                     );
+                     INSERT INTO security_fix_attempts(
+                        id,finding_id,session_id,project_id,attempt_number,eligibility,
+                        category,status,root_cause_json,strategy_json,test_plan_json
+                     ) VALUES (
+                        'attempt-v20','finding-v20','session-v20','project-v20',1,
+                        'INSUFFICIENT_EVIDENCE','sql_injection','prepared','[]','{}','{}'
+                     );
+                     DROP TABLE security_remediation_campaign_events;
+                     DROP TABLE security_remediation_campaign_relationships;
+                     DROP TABLE security_remediation_campaign_findings;
+                     DROP TABLE security_remediation_campaigns;
+                     DELETE FROM schema_migrations WHERE version=21;",
+                )
+                .expect("rewind campaign migration while preserving schema-20 data");
+        }
+
+        let upgraded = Database::open(file.path()).expect("upgrade v20 db");
+        let tables: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (
+                    'security_remediation_campaigns',
+                    'security_remediation_campaign_findings',
+                    'security_remediation_campaign_relationships',
+                    'security_remediation_campaign_events'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("campaign tables");
+        let migration: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=21",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration 21");
+        let preserved: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM security_fix_attempts WHERE id='attempt-v20'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("schema-20 fix attempt preserved");
+        assert_eq!(tables, 4);
+        assert_eq!(migration, 1);
+        assert_eq!(preserved, 1);
+        drop(upgraded);
+
+        let reopened = Database::open(file.path()).expect("reopen upgraded v21 db");
+        let migration_after_reopen: i64 = reopened
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=21",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration 21 after reopen");
         assert_eq!(migration_after_reopen, 1);
     }
 
