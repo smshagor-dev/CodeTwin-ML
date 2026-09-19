@@ -177,11 +177,11 @@ fn source_change_after_approval_is_rejected() {
     let prepared = service
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare");
-    service
+    let review = service
         .generate_patch(&prepared.attempt.id)
         .expect("patch");
     service
-        .approve_attempt(&prepared.attempt.id, false)
+        .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false)
         .expect("approve");
 
     fs::write(
