@@ -11,6 +11,13 @@ import type {
   WebFindingRecord,
 } from "../types";
 import { StatusBadge, formatDate } from "../ui";
+import {
+  canApproveAndApplySecurityFix,
+  isAttemptLimitError,
+  securityFixActions,
+  securityFixDisplayStatus,
+  securityFixRetestExplanation,
+} from "./securityFixModel";
 
 type SecurityFixWorkflowProps = {
   finding: WebFindingRecord;
@@ -107,7 +114,7 @@ export function SecurityFixWorkflow({
     } catch (value) {
       const message = String(value);
       setError(message);
-      if (message.toLowerCase().includes("attempt limit reached")) {
+      if (isAttemptLimitError(message)) {
         setLimitReached(true);
       }
     } finally {
@@ -259,19 +266,9 @@ export function SecurityFixWorkflow({
     attempt?.eligibility === "MANUAL_REMEDIATION"
     || attempt?.eligibility === "INSUFFICIENT_EVIDENCE";
   const canPatch = Boolean(attempt?.repair_id) && !manualOnly;
-  const canRetest = Boolean(
-    attempt
-    && ["applied", "verification_pending", "validation_failed", "still_vulnerable", "unable_to_verify"]
-      .includes(attempt.status),
-  );
-  const shouldOfferRollback = Boolean(
-    attempt?.application_run_id
-    && (
-      attempt.status === "validation_failed"
-      || attempt.status === "still_vulnerable"
-      || attempt.retest_state === "REGRESSION_DETECTED"
-    ),
-  );
+  const actions = securityFixActions(attempt);
+  const canRetest = actions.retest;
+  const shouldOfferRollback = actions.rollback;
 
   return (
     <section className="ws-security-fix">
@@ -320,8 +317,8 @@ export function SecurityFixWorkflow({
             </article>
             <article>
               <span>Runtime status</span>
-              <strong>{fixStatusLabel(attempt)}</strong>
-              <small>{retestExplanation(attempt)}</small>
+              <strong>{securityFixDisplayStatus(attempt)}</strong>
+              <small>{securityFixRetestExplanation(attempt)}</small>
             </article>
           </div>
 
@@ -518,11 +515,12 @@ export function SecurityFixWorkflow({
               <div className="ws-button-row">
                 <button
                   className="ws-button ws-button-primary"
-                  disabled={
-                    Boolean(busy)
-                    || review.safety.classification === "REJECTED"
-                    || (review.safety.classification === "CAUTION" && !acceptCaution)
-                  }
+                  disabled={!canApproveAndApplySecurityFix(
+                    attempt,
+                    review,
+                    acceptCaution,
+                    Boolean(busy),
+                  )}
                   onClick={() => void approveAndApply()}
                 >
                   {busy ?? "Approve & Apply"}
@@ -668,7 +666,7 @@ export function SecurityFixWorkflow({
                 {history.map((item) => (
                   <button key={item.id} onClick={() => void refreshAttempt(item.id)}>
                     <strong>Attempt #{item.attempt_number}</strong>
-                    <span>{fixStatusLabel(item)}</span>
+                    <span>{securityFixDisplayStatus(item)}</span>
                     <small>{formatDate(item.updated_at)}</small>
                   </button>
                 ))}
@@ -685,39 +683,7 @@ export function SecurityFixWorkflow({
 }
 
 function FixStateBadge({ attempt }: { attempt: SecurityFixAttemptRecord }) {
-  const status = attempt.status === "fix_verified"
-    ? "Fix Verified"
-    : attempt.status === "verification_pending" || attempt.status === "unable_to_verify"
-      ? "Verification Pending"
-      : attempt.status.replaceAll("_", " ");
-  return <StatusBadge status={status}/>;
-}
-
-function fixStatusLabel(attempt: SecurityFixAttemptRecord): string {
-  if (attempt.status === "fix_verified") return "Fix Verified";
-  if (attempt.retest_state === "STILL_VULNERABLE") return "Still Vulnerable";
-  if (attempt.retest_state === "UNABLE_TO_VERIFY") return "Applied — Verification Pending";
-  if (attempt.retest_state === "REGRESSION_DETECTED") return "Regression Detected";
-  if (attempt.status === "verification_pending" || attempt.status === "applied") {
-    return "Applied — Verification Pending";
-  }
-  return label(attempt.status);
-}
-
-function retestExplanation(attempt: SecurityFixAttemptRecord): string {
-  if (attempt.retest_state === "FIX_VERIFIED") {
-    return "The original targeted runtime behavior no longer reproduced.";
-  }
-  if (attempt.retest_state === "STILL_VULNERABLE") {
-    return "The original targeted runtime behavior still reproduced.";
-  }
-  if (attempt.retest_state === "UNABLE_TO_VERIFY") {
-    return "The targeted runtime retest could not complete safely.";
-  }
-  if (attempt.retest_state === "REGRESSION_DETECTED") {
-    return "Runtime behavior improved, but repository validation indicates a possible regression.";
-  }
-  return "A patch is never labeled fixed until the targeted runtime retest passes.";
+  return <StatusBadge status={securityFixDisplayStatus(attempt)}/>;
 }
 
 function label(value: string): string {
