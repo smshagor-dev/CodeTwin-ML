@@ -104,6 +104,73 @@ impl<'a> SecurityFixService<'a> {
             .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))
     }
 
+    pub fn record_application_recovery_rollback(
+        &self,
+        attempt_id: &str,
+        application_run_id: &str,
+    ) -> Result<SecurityFixAttemptRecord, SecurityFixError> {
+        let attempt = self
+            .get_attempt(attempt_id)?
+            .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))?;
+        if attempt.status != "approved" || attempt.application_run_id.is_some() {
+            return Err(SecurityFixError::State(
+                "application recovery rollback requires an approved attempt without an applied-run link"
+                    .into(),
+            ));
+        }
+
+        let run: Option<(String, String)> = self
+            .database
+            .connection()
+            .query_row(
+                "SELECT repair_id,status FROM repair_application_runs WHERE id=?1",
+                [application_run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((repair_id, status)) = run else {
+            return Err(SecurityFixError::State(
+                "repair application run not found".into(),
+            ));
+        };
+        if attempt.repair_id.as_deref() != Some(repair_id.as_str()) {
+            return Err(SecurityFixError::State(
+                "recovery rollback run does not belong to this fix attempt".into(),
+            ));
+        }
+        if status != "rolled_back" {
+            return Err(SecurityFixError::State(format!(
+                "recovery rollback requires rolled_back application status; current status is {status}"
+            )));
+        }
+
+        let retest_floor_rowid: i64 = self.database.connection().query_row(
+            "SELECT COALESCE(MAX(rowid),0)
+             FROM guided_security_retests
+             WHERE finding_id=?1",
+            [&attempt.finding_id],
+            |row| row.get(0),
+        )?;
+        self.database.connection().execute(
+            "UPDATE security_fix_attempts
+             SET status='rolled_back',application_run_id=?2,retest_floor_rowid=?3,
+                 updated_at=CURRENT_TIMESTAMP WHERE id=?1",
+            params![attempt_id, application_run_id, retest_floor_rowid],
+        )?;
+        self.append_event(
+            attempt_id,
+            "application_bookkeeping_rollback",
+            "The patch application completed, but security bookkeeping did not. CodeTwin automatically restored the pre-fix file state and retained the repair application audit record.",
+            &json!({
+                "application_run_id": application_run_id,
+                "retest_floor_rowid": retest_floor_rowid,
+            })
+            .to_string(),
+        )?;
+        self.get_attempt(attempt_id)?
+            .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))
+    }
+
     pub fn add_validation_result(
         &self,
         attempt_id: &str,
