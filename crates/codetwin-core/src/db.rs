@@ -21,6 +21,7 @@ const MIGRATION_0015: &str = include_str!("../migrations/0015_qa_execution_manif
 const MIGRATION_0016: &str = include_str!("../migrations/0016_qa_external_read_provenance.sql");
 const MIGRATION_0017: &str = include_str!("../migrations/0017_dashboard_workspace.sql");
 const MIGRATION_0018: &str = include_str!("../migrations/0018_authorized_web_security.sql");
+const MIGRATION_0019: &str = include_str!("../migrations/0019_guided_security_operator.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -76,6 +77,7 @@ impl Database {
         self.apply_migration(16, MIGRATION_0016)?;
         self.apply_migration(17, MIGRATION_0017)?;
         self.apply_migration(18, MIGRATION_0018)?;
+        self.apply_migration(19, MIGRATION_0019)?;
         Ok(())
     }
 
@@ -112,12 +114,12 @@ mod tests {
         let count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites','web_security_scans','web_security_endpoints','web_security_findings','web_security_evidence')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites','web_security_scans','web_security_endpoints','web_security_findings','web_security_evidence','guided_security_sessions','guided_security_plan_items','guided_security_activity','guided_security_source_candidates','guided_security_finding_lifecycle','guided_security_retests','guided_security_comparisons','guided_security_fix_links')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 35);
+        assert_eq!(count, 43);
     }
 
     #[test]
@@ -127,8 +129,8 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 18);
-        for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18] {
+        assert_eq!(count, 19);
+        for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19] {
             let applied: i64 = db
                 .connection()
                 .query_row(
@@ -215,6 +217,51 @@ mod tests {
             |row| row.get(0),
         ).expect("migration 18");
         assert_eq!(tables, 4);
+        assert_eq!(migration, 1);
+    }
+
+    #[test]
+    fn upgrades_existing_v18_database_with_guided_security_operator_schema() {
+        let file = NamedTempFile::new().expect("temp db");
+        {
+            let db = Database::open(file.path()).expect("create current db");
+            db.connection()
+                .execute_batch(
+                    "DROP TABLE guided_security_fix_links;
+                     DROP TABLE guided_security_comparisons;
+                     DROP TABLE guided_security_retests;
+                     DROP TABLE guided_security_finding_lifecycle;
+                     DROP TABLE guided_security_source_candidates;
+                     DROP TABLE guided_security_activity;
+                     DROP TABLE guided_security_plan_items;
+                     DROP TABLE guided_security_sessions;
+                     DELETE FROM schema_migrations WHERE version = 19;",
+                )
+                .expect("rewind guided security migration");
+        }
+
+        let upgraded = Database::open(file.path()).expect("upgrade v18 db");
+        let tables: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
+                 AND name IN ('guided_security_sessions','guided_security_plan_items',
+                              'guided_security_activity','guided_security_source_candidates',
+                              'guided_security_finding_lifecycle','guided_security_retests',
+                              'guided_security_comparisons','guided_security_fix_links')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("guided security tables");
+        let migration: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 19",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration 19");
+        assert_eq!(tables, 8);
         assert_eq!(migration, 1);
     }
 
