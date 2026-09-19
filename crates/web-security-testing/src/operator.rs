@@ -117,6 +117,18 @@ pub struct PlannedOperation {
     pub skip_reason: Option<String>,
 }
 
+#[derive(Debug)]
+struct OperationSpec<'a> {
+    endpoint: &'a EndpointObservation,
+    parameter_name: Option<&'a str>,
+    category: &'a str,
+    risk: OperationRisk,
+    selected: bool,
+    reason: &'a str,
+    skip_reason: Option<&'a str>,
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GuidedTestPlan {
     pub endpoint_count: usize,
@@ -288,13 +300,15 @@ pub fn build_test_plan(
     for endpoint in endpoints {
         push_operation(
             &mut operations,
-            endpoint,
-            None,
-            "passive_analysis",
-            OperationRisk::SAFE,
-            true,
-            "Review response headers, cookies, cache behavior and passive security signals.",
-            None,
+            OperationSpec {
+                endpoint,
+                parameter_name: None,
+                category: "passive_analysis",
+                risk: OperationRisk::SAFE,
+                selected: true,
+                reason: "Review response headers, cookies, cache behavior and passive security signals.",
+                skip_reason: None,
+            },
         );
 
         if endpoint.source == "form"
@@ -303,26 +317,30 @@ pub fn build_test_plan(
         {
             push_operation(
                 &mut operations,
-                endpoint,
-                None,
-                "csrf",
-                OperationRisk::SAFE,
-                true,
-                "Inspect the discovered state-changing form for anti-CSRF controls without submitting it.",
-                None,
+                OperationSpec {
+                    endpoint,
+                    parameter_name: None,
+                    category: "csrf",
+                    risk: OperationRisk::SAFE,
+                    selected: true,
+                    reason: "Inspect the discovered state-changing form for anti-CSRF controls without submitting it.",
+                    skip_reason: None,
+                },
             );
         }
 
         if endpoint.method == "DELETE" {
             push_operation(
                 &mut operations,
-                endpoint,
-                None,
-                "state_changing_request",
-                OperationRisk::RESTRICTED,
-                false,
-                "DELETE may change persistent state.",
-                Some("Restricted destructive/state-changing operation; Developer Mode does not execute it automatically."),
+                OperationSpec {
+                    endpoint,
+                    parameter_name: None,
+                    category: "state_changing_request",
+                    risk: OperationRisk::RESTRICTED,
+                    selected: false,
+                    reason: "DELETE may change persistent state.",
+                    skip_reason: Some("Restricted destructive/state-changing operation; Developer Mode does not execute it automatically."),
+                },
             );
         }
 
@@ -337,65 +355,75 @@ pub fn build_test_plan(
             if config.checks.sql_injection && injection_candidate(endpoint, location) {
                 push_operation(
                     &mut operations,
-                    endpoint,
-                    Some(parameter),
-                    "sql_injection",
-                    risk.clone(),
-                    selected,
-                    "Compare baseline and bounded SQL parser/boolean behavior for an input-bearing endpoint.",
-                    skip_reason.as_deref(),
+                    OperationSpec {
+                        endpoint,
+                        parameter_name: Some(parameter),
+                        category: "sql_injection",
+                        risk,
+                        selected,
+                        reason: "Compare baseline and bounded SQL parser/boolean behavior for an input-bearing endpoint.",
+                        skip_reason: skip_reason.as_deref(),
+                    },
                 );
             }
 
             if config.checks.xss && xss_candidate(endpoint, location) {
                 push_operation(
                     &mut operations,
-                    endpoint,
-                    Some(parameter),
-                    "xss",
-                    risk.clone(),
-                    selected,
-                    "Check whether a harmless marker is reflected and classify its HTML context.",
-                    skip_reason.as_deref(),
+                    OperationSpec {
+                        endpoint,
+                        parameter_name: Some(parameter),
+                        category: "xss",
+                        risk,
+                        selected,
+                        reason: "Check whether a harmless marker is reflected and classify its HTML context.",
+                        skip_reason: skip_reason.as_deref(),
+                    },
                 );
             }
 
             if config.checks.open_redirect && looks_redirect_parameter(parameter) {
                 push_operation(
                     &mut operations,
-                    endpoint,
-                    Some(parameter),
-                    "open_redirect",
-                    risk.clone(),
-                    selected,
-                    "Parameter name indicates a redirect destination; verify only with a harmless external marker.",
-                    skip_reason.as_deref(),
+                    OperationSpec {
+                        endpoint,
+                        parameter_name: Some(parameter),
+                        category: "open_redirect",
+                        risk,
+                        selected,
+                        reason: "Parameter name indicates a redirect destination; verify only with a harmless external marker.",
+                        skip_reason: skip_reason.as_deref(),
+                    },
                 );
             }
 
             if config.checks.path_traversal && looks_path_parameter(parameter) {
                 push_operation(
                     &mut operations,
-                    endpoint,
-                    Some(parameter),
-                    "path_traversal",
-                    risk.clone(),
-                    selected,
-                    "Path-like parameter is eligible for a nonexistent-file traversal indicator.",
-                    skip_reason.as_deref(),
+                    OperationSpec {
+                        endpoint,
+                        parameter_name: Some(parameter),
+                        category: "path_traversal",
+                        risk,
+                        selected,
+                        reason: "Path-like parameter is eligible for a nonexistent-file traversal indicator.",
+                        skip_reason: skip_reason.as_deref(),
+                    },
                 );
             }
 
             if config.checks.ssrf_indicators && looks_url_parameter(parameter) {
                 push_operation(
                     &mut operations,
-                    endpoint,
-                    Some(parameter),
-                    "ssrf",
-                    risk.clone(),
-                    selected,
-                    "URL-like parameter is eligible for a reserved TEST-NET outbound-request indicator.",
-                    skip_reason.as_deref(),
+                    OperationSpec {
+                        endpoint,
+                        parameter_name: Some(parameter),
+                        category: "ssrf",
+                        risk,
+                        selected,
+                        reason: "URL-like parameter is eligible for a reserved TEST-NET outbound-request indicator.",
+                        skip_reason: skip_reason.as_deref(),
+                    },
                 );
             }
 
@@ -404,13 +432,15 @@ pub fn build_test_plan(
             {
                 push_operation(
                     &mut operations,
-                    endpoint,
-                    Some(parameter),
-                    "template_injection",
-                    risk.clone(),
-                    selected,
-                    "Use an arithmetic-only template marker; command execution is not attempted.",
-                    skip_reason.as_deref(),
+                    OperationSpec {
+                        endpoint,
+                        parameter_name: Some(parameter),
+                        category: "template_injection",
+                        risk,
+                        selected,
+                        reason: "Use an arithmetic-only template marker; command execution is not attempted.",
+                        skip_reason: skip_reason.as_deref(),
+                    },
                 );
             }
 
@@ -424,13 +454,15 @@ pub fn build_test_plan(
             {
                 push_operation(
                     &mut operations,
-                    endpoint,
-                    Some(parameter),
-                    "api_validation",
-                    risk.clone(),
-                    selected,
-                    "Send bounded malformed input to an API-described input and compare deterministic error handling.",
-                    skip_reason.as_deref(),
+                    OperationSpec {
+                        endpoint,
+                        parameter_name: Some(parameter),
+                        category: "api_validation",
+                        risk,
+                        selected,
+                        reason: "Send bounded malformed input to an API-described input and compare deterministic error handling.",
+                        skip_reason: skip_reason.as_deref(),
+                    },
                 );
             }
         }
@@ -438,13 +470,15 @@ pub fn build_test_plan(
         if endpoint.method == "GET" && (config.checks.cors || config.checks.method_misconfiguration) {
             push_operation(
                 &mut operations,
-                endpoint,
-                None,
-                "http_policy",
-                OperationRisk::SAFE,
-                true,
-                "Inspect a bounded OPTIONS response for CORS and advertised HTTP method policy.",
-                None,
+                OperationSpec {
+                    endpoint,
+                    parameter_name: None,
+                    category: "http_policy",
+                    risk: OperationRisk::SAFE,
+                    selected: true,
+                    reason: "Inspect a bounded OPTIONS response for CORS and advertised HTTP method policy.",
+                    skip_reason: None,
+                },
             );
         }
 
@@ -452,13 +486,15 @@ pub fn build_test_plan(
             let selected = !matches!(environment, SecurityEnvironment::AuthorizedProduction);
             push_operation(
                 &mut operations,
-                endpoint,
-                None,
-                "access_control",
-                OperationRisk::CAUTION,
-                selected,
-                "Compare the same explicitly encountered object request using the two supplied test identities.",
-                (!selected).then_some("Authorization comparison is disabled by default for authorized production in Developer Mode."),
+                OperationSpec {
+                    endpoint,
+                    parameter_name: None,
+                    category: "access_control",
+                    risk: OperationRisk::CAUTION,
+                    selected,
+                    reason: "Compare the same explicitly encountered object request using the two supplied test identities.",
+                    skip_reason: (!selected).then_some("Authorization comparison is disabled by default for authorized production in Developer Mode."),
+                },
             );
         }
     }
@@ -476,14 +512,16 @@ pub fn build_test_plan(
                 }
                 push_operation(
                     &mut operations,
-                    endpoint,
-                    Some(parameter),
-                    "sql_timing_indicator",
-                    OperationRisk::CAUTION,
-                    !matches!(environment, SecurityEnvironment::AuthorizedProduction),
-                    "Optional bounded repeated timing control for an already eligible SQL input.",
-                    matches!(environment, SecurityEnvironment::AuthorizedProduction)
-                        .then_some("Timing probes are disabled by default for authorized production in Developer Mode."),
+                    OperationSpec {
+                        endpoint,
+                        parameter_name: Some(parameter),
+                        category: "sql_timing_indicator",
+                        risk: OperationRisk::CAUTION,
+                        selected: !matches!(environment, SecurityEnvironment::AuthorizedProduction),
+                        reason: "Optional bounded repeated timing control for an already eligible SQL input.",
+                        skip_reason: matches!(environment, SecurityEnvironment::AuthorizedProduction)
+                            .then_some("Timing probes are disabled by default for authorized production in Developer Mode."),
+                    },
                 );
             }
         }
@@ -643,32 +681,23 @@ fn xss_candidate(endpoint: &EndpointObservation, location: &str) -> bool {
         || endpoint.method == "GET"
 }
 
-fn push_operation(
-    output: &mut Vec<PlannedOperation>,
-    endpoint: &EndpointObservation,
-    parameter_name: Option<&str>,
-    category: &str,
-    risk: OperationRisk,
-    selected: bool,
-    reason: &str,
-    skip_reason: Option<&str>,
-) {
-    let parameter = parameter_name.unwrap_or("");
+fn push_operation(output: &mut Vec<PlannedOperation>, spec: OperationSpec<'_>) {
+    let parameter = spec.parameter_name.unwrap_or("");
     output.push(PlannedOperation {
         operation_key: fingerprint(&[
-            &endpoint.url,
-            &endpoint.method,
+            &spec.endpoint.url,
+            &spec.endpoint.method,
             parameter,
-            category,
+            spec.category,
         ]),
-        endpoint_url: endpoint.url.clone(),
-        method: endpoint.method.clone(),
-        parameter_name: parameter_name.map(str::to_string),
-        category: category.to_string(),
-        risk,
-        selected,
-        reason: reason.to_string(),
-        skip_reason: skip_reason.map(str::to_string),
+        endpoint_url: spec.endpoint.url.clone(),
+        method: spec.endpoint.method.clone(),
+        parameter_name: spec.parameter_name.map(str::to_string),
+        category: spec.category.to_string(),
+        risk: spec.risk,
+        selected: spec.selected,
+        reason: spec.reason.to_string(),
+        skip_reason: spec.skip_reason.map(str::to_string),
     });
 }
 
