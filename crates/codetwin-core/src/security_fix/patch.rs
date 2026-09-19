@@ -125,6 +125,7 @@ impl<'a> SecurityFixService<'a> {
     pub fn approve_attempt(
         &self,
         attempt_id: &str,
+        expected_patch_hash: &str,
         accept_caution: bool,
     ) -> Result<SecurityFixAttemptRecord, SecurityFixError> {
         let attempt = self
@@ -134,6 +135,13 @@ impl<'a> SecurityFixService<'a> {
             return Err(SecurityFixError::AttemptNotApprovable(attempt.status));
         }
         let review = self.review_attempt(attempt_id)?;
+        if expected_patch_hash.len() != 64
+            || !expected_patch_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || review.safety.patch_hash != expected_patch_hash
+            || attempt.patch_hash.as_deref() != Some(expected_patch_hash)
+        {
+            return Err(SecurityFixError::StaleApproval);
+        }
         match review.safety.classification {
             PatchSafetyClass::Rejected => return Err(SecurityFixError::PatchRejected),
             PatchSafetyClass::Caution if !accept_caution => {
