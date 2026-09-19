@@ -5,6 +5,7 @@ use tempfile::{tempdir, TempDir};
 use super::*;
 use crate::{
     AuthorizedWebSecurityStore, GuidedRetestInput, GuidedSecurityStore, ProjectIndexService,
+    QaDiscoveryService,
     RepairApplicationService, WebEvidenceInput, WebFindingInput, WebScanCreate,
 };
 
@@ -1608,4 +1609,63 @@ fn patch_safety_rejects_project_root_escape_path() {
         ),
         Err(SecurityFixError::StaleApproval)
     ));
+}
+
+
+#[test]
+fn regression_test_plan_uses_recommendation_only_when_no_safe_test_location_is_known() {
+    let fixture = sql_fixture();
+    let prepared = SecurityFixService::new(&fixture.database)
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+    assert_eq!(
+        prepared.test_plan.regression_generation_status,
+        "RECOMMENDATION_ONLY"
+    );
+    assert!(prepared
+        .test_plan
+        .regression_generation_reason
+        .contains("No existing test file/framework location"));
+    assert!(prepared
+        .test_plan
+        .targeted
+        .iter()
+        .all(|item| !item.repository_command_execution_required));
+}
+
+#[test]
+fn regression_test_plan_selects_relevant_existing_test_without_inventing_new_file() {
+    let fixture = sql_fixture();
+    let test_path = fixture
+        ._root
+        .path()
+        .join("tests/searchController.test.ts");
+    fs::create_dir_all(test_path.parent().expect("test parent")).expect("test dir");
+    fs::write(
+        &test_path,
+        "import { describe, expect, it } from 'vitest';\n\
+         describe('search', () => { it('keeps SQL-shaped input as data', () => expect(true).toBe(true)); });\n",
+    )
+    .expect("test file");
+    let discovery = QaDiscoveryService::new(&fixture.database)
+        .discover_project(&fixture.project_id)
+        .expect("QA discovery");
+    assert!(discovery.test_files >= 1);
+
+    let prepared = SecurityFixService::new(&fixture.database)
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+    assert_eq!(
+        prepared.test_plan.regression_generation_status,
+        "EXISTING_TEST_SELECTED"
+    );
+    assert!(prepared
+        .test_plan
+        .targeted
+        .iter()
+        .any(|item| {
+            item.repository_command_execution_required
+                && item.runner_kind == "vitest"
+                && item.targets.iter().any(|target| target.ends_with("tests/searchController.test.ts"))
+        }));
 }
