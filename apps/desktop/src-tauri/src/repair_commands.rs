@@ -5,7 +5,7 @@ use codetwin_core::{
     RepairApplicationService,
     RepairChangeRecord, RepairFindingRecord, RepairPlanRecord, RepairSourceSnapshot,
     RepairVerificationItemRecord, RepairVerificationRunRecord, RepairWorkspaceQueryService,
-    VerifiedRepairService,
+    SecurityFixService, VerifiedRepairService,
 };
 
 use super::{with_database, AppState};
@@ -47,6 +47,16 @@ pub(crate) fn approve_repair_plan(
     state: tauri::State<'_, AppState>,
 ) -> Result<RepairPlanRecord, String> {
     with_database(&state, |database| {
+        if SecurityFixService::new(database)
+            .attempt_for_repair(&repair_id)
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Err(
+                "security-fix repair plans must be approved through Guided Security Fix & Verify so patch safety, exact hashes, file identity and caution acknowledgement remain bound to approval"
+                    .to_string(),
+            );
+        }
         VerifiedRepairService::new(database)
             .approve_plan(&repair_id)
             .map_err(|error| error.to_string())
@@ -171,10 +181,23 @@ pub(crate) async fn apply_repair_plan(
     }
     let task = tauri::async_runtime::spawn_blocking(move || {
         let database = Database::open(&database_path).map_err(|error| error.to_string())?;
+        let security_fix = SecurityFixService::new(&database)
+            .attempt_for_repair(&repair_id)
+            .map_err(|error| error.to_string())?;
+        if let Some(attempt) = security_fix.as_ref() {
+            SecurityFixService::new(&database)
+                .assert_application_allowed(&attempt.id)
+                .map_err(|error| error.to_string())?;
+        }
         let run = RepairApplicationService::new(&database)
             .apply_plan(&repair_id, backup_root)
             .map_err(|error| error.to_string())?;
         if run.status == "applied" {
+            if let Some(attempt) = security_fix.as_ref() {
+                SecurityFixService::new(&database)
+                    .record_application(&attempt.id, &run.id)
+                    .map_err(|error| error.to_string())?;
+            }
             GuidedSecurityStore::new(&database)
                 .sync_repair_application_state(&repair_id)
                 .map_err(|error| error.to_string())?;
@@ -201,10 +224,18 @@ pub(crate) async fn rollback_repair_application(
     }
     let task = tauri::async_runtime::spawn_blocking(move || {
         let database = Database::open(&database_path).map_err(|error| error.to_string())?;
+        let security_fix = SecurityFixService::new(&database)
+            .attempt_for_application_run(&run_id)
+            .map_err(|error| error.to_string())?;
         let run = RepairApplicationService::new(&database)
             .rollback_application(&run_id, backup_root)
             .map_err(|error| error.to_string())?;
         if run.status == "rolled_back" {
+            if let Some(attempt) = security_fix.as_ref() {
+                SecurityFixService::new(&database)
+                    .record_rollback(&attempt.id, &run.id)
+                    .map_err(|error| error.to_string())?;
+            }
             GuidedSecurityStore::new(&database)
                 .sync_repair_application_state(&run.repair_id)
                 .map_err(|error| error.to_string())?;
