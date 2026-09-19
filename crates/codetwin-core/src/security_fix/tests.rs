@@ -2016,3 +2016,60 @@ fn xss_guided_proposal_that_leaves_inner_html_sink_is_rejected() {
         .iter()
         .any(|reason| reason.contains("unsafe rendering sink")));
 }
+
+
+#[test]
+fn rollback_bookkeeping_can_be_retried_after_files_are_already_restored() {
+    let (fixture, attempt_id, repair_id) = approved_sql_attempt();
+    let service = SecurityFixService::new(&fixture.database);
+    let backups = tempdir().expect("backups");
+    let run = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply");
+    service
+        .record_application(&attempt_id, &run.id)
+        .expect("record application");
+    GuidedSecurityStore::new(&fixture.database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync applied lifecycle");
+
+    let rolled = RepairApplicationService::new(&fixture.database)
+        .rollback_application(&run.id, backups.path())
+        .expect("rollback files");
+    assert_eq!(rolled.status, "rolled_back");
+
+    let first = service
+        .record_rollback(&attempt_id, &run.id)
+        .expect("record rollback");
+    assert_eq!(first.status, "rolled_back");
+    GuidedSecurityStore::new(&fixture.database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync rollback");
+
+    let retry = service
+        .record_rollback(&attempt_id, &run.id)
+        .expect("retry rollback bookkeeping");
+    assert_eq!(retry.status, "rolled_back");
+    GuidedSecurityStore::new(&fixture.database)
+        .sync_repair_application_state(&repair_id)
+        .expect("retry guided rollback sync");
+
+    let rollback_events = service
+        .events(&attempt_id, 100)
+        .expect("events")
+        .into_iter()
+        .filter(|event| event.event_type == "fix_rolled_back")
+        .count();
+    assert_eq!(rollback_events, 1, "retry must not duplicate rollback history");
+
+    let lifecycle: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT state FROM guided_security_finding_lifecycle WHERE finding_id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("lifecycle");
+    assert_eq!(lifecycle, "fix_proposed");
+}
