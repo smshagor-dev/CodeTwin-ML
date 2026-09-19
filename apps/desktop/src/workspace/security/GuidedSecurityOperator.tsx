@@ -24,7 +24,7 @@ import type {
   WebScanRecord,
   WebScanStartRequest,
 } from "../types";
-import { EmptyState, Panel, StatusBadge, formatDate, shortPath } from "../ui";
+import { Panel, StatusBadge, formatDate, shortPath } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
 import {
   GUIDED_AUTHORIZATION_STATEMENT,
