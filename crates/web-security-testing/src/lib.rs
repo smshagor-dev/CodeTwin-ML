@@ -307,13 +307,15 @@ pub fn run_authorized_scan(
             });
         };
         let active_findings = active::run_active_checks(
-            &policy,
-            &requester,
-            secondary_auth,
-            config,
-            &discovery.endpoints,
-            &discovery.responses,
-            Arc::clone(&cancelled),
+            active::ActiveCheckContext {
+                policy: &policy,
+                requester: &requester,
+                secondary_auth,
+                config,
+                endpoints: &discovery.endpoints,
+                baselines: &discovery.responses,
+                cancelled: Arc::clone(&cancelled),
+            },
             &mut active_progress,
         )?;
         findings.extend(active_findings);
