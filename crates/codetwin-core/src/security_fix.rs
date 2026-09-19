@@ -207,6 +207,8 @@ pub struct SecurityFixAttemptRecord {
     pub safety: Option<PatchSafetyReport>,
     pub approved_patch_hash: Option<String>,
     pub approved_files_json: Option<String>,
+    pub approved_safety_class: Option<PatchSafetyClass>,
+    pub caution_acknowledged: bool,
     pub approved_at: Option<String>,
     pub application_run_id: Option<String>,
     pub validation_state: String,
