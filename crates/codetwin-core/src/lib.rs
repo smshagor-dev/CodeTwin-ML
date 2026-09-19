@@ -16,6 +16,7 @@ pub mod repair_workflow;
 pub mod repair_workspace;
 pub mod runtime_analysis;
 pub mod security_analysis;
+pub mod security_fix;
 pub mod semantic_config;
 pub mod semantic_domain;
 pub mod semantic_query;
@@ -88,6 +89,12 @@ pub use runtime_analysis::{
 pub use security_analysis::{
     CodeSecurityService, SecurityAnalysisError, SecurityFindingRecord, SecurityRuleRecord,
     SecurityRunRecord, SecurityRunSummary,
+};
+pub use security_fix::{
+    FixEligibility, FixEligibilityAssessment, FixStrategy, MultiFindingOverlap, PatchReview,
+    PatchSafetyClass, PatchSafetyReport, RootCauseCandidate, SecurityFixAttemptRecord,
+    SecurityFixError, SecurityFixEventRecord, SecurityFixPreparation, SecurityFixService,
+    SecurityFixTestPlan, SecurityFixValidationRecord, SelectedValidation, ValidationResultInput,
 };
 pub use semantic_config::{LanguageServerConfigService, SemanticConfigError};
 pub use semantic_domain::{
