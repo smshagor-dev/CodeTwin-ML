@@ -26,6 +26,8 @@ CREATE TABLE security_fix_attempts (
   application_run_id TEXT REFERENCES repair_application_runs(id) ON DELETE SET NULL,
   validation_state TEXT NOT NULL DEFAULT 'not_executed'
     CHECK(validation_state IN ('not_executed','passed','failed','partial')),
+  static_before_json TEXT NOT NULL DEFAULT '{}',
+  static_after_json TEXT NOT NULL DEFAULT '{}',
   retest_state TEXT NOT NULL DEFAULT 'not_executed'
     CHECK(retest_state IN ('not_executed','FIX_VERIFIED','STILL_VULNERABLE','UNABLE_TO_VERIFY','REGRESSION_DETECTED')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
