@@ -1988,3 +1988,31 @@ fn failed_fix_preparation_rolls_back_repair_link_lifecycle_and_attempt_atomicall
     assert_eq!(lifecycle_count, 0);
     assert_eq!(repair_count, 0);
 }
+
+
+#[test]
+fn xss_guided_proposal_that_leaves_inner_html_sink_is_rejected() {
+    let fixture = xss_fixture();
+    let service = SecurityFixService::new(&fixture.database);
+    let prepared = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+    let source = fs::read_to_string(&fixture.source_path).expect("source");
+    let insufficient = source.replace(
+        "export function getRender",
+        "/* attempted remediation without changing the sink */\nexport function getRender",
+    );
+    let review = service
+        .propose_replacement(
+            &prepared.attempt.id,
+            &fixture.file_id,
+            &insufficient,
+        )
+        .expect("review");
+    assert_eq!(review.safety.classification, PatchSafetyClass::Rejected);
+    assert!(review
+        .safety
+        .rejected_reasons
+        .iter()
+        .any(|reason| reason.contains("unsafe rendering sink")));
+}
