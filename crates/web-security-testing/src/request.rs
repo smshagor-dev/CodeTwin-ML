@@ -102,7 +102,12 @@ impl ScopedRequester {
         extra_headers: &[(&str, &str)],
     ) -> Result<ObservedResponse, RequestError> {
         self.policy.assert_url(url)?;
-        let custom_headers = parse_headers(&self.auth.custom_headers)?;
+        let attach_credentials = self.policy.credentials_allowed_for(url);
+        let custom_headers = if attach_credentials {
+            parse_headers(&self.auth.custom_headers)?
+        } else {
+            Vec::new()
+        };
         let extra_headers = parse_borrowed_headers(extra_headers)?;
         let retry_safe = method == Method::GET || method == Method::HEAD || method == Method::OPTIONS;
         let attempts = if retry_safe {
@@ -130,7 +135,7 @@ impl ScopedRequester {
                 method.clone(),
                 url,
                 body,
-                &self.auth,
+                attach_credentials.then_some(&self.auth),
                 &custom_headers,
                 &extra_headers,
             );
@@ -162,21 +167,23 @@ fn build_request(
     method: Method,
     url: &Url,
     body: Option<&str>,
-    auth: &AuthContext,
+    auth: Option<&AuthContext>,
     custom_headers: &[(HeaderName, HeaderValue)],
     extra_headers: &[(HeaderName, HeaderValue)],
 ) -> RequestBuilder {
     let mut request = client.request(method, url.clone());
     if let Some(token) = auth
-        .bearer_token
+        .and_then(|auth| auth.bearer_token
         .as_deref()
+        .as_deref())
         .filter(|value| !value.trim().is_empty())
     {
         request = request.bearer_auth(token.trim());
     }
     if let Some(cookie) = auth
-        .cookie_header
+        .and_then(|auth| auth.cookie_header
         .as_deref()
+        .as_deref())
         .filter(|value| !value.trim().is_empty())
     {
         request = request.header("Cookie", cookie.trim());

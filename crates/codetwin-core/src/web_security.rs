@@ -507,8 +507,8 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                AND (?2 IS NULL OR wf.severity=?2)
                AND (?3 IS NULL OR wf.category=?3)
                AND (?4 IS NULL OR wf.confidence=?4)
-               AND (?5 IS NULL OR endpoint_url LIKE ?5 ESCAPE '\')
-               AND (?6 IS NULL OR status=?6)
+               AND (?5 IS NULL OR instr(lower(wf.endpoint_url), lower(?5)) > 0)
+               AND (?6 IS NULL OR wf.status=?6)
              ORDER BY
                CASE wf.severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4
                  WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END DESC,

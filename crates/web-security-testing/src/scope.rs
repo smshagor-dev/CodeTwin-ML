@@ -79,6 +79,13 @@ impl ScopePolicy {
         &self.target
     }
 
+    pub fn credentials_allowed_for(&self, url: &Url) -> bool {
+        self.assert_url(url).is_ok()
+            && url.host_str().is_some_and(|host| host.eq_ignore_ascii_case(&self.target_host))
+            && url.port_or_known_default() == Some(self.target_port)
+            && url.scheme() == self.target.scheme()
+    }
+
     pub fn normalize_and_assert(&self, raw: &str) -> Result<Url, ScopeError> {
         let url = normalize_url(raw)?;
         self.assert_url(&url)?;
@@ -268,6 +275,10 @@ mod tests {
         assert!(policy.normalize_and_assert("http://localhost:8080/app/logout").is_err());
         assert!(policy.normalize_and_assert("http://example.com:8080/app").is_err());
         assert!(normalize_url("file:///tmp/a").is_err());
+        let target = policy
+            .normalize_and_assert("http://localhost:8080/app/users")
+            .expect("target");
+        assert!(policy.credentials_allowed_for(&target));
     }
 
     #[test]
