@@ -728,6 +728,14 @@ export type SecurityRemediationRegressionTracking = {
   execution_status: "PASSED" | "FAILED" | "NOT_EXECUTED";
 };
 
+export type SecurityRemediationRollbackAssessment = {
+  finding_id: string;
+  attempt_id: string | null;
+  allowed: boolean;
+  blocking_findings: string[];
+  reason: string;
+};
+
 export type SecurityRemediationDebtView = {
   unresolved_total: number;
   by_severity: Record<string, number>;
