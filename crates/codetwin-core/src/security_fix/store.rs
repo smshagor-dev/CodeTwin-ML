@@ -141,8 +141,8 @@ impl<'a> SecurityFixService<'a> {
                 input.exit_code,
                 input.duration_ms.and_then(|value| i64::try_from(value).ok()),
                 input.classification,
-                bounded_text(input.stdout_summary, 4_096),
-                bounded_text(input.stderr_summary, 4_096),
+                redact_sensitive_summary(input.stdout_summary, 4_096),
+                redact_sensitive_summary(input.stderr_summary, 4_096),
             ],
         )?;
         self.validation_by_id(&id)?
@@ -466,6 +466,12 @@ impl<'a> SecurityFixService<'a> {
     ) -> Result<(), SecurityFixError> {
         let detail: serde_json::Value = serde_json::from_str(detail_json)?;
         reject_sensitive_json(&detail)?;
+        if contains_sensitive_text(message) {
+            return Err(SecurityFixError::State(
+                "security fix history message must not persist authentication or secret material"
+                    .into(),
+            ));
+        }
         let exists: bool = self.database.connection().query_row(
             "SELECT EXISTS(SELECT 1 FROM security_fix_attempts WHERE id=?1)",
             [attempt_id],
