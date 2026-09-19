@@ -41,6 +41,11 @@ pub async fn prepare_guided_security_test(
     request: GuidedSecurityPrepareRequest,
     state: tauri::State<'_, AppState>,
 ) -> Result<GuidedSecuritySessionRecord, String> {
+    validate_auth_mode(
+        &request.auth_mode,
+        &request.primary_auth,
+        request.secondary_auth.as_ref(),
+    )?;
     let config_json = serde_json::to_string(&request.config).map_err(|error| error.to_string())?;
     let session = with_database(&state, |database| {
         GuidedSecurityStore::new(database)
@@ -410,6 +415,45 @@ pub fn list_guided_security_retests(
             .list_retests(&finding_id, limit)
             .map_err(|error| error.to_string())
     })
+}
+
+fn validate_auth_mode(
+    mode: &str,
+    primary: &AuthContext,
+    secondary: Option<&AuthContext>,
+) -> Result<(), String> {
+    match mode {
+        "none" => Ok(()),
+        "existing_session" | "test_account_a" if auth_present(primary) => Ok(()),
+        "test_accounts_a_b"
+            if auth_present(primary) && secondary.is_some_and(auth_present) =>
+        {
+            Ok(())
+        }
+        "existing_session" => Err(
+            "Existing session mode requires a cookie, bearer token, or custom authentication header."
+                .to_string(),
+        ),
+        "test_account_a" => Err(
+            "Test account A mode requires an authenticated test session.".to_string(),
+        ),
+        "test_accounts_a_b" => Err(
+            "Authorization comparison requires authenticated test sessions for both account A and account B."
+                .to_string(),
+        ),
+        _ => Err("unsupported guided security authentication mode".to_string()),
+    }
+}
+
+fn auth_present(auth: &AuthContext) -> bool {
+    auth.cookie_header
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || auth
+            .bearer_token
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty())
+        || !auth.custom_headers.is_empty()
 }
 
 fn parse_environment(value: &str) -> Result<SecurityEnvironment, String> {
