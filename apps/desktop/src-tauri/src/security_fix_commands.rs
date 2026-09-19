@@ -12,7 +12,10 @@ use codetwin_core::{
 use serde::Serialize;
 
 use super::{
-    repair_commands::{finalize_security_fix_application, REPAIR_APPLICATION_RUNNING},
+    repair_commands::{
+        finalize_security_fix_application, finalize_security_fix_rollback,
+        REPAIR_APPLICATION_RUNNING,
+    },
     with_database, AppState,
 };
 
@@ -243,19 +246,29 @@ pub(crate) async fn rollback_security_fix(
             .application_run_id
             .as_deref()
             .ok_or_else(|| "security fix has no applied patch to roll back".to_string())?;
-        let application = RepairApplicationService::new(&database)
-            .rollback_application(run_id, backup_root)
-            .map_err(|error| error.to_string())?;
+        let applications = RepairApplicationService::new(&database);
+        let persisted = applications
+            .get_run(run_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "repair application not found".to_string())?;
+        let application = if persisted.status == "rolled_back" {
+            persisted
+        } else {
+            applications
+                .rollback_application(run_id, &backup_root)
+                .map_err(|error| error.to_string())?
+        };
         let attempt = if application.status == "rolled_back" {
-            let attempt = service
-                .record_rollback(&attempt_id, &application.id)
-                .map_err(|error| error.to_string())?;
-            if let Some(repair_id) = current.repair_id.as_deref() {
-                GuidedSecurityStore::new(&database)
-                    .sync_repair_application_state(repair_id)
-                    .map_err(|error| error.to_string())?;
-            }
-            attempt
+            let repair_id = current
+                .repair_id
+                .as_deref()
+                .ok_or_else(|| "security fix has no linked repair plan".to_string())?;
+            finalize_security_fix_rollback(
+                &database,
+                &attempt_id,
+                repair_id,
+                &application,
+            )?
         } else {
             current
         };
