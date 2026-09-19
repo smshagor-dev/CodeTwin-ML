@@ -161,7 +161,7 @@ impl ScopePolicy {
         }
         let local_target = matches!(host, "localhost")
             || host.ends_with(".localhost")
-            || host.parse::<IpAddr>().is_ok_and(IpAddr::is_loopback);
+            || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
         if is_loopback_or_private(ip) && !(local_target || self.config.allow_private_networks) {
             return Err(ScopeError::NetworkScope(format!(
                 "{host} resolved to private/loopback address {ip}; enable private-network testing explicitly for an authorized local or staging target"
