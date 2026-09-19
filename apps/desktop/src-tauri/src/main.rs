@@ -4,6 +4,7 @@ mod ml_commands;
 mod qa_commands;
 mod repair_commands;
 mod runtime_commands;
+mod security_campaign_commands;
 mod security_fix_commands;
 mod workspace_commands;
 mod web_security_commands;
@@ -61,6 +62,18 @@ use repair_commands::{
 use runtime_commands::{
     list_runtime_artifacts, list_runtime_evidence, list_runtime_findings, list_runtime_rules,
     run_runtime_analysis, runtime_history,
+};
+use security_campaign_commands::{
+    analyze_security_remediation_campaign, approve_security_remediation_campaign_plan,
+    cancel_security_remediation_campaign, complete_security_remediation_campaign,
+    create_security_remediation_campaign, get_security_remediation_campaign,
+    list_security_remediation_campaign_events, list_security_remediation_campaign_findings,
+    list_security_remediation_campaign_relationships, list_security_remediation_campaigns,
+    pause_security_remediation_campaign, resume_security_remediation_campaign,
+    security_remediation_campaign_before_after, security_remediation_campaign_debt,
+    security_remediation_campaign_regression_tracking, security_remediation_campaign_summary,
+    skip_security_remediation_campaign_finding, start_security_remediation_campaign,
+    sync_security_remediation_campaign,
 };
 use security_fix_commands::{
     analyze_security_fix_overlap, apply_security_fix, approve_security_fix,
@@ -695,6 +708,25 @@ fn main() {
             retest_guided_security_finding,
             list_guided_security_retest_candidates,
             list_guided_security_retests,
+            create_security_remediation_campaign,
+            analyze_security_remediation_campaign,
+            approve_security_remediation_campaign_plan,
+            start_security_remediation_campaign,
+            pause_security_remediation_campaign,
+            resume_security_remediation_campaign,
+            cancel_security_remediation_campaign,
+            sync_security_remediation_campaign,
+            complete_security_remediation_campaign,
+            skip_security_remediation_campaign_finding,
+            get_security_remediation_campaign,
+            list_security_remediation_campaigns,
+            list_security_remediation_campaign_findings,
+            list_security_remediation_campaign_relationships,
+            list_security_remediation_campaign_events,
+            security_remediation_campaign_summary,
+            security_remediation_campaign_before_after,
+            security_remediation_campaign_regression_tracking,
+            security_remediation_campaign_debt,
             evaluate_security_fix_eligibility,
             prepare_security_fix,
             generate_security_fix_patch,
