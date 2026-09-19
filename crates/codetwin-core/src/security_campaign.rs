@@ -455,13 +455,6 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 campaign.status
             )));
         }
-        self.database.connection().execute(
-            "UPDATE security_remediation_campaigns
-             SET status='ANALYZING',updated_at=CURRENT_TIMESTAMP
-             WHERE id=?1 AND status='DRAFT'",
-            [campaign_id],
-        )?;
-
         let mut nodes = self.analysis_nodes(campaign_id)?;
         if nodes.is_empty() {
             return Err(SecurityRemediationCampaignError::State(
@@ -627,6 +620,17 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         let plan_hash = sha256_hex(plan_json.as_bytes());
 
         let tx = self.database.connection().unchecked_transaction()?;
+        let transitioned = tx.execute(
+            "UPDATE security_remediation_campaigns
+             SET status='ANALYZING',updated_at=CURRENT_TIMESTAMP
+             WHERE id=?1 AND status='DRAFT'",
+            [campaign_id],
+        )?;
+        if transitioned != 1 {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign changed while relationship analysis was being prepared".into(),
+            ));
+        }
         tx.execute(
             "DELETE FROM security_remediation_campaign_relationships WHERE campaign_id=?1",
             [campaign_id],
@@ -942,12 +946,10 @@ impl<'a> SecurityRemediationCampaignService<'a> {
     ) -> Result<SecurityRemediationCampaignRecord, SecurityRemediationCampaignError> {
         let campaign = self.require_campaign(campaign_id)?;
         let existing = self.findings(campaign_id)?;
-        let existing_map = existing
-            .iter()
-            .map(|finding| (finding.finding_id.clone(), finding.clone()))
-            .collect::<HashMap<_, _>>();
         let fix = SecurityFixService::new(self.database);
 
+        // First synchronize each finding strictly from persisted Fix & Verify / targeted-retest
+        // evidence. Campaign orchestration never invents a successful security outcome.
         for finding in existing {
             if finding.status == "SKIPPED" {
                 continue;
@@ -973,25 +975,36 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 )?;
             }
 
-            let dependencies = finding.depends_on.clone();
-            if !matches!(target, "VERIFIED" | "SKIPPED") {
-                let dependency_failed = dependencies.iter().any(|dependency_id| {
-                    existing_map
-                        .get(dependency_id)
-                        .is_some_and(|dependency| {
-                            matches!(
-                                dependency.status.as_str(),
-                                "REGRESSION_DETECTED" | "BLOCKED"
-                            )
-                        })
-                });
-                if dependency_failed {
-                    target = "BLOCKED";
-                }
-            }
-
             if target != finding.status {
                 self.set_finding_state(campaign_id, &finding.finding_id, target)?;
+            }
+        }
+
+        // Then evaluate dependencies against the just-synchronized state. This prevents a
+        // newly detected regression/stale prerequisite from leaving a dependent finding runnable
+        // until a later polling cycle.
+        let evidence_synced = self.findings(campaign_id)?;
+        let evidence_map = evidence_synced
+            .iter()
+            .map(|finding| (finding.finding_id.clone(), finding.clone()))
+            .collect::<HashMap<_, _>>();
+        for finding in &evidence_synced {
+            if matches!(
+                finding.status.as_str(),
+                "VERIFIED" | "SKIPPED" | "REGRESSION_DETECTED"
+            ) {
+                continue;
+            }
+            let dependency_failed = finding.depends_on.iter().any(|dependency_id| {
+                evidence_map.get(dependency_id).is_some_and(|dependency| {
+                    matches!(
+                        dependency.status.as_str(),
+                        "REGRESSION_DETECTED" | "BLOCKED"
+                    )
+                })
+            });
+            if dependency_failed && finding.status != "BLOCKED" {
+                self.set_finding_state(campaign_id, &finding.finding_id, "BLOCKED")?;
             }
         }
 
