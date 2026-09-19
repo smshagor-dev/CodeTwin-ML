@@ -4,6 +4,7 @@ use codetwin_core::{
     SecurityRemediationCampaignRecord, SecurityRemediationCampaignService,
     SecurityRemediationCampaignSummary, SecurityRemediationDebtView,
     SecurityRemediationRegressionTracking, SecurityRemediationRelationshipRecord,
+    SecurityRemediationRollbackAssessment,
 };
 
 use super::{with_database, AppState};
@@ -225,6 +226,19 @@ pub(crate) fn security_remediation_campaign_regression_tracking(
     with_database(&state, |database| {
         SecurityRemediationCampaignService::new(database)
             .regression_tracking(&campaign_id)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn assess_security_remediation_campaign_rollback(
+    campaign_id: String,
+    finding_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<SecurityRemediationRollbackAssessment, String> {
+    with_database(&state, |database| {
+        SecurityRemediationCampaignService::new(database)
+            .rollback_assessment(&campaign_id, &finding_id)
             .map_err(|error| error.to_string())
     })
 }
