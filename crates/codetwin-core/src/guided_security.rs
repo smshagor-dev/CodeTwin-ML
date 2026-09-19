@@ -1409,7 +1409,7 @@ impl<'a> GuidedSecurityStore<'a> {
 
     fn finding_context(&self, finding_id: &str) -> Result<FindingContext, GuidedSecurityError> {
         self.database.connection().query_row(
-            "SELECT wf.id, wf.scan_id, ws.project_id, gs.id,
+            "SELECT ws.project_id, gs.id,
                     wf.category, wf.confidence, wf.endpoint_url, wf.method,
                     wf.parameter_name, wf.title, wf.description, wf.remediation
              FROM web_security_findings wf
@@ -1419,18 +1419,16 @@ impl<'a> GuidedSecurityStore<'a> {
             [finding_id],
             |row| {
                 Ok(FindingContext {
-                    id: row.get(0)?,
-                    scan_id: row.get(1)?,
-                    project_id: row.get(2)?,
-                    session_id: row.get(3)?,
-                    category: row.get(4)?,
-                    confidence: row.get(5)?,
-                    endpoint_url: row.get(6)?,
-                    method: row.get(7)?,
-                    parameter_name: row.get(8)?,
-                    title: row.get(9)?,
-                    description: row.get(10)?,
-                    remediation: row.get(11)?,
+                    project_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    category: row.get(2)?,
+                    confidence: row.get(3)?,
+                    endpoint_url: row.get(4)?,
+                    method: row.get(5)?,
+                    parameter_name: row.get(6)?,
+                    title: row.get(7)?,
+                    description: row.get(8)?,
+                    remediation: row.get(9)?,
                 })
             },
         ).optional()?
@@ -1444,8 +1442,6 @@ impl<'a> GuidedSecurityStore<'a> {
 
 #[derive(Debug)]
 struct FindingContext {
-    id: String,
-    scan_id: String,
     project_id: Option<String>,
     session_id: Option<String>,
     category: String,
