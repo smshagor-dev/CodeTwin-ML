@@ -1,4 +1,5 @@
 use std::{
+    fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
@@ -9,10 +10,18 @@ use std::{
     time::Duration,
 };
 
+use codetwin_core::{
+    AuthorizedWebSecurityStore, Database, GuidedPlanItemInput, GuidedRetestInput,
+    GuidedSecurityStore, GuidedSessionCreate, PreparationCompletion, ProjectIndexService,
+    RepairApplicationService, VerifiedRepairService, WebEndpointInput, WebEvidenceInput,
+    WebFindingInput, WebScanCreate,
+};
+use tempfile::tempdir;
 use url::Url;
 use web_security_testing::{
-    prepare_guided_security, run_authorized_scan, AuthContext, CheckConfig, ScanConfig, ScanError,
-    ScopeConfig, SecurityEnvironment,
+    apply_approved_execution_policy, prepare_guided_security, run_authorized_scan,
+    run_targeted_retest, ApprovedExecutionPolicy, AuthContext, CheckConfig, OperationRisk,
+    ScanConfig, ScanError, ScopeConfig, SecurityEnvironment, TargetedRetestRequest,
 };
 
 #[derive(Debug, Clone)]
@@ -597,6 +606,357 @@ fn cancellation_prevents_requests() {
     );
     assert!(matches!(result, Err(ScanError::Cancelled)));
     assert!(lab.requests.lock().expect("requests").is_empty());
+}
+
+#[test]
+fn guided_developer_workflow_runs_end_to_end_on_local_fixtures() {
+    let lab = LocalLab::start();
+    let project = tempdir().expect("project tempdir");
+    let source_dir = project.path().join("src");
+    fs::create_dir_all(&source_dir).expect("source dir");
+    let source_path = source_dir.join("search_controller.rs");
+    let original_source = r#"pub fn search_controller(q: &str) -> String {
+    format!("SELECT * FROM items WHERE name = '{q}'")
+}
+"#;
+    fs::write(&source_path, original_source).expect("write source");
+
+    let database = Database::open_in_memory().expect("database");
+    let index = ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("index local project");
+
+    let primary = AuthContext {
+        cookie_header: Some("session=primary-cookie-secret".into()),
+        bearer_token: Some("primary-secret-token".into()),
+        custom_headers: Vec::new(),
+    };
+    let secondary = AuthContext {
+        cookie_header: Some("session=secondary-cookie-secret".into()),
+        bearer_token: Some("secondary-secret-token".into()),
+        custom_headers: Vec::new(),
+    };
+    let config = lab.config(260);
+    let config_json = serde_json::to_string(&config).expect("config json");
+
+    let preparation = prepare_guided_security(
+        &config,
+        &primary,
+        Some(&secondary),
+        SecurityEnvironment::Local,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("guided preparation");
+    assert!(preparation.application_map.endpoint_count >= 10);
+    assert!(preparation.plan.selected_count > 0);
+
+    let plan_items: Vec<GuidedPlanItemInput> = preparation
+        .plan
+        .operations
+        .iter()
+        .map(|item| GuidedPlanItemInput {
+            operation_key: item.operation_key.clone(),
+            endpoint_url: item.endpoint_url.clone(),
+            method: item.method.clone(),
+            parameter_name: item.parameter_name.clone(),
+            category: item.category.clone(),
+            risk: match item.risk {
+                OperationRisk::SAFE => "SAFE",
+                OperationRisk::CAUTION => "CAUTION",
+                OperationRisk::RESTRICTED => "RESTRICTED",
+            }
+            .to_string(),
+            selected: item.selected,
+            reason: item.reason.clone(),
+            skip_reason: item.skip_reason.clone(),
+        })
+        .collect();
+
+    let guided = GuidedSecurityStore::new(&database);
+    let session = guided
+        .create_session(&GuidedSessionCreate {
+            website_id: None,
+            project_id: Some(index.project_id.clone()),
+            target_url: config.scope.target_url.clone(),
+            environment: "local".into(),
+            testing_depth: "deep".into(),
+            auth_mode: "test_accounts_a_b".into(),
+            authorization_confirmed: true,
+            config_json: config_json.clone(),
+        })
+        .expect("guided session");
+    let prepared = guided
+        .complete_preparation(PreparationCompletion {
+            session_id: &session.id,
+            preflight_json: &serde_json::to_string(&preparation.preflight).expect("preflight"),
+            application_map_json: &serde_json::to_string(&preparation.application_map).expect("map"),
+            plan_json: &serde_json::to_string(&preparation.plan).expect("plan"),
+            mapping_requests: preparation.mapping_requests,
+            plan_items: &plan_items,
+        })
+        .expect("persist preparation");
+    assert_eq!(prepared.status, "awaiting_approval");
+
+    let approved = guided.approve_session(&session.id).expect("approve plan");
+    assert_eq!(approved.status, "approved");
+    guided
+        .assert_execution_allowed(
+            &session.id,
+            &config.scope.target_url,
+            &config_json,
+        )
+        .expect("approved config");
+
+    let selected_categories = guided
+        .selected_plan_categories(&session.id)
+        .expect("selected categories");
+    let execution_config = apply_approved_execution_policy(
+        &config,
+        &ApprovedExecutionPolicy {
+            selected_categories,
+            state_changing_selected: guided
+                .has_selected_state_changing(&session.id)
+                .expect("state-changing policy"),
+        },
+    );
+
+    let web = AuthorizedWebSecurityStore::new(&database);
+    let scan = web
+        .create_scan(&WebScanCreate {
+            website_id: None,
+            project_id: Some(index.project_id.clone()),
+            target_url: config.scope.target_url.clone(),
+            authorization_confirmed: true,
+            scope_json: serde_json::to_string(&config.scope).expect("scope json"),
+            config_json: config_json.clone(),
+            auth_metadata_json: serde_json::json!({
+                "primary": primary.metadata(),
+                "secondary": secondary.metadata(),
+            })
+            .to_string(),
+        })
+        .expect("scan record");
+    guided.link_scan(&session.id, &scan.id).expect("link scan");
+
+    let outcome = run_authorized_scan(
+        &execution_config,
+        &primary,
+        Some(&secondary),
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .expect("guided execution");
+
+    for endpoint in &outcome.endpoints {
+        web.record_endpoint(
+            &scan.id,
+            &WebEndpointInput {
+                url: endpoint.url.clone(),
+                method: endpoint.method.clone(),
+                depth: endpoint.depth,
+                source: endpoint.source.clone(),
+                parameter_names: endpoint.parameter_names.clone(),
+                parameter_locations: endpoint.parameter_locations.clone(),
+                response_header_names: endpoint.response_header_names.clone(),
+                cookie_names: endpoint.cookie_names.clone(),
+                content_type: endpoint.content_type.clone(),
+                status_code: endpoint.status_code,
+                redirect_to: endpoint.redirect_to.clone(),
+            },
+        )
+        .expect("persist endpoint");
+    }
+
+    let mut persisted = Vec::new();
+    for finding in outcome.findings {
+        let source = web
+            .correlate_source(
+                Some(&index.project_id),
+                &finding.endpoint,
+                finding.parameter.as_deref(),
+            )
+            .expect("source correlation");
+        let record = web
+            .record_finding(
+                &scan.id,
+                &WebFindingInput {
+                    fingerprint: finding.stable_fingerprint(),
+                    category: finding.category,
+                    severity: finding.severity,
+                    confidence: finding.confidence,
+                    target: finding.target,
+                    endpoint_url: finding.endpoint,
+                    method: finding.method,
+                    parameter_name: finding.parameter,
+                    title: finding.title,
+                    description: finding.description,
+                    reproduction_summary: finding.reproduction_summary,
+                    impact: finding.impact,
+                    remediation: finding.remediation,
+                    references: finding.references,
+                    source,
+                },
+            )
+            .expect("persist finding");
+        guided
+            .set_finding_lifecycle(&record.id, Some(&session.id), "open")
+            .expect("open lifecycle");
+        guided
+            .correlate_source_candidates(&record.id, 5)
+            .expect("guided source candidates");
+        for evidence in finding.evidence {
+            web.record_evidence(
+                &record.id,
+                &WebEvidenceInput {
+                    summary: evidence.summary,
+                    request_metadata_json: evidence.request_metadata.to_string(),
+                    response_metadata_json: evidence.response_metadata.to_string(),
+                },
+            )
+            .expect("persist evidence");
+        }
+        persisted.push(record);
+    }
+
+    web.update_progress(
+        &scan.id,
+        "completed",
+        "completed",
+        outcome.endpoints.len(),
+        outcome.requests_performed,
+        persisted.len(),
+    )
+    .expect("complete scan");
+    guided
+        .update_from_scan(&session.id, "completed", "completed", None)
+        .expect("complete guided session");
+
+    let categories: std::collections::HashSet<_> =
+        persisted.iter().map(|finding| finding.category.as_str()).collect();
+    for expected in [
+        "sql_injection",
+        "xss",
+        "csrf",
+        "open_redirect",
+        "access_control",
+        "api_input_validation",
+        "security_headers",
+    ] {
+        assert!(categories.contains(expected), "missing category {expected}");
+    }
+
+    let sql = persisted
+        .iter()
+        .find(|finding| finding.category == "sql_injection" && finding.endpoint_url.contains("/search"))
+        .expect("SQL finding");
+    let candidates = guided
+        .list_source_candidates(&sql.id, 5)
+        .expect("source candidates");
+    assert!(!candidates.is_empty());
+    assert!(candidates[0].relative_path.contains("search_controller"));
+
+    let source_before_fix = fs::read_to_string(&source_path).expect("source before fix");
+    let prepared_fix = guided.prepare_fix(&sql.id).expect("prepare fix");
+    assert_eq!(prepared_fix.repair.status, "draft");
+    assert_eq!(
+        fs::read_to_string(&source_path).expect("source after prepare"),
+        source_before_fix,
+        "Prepare Fix must not modify source",
+    );
+
+    let candidate_file_id = prepared_fix
+        .source_candidates
+        .first()
+        .expect("fix source candidate")
+        .file_id
+        .clone();
+    let proposed = source_before_fix.replace(
+        "format!(\"SELECT * FROM items WHERE name = '{q}'\")",
+        "\"SELECT * FROM items WHERE name = ?\".to_string()",
+    );
+    assert_ne!(proposed, source_before_fix);
+
+    let repair = VerifiedRepairService::new(&database);
+    repair
+        .add_file_replacement(&prepared_fix.repair.id, &candidate_file_id, &proposed)
+        .expect("add reviewed replacement");
+    repair
+        .approve_plan(&prepared_fix.repair.id)
+        .expect("explicit repair approval");
+
+    let backups = tempdir().expect("backup tempdir");
+    let application = RepairApplicationService::new(&database)
+        .apply_plan(&prepared_fix.repair.id, backups.path())
+        .expect("apply local repair");
+    assert_eq!(application.status, "applied");
+    guided
+        .sync_repair_application_state(&prepared_fix.repair.id)
+        .expect("sync applied repair");
+    assert_eq!(
+        guided
+            .retest_candidate_finding_ids(&session.id, 20)
+            .expect("retest candidates"),
+        vec![sql.id.clone()],
+    );
+
+    let retest = run_targeted_retest(
+        &config,
+        &primary,
+        Some(&secondary),
+        &TargetedRetestRequest {
+            endpoint_url: sql.endpoint_url.clone(),
+            method: sql.method.clone(),
+            parameter_name: sql.parameter_name.clone(),
+            parameter_location: Some("query".into()),
+            category: sql.category.clone(),
+        },
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("targeted retest");
+    assert!(retest.requests_performed <= 12);
+    let still_vulnerable = retest
+        .findings
+        .iter()
+        .any(|finding| finding.category == "sql_injection");
+    assert!(still_vulnerable);
+
+    guided
+        .record_retest(GuidedRetestInput {
+            finding_id: &sql.id,
+            session_id: Some(&session.id),
+            status: "still_vulnerable",
+            original_confidence: &sql.confidence,
+            observed_confidence: retest
+                .findings
+                .iter()
+                .find(|finding| finding.category == "sql_injection")
+                .map(|finding| finding.confidence.as_str()),
+            requests_performed: retest.requests_performed,
+            detail_json: r#"{"fixture":"local-guided-e2e"}"#,
+        })
+        .expect("record retest");
+
+    let lifecycle: String = database
+        .connection()
+        .query_row(
+            "SELECT state FROM guided_security_finding_lifecycle WHERE finding_id=?1",
+            [&sql.id],
+            |row| row.get(0),
+        )
+        .expect("final lifecycle");
+    assert_eq!(lifecycle, "still_vulnerable");
+
+    let original_history = web
+        .finding_evidence(&sql.id, 50)
+        .expect("original evidence");
+    assert!(!original_history.is_empty());
+    assert_eq!(
+        web.get_scan(&scan.id)
+            .expect("scan")
+            .expect("scan exists")
+            .status,
+        "completed",
+    );
 }
 
 #[test]
