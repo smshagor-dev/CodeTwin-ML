@@ -253,6 +253,41 @@ fn run_scan_background(
                 if let Some(session_id) = guided_session_id.as_deref() {
                     let _ = guided.set_finding_lifecycle(&persisted.id, Some(session_id), "open");
                     let _ = guided.correlate_source_candidates(&persisted.id, 5);
+                    let _ = guided.append_activity(
+                        session_id,
+                        "anomaly_observed",
+                        "verification",
+                        "Security-relevant behavior was observed and recorded for verification.",
+                        &serde_json::json!({
+                            "finding_id": persisted.id,
+                            "category": persisted.category,
+                            "endpoint": persisted.endpoint_url,
+                            "method": persisted.method,
+                        }).to_string(),
+                    );
+                    if matches!(persisted.confidence.as_str(), "Likely" | "Confirmed") {
+                        let _ = guided.append_activity(
+                            session_id,
+                            "verification_performed",
+                            "verification",
+                            "Control/reproduction evidence supported classification above Potential.",
+                            &serde_json::json!({
+                                "finding_id": persisted.id,
+                                "confidence": persisted.confidence,
+                            }).to_string(),
+                        );
+                    }
+                    let _ = guided.append_activity(
+                        session_id,
+                        "finding_classified",
+                        "verification",
+                        &format!("Finding classified as {} confidence.", persisted.confidence),
+                        &serde_json::json!({
+                            "finding_id": persisted.id,
+                            "severity": persisted.severity,
+                            "confidence": persisted.confidence,
+                        }).to_string(),
+                    );
                 }
                 for evidence in finding.evidence {
                     store
