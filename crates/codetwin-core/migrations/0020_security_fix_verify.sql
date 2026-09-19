@@ -154,3 +154,44 @@ BEFORE UPDATE ON security_fix_events
 BEGIN
   SELECT RAISE(ABORT, 'security fix event history is immutable');
 END;
+
+
+CREATE TRIGGER security_fix_attempt_status_transition_guard
+BEFORE UPDATE OF status ON security_fix_attempts
+WHEN OLD.status <> NEW.status AND NOT (
+  (OLD.status = 'prepared' AND NEW.status IN ('patch_proposed','rejected')) OR
+  (OLD.status = 'patch_proposed' AND NEW.status IN ('approved','rejected')) OR
+  (OLD.status = 'rejected' AND NEW.status = 'patch_proposed') OR
+  (OLD.status = 'approved' AND NEW.status = 'applied') OR
+  (OLD.status = 'applied' AND NEW.status IN (
+    'validation_failed','verification_pending','fix_verified',
+    'still_vulnerable','unable_to_verify','rolled_back'
+  )) OR
+  (OLD.status = 'verification_pending' AND NEW.status IN (
+    'validation_failed','fix_verified','still_vulnerable','unable_to_verify','rolled_back'
+  )) OR
+  (OLD.status = 'validation_failed' AND NEW.status IN (
+    'fix_verified','still_vulnerable','unable_to_verify','rolled_back'
+  )) OR
+  (OLD.status = 'unable_to_verify' AND NEW.status IN (
+    'fix_verified','still_vulnerable','validation_failed','rolled_back'
+  )) OR
+  (OLD.status = 'still_vulnerable' AND NEW.status = 'rolled_back') OR
+  (OLD.status = 'fix_verified' AND NEW.status = 'rolled_back')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid security fix lifecycle transition');
+END;
+
+CREATE TRIGGER security_fix_retest_state_transition_guard
+BEFORE UPDATE OF retest_state ON security_fix_attempts
+WHEN OLD.retest_state <> NEW.retest_state AND (
+  (NEW.retest_state = 'FIX_VERIFIED' AND NEW.status <> 'fix_verified') OR
+  (NEW.retest_state = 'STILL_VULNERABLE' AND NEW.status <> 'still_vulnerable') OR
+  (NEW.retest_state = 'UNABLE_TO_VERIFY' AND NEW.status <> 'unable_to_verify') OR
+  (NEW.retest_state = 'REGRESSION_DETECTED' AND NEW.status <> 'validation_failed') OR
+  (NEW.retest_state = 'not_executed' AND OLD.retest_state <> 'not_executed')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid security fix retest transition');
+END;
