@@ -124,78 +124,106 @@ impl<'a> SecurityFixService<'a> {
         expected_patch_hash: &str,
         accept_caution: bool,
     ) -> Result<SecurityFixAttemptRecord, SecurityFixError> {
-        let attempt = self
-            .get_attempt(attempt_id)?
-            .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))?;
-        if attempt.status != "patch_proposed" {
-            return Err(SecurityFixError::AttemptNotApprovable(attempt.status));
-        }
-        let repair_id = attempt
-            .repair_id
-            .as_deref()
-            .ok_or(SecurityFixError::PatchGenerationUnavailable)?;
-        self.assert_attempt_relationships(&attempt, repair_id)?;
-        let review = self.review_attempt(attempt_id)?;
         if expected_patch_hash.len() != 64
-            || !expected_patch_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-            || review.safety.patch_hash != expected_patch_hash
-            || attempt.patch_hash.as_deref() != Some(expected_patch_hash)
+            || !expected_patch_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
         {
             return Err(SecurityFixError::StaleApproval);
         }
-        match review.safety.classification {
-            PatchSafetyClass::Rejected => return Err(SecurityFixError::PatchRejected),
-            PatchSafetyClass::Caution if !accept_caution => {
-                return Err(SecurityFixError::CautionAcknowledgementRequired)
+
+        let connection = self.database.connection();
+        connection.execute_batch("SAVEPOINT security_fix_approval")?;
+        let result = (|| -> Result<SecurityFixAttemptRecord, SecurityFixError> {
+            let attempt = self
+                .get_attempt(attempt_id)?
+                .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))?;
+            if attempt.status != "patch_proposed" {
+                return Err(SecurityFixError::AttemptNotApprovable(attempt.status));
             }
-            PatchSafetyClass::SafeToReview | PatchSafetyClass::Caution => {}
-        }
 
-        let repair_id = attempt
-            .repair_id
-            .as_deref()
-            .ok_or(SecurityFixError::PatchGenerationUnavailable)?;
-        let changes = VerifiedRepairService::new(self.database)
-            .list_changes(repair_id, MAX_PATCH_FILES + 1)
-            .map_err(|error| SecurityFixError::Repair(error.to_string()))?;
-        if changes.is_empty() || changes.len() > MAX_PATCH_FILES {
-            return Err(SecurityFixError::PatchRejected);
-        }
-        let approved_files = approved_file_identity(&changes);
-        VerifiedRepairService::new(self.database)
-            .approve_plan(repair_id)
-            .map_err(|error| SecurityFixError::Repair(error.to_string()))?;
+            let repair_id = attempt
+                .repair_id
+                .as_deref()
+                .ok_or(SecurityFixError::PatchGenerationUnavailable)?;
+            self.assert_attempt_relationships(&attempt, repair_id)?;
 
-        let updated = self.database.connection().execute(
-            "UPDATE security_fix_attempts
-             SET status='approved',approved_patch_hash=?2,approved_files_json=?3,
-                 approved_safety_class=?4,caution_acknowledged=?5,
-                 approved_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
-             WHERE id=?1 AND status='patch_proposed' AND patch_hash=?2",
-            params![
+            let review = self.review_attempt(attempt_id)?;
+            if review.safety.patch_hash != expected_patch_hash
+                || attempt.patch_hash.as_deref() != Some(expected_patch_hash)
+            {
+                return Err(SecurityFixError::StaleApproval);
+            }
+            match review.safety.classification {
+                PatchSafetyClass::Rejected => return Err(SecurityFixError::PatchRejected),
+                PatchSafetyClass::Caution if !accept_caution => {
+                    return Err(SecurityFixError::CautionAcknowledgementRequired)
+                }
+                PatchSafetyClass::SafeToReview | PatchSafetyClass::Caution => {}
+            }
+
+            let changes = VerifiedRepairService::new(self.database)
+                .list_changes(repair_id, MAX_PATCH_FILES + 1)
+                .map_err(|error| SecurityFixError::Repair(error.to_string()))?;
+            if changes.is_empty() || changes.len() > MAX_PATCH_FILES {
+                return Err(SecurityFixError::PatchRejected);
+            }
+            if patch_hash(&changes) != expected_patch_hash {
+                return Err(SecurityFixError::StaleApproval);
+            }
+            let approved_files = approved_file_identity(&changes);
+
+            VerifiedRepairService::new(self.database)
+                .approve_plan(repair_id)
+                .map_err(|error| SecurityFixError::Repair(error.to_string()))?;
+
+            let updated = connection.execute(
+                "UPDATE security_fix_attempts
+                 SET status='approved',approved_patch_hash=?2,approved_files_json=?3,
+                     approved_safety_class=?4,caution_acknowledged=?5,
+                     approved_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+                 WHERE id=?1 AND status='patch_proposed' AND patch_hash=?2",
+                params![
+                    attempt_id,
+                    review.safety.patch_hash,
+                    serde_json::to_string(&approved_files)?,
+                    review.safety.classification.as_db(),
+                    if accept_caution { 1i64 } else { 0i64 },
+                ],
+            )?;
+            if updated != 1 {
+                return Err(SecurityFixError::StaleApproval);
+            }
+
+            self.append_event(
                 attempt_id,
-                review.safety.patch_hash,
-                serde_json::to_string(&approved_files)?,
-                review.safety.classification.as_db(),
-                if accept_caution { 1i64 } else { 0i64 },
-            ],
-        )?;
-        if updated != 1 {
-            return Err(SecurityFixError::StaleApproval);
+                "fix_approved",
+                "Developer approved the exact displayed patch identity, affected files and base hashes.",
+                &json!({
+                    "patch_hash": review.safety.patch_hash,
+                    "files": approved_files,
+                    "safety_class": review.safety.classification,
+                })
+                .to_string(),
+            )?;
+
+            self.get_attempt(attempt_id)?
+                .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))
+        })();
+
+        match result {
+            Ok(record) => {
+                connection.execute_batch("RELEASE SAVEPOINT security_fix_approval")?;
+                Ok(record)
+            }
+            Err(error) => {
+                let _ = connection.execute_batch(
+                    "ROLLBACK TO SAVEPOINT security_fix_approval;
+                     RELEASE SAVEPOINT security_fix_approval;",
+                );
+                Err(error)
+            }
         }
-        self.append_event(
-            attempt_id,
-            "fix_approved",
-            "Developer approved the exact patch identity, affected files and base hashes.",
-            &json!({
-                "patch_hash": review.safety.patch_hash,
-                "files": approved_files,
-                "safety_class": review.safety.classification,
-            })
-            .to_string(),
-        )?;
-        self.get_attempt(attempt_id)?
-            .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))
     }
 
     pub fn assert_application_allowed(
