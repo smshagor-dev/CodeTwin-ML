@@ -12,7 +12,9 @@ impl<'a> SecurityFixService<'a> {
             .map_err(|error| SecurityFixError::Guided(error.to_string()))?;
         let initial_count = candidates.len();
 
-        if finding.confidence == "Potential" {
+        if finding.confidence == "Potential"
+            && !(finding.category == "access_control" && finding.evidence_count >= 2)
+        {
             reasons.push(
                 "Potential runtime evidence is not strong enough for generated patching.".into(),
             );
@@ -26,6 +28,12 @@ impl<'a> SecurityFixService<'a> {
                 supported_language: None,
                 bounded_patch_available: false,
             });
+        }
+        if finding.confidence == "Potential" && finding.category == "access_control" {
+            reasons.push(
+                "Two-identity authorization evidence remains conservative Potential evidence; CodeTwin may prepare a guided server-side remediation, but never an automatic authorization rewrite."
+                    .into(),
+            );
         }
         if finding.evidence_count == 0 {
             reasons.push("No persisted runtime evidence is available for the finding.".into());
