@@ -19,10 +19,23 @@ describe("guided security developer mode", () => {
   it("keeps authorized production conservative", () => {
     const config = guidedConfigFor("https://example.test", "authorized_production", "deep");
     config.scope.authorization_confirmed = true;
+    expect(config.scope.max_crawl_depth).toBeLessThanOrEqual(2);
     expect(config.scope.max_requests).toBeLessThanOrEqual(350);
     expect(config.scope.concurrency).toBeLessThanOrEqual(2);
+    expect(config.scope.timeout_ms).toBeLessThanOrEqual(5_000);
+    expect(config.scope.response_limit_bytes).toBeLessThanOrEqual(512_000);
+    expect(config.scope.redirect_limit).toBeLessThanOrEqual(3);
+    expect(config.scope.retry_limit).toBe(0);
+    expect(config.scope.allow_private_networks).toBe(false);
     expect(config.scope.allow_non_idempotent_methods).toBe(false);
     expect(config.scope.enable_timing_probes).toBe(false);
+    expect(config.scope.excluded_paths).toEqual(expect.arrayContaining([
+      "/payment",
+      "/delete",
+      "/email/send",
+      "/webhook/production",
+      "/admin/destructive",
+    ]));
 
     config.scope.allow_non_idempotent_methods = true;
     expect(validateGuidedConfig(config, "authorized_production")).toMatch(/state-changing/i);
