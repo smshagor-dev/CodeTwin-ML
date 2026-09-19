@@ -111,6 +111,36 @@ impl AuthContext {
                 .collect(),
         }
     }
+
+    pub(crate) fn redaction_values(&self) -> Vec<String> {
+        let mut values = Vec::new();
+        if let Some(value) = self
+            .cookie_header
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            values.push(value.to_string());
+        }
+        if let Some(value) = self
+            .bearer_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            values.push(value.to_string());
+        }
+        values.extend(
+            self.custom_headers
+                .iter()
+                .map(|(_, value)| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        );
+        values.sort();
+        values.dedup();
+        values
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -222,6 +252,7 @@ pub struct ObservedResponse {
     pub body: Vec<u8>,
     pub elapsed_ms: u64,
     pub truncated: bool,
+    pub(crate) redaction_secrets: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
