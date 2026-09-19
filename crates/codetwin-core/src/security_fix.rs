@@ -213,6 +213,7 @@ pub struct SecurityFixAttemptRecord {
     pub caution_acknowledged: bool,
     pub approved_at: Option<String>,
     pub application_run_id: Option<String>,
+    pub retest_floor_rowid: i64,
     pub validation_state: String,
     pub retest_state: String,
     pub static_before_json: String,
