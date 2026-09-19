@@ -57,6 +57,7 @@ CREATE TABLE security_remediation_campaign_findings (
   order_reason TEXT NOT NULL DEFAULT '',
   depends_on_json TEXT NOT NULL DEFAULT '[]',
   expected_affected_json TEXT NOT NULL DEFAULT '[]',
+  retest_floor_rowid INTEGER NOT NULL DEFAULT 0 CHECK(retest_floor_rowid >= 0),
   active_attempt_id TEXT REFERENCES security_fix_attempts(id) ON DELETE SET NULL,
   skip_reason TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -141,6 +142,38 @@ WHEN OLD.approved_plan_hash IS NOT NULL AND (
 )
 BEGIN
   SELECT RAISE(ABORT, 'approved remediation campaign plan identity is immutable');
+END;
+
+CREATE TRIGGER security_remediation_campaign_finding_plan_immutable
+BEFORE UPDATE OF campaign_id, finding_id, ordinal, eligibility, severity, confidence, category,
+                 endpoint_url, source_file_id, source_symbol_id, root_file_id, root_symbol_id,
+                 shared_root_primary_finding_id, order_reason, depends_on_json,
+                 expected_affected_json, retest_floor_rowid
+ON security_remediation_campaign_findings
+WHEN EXISTS (
+  SELECT 1 FROM security_remediation_campaigns c
+  WHERE c.id = OLD.campaign_id AND c.approved_plan_hash IS NOT NULL
+) AND (
+  NEW.campaign_id IS NOT OLD.campaign_id OR
+  NEW.finding_id IS NOT OLD.finding_id OR
+  NEW.ordinal IS NOT OLD.ordinal OR
+  NEW.eligibility IS NOT OLD.eligibility OR
+  NEW.severity IS NOT OLD.severity OR
+  NEW.confidence IS NOT OLD.confidence OR
+  NEW.category IS NOT OLD.category OR
+  NEW.endpoint_url IS NOT OLD.endpoint_url OR
+  NEW.source_file_id IS NOT OLD.source_file_id OR
+  NEW.source_symbol_id IS NOT OLD.source_symbol_id OR
+  NEW.root_file_id IS NOT OLD.root_file_id OR
+  NEW.root_symbol_id IS NOT OLD.root_symbol_id OR
+  NEW.shared_root_primary_finding_id IS NOT OLD.shared_root_primary_finding_id OR
+  NEW.order_reason IS NOT OLD.order_reason OR
+  NEW.depends_on_json IS NOT OLD.depends_on_json OR
+  NEW.expected_affected_json IS NOT OLD.expected_affected_json OR
+  NEW.retest_floor_rowid IS NOT OLD.retest_floor_rowid
+)
+BEGIN
+  SELECT RAISE(ABORT, 'approved remediation campaign finding plan is immutable');
 END;
 
 CREATE TRIGGER security_remediation_campaign_status_transition_guard
@@ -234,7 +267,7 @@ WHEN NEW.status = 'VERIFIED' AND OLD.status <> 'VERIFIED' AND NOT (
     JOIN security_remediation_campaigns c ON c.id = NEW.campaign_id
     WHERE gr.finding_id = NEW.finding_id
       AND gr.status = 'retest_passed'
-      AND gr.created_at >= c.created_at
+      AND gr.rowid > NEW.retest_floor_rowid
   )
 )
 BEGIN
@@ -245,4 +278,10 @@ CREATE TRIGGER security_remediation_campaign_events_immutable
 BEFORE UPDATE ON security_remediation_campaign_events
 BEGIN
   SELECT RAISE(ABORT, 'remediation campaign event history is immutable');
+END;
+
+CREATE TRIGGER security_remediation_campaign_events_delete_guard
+BEFORE DELETE ON security_remediation_campaign_events
+BEGIN
+  SELECT RAISE(ABORT, 'remediation campaign event history is append-only');
 END;
