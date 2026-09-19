@@ -216,9 +216,10 @@ export const workspaceApi = {
   reviewSecurityFix(attemptId: string) {
     return invoke<PatchReview>("review_security_fix", { attemptId });
   },
-  approveSecurityFix(attemptId: string, acceptCaution: boolean) {
+  approveSecurityFix(attemptId: string, expectedPatchHash: string, acceptCaution: boolean) {
     return invoke<SecurityFixAttemptRecord>("approve_security_fix", {
       attemptId,
+      expectedPatchHash,
       acceptCaution,
     });
   },
