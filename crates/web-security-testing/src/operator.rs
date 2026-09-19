@@ -708,8 +708,11 @@ fn xss_candidate(endpoint: &EndpointObservation, location: &str) -> bool {
         || endpoint
             .content_type
             .as_deref()
-            .is_some_and(|value| value.to_ascii_lowercase().contains("html"))
-        || endpoint.method == "GET"
+            .is_some_and(|value| {
+                let value = value.to_ascii_lowercase();
+                value.contains("text/html") || value.contains("application/xhtml")
+            })
+        || (endpoint.content_type.is_none() && endpoint.method == "GET")
 }
 
 fn push_operation(output: &mut Vec<PlannedOperation>, spec: OperationSpec<'_>) {
