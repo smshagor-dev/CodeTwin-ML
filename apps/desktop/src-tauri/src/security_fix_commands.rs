@@ -287,7 +287,7 @@ pub(crate) async fn run_security_fix_validation(
             .ok_or_else(|| "security fix attempt not found".to_string())?;
         if !matches!(
             attempt.status.as_str(),
-            "applied" | "verification_pending" | "validation_failed"
+            "applied" | "verification_pending" | "validation_failed" | "unable_to_verify"
         ) {
             return Err(format!(
                 "security fix validation requires an applied patch; current status is {}",
