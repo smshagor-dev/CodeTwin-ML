@@ -454,20 +454,28 @@ pub fn build_test_plan(
     }
 
     if config.scope.enable_timing_probes {
-        for endpoint in endpoints.iter().filter(|endpoint| {
-            endpoint.method == "GET" && !endpoint.parameter_names.is_empty()
-        }) {
-            push_operation(
-                &mut operations,
-                endpoint,
-                endpoint.parameter_names.first().map(String::as_str),
-                "sql_timing_indicator",
-                OperationRisk::CAUTION,
-                !matches!(environment, SecurityEnvironment::AuthorizedProduction),
-                "Optional bounded one-second timing control for an already eligible SQL input.",
-                matches!(environment, SecurityEnvironment::AuthorizedProduction)
-                    .then_some("Timing probes are disabled by default for authorized production in Developer Mode."),
-            );
+        for endpoint in endpoints.iter().filter(|endpoint| endpoint.method == "GET") {
+            for parameter in &endpoint.parameter_names {
+                let location = endpoint
+                    .parameter_locations
+                    .get(parameter)
+                    .map(String::as_str)
+                    .unwrap_or("query");
+                if !injection_candidate(endpoint, location) {
+                    continue;
+                }
+                push_operation(
+                    &mut operations,
+                    endpoint,
+                    Some(parameter),
+                    "sql_timing_indicator",
+                    OperationRisk::CAUTION,
+                    !matches!(environment, SecurityEnvironment::AuthorizedProduction),
+                    "Optional bounded repeated timing control for an already eligible SQL input.",
+                    matches!(environment, SecurityEnvironment::AuthorizedProduction)
+                        .then_some("Timing probes are disabled by default for authorized production in Developer Mode."),
+                );
+            }
         }
     }
 
