@@ -459,14 +459,22 @@ fn apply_validation_retest_and_rollback_keep_history() {
 
 #[test]
 fn patch_introduced_failure_blocks_fix_verified() {
-    let fixture = sql_fixture();
+    let (fixture, attempt_id, repair_id) = approved_sql_attempt();
     let service = SecurityFixService::new(&fixture.database);
-    let prepared = service
-        .prepare_fix(&fixture.finding_id, false)
-        .expect("prepare");
+    let backups = tempdir().expect("backups");
+    let run = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply");
+    service
+        .record_application(&attempt_id, &run.id)
+        .expect("record application");
+    GuidedSecurityStore::new(&fixture.database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync applied lifecycle");
+
     service
         .add_validation_result(
-            &prepared.attempt.id,
+            &attempt_id,
             ValidationResultInput {
                 command_label: "targeted tests",
                 runner_kind: "test",
@@ -480,19 +488,22 @@ fn patch_introduced_failure_blocks_fix_verified() {
             },
         )
         .expect("failure");
-    fixture
-        .database
-        .connection()
-        .execute(
-            "UPDATE security_fix_attempts SET status='applied' WHERE id=?1",
-            [&prepared.attempt.id],
-        )
-        .expect("mark applied");
     let completed = service
-        .complete_validation(&prepared.attempt.id)
+        .complete_validation(&attempt_id)
         .expect("validation state");
     assert_eq!(completed.status, "validation_failed");
 
+    GuidedSecurityStore::new(&fixture.database)
+        .record_retest(GuidedRetestInput {
+            finding_id: &fixture.finding_id,
+            session_id: None,
+            status: "retest_passed",
+            original_confidence: "Likely",
+            observed_confidence: None,
+            requests_performed: 4,
+            detail_json: r#"{"fixture":"patch-regression"}"#,
+        })
+        .expect("runtime retest");
     let retested = service
         .sync_retest_result(&fixture.finding_id, "retest_passed")
         .expect("sync")
@@ -503,19 +514,29 @@ fn patch_introduced_failure_blocks_fix_verified() {
 
 #[test]
 fn still_vulnerable_creates_revised_attempt_and_default_limit_is_three() {
-    let fixture = sql_fixture();
+    let (fixture, first_attempt_id, repair_id) = approved_sql_attempt();
     let service = SecurityFixService::new(&fixture.database);
-    let first = service
-        .prepare_fix(&fixture.finding_id, false)
-        .expect("first");
-    fixture
-        .database
-        .connection()
-        .execute(
-            "UPDATE security_fix_attempts SET status='applied' WHERE id=?1",
-            [&first.attempt.id],
-        )
-        .expect("applied");
+    let backups = tempdir().expect("backups");
+    let run = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply");
+    service
+        .record_application(&first_attempt_id, &run.id)
+        .expect("record application");
+    GuidedSecurityStore::new(&fixture.database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync lifecycle");
+    GuidedSecurityStore::new(&fixture.database)
+        .record_retest(GuidedRetestInput {
+            finding_id: &fixture.finding_id,
+            session_id: None,
+            status: "still_vulnerable",
+            original_confidence: "Likely",
+            observed_confidence: Some("Likely"),
+            requests_performed: 4,
+            detail_json: r#"{"fixture":"still-vulnerable-unit"}"#,
+        })
+        .expect("persist retest");
     service
         .sync_retest_result(&fixture.finding_id, "still_vulnerable")
         .expect("still vulnerable");
