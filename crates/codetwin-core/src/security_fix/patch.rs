@@ -168,7 +168,7 @@ impl<'a> SecurityFixService<'a> {
                 review.safety.patch_hash,
                 serde_json::to_string(&approved_files)?,
                 review.safety.classification.as_db(),
-                i64::from(accept_caution),
+                if accept_caution { 1i64 } else { 0i64 },
             ],
         )?;
         if updated != 1 {
