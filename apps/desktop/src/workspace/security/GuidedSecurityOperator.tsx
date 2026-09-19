@@ -130,6 +130,18 @@ export function GuidedSecurityOperator() {
     [session],
   );
   const selectedFinding = findings.find((finding) => finding.id === selectedFindingId) ?? null;
+  const mappedStatuses = useMemo(
+    () => applicationMap.groups.flatMap((group) => group.routes.map((route) => route.status_code)),
+    [applicationMap],
+  );
+  const hasRateLimit = mappedStatuses.some((status) => status === 429);
+  const hasAuthFailure = preflight.authentication_available
+    && mappedStatuses.some((status) => status === 401 || status === 403);
+  const budgetReached = Boolean(
+    scan
+      && preflight.max_requests > 0
+      && scan.requests_performed >= preflight.max_requests,
+  );
 
   const refreshSession = useCallback(async (sessionId: string) => {
     const [nextSession, nextPlan, nextActivity] = await Promise.all([
@@ -244,9 +256,16 @@ export function GuidedSecurityOperator() {
         ...current,
         scope: {
           ...current.scope,
+          max_crawl_depth: Math.min(current.scope.max_crawl_depth, 2),
+          max_requests: Math.min(current.scope.max_requests, 350),
+          concurrency: Math.min(current.scope.concurrency, 2),
+          timeout_ms: Math.min(current.scope.timeout_ms, 5_000),
+          response_limit_bytes: Math.min(current.scope.response_limit_bytes, 512_000),
+          redirect_limit: Math.min(current.scope.redirect_limit, 3),
+          retry_limit: 0,
+          allow_private_networks: false,
           allow_non_idempotent_methods: false,
           enable_timing_probes: false,
-          concurrency: Math.min(current.scope.concurrency, 2),
         },
       }));
     }
@@ -599,6 +618,13 @@ export function GuidedSecurityOperator() {
           </div>
         </Panel>
 
+        {(hasRateLimit || hasAuthFailure) && (
+          <div className="ws-guided-runtime-warning" role="status">
+            {hasRateLimit && <p><strong>Rate limiting observed.</strong> One or more mapped requests returned HTTP 429. The approved request budget will not be increased automatically.</p>}
+            {hasAuthFailure && <p><strong>Authentication may be expired or insufficient.</strong> The supplied session encountered HTTP 401/403 responses; review the map before approving active checks.</p>}
+          </div>
+        )}
+
         <div className="ws-guided-two-column">
           <Panel title="Application map">
             <div className="ws-guided-map">
@@ -663,8 +689,8 @@ export function GuidedSecurityOperator() {
         <div className="ws-safe-note">
           <Icon name="activity"/>
           <p>
-            <strong>{session.status === "completed" ? "Guided security test completed" : "Guided security test in progress"}</strong>
-            <span>{scan ? scan.phase.replaceAll("_", " ") + " · " + scan.requests_performed + " / " + preflight.max_requests + " requests" : "Initializing approved scan…"}</span>
+            <strong>{sessionTitle(session.status)}</strong>
+            <span>{scan ? scan.phase.replaceAll("_", " ") + " · " + scan.requests_performed + " / " + preflight.max_requests + " requests" : session.status === "running" ? "Initializing approved scan…" : "No active scan."}</span>
           </p>
         </div>
         <div className="ws-button-row">
@@ -693,6 +719,23 @@ export function GuidedSecurityOperator() {
           <span><b>Elapsed</b>{elapsed(scan?.started_at, scan?.finished_at)}</span>
           <span><b>Findings so far</b>{scan?.findings_count ?? findings.length}</span>
         </div>
+        {budgetReached && (
+          <p className="ws-guided-runtime-warning">
+            <strong>Request budget reached.</strong> CodeTwin stopped at the approved cap; coverage may be partial and no automatic escalation occurred.
+          </p>
+        )}
+        {hasRateLimit && (
+          <p className="ws-guided-runtime-warning">
+            <strong>Rate limiting observed.</strong> HTTP 429 responses were seen during mapping; CodeTwin did not raise concurrency or request limits.
+          </p>
+        )}
+        {hasAuthFailure && (
+          <p className="ws-guided-runtime-warning">
+            <strong>Authentication may be expired or insufficient.</strong> HTTP 401/403 responses were observed for the supplied test context.
+          </p>
+        )}
+        {session.status === "cancelled" && <p className="ws-guided-runtime-warning">The test was cancelled. Persisted observations remain available; no success claim is made.</p>}
+        {session.status === "failed" && <p className="ws-form-error">The guided test failed safely. Review the stored error and activity timeline before retrying.</p>}
         {scan?.last_error && <p className="ws-form-error">{scan.last_error}</p>}
       </Panel>
 
@@ -938,8 +981,21 @@ function phaseState(current: string | undefined, status: string | undefined, pha
   const currentIndex = phases.indexOf(current ?? "");
   const index = phases.indexOf(phase);
   if (index < currentIndex) return "done";
+  if (index === currentIndex && (status === "failed" || status === "cancelled")) return status;
   if (index === currentIndex) return "current";
   return "waiting";
+}
+
+function sessionTitle(status: GuidedSecuritySessionRecord["status"]): string {
+  switch (status) {
+    case "completed": return "Guided security test completed";
+    case "cancelled": return "Guided security test cancelled";
+    case "failed": return "Guided security test failed safely";
+    case "running": return "Guided security test in progress";
+    case "approved": return "Guided security plan approved";
+    case "awaiting_approval": return "Guided security plan awaiting approval";
+    case "preparing": return "Guided security preparation in progress";
+  }
 }
 
 function elapsed(started: string | null | undefined, finished: string | null | undefined): string {
