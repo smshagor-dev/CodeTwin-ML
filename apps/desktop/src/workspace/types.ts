@@ -654,6 +654,8 @@ export type SecurityFixAttemptRecord = {
   safety: PatchSafetyReport | null;
   approved_patch_hash: string | null;
   approved_files_json: string | null;
+  approved_safety_class: PatchSafetyClass | null;
+  caution_acknowledged: boolean;
   approved_at: string | null;
   application_run_id: string | null;
   validation_state: "not_executed" | "passed" | "failed" | "partial";
