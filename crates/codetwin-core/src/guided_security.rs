@@ -95,6 +95,28 @@ pub struct GuidedPlanItemRecord {
     pub created_at: String,
 }
 
+#[derive(Debug)]
+pub struct PreparationCompletion<'a> {
+    pub session_id: &'a str,
+    pub preflight_json: &'a str,
+    pub application_map_json: &'a str,
+    pub plan_json: &'a str,
+    pub mapping_requests: usize,
+    pub plan_items: &'a [GuidedPlanItemInput],
+}
+
+#[derive(Debug)]
+pub struct GuidedRetestInput<'a> {
+    pub finding_id: &'a str,
+    pub session_id: Option<&'a str>,
+    pub status: &'a str,
+    pub original_confidence: &'a str,
+    pub observed_confidence: Option<&'a str>,
+    pub requests_performed: usize,
+    pub detail_json: &'a str,
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GuidedActivityRecord {
     pub id: String,
@@ -261,19 +283,14 @@ impl<'a> GuidedSecurityStore<'a> {
 
     pub fn complete_preparation(
         &self,
-        session_id: &str,
-        preflight_json: &str,
-        application_map_json: &str,
-        plan_json: &str,
-        mapping_requests: usize,
-        plan_items: &[GuidedPlanItemInput],
+        input: PreparationCompletion<'_>,
     ) -> Result<GuidedSecuritySessionRecord, GuidedSecurityError> {
-        serde_json::from_str::<serde_json::Value>(preflight_json)?;
-        serde_json::from_str::<serde_json::Value>(application_map_json)?;
-        serde_json::from_str::<serde_json::Value>(plan_json)?;
+        serde_json::from_str::<serde_json::Value>(input.preflight_json)?;
+        serde_json::from_str::<serde_json::Value>(input.application_map_json)?;
+        serde_json::from_str::<serde_json::Value>(input.plan_json)?;
         let current = self
-            .get_session(session_id)?
-            .ok_or_else(|| GuidedSecurityError::SessionNotFound(session_id.to_string()))?;
+            .get_session(input.session_id)?
+            .ok_or_else(|| GuidedSecurityError::SessionNotFound(input.session_id.to_string()))?;
         if current.status != "preparing" {
             return Err(GuidedSecurityError::State(format!(
                 "session must be preparing before plan creation; observed {}",
@@ -289,18 +306,18 @@ impl<'a> GuidedSecurityStore<'a> {
                  updated_at=CURRENT_TIMESTAMP
              WHERE id=?1",
             params![
-                session_id,
-                bounded_text(preflight_json, 256_000),
-                bounded_text(application_map_json, 1_000_000),
-                bounded_text(plan_json, 1_000_000),
-                mapping_requests as i64,
+                input.session_id,
+                bounded_text(input.preflight_json, 256_000),
+                bounded_text(input.application_map_json, 1_000_000),
+                bounded_text(input.plan_json, 1_000_000),
+                input.mapping_requests as i64,
             ],
         )?;
         tx.execute(
             "DELETE FROM guided_security_plan_items WHERE session_id=?1",
-            [session_id],
+            [input.session_id],
         )?;
-        for item in plan_items.iter().take(10_000) {
+        for item in input.plan_items.iter().take(10_000) {
             validate_plan_item(item)?;
             let id = random_id_from_connection(&tx, "guideop")?;
             tx.execute(
@@ -310,7 +327,7 @@ impl<'a> GuidedSecurityStore<'a> {
                  ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                 params![
                     id,
-                    session_id,
+                    input.session_id,
                     item.operation_key,
                     item.endpoint_url,
                     item.method,
@@ -326,28 +343,28 @@ impl<'a> GuidedSecurityStore<'a> {
         tx.commit()?;
 
         self.append_activity(
-            session_id,
+            input.session_id,
             "target_resolved",
             "preflight",
             "Pre-flight safety checks completed within the configured authorization boundary.",
-            preflight_json,
+            input.preflight_json,
         )?;
         self.append_activity(
-            session_id,
+            input.session_id,
             "application_mapped",
             "mapping",
             "Authorized application mapping completed.",
-            &json!({"mapping_requests": mapping_requests}).to_string(),
+            &json!({"mapping_requests": input.mapping_requests}).to_string(),
         )?;
         self.append_activity(
-            session_id,
+            input.session_id,
             "plan_created",
             "planning",
             "Risk-aware security test plan created and waiting for developer approval.",
-            plan_json,
+            input.plan_json,
         )?;
-        self.get_session(session_id)?
-            .ok_or_else(|| GuidedSecurityError::SessionNotFound(session_id.to_string()))
+        self.get_session(input.session_id)?
+            .ok_or_else(|| GuidedSecurityError::SessionNotFound(input.session_id.to_string()))
     }
 
     pub fn fail_preparation(
@@ -952,20 +969,17 @@ impl<'a> GuidedSecurityStore<'a> {
 
     pub fn record_retest(
         &self,
-        finding_id: &str,
-        session_id: Option<&str>,
-        status: &str,
-        original_confidence: &str,
-        observed_confidence: Option<&str>,
-        requests_performed: usize,
-        detail_json: &str,
+        input: GuidedRetestInput<'_>,
     ) -> Result<GuidedRetestRecord, GuidedSecurityError> {
-        if !matches!(status, "retest_passed" | "still_vulnerable" | "unable_to_verify") {
+        if !matches!(
+            input.status,
+            "retest_passed" | "still_vulnerable" | "unable_to_verify"
+        ) {
             return Err(GuidedSecurityError::InvalidConfig(
                 "unsupported retest status".to_string(),
             ));
         }
-        serde_json::from_str::<serde_json::Value>(detail_json)?;
+        serde_json::from_str::<serde_json::Value>(input.detail_json)?;
         let id = self.random_id("guideretest")?;
         self.database.connection().execute(
             "INSERT INTO guided_security_retests(
@@ -974,23 +988,23 @@ impl<'a> GuidedSecurityStore<'a> {
              ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![
                 id,
-                finding_id,
-                session_id,
-                status,
-                original_confidence,
-                observed_confidence,
-                requests_performed as i64,
-                bounded_text(detail_json, 64_000),
+                input.finding_id,
+                input.session_id,
+                input.status,
+                input.original_confidence,
+                input.observed_confidence,
+                input.requests_performed as i64,
+                bounded_text(input.detail_json, 64_000),
             ],
         )?;
-        self.set_finding_lifecycle(finding_id, session_id, status)?;
-        if let Some(session_id) = session_id {
+        self.set_finding_lifecycle(input.finding_id, input.session_id, input.status)?;
+        if let Some(session_id) = input.session_id {
             self.append_activity(
                 session_id,
                 "finding_retested",
                 "retest",
-                &format!("Finding retest completed with status {status}."),
-                &json!({"finding_id": finding_id, "requests_performed": requests_performed}).to_string(),
+                &format!("Finding retest completed with status {}.", input.status),
+                &json!({"finding_id": input.finding_id, "requests_performed": input.requests_performed}).to_string(),
             )?;
         }
         self.database.connection().query_row(
