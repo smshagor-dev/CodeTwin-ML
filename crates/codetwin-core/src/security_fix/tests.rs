@@ -4,8 +4,8 @@ use tempfile::{tempdir, TempDir};
 
 use super::*;
 use crate::{
-    AuthorizedWebSecurityStore, ProjectIndexService, RepairApplicationService, WebEvidenceInput,
-    WebFindingInput, WebScanCreate,
+    AuthorizedWebSecurityStore, GuidedRetestInput, GuidedSecurityStore, ProjectIndexService,
+    RepairApplicationService, WebEvidenceInput, WebFindingInput, WebScanCreate,
 };
 
 struct Fixture {
@@ -403,6 +403,20 @@ fn apply_validation_retest_and_rollback_keep_history() {
     assert_eq!(validated.validation_state, "partial");
     assert_eq!(validated.status, "verification_pending");
 
+    GuidedSecurityStore::new(&fixture.database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync applied guided lifecycle");
+    GuidedSecurityStore::new(&fixture.database)
+        .record_retest(GuidedRetestInput {
+            finding_id: &fixture.finding_id,
+            session_id: None,
+            status: "retest_passed",
+            original_confidence: "Likely",
+            observed_confidence: None,
+            requests_performed: 3,
+            detail_json: r#"{"fixture":"core-fix-verified"}"#,
+        })
+        .expect("persist targeted retest");
     let verified = service
         .sync_retest_result(&fixture.finding_id, "retest_passed")
         .expect("sync retest")
@@ -417,7 +431,21 @@ fn apply_validation_retest_and_rollback_keep_history() {
     let rolled_attempt = service
         .record_rollback(&prepared.attempt.id, &run.id)
         .expect("record rollback");
+    GuidedSecurityStore::new(&fixture.database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync rolled-back guided lifecycle");
     assert_eq!(rolled_attempt.status, "rolled_back");
+    assert_eq!(rolled_attempt.retest_state, "FIX_VERIFIED");
+    let lifecycle: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT state FROM guided_security_finding_lifecycle WHERE finding_id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("rolled-back lifecycle");
+    assert_eq!(lifecycle, "fix_proposed");
     assert!(fs::read_to_string(&fixture.source_path)
         .expect("restored source")
         .contains(&format!("{}{{q}}", char::from(36))));
