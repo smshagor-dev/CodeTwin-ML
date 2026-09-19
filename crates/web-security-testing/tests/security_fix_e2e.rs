@@ -968,6 +968,47 @@ fn unable_to_verify_never_becomes_fixed_when_local_target_is_down() {
         .expect("record apply");
     record_runtime_validation(&database, &prepared.attempt.id, "local source validation");
 
+    let unavailable_config = ScanConfig {
+        scope: ScopeConfig {
+            target_url: "http://127.0.0.1:9/".into(),
+            allowed_hostnames: vec!["127.0.0.1".into()],
+            allowed_subdomains: vec![],
+            allowed_paths: vec!["/".into()],
+            excluded_paths: vec![],
+            max_crawl_depth: 0,
+            max_requests: 12,
+            concurrency: 1,
+            timeout_ms: 150,
+            response_limit_bytes: 16_384,
+            redirect_limit: 0,
+            retry_limit: 0,
+            active_testing: true,
+            allow_non_idempotent_methods: false,
+            allow_private_networks: true,
+            enable_timing_probes: false,
+            authorization_confirmed: true,
+        },
+        checks: CheckConfig::default(),
+    };
+    let retest = run_targeted_retest(
+        &unavailable_config,
+        &AuthContext::default(),
+        None,
+        &TargetedRetestRequest {
+            endpoint_url: finding.endpoint_url.clone(),
+            method: finding.method.clone(),
+            parameter_name: finding.parameter_name.clone(),
+            parameter_location: Some("query".into()),
+            category: finding.category.clone(),
+        },
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("bounded unavailable retest");
+    assert!(retest.requests_performed > 0);
+    assert_eq!(retest.responses_observed, 0);
+    assert!(!retest.verification_completed);
+    assert!(retest.failure_reason.is_some());
+
     GuidedSecurityStore::new(&database)
         .record_retest(GuidedRetestInput {
             finding_id: &finding.id,
@@ -975,8 +1016,11 @@ fn unable_to_verify_never_becomes_fixed_when_local_target_is_down() {
             status: "unable_to_verify",
             original_confidence: &finding.confidence,
             observed_confidence: None,
-            requests_performed: 0,
-            detail_json: r#"{"reason":"local target unavailable"}"#,
+            requests_performed: retest.requests_performed,
+            detail_json: &serde_json::json!({
+                "reason": retest.failure_reason,
+                "responses_observed": retest.responses_observed,
+            }).to_string(),
         })
         .expect("persist unable retest");
     let attempt = service
