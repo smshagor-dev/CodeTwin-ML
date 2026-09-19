@@ -1723,7 +1723,10 @@ fn boundary_for_category(category: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{GuidedPlanItemInput, GuidedSecurityStore, GuidedSessionCreate};
+    use super::{
+        GuidedPlanItemInput, GuidedRetestInput, GuidedSecurityStore, GuidedSessionCreate,
+        PreparationCompletion,
+    };
     use crate::{
         AuthorizedWebSecurityStore, Database, WebFindingInput, WebScanCreate,
     };
@@ -1758,14 +1761,14 @@ mod tests {
             skip_reason: None,
         };
         let prepared = store
-            .complete_preparation(
-                &session.id,
-                "{}",
-                r#"{"endpoint_count":1}"#,
-                r#"{"selected_count":1}"#,
-                1,
-                &[item],
-            )
+            .complete_preparation(PreparationCompletion {
+                session_id: &session.id,
+                preflight_json: "{}",
+                application_map_json: r#"{"endpoint_count":1}"#,
+                plan_json: r#"{"selected_count":1}"#,
+                mapping_requests: 1,
+                plan_items: &[item],
+            })
             .expect("prepared");
         assert_eq!(prepared.status, "awaiting_approval");
         assert!(store
@@ -1803,7 +1806,14 @@ mod tests {
             skip_reason: None,
         };
         assert!(store
-            .complete_preparation(&session.id, "{}", "{}", "{}", 0, &[item])
+            .complete_preparation(PreparationCompletion {
+                session_id: &session.id,
+                preflight_json: "{}",
+                application_map_json: "{}",
+                plan_json: "{}",
+                mapping_requests: 0,
+                plan_items: &[item],
+            })
             .is_err());
     }
 
@@ -1860,21 +1870,28 @@ mod tests {
         );
         let session = store.create_session(&create()).expect("session");
         store
-            .complete_preparation(&session.id, "{}", "{}", "{}", 1, &[])
+            .complete_preparation(PreparationCompletion {
+                session_id: &session.id,
+                preflight_json: "{}",
+                application_map_json: "{}",
+                plan_json: "{}",
+                mapping_requests: 1,
+                plan_items: &[],
+            })
             .expect("prepared");
         store.approve_session(&session.id).expect("approved");
         store.link_scan(&session.id, &scan_id).expect("link scan");
 
         let retest = store
-            .record_retest(
-                &finding_id,
-                Some(&session.id),
-                "retest_passed",
-                "Likely",
-                None,
-                3,
-                r#"{"control":"no anomaly"}"#,
-            )
+            .record_retest(GuidedRetestInput {
+                finding_id: &finding_id,
+                session_id: Some(&session.id),
+                status: "retest_passed",
+                original_confidence: "Likely",
+                observed_confidence: None,
+                requests_performed: 3,
+                detail_json: r#"{"control":"no anomaly"}"#,
+            })
             .expect("retest");
         assert_eq!(retest.status, "retest_passed");
         assert_eq!(retest.requests_performed, 3);
