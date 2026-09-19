@@ -11,7 +11,10 @@ use codetwin_core::{
 };
 use serde::Serialize;
 
-use super::{repair_commands::REPAIR_APPLICATION_RUNNING, with_database, AppState};
+use super::{
+    repair_commands::{finalize_security_fix_application, REPAIR_APPLICATION_RUNNING},
+    with_database, AppState,
+};
 
 #[derive(Debug, Serialize)]
 pub struct SecurityFixApplicationResult {
@@ -187,16 +190,16 @@ pub(crate) async fn apply_security_fix(
             .assert_application_allowed(&attempt_id)
             .map_err(|error| error.to_string())?;
         let application = RepairApplicationService::new(&database)
-            .apply_plan(&repair_id, backup_root)
+            .apply_plan(&repair_id, &backup_root)
             .map_err(|error| error.to_string())?;
         let attempt = if application.status == "applied" {
-            let attempt = service
-                .record_application(&attempt_id, &application.id)
-                .map_err(|error| error.to_string())?;
-            GuidedSecurityStore::new(&database)
-                .sync_repair_application_state(&repair_id)
-                .map_err(|error| error.to_string())?;
-            attempt
+            finalize_security_fix_application(
+                &database,
+                &attempt_id,
+                &repair_id,
+                &application,
+                &backup_root,
+            )?
         } else {
             service
                 .get_attempt(&attempt_id)
