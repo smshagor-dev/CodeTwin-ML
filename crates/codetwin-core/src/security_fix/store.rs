@@ -171,7 +171,7 @@ impl<'a> SecurityFixService<'a> {
             .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))?;
         if !matches!(
             attempt.status.as_str(),
-            "applied" | "validation_failed" | "verification_pending"
+            "applied" | "validation_failed" | "verification_pending" | "unable_to_verify"
         ) {
             return Err(SecurityFixError::State(format!(
                 "validation cannot complete in status {}",
