@@ -341,11 +341,11 @@ fn apply_validation_retest_and_rollback_keep_history() {
     let prepared = service
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare");
-    service
+    let review = service
         .generate_patch(&prepared.attempt.id)
         .expect("patch");
     service
-        .approve_attempt(&prepared.attempt.id, false)
+        .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false)
         .expect("approve");
     let repair_id = service
         .assert_application_allowed(&prepared.attempt.id)
