@@ -492,7 +492,8 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         let endpoint_pattern = filter
             .endpoint
             .as_ref()
-            .map(|value| format!("%{}%", escape_like(value)));
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
         let mut statement = self.database.connection().prepare(
             "SELECT wf.id, wf.scan_id, wf.fingerprint, wf.category, wf.severity, wf.confidence, wf.target,
                     wf.endpoint_url, wf.method, wf.parameter_name, wf.title, wf.description,
@@ -503,15 +504,15 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
              LEFT JOIN files sf ON sf.id=wf.source_file_id
              LEFT JOIN symbols ss ON ss.id=wf.source_symbol_id
              WHERE wf.scan_id=?1
-               AND (?2 IS NULL OR severity=?2)
-               AND (?3 IS NULL OR category=?3)
-               AND (?4 IS NULL OR confidence=?4)
+               AND (?2 IS NULL OR wf.severity=?2)
+               AND (?3 IS NULL OR wf.category=?3)
+               AND (?4 IS NULL OR wf.confidence=?4)
                AND (?5 IS NULL OR endpoint_url LIKE ?5 ESCAPE '\')
                AND (?6 IS NULL OR status=?6)
              ORDER BY
-               CASE severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4
+               CASE wf.severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4
                  WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END DESC,
-               last_detected DESC
+               wf.last_detected DESC
              LIMIT ?7",
         )?;
         let rows = statement.query_map(
@@ -939,12 +940,6 @@ fn bounded_text(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
-fn escape_like(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
 
 #[cfg(test)]
 mod tests {
@@ -985,6 +980,12 @@ mod tests {
                     depth: 1,
                     source: "html".to_string(),
                     parameter_names: vec!["q".to_string()],
+                    parameter_locations: std::collections::BTreeMap::from([(
+                        "q".to_string(),
+                        "query".to_string(),
+                    )]),
+                    response_header_names: vec!["content-type".to_string()],
+                    cookie_names: Vec::new(),
                     content_type: Some("text/html".to_string()),
                     status_code: Some(200),
                     redirect_to: None,
