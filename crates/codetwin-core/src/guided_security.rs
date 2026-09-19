@@ -584,6 +584,41 @@ impl<'a> GuidedSecurityStore<'a> {
         Ok(output)
     }
 
+    pub fn selected_plan_categories(
+        &self,
+        session_id: &str,
+    ) -> Result<BTreeSet<String>, GuidedSecurityError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT DISTINCT category
+             FROM guided_security_plan_items
+             WHERE session_id=?1 AND selected=1
+             ORDER BY category",
+        )?;
+        let rows = statement.query_map([session_id], |row| row.get::<_, String>(0))?;
+        let mut output = BTreeSet::new();
+        for row in rows {
+            output.insert(row?);
+        }
+        Ok(output)
+    }
+
+    pub fn has_selected_state_changing(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, GuidedSecurityError> {
+        self.database
+            .connection()
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM guided_security_plan_items
+                   WHERE session_id=?1 AND selected=1 AND method IN ('POST','PUT','PATCH')
+                 )",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
     pub fn append_activity(
         &self,
         session_id: &str,
