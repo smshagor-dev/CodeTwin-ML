@@ -258,6 +258,7 @@ export type WebScanStartRequest = {
   config: WebScanConfig;
   primary_auth: WebAuthContext;
   secondary_auth: WebAuthContext | null;
+  guided_session_id?: string | null;
 };
 
 export type WebScanRecord = {
@@ -340,4 +341,207 @@ export type WebFindingFilter = {
   confidence: string | null;
   endpoint: string | null;
   status: string | null;
+};
+
+
+export type GuidedEnvironment = "local" | "development" | "staging" | "authorized_production";
+export type GuidedTestingDepth = "quick" | "standard" | "deep" | "custom";
+export type GuidedAuthMode = "none" | "existing_session" | "test_account_a" | "test_accounts_a_b";
+export type GuidedRisk = "SAFE" | "CAUTION" | "RESTRICTED";
+
+export type GuidedSecurityPrepareRequest = {
+  website_id: string | null;
+  project_id: string | null;
+  environment: GuidedEnvironment;
+  testing_depth: GuidedTestingDepth;
+  auth_mode: GuidedAuthMode;
+  config: WebScanConfig;
+  primary_auth: WebAuthContext;
+  secondary_auth: WebAuthContext | null;
+};
+
+export type GuidedSecuritySessionRecord = {
+  id: string;
+  website_id: string | null;
+  project_id: string | null;
+  target_url: string;
+  environment: GuidedEnvironment;
+  testing_depth: GuidedTestingDepth;
+  auth_mode: GuidedAuthMode;
+  status: "preparing" | "awaiting_approval" | "approved" | "running" | "completed" | "failed" | "cancelled";
+  authorization_confirmed: boolean;
+  config_json: string;
+  preflight_json: string;
+  application_map_json: string;
+  plan_json: string;
+  mapping_requests: number;
+  scan_id: string | null;
+  last_error: string | null;
+  created_at: string;
+  prepared_at: string | null;
+  approved_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+};
+
+export type GuidedPreflight = {
+  authorized_target: string;
+  resolved_address: string;
+  ip_classification: string;
+  allowed_hostnames: string[];
+  allowed_subdomains: string[];
+  allowed_paths: string[];
+  excluded_paths: string[];
+  port: number;
+  https_behavior: string;
+  redirect_limit: number;
+  max_requests: number;
+  concurrency: number;
+  timeout_ms: number;
+  authentication_available: boolean;
+  destructive_actions: boolean;
+  state_changing_testing: boolean;
+  timing_probes: boolean;
+};
+
+export type GuidedApplicationRoute = {
+  url: string;
+  method: string;
+  source: string;
+  parameters: string[];
+  parameter_locations: Record<string, string>;
+  content_type: string | null;
+  status_code: number | null;
+  cookies: string[];
+  authentication_boundary: boolean;
+};
+
+export type GuidedApplicationMap = {
+  groups: Array<{ label: string; routes: GuidedApplicationRoute[] }>;
+  endpoint_count: number;
+  page_count: number;
+  form_count: number;
+  api_endpoint_count: number;
+  parameter_count: number;
+  authenticated_endpoint_count: number;
+};
+
+export type GuidedPlanItemRecord = {
+  id: string;
+  session_id: string;
+  operation_key: string;
+  endpoint_url: string;
+  method: string;
+  parameter_name: string | null;
+  category: string;
+  risk: GuidedRisk;
+  selected: boolean;
+  reason: string;
+  skip_reason: string | null;
+  created_at: string;
+};
+
+export type GuidedTestPlan = {
+  endpoint_count: number;
+  form_count: number;
+  parameter_count: number;
+  selected_count: number;
+  skipped_count: number;
+  counts_by_category: Record<string, number>;
+  counts_by_risk: Record<string, number>;
+  operations: Array<{
+    operation_key: string;
+    endpoint_url: string;
+    method: string;
+    parameter_name: string | null;
+    category: string;
+    risk: GuidedRisk;
+    selected: boolean;
+    reason: string;
+    skip_reason: string | null;
+  }>;
+};
+
+export type GuidedActivityRecord = {
+  id: string;
+  session_id: string;
+  sequence: number;
+  event_type: string;
+  phase: string;
+  message: string;
+  detail_json: string;
+  created_at: string;
+};
+
+export type GuidedSourceCandidate = {
+  id: string;
+  finding_id: string;
+  rank: number;
+  file_id: string;
+  relative_path: string;
+  symbol_id: string | null;
+  symbol_name: string | null;
+  confidence: number;
+  rationale: string;
+  created_at: string;
+};
+
+export type GuidedSecurityScorecard = {
+  endpoints_mapped: number;
+  endpoints_tested: number;
+  coverage_percent: number;
+  confirmed_findings: number;
+  likely_findings: number;
+  potential_findings: number;
+  rejected_anomalies: number;
+  by_severity: Record<string, number>;
+  authentication_context_supplied: boolean;
+  planned_authorization_checks: number;
+  planned_api_validation_checks: number;
+  planned_input_checks: number;
+};
+
+export type GuidedRiskGraph = {
+  nodes: Array<{ id: string; kind: string; label: string }>;
+  edges: Array<{ from: string; to: string; relationship: string }>;
+};
+
+export type GuidedRetestRecord = {
+  id: string;
+  finding_id: string;
+  session_id: string | null;
+  status: "retest_passed" | "still_vulnerable" | "unable_to_verify";
+  original_confidence: string;
+  observed_confidence: string | null;
+  requests_performed: number;
+  detail_json: string;
+  created_at: string;
+};
+
+export type GuidedScanComparison = {
+  id: string;
+  session_id: string | null;
+  previous_scan_id: string;
+  current_scan_id: string;
+  comparison_json: string;
+  created_at: string;
+};
+
+export type GuidedFixPreparation = {
+  finding_id: string;
+  project_id: string;
+  repair: {
+    id: string;
+    project_id: string;
+    finding_id: string | null;
+    title: string;
+    rationale: string;
+    status: string;
+    created_at: string;
+    updated_at: string;
+    approved_at?: string | null;
+  };
+  source_candidates: GuidedSourceCandidate[];
+  remediation: string;
 };
