@@ -514,6 +514,7 @@ fn apply_generated_fix(
     service
         .approve_attempt(
             &prepared.attempt.id,
+            &review.safety.patch_hash,
             review.safety.classification == PatchSafetyClass::Caution,
         )
         .expect("approve exact patch");
@@ -843,7 +844,7 @@ fn idor_guided_fix_verify_uses_two_local_identities_and_server_side_patch() {
     assert_ne!(review.safety.classification, PatchSafetyClass::Rejected);
     let caution = review.safety.classification == PatchSafetyClass::Caution;
     service
-        .approve_attempt(&prepared.attempt.id, caution)
+        .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, caution)
         .expect("approve guided patch");
     let repair_id = service
         .assert_application_allowed(&prepared.attempt.id)
@@ -957,11 +958,11 @@ fn unable_to_verify_never_becomes_fixed_when_local_target_is_down() {
     let prepared = service
         .prepare_fix(&finding.id, false)
         .expect("prepare");
-    service
+    let review = service
         .generate_patch(&prepared.attempt.id)
         .expect("patch");
     service
-        .approve_attempt(&prepared.attempt.id, false)
+        .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false)
         .expect("approve");
     let repair_id = service
         .assert_application_allowed(&prepared.attempt.id)
@@ -1091,11 +1092,11 @@ fn rollback_restores_exact_source_index_and_current_vulnerable_state() {
     let prepared = service
         .prepare_fix(&finding.id, false)
         .expect("prepare");
-    service
+    let review = service
         .generate_patch(&prepared.attempt.id)
         .expect("generate patch");
     service
-        .approve_attempt(&prepared.attempt.id, false)
+        .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false)
         .expect("approve");
     let repair_id = service
         .assert_application_allowed(&prepared.attempt.id)
@@ -1256,6 +1257,7 @@ fn still_vulnerable_creates_new_immutable_attempt_and_stops_automatic_loop() {
     service
         .approve_attempt(
             &first.attempt.id,
+            &review.safety.patch_hash,
             review.safety.classification == PatchSafetyClass::Caution,
         )
         .expect("approve insufficient patch");
