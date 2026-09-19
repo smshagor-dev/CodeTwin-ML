@@ -1822,25 +1822,37 @@ mod tests {
         let database = Database::open_in_memory().expect("database");
         let store = GuidedSecurityStore::new(&database);
         let session = store.create_session(&create()).expect("session");
-        let item = GuidedPlanItemInput {
-            operation_key: "op".into(),
+        let selected_item = GuidedPlanItemInput {
+            operation_key: "op-selected".into(),
+            endpoint_url: "http://localhost:3000/search?q=a".into(),
+            method: "GET".into(),
+            parameter_name: Some("q".into()),
+            category: "xss".into(),
+            risk: "SAFE".into(),
+            selected: true,
+            reason: "selected input check".into(),
+            skip_reason: None,
+        };
+        let skipped_item = GuidedPlanItemInput {
+            operation_key: "op-skipped".into(),
             endpoint_url: "http://localhost:3000/search?q=a".into(),
             method: "GET".into(),
             parameter_name: Some("q".into()),
             category: "sql_injection".into(),
-            risk: "SAFE".into(),
-            selected: true,
-            reason: "input check".into(),
-            skip_reason: None,
+            risk: "CAUTION".into(),
+            selected: false,
+            reason: "not selected".into(),
+            skip_reason: Some("policy skipped".into()),
         };
+        let items = [selected_item, skipped_item];
         let prepared = store
             .complete_preparation(PreparationCompletion {
                 session_id: &session.id,
                 preflight_json: "{}",
                 application_map_json: r#"{"endpoint_count":1}"#,
-                plan_json: r#"{"selected_count":1}"#,
+                plan_json: r#"{"selected_count":1,"skipped_count":1}"#,
                 mapping_requests: 1,
-                plan_items: &[item],
+                plan_items: &items,
             })
             .expect("prepared");
         assert_eq!(prepared.status, "awaiting_approval");
@@ -1853,6 +1865,13 @@ mod tests {
             .is_err());
         let approved = store.approve_session(&session.id).expect("approved");
         assert_eq!(approved.status, "approved");
+
+        let selected_categories = store
+            .selected_plan_categories(&session.id)
+            .expect("selected categories");
+        assert!(selected_categories.contains("xss"));
+        assert!(!selected_categories.contains("sql_injection"));
+
         assert!(store
             .assert_execution_allowed(
                 &session.id,
@@ -1860,6 +1879,23 @@ mod tests {
                 &create().config_json,
             )
             .is_ok());
+        assert!(store
+            .assert_execution_allowed(
+                &session.id,
+                "http://localhost:3000",
+                r#"{"scope":{"authorization_confirmed":true,"max_requests":999}}"#,
+            )
+            .is_err());
+        assert!(store
+            .complete_preparation(PreparationCompletion {
+                session_id: &session.id,
+                preflight_json: "{}",
+                application_map_json: "{}",
+                plan_json: "{}",
+                mapping_requests: 0,
+                plan_items: &[],
+            })
+            .is_err());
     }
 
     #[test]
