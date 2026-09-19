@@ -621,6 +621,25 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
               <strong>Insufficient evidence</strong>
               <p>Campaign membership does not upgrade remediation eligibility. Gather stronger runtime/source evidence before preparing a fix.</p>
             </div>
+          ) : current.shared_root_primary_finding_id
+            && ["QUEUED", "BLOCKED"].includes(current.status)
+            && currentWebFinding ? (
+            <div className="ws-security-campaign-callout">
+              <strong>Retest shared-root finding before proposing another patch</strong>
+              <p>
+                Finding {current.shared_root_primary_finding_id} was selected as the probable shared-root representative.
+                Retest this finding against the changed runtime first. A new patch is only appropriate if its own vulnerability still reproduces.
+              </p>
+              <button
+                className="ws-button ws-button-primary"
+                disabled={Boolean(busy)}
+                onClick={() => void onRetest(currentWebFinding)
+                  .then(() => refreshCampaign(campaign.id, true))
+                  .catch((value) => setError(String(value)))}
+              >
+                Retest Before New Patch
+              </button>
+            </div>
           ) : currentWebFinding ? (
             <SecurityFixWorkflow
               finding={currentWebFinding}
