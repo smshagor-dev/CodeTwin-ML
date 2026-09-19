@@ -2,6 +2,7 @@ pub mod database_analysis;
 pub mod db;
 pub mod domain;
 pub mod identity;
+pub mod guided_security;
 pub mod impact_analysis;
 pub mod import_resolver;
 pub mod ml_inference;
@@ -39,6 +40,12 @@ pub use identity::{
     deterministic_id, file_id, graph_edge_id, graph_node_id, is_windows_path_identity,
     normalize_path_identity, normalize_path_text, normalize_relative_path, project_id,
     symbol_fingerprint,
+};
+pub use guided_security::{
+    GuidedActivityRecord, GuidedFixPreparation, GuidedPlanItemInput, GuidedPlanItemRecord,
+    GuidedRetestRecord, GuidedRiskEdge, GuidedRiskGraph, GuidedRiskNode, GuidedScanComparison,
+    GuidedSecurityError, GuidedSecurityScorecard, GuidedSecuritySessionRecord, GuidedSecurityStore,
+    GuidedSessionCreate, GuidedSourceCandidate,
 };
 pub use impact_analysis::{
     ImpactAnalysisError, ImpactAnalysisService, ImpactReport, ImpactedFileRecord,
