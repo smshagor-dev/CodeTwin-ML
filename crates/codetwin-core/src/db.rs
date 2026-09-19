@@ -454,6 +454,7 @@ mod tests {
         assert!(attempt_sql.contains("UNIQUE(finding_id, attempt_number)"));
         assert!(attempt_sql.contains("approved_safety_class"));
         assert!(attempt_sql.contains("caution_acknowledged"));
+        assert!(attempt_sql.contains("retest_floor_rowid"));
 
         let trigger_count: i64 = db
             .connection()
