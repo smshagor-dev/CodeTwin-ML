@@ -98,7 +98,7 @@ pub use security_campaign::{
     SecurityRemediationCampaignRecord, SecurityRemediationCampaignService,
     SecurityRemediationCampaignSummary, SecurityRemediationDebtView,
     SecurityRemediationPlanItem, SecurityRemediationRegressionTracking,
-    SecurityRemediationRelationshipRecord,
+    SecurityRemediationRelationshipRecord, SecurityRemediationRollbackAssessment,
 };
 pub use security_fix::{
     FixEligibility, FixEligibilityAssessment, FixStrategy, MultiFindingOverlap, PatchReview,
