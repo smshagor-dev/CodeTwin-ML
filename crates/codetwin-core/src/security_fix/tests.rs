@@ -1569,3 +1569,43 @@ fn approved_attempt_identity_rejects_project_mutation_too() {
         )
         .is_err());
 }
+
+
+#[test]
+fn patch_safety_rejects_project_root_escape_path() {
+    let fixture = sql_fixture();
+    let service = SecurityFixService::new(&fixture.database);
+    let prepared = service
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+    let displayed = service
+        .generate_patch(&prepared.attempt.id)
+        .expect("patch");
+    let repair_id = prepared.attempt.repair_id.as_deref().expect("repair");
+    fixture
+        .database
+        .connection()
+        .execute(
+            "UPDATE repair_changes SET relative_path='../outside.ts' WHERE repair_id=?1",
+            [repair_id],
+        )
+        .expect("tamper path");
+
+    let review = service
+        .review_attempt(&prepared.attempt.id)
+        .expect("review unsafe path");
+    assert_eq!(review.safety.classification, PatchSafetyClass::Rejected);
+    assert!(review
+        .safety
+        .rejected_reasons
+        .iter()
+        .any(|reason| reason.contains("project root")));
+    assert!(matches!(
+        service.approve_attempt(
+            &prepared.attempt.id,
+            &displayed.safety.patch_hash,
+            false,
+        ),
+        Err(SecurityFixError::StaleApproval)
+    ));
+}
