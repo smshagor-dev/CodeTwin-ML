@@ -91,12 +91,13 @@ pub(crate) fn review_security_fix(
 #[tauri::command]
 pub(crate) fn approve_security_fix(
     attempt_id: String,
+    expected_patch_hash: String,
     accept_caution: bool,
     state: tauri::State<'_, AppState>,
 ) -> Result<SecurityFixAttemptRecord, String> {
     with_database(&state, |database| {
         SecurityFixService::new(database)
-            .approve_attempt(&attempt_id, accept_caution)
+            .approve_attempt(&attempt_id, &expected_patch_hash, accept_caution)
             .map_err(|error| error.to_string())
     })
 }
