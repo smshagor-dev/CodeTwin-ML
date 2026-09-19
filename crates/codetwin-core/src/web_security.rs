@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -61,6 +63,9 @@ pub struct WebEndpointInput {
     pub depth: usize,
     pub source: String,
     pub parameter_names: Vec<String>,
+    pub parameter_locations: BTreeMap<String, String>,
+    pub response_header_names: Vec<String>,
+    pub cookie_names: Vec<String>,
     pub content_type: Option<String>,
     pub status_code: Option<u16>,
     pub redirect_to: Option<String>,
@@ -75,6 +80,9 @@ pub struct WebEndpointRecord {
     pub depth: usize,
     pub source: String,
     pub parameter_names: Vec<String>,
+    pub parameter_locations: BTreeMap<String, String>,
+    pub response_header_names: Vec<String>,
+    pub cookie_names: Vec<String>,
     pub content_type: Option<String>,
     pub status_code: Option<u16>,
     pub redirect_to: Option<String>,
@@ -128,7 +136,9 @@ pub struct WebFindingRecord {
     pub remediation: String,
     pub references: Vec<String>,
     pub source_file_id: Option<String>,
+    pub source_relative_path: Option<String>,
     pub source_symbol_id: Option<String>,
+    pub source_symbol_name: Option<String>,
     pub source_confidence: Option<f64>,
     pub status: String,
     pub first_detected: String,
@@ -307,15 +317,22 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
     ) -> Result<WebEndpointRecord, WebSecurityStoreError> {
         let id = stable_id("webendpoint", &[scan_id, &endpoint.method, &endpoint.url]);
         let parameters_json = serde_json::to_string(&endpoint.parameter_names)?;
+        let locations_json = serde_json::to_string(&endpoint.parameter_locations)?;
+        let response_headers_json = serde_json::to_string(&endpoint.response_header_names)?;
+        let cookie_names_json = serde_json::to_string(&endpoint.cookie_names)?;
         self.database.connection().execute(
             "INSERT INTO web_security_endpoints(
                 id, scan_id, url, method, depth, source, parameter_names_json,
+                parameter_locations_json, response_header_names_json, cookie_names_json,
                 content_type, status_code, redirect_to
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(scan_id, method, url) DO UPDATE SET
                 depth = MIN(web_security_endpoints.depth, excluded.depth),
                 source = excluded.source,
                 parameter_names_json = excluded.parameter_names_json,
+                parameter_locations_json = excluded.parameter_locations_json,
+                response_header_names_json = excluded.response_header_names_json,
+                cookie_names_json = excluded.cookie_names_json,
                 content_type = COALESCE(excluded.content_type, web_security_endpoints.content_type),
                 status_code = COALESCE(excluded.status_code, web_security_endpoints.status_code),
                 redirect_to = COALESCE(excluded.redirect_to, web_security_endpoints.redirect_to)",
@@ -327,6 +344,9 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 endpoint.depth as i64,
                 endpoint.source,
                 parameters_json,
+                locations_json,
+                response_headers_json,
+                cookie_names_json,
                 endpoint.content_type,
                 endpoint.status_code.map(i64::from),
                 endpoint.redirect_to,
@@ -336,6 +356,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             .connection()
             .query_row(
                 "SELECT id, scan_id, url, method, depth, source, parameter_names_json,
+                        parameter_locations_json, response_header_names_json, cookie_names_json,
                         content_type, status_code, redirect_to, created_at
                  FROM web_security_endpoints WHERE scan_id=?1 AND method=?2 AND url=?3",
                 params![scan_id, endpoint.method, endpoint.url],
@@ -351,6 +372,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
     ) -> Result<Vec<WebEndpointRecord>, WebSecurityStoreError> {
         let mut statement = self.database.connection().prepare(
             "SELECT id, scan_id, url, method, depth, source, parameter_names_json,
+                    parameter_locations_json, response_header_names_json, cookie_names_json,
                     content_type, status_code, redirect_to, created_at
              FROM web_security_endpoints WHERE scan_id=?1
              ORDER BY depth, url, method LIMIT ?2",
@@ -472,13 +494,15 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             .as_ref()
             .map(|value| format!("%{}%", escape_like(value)));
         let mut statement = self.database.connection().prepare(
-            "SELECT id, scan_id, fingerprint, category, severity, confidence, target,
-                    endpoint_url, method, parameter_name, title, description,
-                    reproduction_summary, impact, remediation, references_json,
-                    source_file_id, source_symbol_id, source_confidence, status,
-                    first_detected, last_detected
-             FROM web_security_findings
-             WHERE scan_id=?1
+            "SELECT wf.id, wf.scan_id, wf.fingerprint, wf.category, wf.severity, wf.confidence, wf.target,
+                    wf.endpoint_url, wf.method, wf.parameter_name, wf.title, wf.description,
+                    wf.reproduction_summary, wf.impact, wf.remediation, wf.references_json,
+                    wf.source_file_id, sf.relative_path, wf.source_symbol_id, ss.name,
+                    wf.source_confidence, wf.status, wf.first_detected, wf.last_detected
+             FROM web_security_findings wf
+             LEFT JOIN files sf ON sf.id=wf.source_file_id
+             LEFT JOIN symbols ss ON ss.id=wf.source_symbol_id
+             WHERE wf.scan_id=?1
                AND (?2 IS NULL OR severity=?2)
                AND (?3 IS NULL OR category=?3)
                AND (?4 IS NULL OR confidence=?4)
@@ -712,12 +736,15 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         self.database
             .connection()
             .query_row(
-                "SELECT id, scan_id, fingerprint, category, severity, confidence, target,
-                        endpoint_url, method, parameter_name, title, description,
-                        reproduction_summary, impact, remediation, references_json,
-                        source_file_id, source_symbol_id, source_confidence, status,
-                        first_detected, last_detected
-                 FROM web_security_findings WHERE id=?1",
+                "SELECT wf.id, wf.scan_id, wf.fingerprint, wf.category, wf.severity, wf.confidence, wf.target,
+                        wf.endpoint_url, wf.method, wf.parameter_name, wf.title, wf.description,
+                        wf.reproduction_summary, wf.impact, wf.remediation, wf.references_json,
+                        wf.source_file_id, sf.relative_path, wf.source_symbol_id, ss.name,
+                        wf.source_confidence, wf.status, wf.first_detected, wf.last_detected
+                 FROM web_security_findings wf
+                 LEFT JOIN files sf ON sf.id=wf.source_file_id
+                 LEFT JOIN symbols ss ON ss.id=wf.source_symbol_id
+                 WHERE wf.id=?1",
                 [finding_id],
                 map_finding,
             )
@@ -760,12 +787,20 @@ fn map_scan(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebScanRecord> {
 
 fn map_endpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebEndpointRecord> {
     let parameter_names_json: String = row.get(6)?;
+    let parameter_locations_json: String = row.get(7)?;
+    let response_header_names_json: String = row.get(8)?;
+    let cookie_names_json: String = row.get(9)?;
     let parameter_names = serde_json::from_str(&parameter_names_json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            6,
-            rusqlite::types::Type::Text,
-            Box::new(error),
-        )
+        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    let parameter_locations = serde_json::from_str(&parameter_locations_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    let response_header_names = serde_json::from_str(&response_header_names_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    let cookie_names = serde_json::from_str(&cookie_names_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(error))
     })?;
     Ok(WebEndpointRecord {
         id: row.get(0)?,
@@ -775,12 +810,15 @@ fn map_endpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebEndpointRecord> 
         depth: nonnegative(row.get(4)?),
         source: row.get(5)?,
         parameter_names,
-        content_type: row.get(7)?,
+        parameter_locations,
+        response_header_names,
+        cookie_names,
+        content_type: row.get(10)?,
         status_code: row
-            .get::<_, Option<i64>>(8)?
+            .get::<_, Option<i64>>(11)?
             .and_then(|value| u16::try_from(value).ok()),
-        redirect_to: row.get(9)?,
-        created_at: row.get(10)?,
+        redirect_to: row.get(12)?,
+        created_at: row.get(13)?,
     })
 }
 
@@ -811,11 +849,13 @@ fn map_finding(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebFindingRecord> {
         remediation: row.get(14)?,
         references,
         source_file_id: row.get(16)?,
-        source_symbol_id: row.get(17)?,
-        source_confidence: row.get(18)?,
-        status: row.get(19)?,
-        first_detected: row.get(20)?,
-        last_detected: row.get(21)?,
+        source_relative_path: row.get(17)?,
+        source_symbol_id: row.get(18)?,
+        source_symbol_name: row.get(19)?,
+        source_confidence: row.get(20)?,
+        status: row.get(21)?,
+        first_detected: row.get(22)?,
+        last_detected: row.get(23)?,
     })
 }
 
@@ -901,9 +941,9 @@ fn bounded_text(value: &str, max: usize) -> String {
 
 fn escape_like(value: &str) -> String {
     value
-        .replace('\', "\\")
-        .replace('%', "\%")
-        .replace('_', "\_")
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 #[cfg(test)]

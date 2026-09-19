@@ -155,6 +155,12 @@ pub struct EndpointObservation {
     pub depth: usize,
     pub source: String,
     pub parameter_names: Vec<String>,
+    #[serde(default)]
+    pub parameter_locations: BTreeMap<String, String>,
+    #[serde(default)]
+    pub response_header_names: Vec<String>,
+    #[serde(default)]
+    pub cookie_names: Vec<String>,
     pub content_type: Option<String>,
     pub status_code: Option<u16>,
     pub redirect_to: Option<String>,
