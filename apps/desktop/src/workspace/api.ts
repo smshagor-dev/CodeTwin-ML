@@ -181,6 +181,9 @@ export const workspaceApi = {
       },
     });
   },
+  listGuidedSecurityRetestCandidates(sessionId: string, limit = 500) {
+    return invoke<string[]>("list_guided_security_retest_candidates", { sessionId, limit });
+  },
   listGuidedSecurityRetests(findingId: string, limit = 50) {
     return invoke<GuidedRetestRecord[]>("list_guided_security_retests", { findingId, limit });
   },
