@@ -15,6 +15,23 @@ use super::{with_database, AppState};
 
 pub(crate) static REPAIR_APPLICATION_RUNNING: AtomicBool = AtomicBool::new(false);
 
+fn reject_generic_security_fix_plan_mutation(
+    database: &Database,
+    repair_id: &str,
+    action: &str,
+) -> Result<(), String> {
+    if SecurityFixService::new(database)
+        .attempt_for_repair(repair_id)
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        return Err(format!(
+            "security-fix repair plans cannot be {action} through generic Repair commands; use Guided Security Fix & Verify so approval, verification and rollback lifecycle remain authoritative"
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn finalize_security_fix_application(
     database: &Database,
     attempt_id: &str,
@@ -130,16 +147,7 @@ pub(crate) fn approve_repair_plan(
     state: tauri::State<'_, AppState>,
 ) -> Result<RepairPlanRecord, String> {
     with_database(&state, |database| {
-        if SecurityFixService::new(database)
-            .attempt_for_repair(&repair_id)
-            .map_err(|error| error.to_string())?
-            .is_some()
-        {
-            return Err(
-                "security-fix repair plans must be approved through Guided Security Fix & Verify so patch safety, exact hashes, file identity and caution acknowledgement remain bound to approval"
-                    .to_string(),
-            );
-        }
+        reject_generic_security_fix_plan_mutation(database, &repair_id, "approved")?;
         VerifiedRepairService::new(database)
             .approve_plan(&repair_id)
             .map_err(|error| error.to_string())
@@ -152,6 +160,7 @@ pub(crate) fn reject_repair_plan(
     state: tauri::State<'_, AppState>,
 ) -> Result<RepairPlanRecord, String> {
     with_database(&state, |database| {
+        reject_generic_security_fix_plan_mutation(database, &repair_id, "rejected")?;
         VerifiedRepairService::new(database)
             .reject_plan(&repair_id)
             .map_err(|error| error.to_string())
@@ -164,6 +173,7 @@ pub(crate) fn verify_repair_plan(
     state: tauri::State<'_, AppState>,
 ) -> Result<RepairVerificationRunRecord, String> {
     with_database(&state, |database| {
+        reject_generic_security_fix_plan_mutation(database, &repair_id, "verified")?;
         VerifiedRepairService::new(database)
             .verify_plan(&repair_id)
             .map_err(|error| error.to_string())
