@@ -323,6 +323,13 @@ impl<'a> SecurityFixService<'a> {
         let mut changed_lines = 0usize;
 
         for change in changes {
+            if unsafe_patch_path(&change.relative_path) {
+                rejected_reasons.push(format!(
+                    "{} escapes or ambiguously addresses the imported project root.",
+                    change.relative_path
+                ));
+                continue;
+            }
             let Some(file_id) = change.file_id.as_deref() else {
                 rejected_reasons.push(format!(
                     "{} is not bound to an indexed text source file.",
@@ -610,6 +617,17 @@ pub(super) fn is_configuration_path(path: &str) -> bool {
         || lower.contains("nginx")
         || lower.contains("server")
         || lower.contains("config")
+}
+
+fn unsafe_patch_path(value: &str) -> bool {
+    let normalized = value.replace('\\', "/");
+    normalized.is_empty()
+        || normalized.starts_with('/')
+        || normalized.starts_with("//")
+        || normalized.as_bytes().get(1).is_some_and(|byte| *byte == b':')
+        || normalized
+            .split('/')
+            .any(|segment| matches!(segment, ".." | "."))
 }
 
 fn is_test_path(path: &str) -> bool {
