@@ -1012,6 +1012,7 @@ mod tests {
             body: body.as_bytes().to_vec(),
             elapsed_ms: 10,
             truncated: false,
+            redaction_secrets: Vec::new(),
         }
     }
 
