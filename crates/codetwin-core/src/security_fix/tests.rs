@@ -1822,3 +1822,63 @@ fn failed_security_approval_rolls_back_underlying_repair_approval_atomically() {
     assert_eq!(repair_status, "draft");
     assert_eq!(attempt_status, "patch_proposed");
 }
+
+
+#[test]
+fn validation_can_retry_after_unable_to_verify_without_skipping_runtime_verification() {
+    let (fixture, attempt_id, repair_id) = approved_sql_attempt();
+    let service = SecurityFixService::new(&fixture.database);
+    let backups = tempdir().expect("backups");
+    let run = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply");
+    service
+        .record_application(&attempt_id, &run.id)
+        .expect("record application");
+    GuidedSecurityStore::new(&fixture.database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync lifecycle");
+
+    GuidedSecurityStore::new(&fixture.database)
+        .record_retest(GuidedRetestInput {
+            finding_id: &fixture.finding_id,
+            session_id: None,
+            status: "unable_to_verify",
+            original_confidence: "Likely",
+            observed_confidence: None,
+            requests_performed: 1,
+            detail_json: r#"{"fixture":"unable-before-validation-retry"}"#,
+        })
+        .expect("persist unable retest");
+    let unable = service
+        .sync_retest_result(&fixture.finding_id, "unable_to_verify")
+        .expect("sync unable")
+        .expect("attempt");
+    assert_eq!(unable.status, "unable_to_verify");
+
+    service
+        .add_validation_result(
+            &attempt_id,
+            ValidationResultInput {
+                command_label: "retry repository validation",
+                runner_kind: "fixture",
+                targets: &[],
+                status: "PASS",
+                exit_code: Some(0),
+                duration_ms: Some(1),
+                classification: "NONE",
+                stdout_summary: "pass",
+                stderr_summary: "",
+            },
+        )
+        .expect("validation result");
+    let retried = service
+        .complete_validation(&attempt_id)
+        .expect("complete validation retry");
+    assert_eq!(retried.status, "verification_pending");
+    assert_eq!(
+        retried.retest_state, "UNABLE_TO_VERIFY",
+        "historical runtime outcome remains visible until a new targeted retest executes"
+    );
+    assert_ne!(retried.status, "fix_verified");
+}
