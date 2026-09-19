@@ -82,6 +82,7 @@ pub struct SecurityRemediationCampaignFindingRecord {
     pub order_reason: String,
     pub depends_on: Vec<String>,
     pub expected_affected: Vec<String>,
+    pub retest_floor_rowid: i64,
     pub active_attempt_id: Option<String>,
     pub skip_reason: Option<String>,
     pub created_at: String,
@@ -125,6 +126,11 @@ pub struct SecurityRemediationPlanItem {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SecurityRemediationCampaignPlan {
     pub version: usize,
+    pub project_id: String,
+    pub scan_id: String,
+    pub target_url: String,
+    pub environment: String,
+    pub scope_sha256: String,
     pub ordered_findings: Vec<SecurityRemediationPlanItem>,
     pub relationship_count: usize,
     pub mutation_strategy: String,
@@ -344,6 +350,11 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 )));
             };
             let eligibility = fix_service.evaluate_eligibility(finding_id)?.result;
+            let retest_floor_rowid: i64 = self.database.connection().query_row(
+                "SELECT COALESCE(MAX(rowid),0) FROM guided_security_retests WHERE finding_id=?1",
+                [finding_id],
+                |row| row.get(0),
+            )?;
             selected.push((
                 finding_id.clone(),
                 severity,
@@ -355,6 +366,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 source_symbol_id,
                 remediation,
                 eligibility,
+                retest_floor_rowid,
             ));
         }
 
@@ -372,6 +384,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 "source_file_id": item.6,
                 "source_symbol_id": item.7,
                 "eligibility": item.9,
+                "retest_floor_rowid": item.10,
             })).collect::<Vec<_>>(),
         });
         reject_sensitive_json(&baseline)?;
@@ -405,8 +418,8 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             tx.execute(
                 "INSERT INTO security_remediation_campaign_findings(
                     campaign_id,finding_id,ordinal,status,eligibility,severity,confidence,
-                    category,endpoint_url,source_file_id,source_symbol_id
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                    category,endpoint_url,source_file_id,source_symbol_id,retest_floor_rowid
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                 params![
                     campaign_id,
                     item.0,
@@ -419,6 +432,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                     item.4,
                     item.6,
                     item.7,
+                    item.10,
                 ],
             )?;
         }
@@ -449,6 +463,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         campaign_id: &str,
     ) -> Result<SecurityRemediationCampaignRecord, SecurityRemediationCampaignError> {
         let campaign = self.require_campaign(campaign_id)?;
+        self.assert_scope_binding(&campaign)?;
         if campaign.status != "DRAFT" {
             return Err(SecurityRemediationCampaignError::State(format!(
                 "relationship analysis requires DRAFT; observed {}",
@@ -610,6 +625,11 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             .collect::<Vec<_>>();
         let plan = SecurityRemediationCampaignPlan {
             version: campaign.plan_revision + 1,
+            project_id: campaign.project_id.clone(),
+            scan_id: campaign.scan_id.clone(),
+            target_url: campaign.target_url.clone(),
+            environment: campaign.environment.clone(),
+            scope_sha256: sha256_hex(campaign.scope_json.as_bytes()),
             ordered_findings: plan_items.clone(),
             relationship_count: relationships.len(),
             mutation_strategy:
@@ -706,6 +726,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         expected_plan_hash: &str,
     ) -> Result<SecurityRemediationCampaignRecord, SecurityRemediationCampaignError> {
         let campaign = self.require_campaign(campaign_id)?;
+        self.assert_scope_binding(&campaign)?;
         if campaign.status != "READY_FOR_REVIEW" {
             return Err(SecurityRemediationCampaignError::State(format!(
                 "campaign plan approval requires READY_FOR_REVIEW; observed {}",
@@ -751,6 +772,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         campaign_id: &str,
     ) -> Result<SecurityRemediationCampaignRecord, SecurityRemediationCampaignError> {
         let campaign = self.require_campaign(campaign_id)?;
+        self.assert_scope_binding(&campaign)?;
         if campaign.status != "APPROVED" {
             return Err(SecurityRemediationCampaignError::State(format!(
                 "campaign start requires APPROVED; observed {}",
@@ -809,6 +831,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         campaign_id: &str,
     ) -> Result<SecurityRemediationCampaignRecord, SecurityRemediationCampaignError> {
         let campaign = self.require_campaign(campaign_id)?;
+        self.assert_scope_binding(&campaign)?;
         if !matches!(campaign.status.as_str(), "PAUSED" | "BLOCKED") {
             return Err(SecurityRemediationCampaignError::State(format!(
                 "campaign resume requires PAUSED or BLOCKED; observed {}",
@@ -945,6 +968,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         campaign_id: &str,
     ) -> Result<SecurityRemediationCampaignRecord, SecurityRemediationCampaignError> {
         let campaign = self.require_campaign(campaign_id)?;
+        self.assert_scope_binding(&campaign)?;
         let existing = self.findings(campaign_id)?;
         let fix = SecurityFixService::new(self.database);
 
@@ -957,7 +981,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             let attempt = fix.latest_attempt_for_finding(&finding.finding_id)?;
             let latest_retest = self.latest_campaign_retest(
                 &finding.finding_id,
-                &campaign.created_at,
+                finding.retest_floor_rowid,
             )?;
             let mut target = target_state(&finding, attempt.as_ref(), latest_retest.as_deref());
 
@@ -1140,7 +1164,8 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             "SELECT campaign_id,finding_id,ordinal,status,eligibility,severity,confidence,category,
                     endpoint_url,source_file_id,source_symbol_id,root_file_id,root_symbol_id,
                     shared_root_primary_finding_id,order_reason,depends_on_json,
-                    expected_affected_json,active_attempt_id,skip_reason,created_at,updated_at
+                    expected_affected_json,retest_floor_rowid,active_attempt_id,skip_reason,
+                    created_at,updated_at
              FROM security_remediation_campaign_findings
              WHERE campaign_id=?1 ORDER BY ordinal",
         )?;
@@ -1490,19 +1515,71 @@ impl<'a> SecurityRemediationCampaignService<'a> {
     fn latest_campaign_retest(
         &self,
         finding_id: &str,
-        campaign_created_at: &str,
+        retest_floor_rowid: i64,
     ) -> Result<Option<String>, SecurityRemediationCampaignError> {
         self.database
             .connection()
             .query_row(
                 "SELECT status FROM guided_security_retests
-                 WHERE finding_id=?1 AND created_at>=?2
+                 WHERE finding_id=?1 AND rowid>?2
                  ORDER BY rowid DESC LIMIT 1",
-                params![finding_id, campaign_created_at],
+                params![finding_id, retest_floor_rowid],
                 |row| row.get(0),
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    fn assert_scope_binding(
+        &self,
+        campaign: &SecurityRemediationCampaignRecord,
+    ) -> Result<(), SecurityRemediationCampaignError> {
+        let session: Option<(Option<String>, String, String, Option<String>, i64)> = self
+            .database
+            .connection()
+            .query_row(
+                "SELECT project_id,target_url,environment,scan_id,authorization_confirmed
+                 FROM guided_security_sessions WHERE id=?1",
+                [&campaign.session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()?;
+        let Some((session_project, session_target, session_environment, session_scan, session_authorized)) = session else {
+            return Err(SecurityRemediationCampaignError::Scope(
+                "campaign guided security session no longer exists".into(),
+            ));
+        };
+        let scan: Option<(Option<String>, String, String, String, i64)> = self
+            .database
+            .connection()
+            .query_row(
+                "SELECT project_id,target_url,status,scope_json,authorization_confirmed
+                 FROM web_security_scans WHERE id=?1",
+                [&campaign.scan_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()?;
+        let Some((scan_project, scan_target, scan_status, scan_scope, scan_authorized)) = scan else {
+            return Err(SecurityRemediationCampaignError::Scope(
+                "campaign security scan no longer exists".into(),
+            ));
+        };
+        if session_authorized != 1
+            || scan_authorized != 1
+            || scan_status != "completed"
+            || session_project.as_deref() != Some(campaign.project_id.as_str())
+            || scan_project.as_deref() != Some(campaign.project_id.as_str())
+            || session_target != campaign.target_url
+            || scan_target != campaign.target_url
+            || session_environment != campaign.environment
+            || session_scan.as_deref() != Some(campaign.scan_id.as_str())
+            || scan_scope != campaign.scope_json
+        {
+            return Err(SecurityRemediationCampaignError::Scope(
+                "campaign project, authorized target, environment, scan or scope binding changed".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn require_campaign(
@@ -1671,29 +1748,39 @@ fn map_campaign_finding(
         order_reason: row.get(14)?,
         depends_on,
         expected_affected,
-        active_attempt_id: row.get(17)?,
-        skip_reason: row.get(18)?,
-        created_at: row.get(19)?,
-        updated_at: row.get(20)?,
+        retest_floor_rowid: row.get(17)?,
+        active_attempt_id: row.get(18)?,
+        skip_reason: row.get(19)?,
+        created_at: row.get(20)?,
+        updated_at: row.get(21)?,
     })
 }
 
-fn priority(node: &AnalysisNode) -> (usize, usize, usize, String, String) {
+fn priority(node: &AnalysisNode) -> (usize, usize, usize, usize, String, String) {
     (
-        eligibility_priority(node.eligibility),
+        actionability_priority(node.eligibility),
         category_priority(&node.category),
+        eligibility_priority(node.eligibility),
         severity_priority(&node.severity),
         node.root_path.clone().unwrap_or_default(),
         node.finding_id.clone(),
     )
 }
 
+fn actionability_priority(eligibility: FixEligibility) -> usize {
+    match eligibility {
+        FixEligibility::AutoFixCandidate | FixEligibility::GuidedFixCandidate => 0,
+        FixEligibility::ManualRemediation => 3,
+        FixEligibility::InsufficientEvidence => 4,
+    }
+}
+
 fn eligibility_priority(eligibility: FixEligibility) -> usize {
     match eligibility {
         FixEligibility::AutoFixCandidate => 0,
         FixEligibility::GuidedFixCandidate => 1,
-        FixEligibility::ManualRemediation => 3,
-        FixEligibility::InsufficientEvidence => 4,
+        FixEligibility::ManualRemediation => 2,
+        FixEligibility::InsufficientEvidence => 3,
     }
 }
 
