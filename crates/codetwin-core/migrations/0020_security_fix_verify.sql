@@ -195,3 +195,30 @@ WHEN OLD.retest_state <> NEW.retest_state AND (
 BEGIN
   SELECT RAISE(ABORT, 'invalid security fix retest transition');
 END;
+
+
+CREATE TRIGGER security_fix_application_identity_guard
+BEFORE UPDATE OF application_run_id, retest_floor_rowid ON security_fix_attempts
+WHEN (
+  NEW.application_run_id IS NOT OLD.application_run_id OR
+  NEW.retest_floor_rowid IS NOT OLD.retest_floor_rowid
+) AND NOT (
+  OLD.status = 'approved' AND
+  NEW.status = 'applied' AND
+  NEW.application_run_id IS NOT NULL AND
+  EXISTS (
+    SELECT 1
+    FROM repair_application_runs rar
+    WHERE rar.id = NEW.application_run_id
+      AND rar.repair_id = NEW.repair_id
+      AND rar.status = 'applied'
+  ) AND
+  NEW.retest_floor_rowid = (
+    SELECT COALESCE(MAX(gr.rowid), 0)
+    FROM guided_security_retests gr
+    WHERE gr.finding_id = NEW.finding_id
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'security fix application identity and retest floor are immutable outside legitimate apply');
+END;
