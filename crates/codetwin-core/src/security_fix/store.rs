@@ -327,6 +327,48 @@ impl<'a> SecurityFixService<'a> {
             .map_err(Into::into)
     }
 
+    pub fn attempt_for_repair(
+        &self,
+        repair_id: &str,
+    ) -> Result<Option<SecurityFixAttemptRecord>, SecurityFixError> {
+        self.database
+            .connection()
+            .query_row(
+                "SELECT id,finding_id,session_id,project_id,repair_id,attempt_number,eligibility,
+                        category,status,root_cause_json,strategy_json,test_plan_json,patch_hash,
+                        safety_class,safety_json,approved_patch_hash,approved_files_json,
+                        approved_safety_class,caution_acknowledged,approved_at,
+                        application_run_id,validation_state,retest_state,static_before_json,
+                        static_after_json,created_at,updated_at
+                 FROM security_fix_attempts WHERE repair_id=?1 LIMIT 1",
+                [repair_id],
+                map_attempt,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn attempt_for_application_run(
+        &self,
+        application_run_id: &str,
+    ) -> Result<Option<SecurityFixAttemptRecord>, SecurityFixError> {
+        self.database
+            .connection()
+            .query_row(
+                "SELECT id,finding_id,session_id,project_id,repair_id,attempt_number,eligibility,
+                        category,status,root_cause_json,strategy_json,test_plan_json,patch_hash,
+                        safety_class,safety_json,approved_patch_hash,approved_files_json,
+                        approved_safety_class,caution_acknowledged,approved_at,
+                        application_run_id,validation_state,retest_state,static_before_json,
+                        static_after_json,created_at,updated_at
+                 FROM security_fix_attempts WHERE application_run_id=?1 LIMIT 1",
+                [application_run_id],
+                map_attempt,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn list_attempts(
         &self,
         finding_id: &str,
