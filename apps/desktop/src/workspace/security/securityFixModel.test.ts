@@ -182,10 +182,16 @@ describe("Guided Security Fix & Verify frontend lifecycle", () => {
     });
     expect(securityFixActions(
       attempt("applied", "not_executed", { application_run_id: "run-1" }),
-    )).toMatchObject({ retest: true, rollback: false });
+    )).toMatchObject({ retest: true, rollback: true });
+    expect(securityFixActions(
+      attempt("verification_pending", "not_executed", { application_run_id: "run-1" }),
+    ).rollback).toBe(true);
+    expect(securityFixActions(
+      attempt("fix_verified", "FIX_VERIFIED", { application_run_id: "run-1" }),
+    ).rollback).toBe(true);
     expect(securityFixActions(
       attempt("unable_to_verify", "UNABLE_TO_VERIFY", { application_run_id: "run-1" }),
-    ).retest).toBe(true);
+    )).toMatchObject({ retest: true, rollback: true });
     expect(securityFixActions(
       attempt("rolled_back", "FIX_VERIFIED", { application_run_id: "run-1" }),
     )).toMatchObject({ retest: false, rollback: false, revise: false });
