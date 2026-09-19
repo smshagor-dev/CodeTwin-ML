@@ -1658,6 +1658,7 @@ fn reject_sensitive_json(
                         | "set_cookie"
                         | "cookie_header"
                         | "bearer_token"
+                        | "custom_headers"
                         | "api_key"
                         | "x_api_key"
                         | "password"
