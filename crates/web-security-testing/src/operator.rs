@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::{atomic::AtomicBool, Arc};
 
@@ -128,6 +128,37 @@ struct OperationSpec<'a> {
     skip_reason: Option<&'a str>,
 }
 
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovedExecutionPolicy {
+    pub selected_categories: BTreeSet<String>,
+    pub state_changing_selected: bool,
+}
+
+pub fn apply_approved_execution_policy(
+    config: &ScanConfig,
+    policy: &ApprovedExecutionPolicy,
+) -> ScanConfig {
+    let mut constrained = config.clone();
+    let selected = &policy.selected_categories;
+
+    constrained.checks.sql_injection &= selected.contains("sql_injection");
+    constrained.checks.xss &= selected.contains("xss");
+    constrained.checks.csrf &= selected.contains("csrf");
+    constrained.checks.open_redirect &= selected.contains("open_redirect");
+    constrained.checks.path_traversal &= selected.contains("path_traversal");
+    constrained.checks.ssrf_indicators &= selected.contains("ssrf");
+    constrained.checks.template_command_indicators &= selected.contains("template_injection");
+    constrained.checks.api_validation &= selected.contains("api_validation");
+    constrained.checks.access_control &= selected.contains("access_control");
+
+    let http_policy = selected.contains("http_policy");
+    constrained.checks.cors &= http_policy;
+    constrained.checks.method_misconfiguration &= http_policy;
+    constrained.scope.enable_timing_probes &= selected.contains("sql_timing_indicator");
+    constrained.scope.allow_non_idempotent_methods &= policy.state_changing_selected;
+    constrained
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GuidedTestPlan {
@@ -734,7 +765,11 @@ fn title_case(value: &str) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{build_test_plan, OperationRisk, SecurityEnvironment};
+    use super::{
+        apply_approved_execution_policy, build_test_plan, ApprovedExecutionPolicy, OperationRisk,
+        SecurityEnvironment,
+    };
+    use std::collections::BTreeSet;
     use crate::{CheckConfig, EndpointObservation, ScanConfig, ScopeConfig};
 
     fn config() -> ScanConfig {
@@ -776,6 +811,35 @@ mod tests {
             status_code: Some(200),
             redirect_to: None,
         }
+    }
+
+    #[test]
+    fn approved_policy_disables_skipped_detector_families() {
+        let mut source = config();
+        source.scope.active_testing = true;
+        source.scope.allow_non_idempotent_methods = true;
+        source.scope.enable_timing_probes = true;
+        let policy = ApprovedExecutionPolicy {
+            selected_categories: BTreeSet::from([
+                "xss".to_string(),
+                "http_policy".to_string(),
+            ]),
+            state_changing_selected: false,
+        };
+
+        let constrained = apply_approved_execution_policy(&source, &policy);
+        assert!(constrained.checks.xss);
+        assert!(constrained.checks.cors);
+        assert!(constrained.checks.method_misconfiguration);
+        assert!(!constrained.checks.sql_injection);
+        assert!(!constrained.checks.open_redirect);
+        assert!(!constrained.checks.path_traversal);
+        assert!(!constrained.checks.ssrf_indicators);
+        assert!(!constrained.checks.template_command_indicators);
+        assert!(!constrained.checks.api_validation);
+        assert!(!constrained.checks.access_control);
+        assert!(!constrained.scope.enable_timing_probes);
+        assert!(!constrained.scope.allow_non_idempotent_methods);
     }
 
     #[test]
