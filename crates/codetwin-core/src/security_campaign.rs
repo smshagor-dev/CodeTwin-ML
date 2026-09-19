@@ -1577,7 +1577,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                     stored_eligibility,
                 )| {
                     let assessment = fix.evaluate_eligibility(&finding_id)?;
-                    let roots = fix.analyze_root_causes(&finding_id).unwrap_or_default();
+                    let roots = fix.analyze_root_causes(&finding_id)?;
                     let root = roots.first();
                     let eligibility = assessment.result;
                     if FixEligibility::parse(&stored_eligibility)? != eligibility {
@@ -1698,7 +1698,8 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 "SELECT campaign_id,finding_id,ordinal,status,eligibility,severity,confidence,category,
                         endpoint_url,source_file_id,source_symbol_id,root_file_id,root_symbol_id,
                         shared_root_primary_finding_id,order_reason,depends_on_json,
-                        expected_affected_json,active_attempt_id,skip_reason,created_at,updated_at
+                        expected_affected_json,retest_floor_rowid,active_attempt_id,skip_reason,
+                        created_at,updated_at
                  FROM security_remediation_campaign_findings
                  WHERE campaign_id=?1 AND finding_id=?2",
                 params![campaign_id, finding_id],
