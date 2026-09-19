@@ -249,85 +249,104 @@ impl<'a> SecurityFixService<'a> {
         let test_plan = self.build_test_plan_for_context(&finding, &root_causes)?;
         let static_before_json = self.static_security_snapshot(&project_id)?;
 
-        let repair = if matches!(
-            eligibility.result,
-            FixEligibility::AutoFixCandidate | FixEligibility::GuidedFixCandidate
-        ) {
-            Some(
-                VerifiedRepairService::new(self.database)
-                    .create_plan(
-                        &project_id,
-                        None,
-                        &format!("Security fix: {}", bounded_text(&finding.title, 180)),
-                        &format!(
-                            "Runtime finding {} {} ({}, {}). Root-cause candidates and the remediation strategy are stored in the guided security-fix attempt. This repair plan cannot become applicable until patch safety review and explicit developer approval.",
-                            finding.method,
-                            finding.endpoint_url,
-                            finding.category,
-                            finding.confidence
-                        ),
+        let connection = self.database.connection();
+        connection.execute_batch("SAVEPOINT security_fix_prepare")?;
+        let prepared = (|| -> Result<(SecurityFixAttemptRecord, Option<RepairPlanRecord>), SecurityFixError> {
+            let repair = if matches!(
+                eligibility.result,
+                FixEligibility::AutoFixCandidate | FixEligibility::GuidedFixCandidate
+            ) {
+                Some(
+                    VerifiedRepairService::new(self.database)
+                        .create_plan(
+                            &project_id,
+                            None,
+                            &format!("Security fix: {}", bounded_text(&finding.title, 180)),
+                            &format!(
+                                "Runtime finding {} {} ({}, {}). Root-cause candidates and the remediation strategy are stored in the guided security-fix attempt. This repair plan cannot become applicable until patch safety review and explicit developer approval.",
+                                finding.method,
+                                finding.endpoint_url,
+                                finding.category,
+                                finding.confidence
+                            ),
+                        )
+                        .map_err(|error| SecurityFixError::Repair(error.to_string()))?,
+                )
+            } else {
+                None
+            };
+
+            if let Some(repair) = repair.as_ref() {
+                connection.execute(
+                    "INSERT INTO guided_security_fix_links(finding_id, repair_id, state)
+                     VALUES (?1,?2,'fix_proposed')
+                     ON CONFLICT(finding_id) DO UPDATE SET
+                        repair_id=excluded.repair_id,
+                        state='fix_proposed',
+                        updated_at=CURRENT_TIMESTAMP",
+                    params![finding.finding_id, repair.id],
+                )?;
+                GuidedSecurityStore::new(self.database)
+                    .set_finding_lifecycle(
+                        &finding.finding_id,
+                        finding.session_id.as_deref(),
+                        "fix_proposed",
                     )
-                    .map_err(|error| SecurityFixError::Repair(error.to_string()))?,
-            )
-        } else {
-            None
+                    .map_err(|error| SecurityFixError::Guided(error.to_string()))?;
+            }
+
+            let id = self.random_id("secfix")?;
+            connection.execute(
+                "INSERT INTO security_fix_attempts(
+                    id,finding_id,session_id,project_id,repair_id,attempt_number,eligibility,
+                    category,status,root_cause_json,strategy_json,test_plan_json,static_before_json
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'prepared',?9,?10,?11,?12)",
+                params![
+                    id,
+                    finding.finding_id,
+                    finding.session_id,
+                    project_id,
+                    repair.as_ref().map(|record| record.id.as_str()),
+                    to_i64(next_attempt),
+                    eligibility.result.as_db(),
+                    finding.category,
+                    serde_json::to_string(&root_causes)?,
+                    serde_json::to_string(&strategy)?,
+                    serde_json::to_string(&test_plan)?,
+                    static_before_json,
+                ],
+            )?;
+            self.append_event(
+                &id,
+                "fix_prepared",
+                "Fix eligibility, root-cause candidates, remediation strategy and validation plan prepared. No source was modified.",
+                &json!({
+                    "eligibility": eligibility.result,
+                    "attempt_number": next_attempt,
+                    "repair_id": repair.as_ref().map(|record| record.id.as_str()),
+                })
+                .to_string(),
+            )?;
+            let attempt = self
+                .get_attempt(&id)?
+                .ok_or_else(|| SecurityFixError::AttemptNotFound(id.clone()))?;
+            Ok((attempt, repair))
+        })();
+
+        let (attempt, repair) = match prepared {
+            Ok(value) => {
+                connection.execute_batch("RELEASE SAVEPOINT security_fix_prepare")?;
+                value
+            }
+            Err(error) => {
+                let _ = connection.execute_batch(
+                    "ROLLBACK TO SAVEPOINT security_fix_prepare;
+                     RELEASE SAVEPOINT security_fix_prepare;",
+                );
+                return Err(error);
+            }
         };
 
-        if let Some(repair) = repair.as_ref() {
-            self.database.connection().execute(
-                "INSERT INTO guided_security_fix_links(finding_id, repair_id, state)
-                 VALUES (?1,?2,'fix_proposed')
-                 ON CONFLICT(finding_id) DO UPDATE SET
-                    repair_id=excluded.repair_id,
-                    state='fix_proposed',
-                    updated_at=CURRENT_TIMESTAMP",
-                params![finding.finding_id, repair.id],
-            )?;
-            GuidedSecurityStore::new(self.database)
-                .set_finding_lifecycle(
-                    &finding.finding_id,
-                    finding.session_id.as_deref(),
-                    "fix_proposed",
-                )
-                .map_err(|error| SecurityFixError::Guided(error.to_string()))?;
-        }
-
-        let id = self.random_id("secfix")?;
-        self.database.connection().execute(
-            "INSERT INTO security_fix_attempts(
-                id,finding_id,session_id,project_id,repair_id,attempt_number,eligibility,
-                category,status,root_cause_json,strategy_json,test_plan_json,static_before_json
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'prepared',?9,?10,?11,?12)",
-            params![
-                id,
-                finding.finding_id,
-                finding.session_id,
-                project_id,
-                repair.as_ref().map(|record| record.id.as_str()),
-                to_i64(next_attempt),
-                eligibility.result.as_db(),
-                finding.category,
-                serde_json::to_string(&root_causes)?,
-                serde_json::to_string(&strategy)?,
-                serde_json::to_string(&test_plan)?,
-                static_before_json,
-            ],
-        )?;
-        self.append_event(
-            &id,
-            "fix_prepared",
-            "Fix eligibility, root-cause candidates, remediation strategy and validation plan prepared. No source was modified.",
-            &json!({
-                "eligibility": eligibility.result,
-                "attempt_number": next_attempt,
-                "repair_id": repair.as_ref().map(|record| record.id.as_str()),
-            })
-            .to_string(),
-        )?;
-
-        let attempt = self
-            .get_attempt(&id)?
-            .ok_or_else(|| SecurityFixError::AttemptNotFound(id.clone()))?;
         Ok(SecurityFixPreparation {
             attempt,
             eligibility,
