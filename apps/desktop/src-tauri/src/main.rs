@@ -38,7 +38,8 @@ use guided_security_commands::{
     approve_guided_security_plan, compare_guided_security_scans,
     correlate_guided_security_sources, get_guided_security_session, guided_security_risk_graph,
     guided_security_scorecard, list_guided_security_activity, list_guided_security_plan_items,
-    list_guided_security_retests, list_guided_security_sessions, prepare_guided_security_fix,
+    list_guided_security_retest_candidates, list_guided_security_retests,
+    list_guided_security_sessions, prepare_guided_security_fix,
     prepare_guided_security_test, retest_guided_security_finding,
     update_guided_finding_lifecycle,
 };
@@ -686,6 +687,7 @@ fn main() {
             prepare_guided_security_fix,
             update_guided_finding_lifecycle,
             retest_guided_security_finding,
+            list_guided_security_retest_candidates,
             list_guided_security_retests,
             start_web_security_scan,
             cancel_web_security_scan,
