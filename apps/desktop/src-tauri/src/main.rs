@@ -65,7 +65,7 @@ use runtime_commands::{
 };
 use security_campaign_commands::{
     analyze_security_remediation_campaign, approve_security_remediation_campaign_plan,
-    cancel_security_remediation_campaign, complete_security_remediation_campaign,
+    assess_security_remediation_campaign_rollback, cancel_security_remediation_campaign, complete_security_remediation_campaign,
     create_security_remediation_campaign, get_security_remediation_campaign,
     list_security_remediation_campaign_events, list_security_remediation_campaign_findings,
     list_security_remediation_campaign_relationships, list_security_remediation_campaigns,
@@ -711,6 +711,7 @@ fn main() {
             create_security_remediation_campaign,
             analyze_security_remediation_campaign,
             approve_security_remediation_campaign_plan,
+            assess_security_remediation_campaign_rollback,
             start_security_remediation_campaign,
             pause_security_remediation_campaign,
             resume_security_remediation_campaign,
