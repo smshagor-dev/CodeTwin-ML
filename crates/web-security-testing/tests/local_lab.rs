@@ -11,7 +11,8 @@ use std::{
 
 use url::Url;
 use web_security_testing::{
-    run_authorized_scan, AuthContext, CheckConfig, ScanConfig, ScanError, ScopeConfig,
+    prepare_guided_security, run_authorized_scan, AuthContext, CheckConfig, ScanConfig, ScanError,
+    ScopeConfig, SecurityEnvironment,
 };
 
 struct LocalLab {
@@ -143,6 +144,10 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<String>>>) {
 <a href="/escape">escape</a>
 <a href="/object?id=1">object</a>
 <a href="/openapi.json">api</a>
+<a href="/static-sql?q=hello">static sql-looking text</a>
+<a href="/escaped?q=hello">escaped reflection</a>
+<a href="/redirect-safe?next=/home">safe redirect</a>
+<a href="/generic500?q=hello">generic error</a>
 <form action="/update" method="post"><input name="display_name"></form>
 </body></html>"#,
         ),
@@ -211,6 +216,42 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<String>>>) {
                 &format!("<html><body>{escaped}</body></html>"),
             );
         }
+        "/static-sql" => respond(
+            &mut stream,
+            "200 OK",
+            &[("Content-Type", "text/html")],
+            "<html><body>Example documentation: SQLSTATE[42000] syntax error text</body></html>",
+        ),
+        "/escaped" => {
+            let q = query.get("q").map(String::as_str).unwrap_or("");
+            let escaped = q
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+                .replace(''', "&#39;");
+            respond(
+                &mut stream,
+                "200 OK",
+                &[("Content-Type", "text/html")],
+                &format!("<html><body><pre>{escaped}</pre></body></html>"),
+            );
+        }
+        "/redirect-safe" => {
+            let next = query.get("next").map(String::as_str).unwrap_or("/");
+            let location = if next.starts_with('/') && !next.starts_with("//") {
+                next
+            } else {
+                "/"
+            };
+            respond(&mut stream, "302 Found", &[("Location", location)], "");
+        }
+        "/generic500" => respond(
+            &mut stream,
+            "500 Internal Server Error",
+            &[("Content-Type", "text/plain")],
+            "Something went wrong. Reference ID 500.",
+        ),
         "/escape" => respond(
             &mut stream,
             "302 Found",
@@ -314,6 +355,85 @@ fn authorized_local_lab_detects_representative_findings_without_scope_escape() {
     let serialized = serde_json::to_string(&outcome.findings).expect("findings JSON");
     assert!(!serialized.contains("primary-secret-token"));
     assert!(!serialized.contains("secondary-secret-token"));
+}
+
+
+#[test]
+fn guided_operator_maps_and_plans_before_active_execution() {
+    let lab = LocalLab::start();
+    let prepared = prepare_guided_security(
+        &lab.config(120),
+        &AuthContext::default(),
+        None,
+        SecurityEnvironment::Local,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("guided preparation");
+
+    assert!(prepared.application_map.endpoint_count >= 8);
+    assert!(prepared.application_map.form_count >= 1);
+    assert!(prepared.plan.selected_count > 0);
+    assert!(prepared.plan.skipped_count > 0);
+    assert!(prepared
+        .plan
+        .operations
+        .iter()
+        .any(|item| item.category == "sql_injection" && item.endpoint_url.contains("/search")));
+    assert!(prepared
+        .plan
+        .operations
+        .iter()
+        .any(|item| item.category == "csrf" && item.endpoint_url.contains("/update")));
+    assert!(prepared
+        .plan
+        .operations
+        .iter()
+        .filter(|item| item.method == "POST")
+        .all(|item| !item.selected || item.category == "csrf"));
+    assert!(prepared.mapping_requests <= 120);
+}
+
+#[test]
+fn suspicious_but_safe_negative_fixtures_are_not_confirmed() {
+    let lab = LocalLab::start();
+    let outcome = run_authorized_scan(
+        &lab.config(180),
+        &AuthContext::default(),
+        None,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .expect("negative fixture scan");
+
+    let confirmed_on_safe_fixture: Vec<_> = outcome
+        .findings
+        .iter()
+        .filter(|finding| {
+            finding.confidence == "Confirmed"
+                && (finding.endpoint.contains("/static-sql")
+                    || finding.endpoint.contains("/escaped")
+                    || finding.endpoint.contains("/redirect-safe")
+                    || finding.endpoint.contains("/generic500")
+                    || finding.endpoint.contains("/safe"))
+        })
+        .collect();
+    assert!(
+        confirmed_on_safe_fixture.is_empty(),
+        "safe-looking fixtures must not become confirmed vulnerabilities: {confirmed_on_safe_fixture:?}"
+    );
+
+    assert!(!outcome.findings.iter().any(|finding| {
+        finding.category == "xss" && finding.endpoint.contains("/escaped")
+    }));
+    assert!(!outcome.findings.iter().any(|finding| {
+        finding.category == "open_redirect" && finding.endpoint.contains("/redirect-safe")
+    }));
+    assert!(!outcome.findings.iter().any(|finding| {
+        finding.category == "sql_injection" && finding.endpoint.contains("/static-sql")
+    }));
+    assert!(!outcome.findings.iter().any(|finding| {
+        finding.category == "api_input_validation" && finding.endpoint.contains("/generic500")
+    }));
 }
 
 #[test]
