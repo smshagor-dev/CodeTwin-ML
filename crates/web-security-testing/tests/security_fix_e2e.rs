@@ -243,7 +243,14 @@ fn handle_render(
         return;
     }
 
-    if source.contains(".textContent = q") {
+    if source.contains("return null;") {
+        respond(
+            stream,
+            "500 Internal Server Error",
+            &[("Content-Type", "text/plain")],
+            "render regression",
+        );
+    } else if source.contains(".textContent = q") {
         respond(
             stream,
             "200 OK",
@@ -1030,4 +1037,449 @@ fn unable_to_verify_never_becomes_fixed_when_local_target_is_down() {
     assert_eq!(attempt.status, "unable_to_verify");
     assert_eq!(attempt.retest_state, "UNABLE_TO_VERIFY");
     assert_ne!(attempt.status, "fix_verified");
+}
+
+
+#[test]
+fn rollback_restores_exact_source_index_and_current_vulnerable_state() {
+    let project = tempdir().expect("project");
+    write_project(project.path());
+    let source_path = project.path().join("src/api/search_controller.ts");
+    let original_source = fs::read_to_string(&source_path).expect("original source");
+    let lab = SourceBackedLab::start(project.path().to_path_buf());
+    let config = lab.config();
+    let primary = primary_auth();
+
+    let database = Database::open_in_memory().expect("database");
+    let index = ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("index project");
+    let original_hash: String = database
+        .connection()
+        .query_row(
+            "SELECT content_hash FROM files
+             WHERE project_id=?1 AND relative_path='src/api/search_controller.ts' AND is_active=1",
+            [&index.project_id],
+            |row| row.get(0),
+        )
+        .expect("original hash");
+
+    let outcome = run_authorized_scan(
+        &config,
+        &primary,
+        None,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .expect("initial scan");
+    let findings = persist_outcome(
+        &database,
+        &index.project_id,
+        &config,
+        &primary,
+        None,
+        outcome,
+    );
+    let finding = findings
+        .iter()
+        .find(|item| {
+            item.category == "sql_injection" && item.endpoint_url.contains("/api/search")
+        })
+        .expect("SQLi finding");
+
+    let service = SecurityFixService::new(&database);
+    let prepared = service
+        .prepare_fix(&finding.id, false)
+        .expect("prepare");
+    service
+        .generate_patch(&prepared.attempt.id)
+        .expect("generate patch");
+    service
+        .approve_attempt(&prepared.attempt.id, false)
+        .expect("approve");
+    let repair_id = service
+        .assert_application_allowed(&prepared.attempt.id)
+        .expect("application allowed");
+
+    let backups = tempdir().expect("backup root");
+    let run = RepairApplicationService::new(&database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply");
+    assert_eq!(run.status, "applied");
+    service
+        .record_application(&prepared.attempt.id, &run.id)
+        .expect("record application");
+    GuidedSecurityStore::new(&database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync apply");
+    ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("re-index patched source");
+    record_runtime_validation(&database, &prepared.attempt.id, "SQL rollback precheck");
+    targeted_retest_and_sync(&database, &config, finding, &primary, None);
+
+    let before_rollback = service
+        .get_attempt(&prepared.attempt.id)
+        .expect("attempt")
+        .expect("attempt exists");
+    assert_eq!(before_rollback.status, "fix_verified");
+
+    let rolled = RepairApplicationService::new(&database)
+        .rollback_application(&run.id, backups.path())
+        .expect("rollback");
+    assert_eq!(rolled.status, "rolled_back");
+    service
+        .record_rollback(&prepared.attempt.id, &run.id)
+        .expect("record rollback");
+    GuidedSecurityStore::new(&database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync rollback");
+    ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("re-index restored source");
+
+    assert_eq!(
+        fs::read_to_string(&source_path).expect("restored source"),
+        original_source,
+    );
+    let restored_hash: String = database
+        .connection()
+        .query_row(
+            "SELECT content_hash FROM files
+             WHERE project_id=?1 AND relative_path='src/api/search_controller.ts' AND is_active=1",
+            [&index.project_id],
+            |row| row.get(0),
+        )
+        .expect("restored hash");
+    assert_eq!(restored_hash, original_hash);
+
+    let current = service
+        .get_attempt(&prepared.attempt.id)
+        .expect("attempt after rollback")
+        .expect("attempt exists");
+    assert_eq!(current.status, "rolled_back");
+    assert_eq!(
+        current.retest_state, "FIX_VERIFIED",
+        "historical successful retest remains immutable audit evidence"
+    );
+    let lifecycle: String = database
+        .connection()
+        .query_row(
+            "SELECT state FROM guided_security_finding_lifecycle WHERE finding_id=?1",
+            [&finding.id],
+            |row| row.get(0),
+        )
+        .expect("current guided lifecycle");
+    assert_eq!(lifecycle, "fix_proposed");
+
+    let post_rollback = run_targeted_retest(
+        &config,
+        &primary,
+        None,
+        &TargetedRetestRequest {
+            endpoint_url: finding.endpoint_url.clone(),
+            method: finding.method.clone(),
+            parameter_name: finding.parameter_name.clone(),
+            parameter_location: Some("query".into()),
+            category: finding.category.clone(),
+        },
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("post rollback retest");
+    assert!(post_rollback.verification_completed);
+    assert!(post_rollback
+        .findings
+        .iter()
+        .any(|observed| observed.category == "sql_injection"));
+
+    let events = service
+        .events(&prepared.attempt.id, 100)
+        .expect("history");
+    assert!(events.iter().any(|item| item.event_type == "security_retest_completed"));
+    assert!(events.iter().any(|item| item.event_type == "fix_rolled_back"));
+}
+
+#[test]
+fn still_vulnerable_creates_new_immutable_attempt_and_stops_automatic_loop() {
+    let project = tempdir().expect("project");
+    write_project(project.path());
+    let lab = SourceBackedLab::start(project.path().to_path_buf());
+    let config = lab.config();
+    let primary = primary_auth();
+
+    let database = Database::open_in_memory().expect("database");
+    let index = ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("index");
+    let outcome = run_authorized_scan(
+        &config,
+        &primary,
+        None,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .expect("scan");
+    let findings = persist_outcome(
+        &database,
+        &index.project_id,
+        &config,
+        &primary,
+        None,
+        outcome,
+    );
+    let finding = findings
+        .iter()
+        .find(|item| {
+            item.category == "xss" && item.endpoint_url.contains("/api/render-ambiguous")
+        })
+        .expect("ambiguous XSS finding");
+
+    let service = SecurityFixService::new(&database);
+    let first = service
+        .prepare_fix(&finding.id, false)
+        .expect("attempt 1");
+    assert_eq!(first.eligibility.result, FixEligibility::GuidedFixCandidate);
+    let source = fs::read_to_string(project.path().join("src/api/render-ambiguous-controller.ts"))
+        .expect("source");
+    let insufficient = source.replace(
+        "export function getRenderAmbiguous",
+        "/* reviewed but insufficient remediation */\nexport function getRenderAmbiguous",
+    );
+    let review = service
+        .propose_replacement(
+            &first.attempt.id,
+            &first.root_causes[0].file_id,
+            &insufficient,
+        )
+        .expect("review insufficient patch");
+    assert_ne!(review.safety.classification, PatchSafetyClass::Rejected);
+    service
+        .approve_attempt(
+            &first.attempt.id,
+            review.safety.classification == PatchSafetyClass::Caution,
+        )
+        .expect("approve insufficient patch");
+    let repair_id = service
+        .assert_application_allowed(&first.attempt.id)
+        .expect("allowed");
+    let backups = tempdir().expect("backup");
+    let run = RepairApplicationService::new(&database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply");
+    service
+        .record_application(&first.attempt.id, &run.id)
+        .expect("record apply");
+    GuidedSecurityStore::new(&database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync apply");
+    ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("re-index");
+    record_runtime_validation(&database, &first.attempt.id, "ambiguous XSS regression");
+
+    let retest = run_targeted_retest(
+        &config,
+        &primary,
+        None,
+        &TargetedRetestRequest {
+            endpoint_url: finding.endpoint_url.clone(),
+            method: finding.method.clone(),
+            parameter_name: finding.parameter_name.clone(),
+            parameter_location: Some("query".into()),
+            category: "xss".into(),
+        },
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("targeted retest");
+    assert!(retest.verification_completed);
+    let observed = retest
+        .findings
+        .iter()
+        .find(|item| item.category == "xss")
+        .expect("XSS remains");
+    GuidedSecurityStore::new(&database)
+        .record_retest(GuidedRetestInput {
+            finding_id: &finding.id,
+            session_id: None,
+            status: "still_vulnerable",
+            original_confidence: &finding.confidence,
+            observed_confidence: Some(&observed.confidence),
+            requests_performed: retest.requests_performed,
+            detail_json: r#"{"fixture":"still-vulnerable-e2e"}"#,
+        })
+        .expect("persist retest");
+    let first_after = service
+        .sync_retest_result(&finding.id, "still_vulnerable")
+        .expect("sync")
+        .expect("attempt 1");
+    assert_eq!(first_after.status, "still_vulnerable");
+    let immutable_first = first_after.clone();
+
+    let second = service
+        .prepare_fix(&finding.id, false)
+        .expect("attempt 2");
+    assert_eq!(second.attempt.attempt_number, 2);
+    assert_ne!(second.attempt.id, first_after.id);
+    assert!(second
+        .strategy
+        .rationale
+        .contains("previous guided fix attempt remained vulnerable"));
+    assert_eq!(
+        service
+            .get_attempt(&immutable_first.id)
+            .expect("old attempt")
+            .expect("old attempt exists"),
+        immutable_first,
+        "new attempts must not rewrite previous attempts"
+    );
+
+    let third = service
+        .prepare_fix(&finding.id, false)
+        .expect("attempt 3");
+    assert_eq!(third.attempt.attempt_number, 3);
+    assert!(matches!(
+        service.prepare_fix(&finding.id, false),
+        Err(codetwin_core::SecurityFixError::AttemptLimitReached)
+    ));
+    let fourth = service
+        .prepare_fix(&finding.id, true)
+        .expect("explicit further investigation");
+    assert_eq!(fourth.attempt.attempt_number, 4);
+}
+
+#[test]
+fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
+    let project = tempdir().expect("project");
+    write_project(project.path());
+    let lab = SourceBackedLab::start(project.path().to_path_buf());
+    let config = lab.config();
+    let primary = primary_auth();
+
+    let database = Database::open_in_memory().expect("database");
+    let index = ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("index");
+    let outcome = run_authorized_scan(
+        &config,
+        &primary,
+        None,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .expect("scan");
+    let findings = persist_outcome(
+        &database,
+        &index.project_id,
+        &config,
+        &primary,
+        None,
+        outcome,
+    );
+    let finding = findings
+        .iter()
+        .find(|item| {
+            item.category == "xss"
+                && item.endpoint_url.contains("/api/render?q=")
+                && !item.endpoint_url.contains("ambiguous")
+        })
+        .expect("XSS finding");
+
+    let service = SecurityFixService::new(&database);
+    let prepared = service
+        .prepare_fix(&finding.id, false)
+        .expect("prepare");
+    let source = fs::read_to_string(project.path().join("src/api/render_controller.ts"))
+        .expect("source");
+    let regressive = source
+        .replace(".innerHTML = q", ".textContent = q")
+        .replace("return output;", "return null;");
+    let review = service
+        .propose_replacement(
+            &prepared.attempt.id,
+            &prepared.root_causes[0].file_id,
+            &regressive,
+        )
+        .expect("review");
+    assert_ne!(review.safety.classification, PatchSafetyClass::Rejected);
+    service
+        .approve_attempt(
+            &prepared.attempt.id,
+            review.safety.classification == PatchSafetyClass::Caution,
+        )
+        .expect("approve");
+    let repair_id = service
+        .assert_application_allowed(&prepared.attempt.id)
+        .expect("allowed");
+    let backups = tempdir().expect("backup");
+    let run = RepairApplicationService::new(&database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply");
+    service
+        .record_application(&prepared.attempt.id, &run.id)
+        .expect("record apply");
+    GuidedSecurityStore::new(&database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync apply");
+    ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("re-index");
+
+    let (normal_status, _) =
+        blocking_get(&format!("{}/api/render?q=hello", lab.base_url), None);
+    assert_eq!(normal_status, 500, "patch intentionally introduced a regression");
+    service
+        .add_validation_result(
+            &prepared.attempt.id,
+            ValidationResultInput {
+                command_label: "render behavior regression",
+                runner_kind: "local_security_fix_fixture",
+                targets: &["src/api/render_controller.ts".into()],
+                status: "FAIL",
+                exit_code: Some(1),
+                duration_ms: Some(1),
+                classification: "PATCH_INTRODUCED_FAILURE",
+                stdout_summary: "",
+                stderr_summary: "normal render returned 500",
+            },
+        )
+        .expect("persist regression");
+    let validation = service
+        .complete_validation(&prepared.attempt.id)
+        .expect("complete validation");
+    assert_eq!(validation.status, "validation_failed");
+
+    let retest = run_targeted_retest(
+        &config,
+        &primary,
+        None,
+        &TargetedRetestRequest {
+            endpoint_url: finding.endpoint_url.clone(),
+            method: finding.method.clone(),
+            parameter_name: finding.parameter_name.clone(),
+            parameter_location: Some("query".into()),
+            category: "xss".into(),
+        },
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("targeted retest");
+    assert!(retest.verification_completed);
+    assert!(!retest.findings.iter().any(|item| item.category == "xss"));
+    GuidedSecurityStore::new(&database)
+        .record_retest(GuidedRetestInput {
+            finding_id: &finding.id,
+            session_id: None,
+            status: "retest_passed",
+            original_confidence: &finding.confidence,
+            observed_confidence: None,
+            requests_performed: retest.requests_performed,
+            detail_json: r#"{"fixture":"regression-detected-e2e"}"#,
+        })
+        .expect("persist retest");
+    let final_attempt = service
+        .sync_retest_result(&finding.id, "retest_passed")
+        .expect("sync")
+        .expect("attempt");
+    assert_eq!(final_attempt.retest_state, "REGRESSION_DETECTED");
+    assert_eq!(final_attempt.status, "validation_failed");
+    assert_ne!(final_attempt.status, "fix_verified");
 }
