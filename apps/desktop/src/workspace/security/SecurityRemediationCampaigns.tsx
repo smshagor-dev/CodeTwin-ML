@@ -340,7 +340,7 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
           </select>
           <select value={filters.category} onChange={(event) => setFilters({ ...filters, category: event.target.value })}>
             <option value="">All vulnerability families</option>
-            {[...new Set(findings.map((finding) => finding.category))].sort().map((value) => <option key={value}>{label(value)}</option>)}
+            {[...new Set(findings.map((finding) => finding.category))].sort().map((value) => <option key={value} value={value}>{label(value)}</option>)}
           </select>
           <select value={filters.eligibility} onChange={(event) => setFilters({ ...filters, eligibility: event.target.value })}>
             <option value="">All eligibility</option>
@@ -482,16 +482,6 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
               )}
             >
               {busy ?? "Approve Campaign Plan"}
-            </button>
-            <button
-              className="ws-button ws-button-secondary"
-              disabled={Boolean(busy)}
-              onClick={() => void runAction(
-                "Reanalyzing relationships",
-                () => workspaceApi.analyzeSecurityRemediationCampaign(campaign.id),
-              )}
-            >
-              Reanalyze
             </button>
           </div>
         </section>
