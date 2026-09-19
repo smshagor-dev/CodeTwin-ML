@@ -1926,3 +1926,65 @@ fn bookkeeping_failure_recovery_records_rolled_back_application_without_strandin
         .iter()
         .any(|event| event.event_type == "application_bookkeeping_rollback"));
 }
+
+
+#[test]
+fn failed_fix_preparation_rolls_back_repair_link_lifecycle_and_attempt_atomically() {
+    let fixture = sql_fixture();
+    fixture
+        .database
+        .connection()
+        .execute_batch(
+            "CREATE TRIGGER test_reject_security_fix_prepare
+             BEFORE INSERT ON security_fix_attempts
+             BEGIN
+               SELECT RAISE(ABORT, 'injected prepare failure');
+             END;",
+        )
+        .expect("install prepare failure");
+
+    let service = SecurityFixService::new(&fixture.database);
+    assert!(service.prepare_fix(&fixture.finding_id, false).is_err());
+
+    let attempt_count: i64 = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM security_fix_attempts WHERE finding_id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("attempt count");
+    let link_count: i64 = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM guided_security_fix_links WHERE finding_id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("link count");
+    let lifecycle_count: i64 = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM guided_security_finding_lifecycle WHERE finding_id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("lifecycle count");
+    let repair_count: i64 = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM repair_plans WHERE project_id=?1",
+            [&fixture.project_id],
+            |row| row.get(0),
+        )
+        .expect("repair count");
+
+    assert_eq!(attempt_count, 0);
+    assert_eq!(link_count, 0);
+    assert_eq!(lifecycle_count, 0);
+    assert_eq!(repair_count, 0);
+}
