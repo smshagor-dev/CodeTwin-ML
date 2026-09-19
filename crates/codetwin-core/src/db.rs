@@ -263,6 +263,187 @@ mod tests {
             .expect("migration 19");
         assert_eq!(tables, 8);
         assert_eq!(migration, 1);
+
+        upgraded
+            .connection()
+            .execute(
+                "INSERT INTO guided_security_sessions(
+                    id,target_url,environment,testing_depth,auth_mode,status,
+                    authorization_confirmed,config_json
+                 ) VALUES ('guided-reopen','http://localhost:3000','local','standard',
+                           'none','awaiting_approval',1,'{}')",
+                [],
+            )
+            .expect("persist guided session");
+        drop(upgraded);
+
+        let reopened = Database::open(file.path()).expect("reopen upgraded v19 db");
+        let migration_after_reopen: i64 = reopened
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 19",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration 19 after reopen");
+        let persisted: i64 = reopened
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM guided_security_sessions WHERE id='guided-reopen'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("persisted guided session");
+        assert_eq!(migration_after_reopen, 1);
+        assert_eq!(persisted, 1);
+    }
+
+    #[test]
+    fn guided_security_schema_enforces_constraints_indexes_and_foreign_keys() {
+        let db = Database::open_in_memory().expect("database");
+
+        let index_count: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN (
+                    'idx_guided_security_sessions_project_created',
+                    'idx_guided_security_sessions_status_created',
+                    'idx_guided_security_plan_session',
+                    'idx_guided_security_activity_session',
+                    'idx_guided_security_source_finding',
+                    'idx_guided_security_retests_finding'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("guided indexes");
+        assert_eq!(index_count, 6);
+
+        let session_sql: String = db
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='guided_security_sessions'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("guided session schema");
+        assert!(session_sql.contains("'local','development','staging','authorized_production'"));
+        assert!(session_sql.contains("'quick','standard','deep','custom'"));
+        assert!(session_sql.contains("'preparing','awaiting_approval','approved','running','completed','failed','cancelled'"));
+        assert!(session_sql.contains("scan_id TEXT UNIQUE REFERENCES web_security_scans(id) ON DELETE SET NULL"));
+        assert!(session_sql.contains("authorization_confirmed = 1"));
+
+        let retest_sql: String = db
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='guided_security_retests'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("guided retest schema");
+        assert!(retest_sql.contains("'retest_passed','still_vulnerable','unable_to_verify'"));
+        assert!(retest_sql.contains("'Potential','Likely','Confirmed'"));
+
+        let lifecycle_sql: String = db
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='guided_security_finding_lifecycle'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("guided lifecycle schema");
+        assert!(lifecycle_sql.contains("'open','fix_proposed','fix_applied','retest_passed','still_vulnerable','unable_to_verify'"));
+
+        for table in [
+            "guided_security_sessions",
+            "guided_security_plan_items",
+            "guided_security_activity",
+            "guided_security_source_candidates",
+            "guided_security_finding_lifecycle",
+            "guided_security_retests",
+            "guided_security_comparisons",
+            "guided_security_fix_links",
+        ] {
+            let mut statement = db
+                .connection()
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .expect("guided table columns");
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("guided column rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("guided columns");
+            assert!(columns.iter().all(|column| {
+                !matches!(
+                    column.as_str(),
+                    "cookie"
+                        | "cookie_header"
+                        | "authorization"
+                        | "bearer_token"
+                        | "api_key"
+                        | "password"
+                        | "secret"
+                        | "token"
+                        | "access_token"
+                        | "refresh_token"
+                )
+            }));
+        }
+
+        db.connection()
+            .execute(
+                "INSERT INTO web_security_scans(
+                    id,target_url,status,phase,authorization_confirmed,
+                    scope_json,config_json,auth_metadata_json
+                 ) VALUES ('scan-fk','http://localhost:3000','completed','completed',1,'{}','{}','{}')",
+                [],
+            )
+            .expect("scan fixture");
+        db.connection()
+            .execute(
+                "INSERT INTO guided_security_sessions(
+                    id,target_url,environment,testing_depth,auth_mode,status,
+                    authorization_confirmed,config_json,scan_id
+                 ) VALUES ('session-fk','http://localhost:3000','local','standard',
+                           'none','completed',1,'{}','scan-fk')",
+                [],
+            )
+            .expect("guided session fixture");
+        db.connection()
+            .execute(
+                "INSERT INTO guided_security_plan_items(
+                    id,session_id,operation_key,endpoint_url,method,category,risk,selected,reason
+                 ) VALUES ('plan-fk','session-fk','op','http://localhost:3000','GET',
+                           'passive_analysis','SAFE',1,'fixture')",
+                [],
+            )
+            .expect("guided plan fixture");
+
+        db.connection()
+            .execute("DELETE FROM web_security_scans WHERE id='scan-fk'", [])
+            .expect("delete linked scan");
+        let linked_scan: Option<String> = db
+            .connection()
+            .query_row(
+                "SELECT scan_id FROM guided_security_sessions WHERE id='session-fk'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("scan link after delete");
+        assert!(linked_scan.is_none());
+
+        db.connection()
+            .execute("DELETE FROM guided_security_sessions WHERE id='session-fk'", [])
+            .expect("delete guided session");
+        let plan_count: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM guided_security_plan_items WHERE id='plan-fk'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("cascade plan delete");
+        assert_eq!(plan_count, 0);
     }
 
     #[test]
