@@ -362,13 +362,21 @@ export function GuidedSecurityOperator() {
   }
 
   async function retestFixedFindings() {
-    const candidates = findings.filter((finding) => finding.status === "resolved");
-    if (!candidates.length) {
-      setToast({ tone: "info", message: "No findings are currently marked resolved for batch retesting." });
-      return;
-    }
-    for (const finding of candidates) {
-      await retestFinding(finding);
+    if (!session) return;
+    try {
+      const candidateIds = await workspaceApi.listGuidedSecurityRetestCandidates(session.id, 500);
+      const candidates = candidateIds
+        .map((id) => findings.find((finding) => finding.id === id))
+        .filter((finding): finding is WebFindingRecord => Boolean(finding));
+      if (!candidates.length) {
+        setToast({ tone: "info", message: "No applied guided fixes are waiting for targeted retest." });
+        return;
+      }
+      for (const finding of candidates) {
+        await retestFinding(finding);
+      }
+    } catch (value) {
+      setToast({ tone: "error", message: "Could not load applied-fix retest candidates: " + String(value) });
     }
   }
 
