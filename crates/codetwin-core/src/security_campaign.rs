@@ -2081,6 +2081,187 @@ mod tests {
     }
 
     #[test]
+    fn campaign_rejects_target_substitution_before_plan_analysis() {
+        let (database, session_id, _, finding_a, _) = fixture();
+        let service = SecurityRemediationCampaignService::new(&database);
+        let campaign = service
+            .create(&SecurityRemediationCampaignCreate {
+                session_id,
+                finding_ids: vec![finding_a],
+            })
+            .expect("create");
+        database
+            .connection()
+            .execute(
+                "UPDATE security_remediation_campaigns
+                 SET target_url='http://127.0.0.1:39999' WHERE id=?1",
+                [&campaign.id],
+            )
+            .expect("simulate preapproval target substitution");
+        let error = service
+            .analyze(&campaign.id)
+            .expect_err("substituted target must not be analyzed");
+        assert!(error.to_string().contains("scope binding changed"));
+    }
+
+    #[test]
+    fn approved_campaign_plan_rejects_order_and_plan_identity_tampering() {
+        let (database, session_id, _, finding_a, finding_b) = fixture();
+        let service = SecurityRemediationCampaignService::new(&database);
+        let campaign = service
+            .create(&SecurityRemediationCampaignCreate {
+                session_id,
+                finding_ids: vec![finding_a.clone(), finding_b],
+            })
+            .expect("create");
+        let analyzed = service.analyze(&campaign.id).expect("analyze");
+        service
+            .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("plan hash"))
+            .expect("approve");
+
+        assert!(database
+            .connection()
+            .execute(
+                "UPDATE security_remediation_campaign_findings
+                 SET ordinal=99 WHERE campaign_id=?1 AND finding_id=?2",
+                params![campaign.id, finding_a],
+            )
+            .is_err(), "approved finding order must be immutable");
+        assert!(database
+            .connection()
+            .execute(
+                "UPDATE security_remediation_campaigns
+                 SET plan_json='{}' WHERE id=?1",
+                [&campaign.id],
+            )
+            .is_err(), "approved plan payload must be immutable");
+    }
+
+    #[test]
+    fn campaign_retest_floor_prevents_precreation_retest_from_forging_verified() {
+        let (database, session_id, _, finding_a, _) = fixture();
+        database
+            .connection()
+            .execute(
+                "INSERT INTO guided_security_retests(
+                    id,finding_id,session_id,status,original_confidence,
+                    observed_confidence,requests_performed,detail_json
+                 ) VALUES (
+                    'pre-campaign-retest',?1,?2,'retest_passed','Likely','Likely',2,'{}'
+                 )",
+                params![finding_a, session_id],
+            )
+            .expect("pre-campaign retest");
+
+        let service = SecurityRemediationCampaignService::new(&database);
+        let campaign = service
+            .create(&SecurityRemediationCampaignCreate {
+                session_id: session_id.clone(),
+                finding_ids: vec![finding_a.clone()],
+            })
+            .expect("create");
+        let member = service
+            .findings(&campaign.id)
+            .expect("members")
+            .into_iter()
+            .next()
+            .expect("member");
+        assert!(member.retest_floor_rowid > 0);
+
+        let analyzed = service.analyze(&campaign.id).expect("analyze");
+        service
+            .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+            .expect("approve");
+        service.start(&campaign.id).expect("start");
+        service.sync(&campaign.id).expect("sync");
+        let before_new_retest = service
+            .findings(&campaign.id)
+            .expect("members")
+            .into_iter()
+            .next()
+            .expect("member");
+        assert_ne!(
+            before_new_retest.status, "VERIFIED",
+            "a retest that predates campaign creation cannot verify campaign work"
+        );
+
+        database
+            .connection()
+            .execute(
+                "INSERT INTO guided_security_retests(
+                    id,finding_id,session_id,status,original_confidence,
+                    observed_confidence,requests_performed,detail_json
+                 ) VALUES (
+                    'post-campaign-retest',?1,?2,'retest_passed','Likely','Likely',2,'{}'
+                 )",
+                params![finding_a, session_id],
+            )
+            .expect("post-campaign retest");
+        service.sync(&campaign.id).expect("sync post-campaign retest");
+        assert_eq!(
+            service
+                .findings(&campaign.id)
+                .expect("members")
+                .into_iter()
+                .next()
+                .expect("member")
+                .status,
+            "VERIFIED"
+        );
+    }
+
+    #[test]
+    fn persistence_rejects_forged_verified_invalid_lifecycle_and_duplicate_history() {
+        let (database, session_id, _, finding_a, _) = fixture();
+        let service = SecurityRemediationCampaignService::new(&database);
+        let campaign = service
+            .create(&SecurityRemediationCampaignCreate {
+                session_id,
+                finding_ids: vec![finding_a.clone()],
+            })
+            .expect("create");
+
+        assert!(database
+            .connection()
+            .execute(
+                "UPDATE security_remediation_campaigns SET status='COMPLETED' WHERE id=?1",
+                [&campaign.id],
+            )
+            .is_err(), "draft campaign cannot jump directly to completed");
+        assert!(database
+            .connection()
+            .execute(
+                "UPDATE security_remediation_campaign_findings
+                 SET status='VERIFIED' WHERE campaign_id=?1 AND finding_id=?2",
+                params![campaign.id, finding_a],
+            )
+            .is_err(), "VERIFIED requires persisted post-campaign security evidence");
+
+        let event = service
+            .events(&campaign.id, 20)
+            .expect("events")
+            .into_iter()
+            .next()
+            .expect("created event");
+        assert!(database
+            .connection()
+            .execute(
+                "INSERT INTO security_remediation_campaign_events(
+                    id,campaign_id,sequence,event_type,message,detail_json
+                 ) VALUES ('duplicate-campaign-event',?1,?2,'duplicate','duplicate','{}')",
+                params![campaign.id, to_i64(event.sequence)],
+            )
+            .is_err(), "event sequence must be unique");
+        assert!(database
+            .connection()
+            .execute(
+                "DELETE FROM security_remediation_campaign_events WHERE id=?1",
+                [&event.id],
+            )
+            .is_err(), "campaign event history must be append-only");
+    }
+
+    #[test]
     fn campaign_completion_with_unresolved_findings_is_factual() {
         let (database, session_id, _, finding_a, _) = fixture();
         let service = SecurityRemediationCampaignService::new(&database);
