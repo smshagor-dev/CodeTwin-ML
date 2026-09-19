@@ -70,10 +70,24 @@ pub fn response_evidence(
             "body_sha256": body_hash(&response.body),
             "body_bytes": response.body.len(),
             "headers": redact_headers(&response.headers),
-            "body_excerpt": redact_body(&response.body),
+            "body_excerpt": redact_body_with_secrets(
+                &response.body,
+                &response.redaction_secrets,
+            ),
             "truncated": response.truncated,
         }),
     }
+}
+
+pub fn redact_body_with_secrets(body: &[u8], secrets: &[String]) -> String {
+    let mut redacted = redact_body(body);
+    for secret in secrets {
+        let secret = secret.trim();
+        if !secret.is_empty() {
+            redacted = redacted.replace(secret, "<redacted>");
+        }
+    }
+    redacted
 }
 
 pub fn redact_body(body: &[u8]) -> String {
@@ -236,7 +250,7 @@ fn truncate(value: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_body, redact_headers};
+    use super::{redact_body, redact_body_with_secrets, redact_headers};
 
     #[test]
     fn redacts_secrets_from_headers_and_json() {
@@ -262,5 +276,13 @@ mod tests {
         assert!(!obvious.contains("github_pat_longvalue"));
         assert!(!obvious.contains("sk-secretvalue"));
         assert!(!obvious.contains("eyJhbGci"));
+
+        let echoed = redact_body_with_secrets(
+            b"debug echo raw-primary-secret and custom-secret",
+            &["raw-primary-secret".to_string(), "custom-secret".to_string()],
+        );
+        assert!(!echoed.contains("raw-primary-secret"));
+        assert!(!echoed.contains("custom-secret"));
+        assert!(echoed.matches("<redacted>").count() >= 2);
     }
 }
