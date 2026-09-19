@@ -180,6 +180,17 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         Self { database }
     }
 
+    pub fn recover_interrupted_scans(&self) -> Result<usize, WebSecurityStoreError> {
+        Ok(self.database.connection().execute(
+            "UPDATE web_security_scans
+             SET status='failed', phase='failed',
+                 last_error='CodeTwin restarted before this scan completed.',
+                 finished_at=COALESCE(finished_at, CURRENT_TIMESTAMP)
+             WHERE status IN ('queued','running')",
+            [],
+        )?)
+    }
+
     pub fn create_scan(&self, input: &WebScanCreate) -> Result<WebScanRecord, WebSecurityStoreError> {
         if !input.authorization_confirmed {
             return Err(WebSecurityStoreError::InvalidConfig(
@@ -399,13 +410,24 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             .as_ref()
             .and_then(|source| source.symbol_id.as_deref());
         let source_confidence = finding.source.as_ref().map(|source| source.confidence);
+        let first_detected: Option<String> = self.database.connection().query_row(
+            "SELECT MIN(previous.first_detected)
+             FROM web_security_findings previous
+             JOIN web_security_scans previous_scan ON previous_scan.id=previous.scan_id
+             JOIN web_security_scans current_scan ON current_scan.id=?1
+             WHERE previous.fingerprint=?2
+               AND previous_scan.target_url=current_scan.target_url
+               AND COALESCE(previous_scan.project_id,'')=COALESCE(current_scan.project_id,'')",
+            params![scan_id, finding.fingerprint],
+            |row| row.get(0),
+        )?;
         self.database.connection().execute(
             "INSERT INTO web_security_findings(
                 id, scan_id, fingerprint, category, severity, confidence, target,
                 endpoint_url, method, parameter_name, title, description,
                 reproduction_summary, impact, remediation, references_json,
-                source_file_id, source_symbol_id, source_confidence
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
+                source_file_id, source_symbol_id, source_confidence, first_detected
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,COALESCE(?20,CURRENT_TIMESTAMP))
              ON CONFLICT(scan_id, fingerprint) DO UPDATE SET
                 severity=excluded.severity,
                 confidence=excluded.confidence,
@@ -438,6 +460,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 source_file_id,
                 source_symbol_id,
                 source_confidence,
+                first_detected,
             ],
         )?;
         self.get_finding_by_id(&id)?
@@ -572,6 +595,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         &self,
         project_id: Option<&str>,
         endpoint_url: &str,
+        parameter_name: Option<&str>,
     ) -> Result<Option<WebSourceCorrelation>, WebSecurityStoreError> {
         let Some(project_id) = project_id else {
             return Ok(None);
@@ -588,27 +612,41 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                     && segment.chars().any(|character| character.is_ascii_alphabetic())
                     && !matches!(*segment, "api" | "v1" | "v2" | "www")
             })
-            .unwrap_or("");
-        if segment.is_empty() {
+            .unwrap_or("")
+            .to_string();
+        let parameter = parameter_name.unwrap_or("").trim().to_string();
+        if segment.is_empty() && parameter.is_empty() {
             return Ok(None);
         }
-        let pattern = format!("%{}%", escape_like(segment));
+
         self.database
             .connection()
             .query_row(
                 "SELECT f.id, f.relative_path, s.id, s.name,
                         CASE
-                          WHEN lower(s.name)=lower(?3) THEN 0.72
-                          WHEN lower(f.relative_path) LIKE lower(?2) THEN 0.58
+                          WHEN ?2 <> '' AND lower(s.name)=lower(?2) THEN 0.78
+                          WHEN ?3 <> '' AND lower(s.name)=lower(?3) THEN 0.72
+                          WHEN sf.id IS NOT NULL THEN 0.68
+                          WHEN ?2 <> '' AND instr(lower(f.relative_path), lower(?2)) > 0 THEN 0.58
                           ELSE 0.42
                         END AS confidence
                  FROM files f
                  LEFT JOIN symbols s ON s.file_id=f.id AND s.is_active=1
+                 LEFT JOIN findings sf
+                   ON sf.project_id=f.project_id
+                  AND sf.file_id=f.id
+                  AND sf.analyzer_key='appsec'
+                  AND sf.status='open'
                  WHERE f.project_id=?1 AND f.is_active=1
-                   AND (f.relative_path LIKE ?2 ESCAPE '\' OR s.name LIKE ?2 ESCAPE '\')
-                 ORDER BY confidence DESC, f.relative_path, s.start_line
+                   AND (
+                     (?2 <> '' AND (instr(lower(f.relative_path), lower(?2)) > 0
+                                    OR lower(s.name)=lower(?2)))
+                     OR (?3 <> '' AND lower(s.name)=lower(?3))
+                     OR sf.id IS NOT NULL
+                   )
+                 ORDER BY confidence DESC, f.relative_path, COALESCE(s.start_line, 0)
                  LIMIT 1",
-                params![project_id, pattern, segment],
+                params![project_id, segment, parameter],
                 |row| {
                     Ok(WebSourceCorrelation {
                         file_id: row.get(0)?,
@@ -633,14 +671,32 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             .ok_or_else(|| WebSecurityStoreError::NotFound(scan_id.to_string()))?;
         let findings = self.list_findings(scan_id, &WebFindingFilter::default(), MAX_LIST)?;
         let endpoints = self.list_endpoints(scan_id, MAX_LIST)?;
+        let generated_at: String = self.database.connection().query_row(
+            "SELECT CURRENT_TIMESTAMP",
+            [],
+            |row| row.get(0),
+        )?;
+        let mut severity_summary = std::collections::BTreeMap::<String, usize>::new();
+        for finding in &findings {
+            *severity_summary.entry(finding.severity.clone()).or_default() += 1;
+        }
+        let mut report_findings = Vec::with_capacity(findings.len());
+        for finding in &findings {
+            report_findings.push(json!({
+                "finding": finding,
+                "evidence": self.finding_evidence(&finding.id, 20)?,
+            }));
+        }
 
         if format.eq_ignore_ascii_case("json") {
             return Ok(serde_json::to_string_pretty(&json!({
                 "title": "CodeTwin Authorized Application Security Report",
+                "generated_at": generated_at,
                 "scan": scan,
                 "methodology": "Bounded authorized crawling, passive response analysis, and non-destructive active probes.",
                 "endpoint_inventory": endpoints,
-                "findings": findings,
+                "severity_summary": severity_summary,
+                "findings": report_findings,
                 "limitations": [
                     "Automated testing can produce false positives and false negatives.",
                     "Potential and Likely findings require human review.",
@@ -660,13 +716,19 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         report.push_str("# CodeTwin Authorized Application Security Report\n\n");
         report.push_str("## Executive Summary\n\n");
         report.push_str(&format!(
-            "Target: {}  \nStatus: **{}**  \nEndpoints discovered: **{}**  \nRequests performed: **{}**  \nFindings: **{}**\n\n",
+            "Generated: {}  \nTarget: {}  \nStatus: **{}**  \nEndpoints discovered: **{}**  \nRequests performed: **{}**  \nFindings: **{}**\n\n",
+            generated_at,
             scan.target_url,
             scan.status,
             scan.endpoints_discovered,
             scan.requests_performed,
             findings.len()
         ));
+        report.push_str("Severity summary: ");
+        for (severity, count) in &severity_summary {
+            report.push_str(&format!("**{}:** {}  ", severity, count));
+        }
+        report.push_str("\n\n");
         report.push_str("## Scope & Authorization\n\n");
         report.push_str(
             "The scan record contains explicit authorization confirmation and the exact bounded scope/configuration used for execution. Authentication metadata records only whether credentials were supplied and custom header names; secret values are not persisted.\n\n",
@@ -698,7 +760,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         }
         for finding in findings {
             report.push_str(&format!(
-                "### [{} / {}] {}\n\n- Category: {}\n- Endpoint: {} {}\n- Parameter: {}\n- Status: {}\n- Source correlation confidence: {}\n\n{}\n\n**Impact:** {}\n\n**Evidence / reproduction:** {}\n\n**Remediation:** {}\n\n",
+                "### [{} / {}] {}\n\n- Category: {}\n- Endpoint: {} {}\n- Parameter: {}\n- Status: {}\n- Source correlation: {}\n- Source correlation confidence: {}\n\n{}\n\n**Impact:** {}\n\n**Reproduction:** {}\n\n**Remediation:** {}\n\n",
                 finding.severity.to_ascii_uppercase(),
                 finding.confidence,
                 finding.title,
@@ -707,6 +769,14 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 finding.endpoint_url,
                 finding.parameter_name.as_deref().unwrap_or("n/a"),
                 finding.status,
+                finding
+                    .source_relative_path
+                    .as_deref()
+                    .map(|path| match finding.source_symbol_name.as_deref() {
+                        Some(symbol) => format!("{path} → {symbol}"),
+                        None => path.to_string(),
+                    })
+                    .unwrap_or_else(|| "not correlated".to_string()),
                 finding
                     .source_confidence
                     .map(|value| format!("{value:.2}"))
@@ -721,6 +791,19 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                     "References: {}\n\n",
                     finding.references.join(", ")
                 ));
+            }
+            let evidence = self.finding_evidence(&finding.id, 20)?;
+            if !evidence.is_empty() {
+                report.push_str("**Observed evidence:**\n\n");
+                for item in evidence {
+                    report.push_str(&format!(
+                        "- {} — request: `{}`; response: `{}`\n",
+                        item.summary,
+                        bounded_text(&item.request_metadata_json, 800),
+                        bounded_text(&item.response_metadata_json, 1_200),
+                    ));
+                }
+                report.push('\n');
             }
         }
         report.push_str("## Testing Limitations\n\n");

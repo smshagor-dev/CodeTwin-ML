@@ -16,7 +16,7 @@ use std::{
 };
 
 use codetwin_core::{
-    CodeQualityService, CodeSecurityService, Database, FindingEvidenceRecord, GraphNeighborhood,
+    AuthorizedWebSecurityStore, CodeQualityService, CodeSecurityService, Database, FindingEvidenceRecord, GraphNeighborhood,
     GraphSummary, ImpactAnalysisService, ImpactReport, ImportReferenceRecord, IndexRunRecord,
     IndexSummary, LanguageServerConfig, LanguageServerConfigService, LanguageServerKind,
     ProjectIndexService, ProjectQueryService, QualityFindingRecord, QualityRuleRecord,
@@ -557,6 +557,9 @@ fn main() {
             std::fs::create_dir_all(&app_data_dir)?;
             let database_path = app_data_dir.join("codetwin.sqlite3");
             let database = Database::open(&database_path)?;
+            AuthorizedWebSecurityStore::new(&database)
+                .recover_interrupted_scans()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
             app.manage(AppState {
                 database: Mutex::new(database),
                 database_path,

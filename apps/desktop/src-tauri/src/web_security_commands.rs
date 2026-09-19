@@ -152,7 +152,11 @@ fn run_scan_background(
             let mut persisted_findings = 0usize;
             for finding in outcome.findings {
                 let source = store
-                    .correlate_source(request.project_id.as_deref(), &finding.endpoint)
+                    .correlate_source(
+                        request.project_id.as_deref(),
+                        &finding.endpoint,
+                        finding.parameter.as_deref(),
+                    )
                     .map_err(|error| error.to_string())?;
                 let persisted = store
                     .record_finding(
