@@ -259,10 +259,10 @@ fn run_scan_background(
                         "verification",
                         "Security-relevant behavior was observed and recorded for verification.",
                         &serde_json::json!({
-                            "finding_id": persisted.id,
-                            "category": persisted.category,
-                            "endpoint": persisted.endpoint_url,
-                            "method": persisted.method,
+                            "finding_id": &persisted.id,
+                            "category": &persisted.category,
+                            "endpoint": &persisted.endpoint_url,
+                            "method": &persisted.method,
                         }).to_string(),
                     );
                     if matches!(persisted.confidence.as_str(), "Likely" | "Confirmed") {
@@ -272,8 +272,8 @@ fn run_scan_background(
                             "verification",
                             "Control/reproduction evidence supported classification above Potential.",
                             &serde_json::json!({
-                                "finding_id": persisted.id,
-                                "confidence": persisted.confidence,
+                                "finding_id": &persisted.id,
+                                "confidence": &persisted.confidence,
                             }).to_string(),
                         );
                     }
@@ -283,9 +283,9 @@ fn run_scan_background(
                         "verification",
                         &format!("Finding classified as {} confidence.", persisted.confidence),
                         &serde_json::json!({
-                            "finding_id": persisted.id,
-                            "severity": persisted.severity,
-                            "confidence": persisted.confidence,
+                            "finding_id": &persisted.id,
+                            "severity": &persisted.severity,
+                            "confidence": &persisted.confidence,
                         }).to_string(),
                     );
                 }
