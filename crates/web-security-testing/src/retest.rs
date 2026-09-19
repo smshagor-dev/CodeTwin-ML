@@ -109,14 +109,17 @@ pub fn run_targeted_retest(
     }
 
     let mut ignored_progress = |_| {};
+    let endpoints = [endpoint];
     let findings = active::run_active_checks(
-        &policy,
-        &requester,
-        secondary_auth,
-        &targeted,
-        &[endpoint],
-        &baselines,
-        cancelled,
+        active::ActiveCheckContext {
+            policy: &policy,
+            requester: &requester,
+            secondary_auth,
+            config: &targeted,
+            endpoints: &endpoints,
+            baselines: &baselines,
+            cancelled,
+        },
         &mut ignored_progress,
     )?;
 
