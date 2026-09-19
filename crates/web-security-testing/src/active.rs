@@ -16,6 +16,16 @@ use crate::{
     ScopedRequester,
 };
 
+pub(crate) struct ActiveCheckContext<'a> {
+    pub policy: &'a ScopePolicy,
+    pub requester: &'a ScopedRequester,
+    pub secondary_auth: Option<&'a AuthContext>,
+    pub config: &'a ScanConfig,
+    pub endpoints: &'a [EndpointObservation],
+    pub baselines: &'a HashMap<String, ObservedResponse>,
+    pub cancelled: Arc<AtomicBool>,
+}
+
 #[derive(Clone)]
 struct ProbeTask {
     endpoint: EndpointObservation,
@@ -23,16 +33,19 @@ struct ProbeTask {
     parameter: String,
 }
 
-pub fn run_active_checks(
-    policy: &ScopePolicy,
-    requester: &ScopedRequester,
-    secondary_auth: Option<&AuthContext>,
-    config: &ScanConfig,
-    endpoints: &[EndpointObservation],
-    baselines: &HashMap<String, ObservedResponse>,
-    cancelled: Arc<AtomicBool>,
+pub(crate) fn run_active_checks(
+    context: ActiveCheckContext<'_>,
     on_progress: &mut impl FnMut(usize),
 ) -> Result<Vec<FindingObservation>, ScanError> {
+    let ActiveCheckContext {
+        policy,
+        requester,
+        secondary_auth,
+        config,
+        endpoints,
+        baselines,
+        cancelled,
+    } = context;
     let mut findings = Vec::new();
     let mut tasks = Vec::new();
     for endpoint in endpoints {
