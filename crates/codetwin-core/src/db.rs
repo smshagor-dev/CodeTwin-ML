@@ -464,13 +464,15 @@ mod tests {
                     'security_fix_verified_requires_retest',
                     'security_fix_verified_insert_guard',
                     'security_fix_validation_results_immutable',
-                    'security_fix_events_immutable'
+                    'security_fix_events_immutable',
+                    'security_fix_attempt_status_transition_guard',
+                    'security_fix_retest_state_transition_guard'
                  )",
                 [],
                 |row| row.get(0),
             )
             .expect("security fix triggers");
-        assert_eq!(trigger_count, 5);
+        assert_eq!(trigger_count, 7);
 
         for table in [
             "security_fix_attempts",
