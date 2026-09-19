@@ -15,6 +15,9 @@ mod analysis;
 mod patch;
 mod store;
 
+#[cfg(test)]
+mod tests;
+
 const MAX_FIX_ATTEMPTS: usize = 3;
 const MAX_ROOT_CAUSES: usize = 5;
 const MAX_PATCH_FILES: usize = 3;
