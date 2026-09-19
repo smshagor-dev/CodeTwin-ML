@@ -647,6 +647,7 @@ export type SecurityRemediationCampaignFindingRecord = {
   order_reason: string;
   depends_on: string[];
   expected_affected: string[];
+  retest_floor_rowid: number;
   active_attempt_id: string | null;
   skip_reason: string | null;
   created_at: string;
@@ -686,6 +687,11 @@ export type SecurityRemediationPlanItem = {
 
 export type SecurityRemediationCampaignPlan = {
   version: number;
+  project_id: string;
+  scan_id: string;
+  target_url: string;
+  environment: GuidedEnvironment;
+  scope_sha256: string;
   ordered_findings: SecurityRemediationPlanItem[];
   relationship_count: number;
   mutation_strategy: string;
