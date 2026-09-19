@@ -46,6 +46,7 @@ pub async fn prepare_guided_security_test(
         &request.primary_auth,
         request.secondary_auth.as_ref(),
     )?;
+    validate_environment_policy(&request.environment, &request.config)?;
     let config_json = serde_json::to_string(&request.config).map_err(|error| error.to_string())?;
     let session = with_database(&state, |database| {
         GuidedSecurityStore::new(database)
@@ -415,6 +416,37 @@ pub fn list_guided_security_retests(
             .list_retests(&finding_id, limit)
             .map_err(|error| error.to_string())
     })
+}
+
+fn validate_environment_policy(
+    environment: &str,
+    config: &ScanConfig,
+) -> Result<(), String> {
+    if environment != "authorized_production" {
+        return Ok(());
+    }
+    if config.scope.allow_non_idempotent_methods {
+        return Err(
+            "authorized production Developer Mode cannot enable state-changing active probes"
+                .to_string(),
+        );
+    }
+    if config.scope.enable_timing_probes {
+        return Err(
+            "authorized production Developer Mode cannot enable timing probes".to_string(),
+        );
+    }
+    if config.scope.max_requests > 350 {
+        return Err(
+            "authorized production Developer Mode is capped at 350 requests".to_string(),
+        );
+    }
+    if config.scope.concurrency > 2 {
+        return Err(
+            "authorized production Developer Mode is capped at concurrency 2".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_auth_mode(
