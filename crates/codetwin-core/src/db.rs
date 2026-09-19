@@ -343,14 +343,36 @@ mod tests {
                 )
                 .expect("rewind security fix migration");
             db.connection()
-                .execute(
+                .execute_batch(
                     "INSERT INTO web_security_scans(
                         id,target_url,status,phase,authorization_confirmed,
                         scope_json,config_json,auth_metadata_json
-                     ) VALUES ('scan-v19','http://localhost:3000','completed','completed',1,'{}','{}','{}')",
-                    [],
+                     ) VALUES ('scan-v19','http://localhost:3000','completed','completed',1,'{}','{}','{}');
+                     INSERT INTO web_security_findings(
+                        id,scan_id,fingerprint,category,severity,confidence,target,
+                        endpoint_url,method,parameter_name,title,description,
+                        reproduction_summary,impact,remediation,references_json
+                     ) VALUES (
+                        'finding-v19','scan-v19','fingerprint-v19','sql_injection','high','Likely',
+                        'http://localhost:3000','http://localhost:3000/search?q=hello','GET','q',
+                        'Preserved finding','Preserved runtime finding','Local reproduction',
+                        'Local impact','Parameterize query','[]'
+                     );
+                     INSERT INTO web_security_evidence(
+                        id,finding_id,summary,request_metadata_json,response_metadata_json
+                     ) VALUES ('evidence-v19','finding-v19','Preserved evidence','{}','{}');
+                     INSERT INTO guided_security_sessions(
+                        id,target_url,environment,testing_depth,auth_mode,status,
+                        authorization_confirmed,config_json,scan_id
+                     ) VALUES (
+                        'guided-v19','http://localhost:3000','local','standard','none',
+                        'completed',1,'{}','scan-v19'
+                     );
+                     INSERT INTO guided_security_finding_lifecycle(
+                        finding_id,session_id,state
+                     ) VALUES ('finding-v19','guided-v19','open');",
                 )
-                .expect("persist v19 scan");
+                .expect("persist schema-19 guided and web-security history");
         }
 
         let upgraded = Database::open(file.path()).expect("upgrade v19 db");
@@ -371,17 +393,22 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("migration 20");
-        let scan_count: i64 = upgraded
+        let preserved: i64 = upgraded
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM web_security_scans WHERE id='scan-v19'",
+                "SELECT
+                    (SELECT COUNT(*) FROM web_security_scans WHERE id='scan-v19') +
+                    (SELECT COUNT(*) FROM web_security_findings WHERE id='finding-v19') +
+                    (SELECT COUNT(*) FROM web_security_evidence WHERE id='evidence-v19') +
+                    (SELECT COUNT(*) FROM guided_security_sessions WHERE id='guided-v19') +
+                    (SELECT COUNT(*) FROM guided_security_finding_lifecycle WHERE finding_id='finding-v19')",
                 [],
                 |row| row.get(0),
             )
-            .expect("v19 evidence preserved");
+            .expect("schema-19 data preserved");
         assert_eq!(tables, 3);
         assert_eq!(migration, 1);
-        assert_eq!(scan_count, 1);
+        assert_eq!(preserved, 5);
         drop(upgraded);
 
         let reopened = Database::open(file.path()).expect("reopen upgraded v20 db");
@@ -425,6 +452,25 @@ mod tests {
         assert!(attempt_sql.contains("'AUTO_FIX_CANDIDATE','GUIDED_FIX_CANDIDATE','MANUAL_REMEDIATION','INSUFFICIENT_EVIDENCE'"));
         assert!(attempt_sql.contains("'FIX_VERIFIED','STILL_VULNERABLE','UNABLE_TO_VERIFY','REGRESSION_DETECTED'"));
         assert!(attempt_sql.contains("UNIQUE(finding_id, attempt_number)"));
+        assert!(attempt_sql.contains("approved_safety_class"));
+        assert!(attempt_sql.contains("caution_acknowledged"));
+
+        let trigger_count: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='trigger' AND name IN (
+                    'security_fix_attempt_approval_identity_immutable',
+                    'security_fix_verified_requires_retest',
+                    'security_fix_verified_insert_guard',
+                    'security_fix_validation_results_immutable',
+                    'security_fix_events_immutable'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("security fix triggers");
+        assert_eq!(trigger_count, 5);
 
         for table in [
             "security_fix_attempts",
