@@ -367,7 +367,7 @@ pub async fn retest_guided_security_finding(
                     .map(|finding| finding.confidence.as_str())
                     .max_by_key(|confidence| confidence_rank(confidence))
                     .map(str::to_string);
-                let status = if outcome.requests_performed == 0 {
+                let status = if !outcome.verification_completed {
                     "unable_to_verify"
                 } else if matching.is_empty() {
                     "retest_passed"
@@ -379,6 +379,10 @@ pub async fn retest_guided_security_finding(
                     "endpoint": retest_request.endpoint_url,
                     "finding_titles": matching.iter().map(|finding| finding.title.clone()).collect::<Vec<_>>(),
                     "evidence_count": matching.iter().map(|finding| finding.evidence.len()).sum::<usize>(),
+                    "requests_performed": outcome.requests_performed,
+                    "responses_observed": outcome.responses_observed,
+                    "verification_completed": outcome.verification_completed,
+                    "failure_reason": outcome.failure_reason,
                     "note": "Targeted retest used the minimum bounded detector family for this finding; authentication secrets were not persisted."
                 })
                 .to_string();
