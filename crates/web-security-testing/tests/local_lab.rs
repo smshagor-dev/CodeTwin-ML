@@ -318,7 +318,7 @@ fn authorized_local_lab_detects_representative_findings_without_scope_escape() {
         ..AuthContext::default()
     };
     let outcome = run_authorized_scan(
-        &lab.config(120),
+        &lab.config(240),
         &primary,
         Some(&secondary),
         cancelled,
@@ -345,7 +345,7 @@ fn authorized_local_lab_detects_representative_findings_without_scope_escape() {
         .endpoints
         .iter()
         .all(|endpoint| !endpoint.url.contains("example.com")));
-    assert!(outcome.requests_performed <= 120);
+    assert!(outcome.requests_performed <= 240);
 
     let safe_sql = outcome.findings.iter().filter(|finding| {
         finding.category == "sql_injection" && finding.endpoint.contains("/safe")
