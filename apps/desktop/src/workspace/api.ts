@@ -26,6 +26,15 @@ import type {
   QaDiscoveryRunRecord,
   QaFrameworkSummary,
   SecurityFindingRecord,
+  SecurityRemediationBeforeAfterItem,
+  SecurityRemediationCampaignCreate,
+  SecurityRemediationCampaignEventRecord,
+  SecurityRemediationCampaignFindingRecord,
+  SecurityRemediationCampaignRecord,
+  SecurityRemediationCampaignSummary,
+  SecurityRemediationDebtView,
+  SecurityRemediationRegressionTracking,
+  SecurityRemediationRelationshipRecord,
   SecurityFixApplicationResult,
   SecurityFixAttemptRecord,
   SecurityFixEventRecord,
@@ -193,6 +202,84 @@ export const workspaceApi = {
   },
   listGuidedSecurityRetests(findingId: string, limit = 50) {
     return invoke<GuidedRetestRecord[]>("list_guided_security_retests", { findingId, limit });
+  },
+  createSecurityRemediationCampaign(input: SecurityRemediationCampaignCreate) {
+    return invoke<SecurityRemediationCampaignRecord>("create_security_remediation_campaign", { input });
+  },
+  analyzeSecurityRemediationCampaign(campaignId: string) {
+    return invoke<SecurityRemediationCampaignRecord>("analyze_security_remediation_campaign", { campaignId });
+  },
+  approveSecurityRemediationCampaignPlan(campaignId: string, expectedPlanHash: string) {
+    return invoke<SecurityRemediationCampaignRecord>("approve_security_remediation_campaign_plan", {
+      campaignId,
+      expectedPlanHash,
+    });
+  },
+  startSecurityRemediationCampaign(campaignId: string) {
+    return invoke<SecurityRemediationCampaignRecord>("start_security_remediation_campaign", { campaignId });
+  },
+  pauseSecurityRemediationCampaign(campaignId: string) {
+    return invoke<SecurityRemediationCampaignRecord>("pause_security_remediation_campaign", { campaignId });
+  },
+  resumeSecurityRemediationCampaign(campaignId: string) {
+    return invoke<SecurityRemediationCampaignRecord>("resume_security_remediation_campaign", { campaignId });
+  },
+  cancelSecurityRemediationCampaign(campaignId: string) {
+    return invoke<SecurityRemediationCampaignRecord>("cancel_security_remediation_campaign", { campaignId });
+  },
+  syncSecurityRemediationCampaign(campaignId: string) {
+    return invoke<SecurityRemediationCampaignRecord>("sync_security_remediation_campaign", { campaignId });
+  },
+  completeSecurityRemediationCampaign(campaignId: string) {
+    return invoke<SecurityRemediationCampaignRecord>("complete_security_remediation_campaign", { campaignId });
+  },
+  skipSecurityRemediationCampaignFinding(campaignId: string, findingId: string, reason: string) {
+    return invoke<SecurityRemediationCampaignFindingRecord>("skip_security_remediation_campaign_finding", {
+      campaignId,
+      findingId,
+      reason,
+    });
+  },
+  getSecurityRemediationCampaign(campaignId: string) {
+    return invoke<SecurityRemediationCampaignRecord | null>("get_security_remediation_campaign", { campaignId });
+  },
+  listSecurityRemediationCampaigns(projectId: string | null = null, limit = 100) {
+    return invoke<SecurityRemediationCampaignRecord[]>("list_security_remediation_campaigns", {
+      projectId,
+      limit,
+    });
+  },
+  listSecurityRemediationCampaignFindings(campaignId: string) {
+    return invoke<SecurityRemediationCampaignFindingRecord[]>("list_security_remediation_campaign_findings", {
+      campaignId,
+    });
+  },
+  listSecurityRemediationCampaignRelationships(campaignId: string) {
+    return invoke<SecurityRemediationRelationshipRecord[]>("list_security_remediation_campaign_relationships", {
+      campaignId,
+    });
+  },
+  listSecurityRemediationCampaignEvents(campaignId: string, limit = 500) {
+    return invoke<SecurityRemediationCampaignEventRecord[]>("list_security_remediation_campaign_events", {
+      campaignId,
+      limit,
+    });
+  },
+  securityRemediationCampaignSummary(campaignId: string) {
+    return invoke<SecurityRemediationCampaignSummary>("security_remediation_campaign_summary", { campaignId });
+  },
+  securityRemediationCampaignBeforeAfter(campaignId: string) {
+    return invoke<SecurityRemediationBeforeAfterItem[]>("security_remediation_campaign_before_after", {
+      campaignId,
+    });
+  },
+  securityRemediationCampaignRegressionTracking(campaignId: string) {
+    return invoke<SecurityRemediationRegressionTracking[]>("security_remediation_campaign_regression_tracking", {
+      campaignId,
+    });
+  },
+  securityRemediationCampaignDebt(campaignId: string) {
+    return invoke<SecurityRemediationDebtView>("security_remediation_campaign_debt", { campaignId });
   },
   evaluateSecurityFixEligibility(findingId: string) {
     return invoke<FixEligibilityAssessment>("evaluate_security_fix_eligibility", { findingId });
