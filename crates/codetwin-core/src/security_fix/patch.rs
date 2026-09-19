@@ -90,10 +90,6 @@ impl<'a> SecurityFixService<'a> {
         let attempt = self
             .get_attempt(attempt_id)?
             .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))?;
-        let repair_id = attempt
-            .repair_id
-            .as_deref()
-            .ok_or(SecurityFixError::PatchGenerationUnavailable)?;
         let changes = VerifiedRepairService::new(self.database)
             .list_changes(repair_id, MAX_PATCH_FILES + 1)
             .map_err(|error| SecurityFixError::Repair(error.to_string()))?;
@@ -134,6 +130,11 @@ impl<'a> SecurityFixService<'a> {
         if attempt.status != "patch_proposed" {
             return Err(SecurityFixError::AttemptNotApprovable(attempt.status));
         }
+        let repair_id = attempt
+            .repair_id
+            .as_deref()
+            .ok_or(SecurityFixError::PatchGenerationUnavailable)?;
+        self.assert_attempt_relationships(&attempt, repair_id)?;
         let review = self.review_attempt(attempt_id)?;
         if expected_patch_hash.len() != 64
             || !expected_patch_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -227,10 +228,7 @@ impl<'a> SecurityFixService<'a> {
             .ok_or(SecurityFixError::AttemptNotApproved)?;
 
         let repair = VerifiedRepairService::new(self.database);
-        let plan = repair
-            .get_plan(repair_id)
-            .map_err(|error| SecurityFixError::Repair(error.to_string()))?
-            .ok_or_else(|| SecurityFixError::State("approved repair plan disappeared".into()))?;
+        let plan = self.assert_attempt_relationships(&attempt, repair_id)?;
         if plan.status != "approved" {
             return Err(SecurityFixError::AttemptNotApproved);
         }
@@ -268,6 +266,38 @@ impl<'a> SecurityFixService<'a> {
             }
         }
         Ok(repair_id.to_string())
+    }
+
+    fn assert_attempt_relationships(
+        &self,
+        attempt: &SecurityFixAttemptRecord,
+        repair_id: &str,
+    ) -> Result<RepairPlanRecord, SecurityFixError> {
+        let finding = self.finding_context(&attempt.finding_id)?;
+        if finding.project_id.as_deref() != Some(attempt.project_id.as_str()) {
+            return Err(SecurityFixError::StaleApproval);
+        }
+
+        let plan = VerifiedRepairService::new(self.database)
+            .get_plan(repair_id)
+            .map_err(|error| SecurityFixError::Repair(error.to_string()))?
+            .ok_or(SecurityFixError::StaleApproval)?;
+        if plan.project_id != attempt.project_id {
+            return Err(SecurityFixError::StaleApproval);
+        }
+
+        let linked: bool = self.database.connection().query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM guided_security_fix_links
+                WHERE finding_id=?1 AND repair_id=?2
+             )",
+            params![attempt.finding_id, repair_id],
+            |row| row.get(0),
+        )?;
+        if !linked {
+            return Err(SecurityFixError::StaleApproval);
+        }
+        Ok(plan)
     }
 
     fn analyze_patch_safety(
