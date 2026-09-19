@@ -463,6 +463,11 @@ fn validate_environment_policy(
             "authorized production Developer Mode cannot enable timing probes".to_string(),
         );
     }
+    if config.scope.max_crawl_depth > 2 {
+        return Err(
+            "authorized production Developer Mode is capped at crawl depth 2".to_string(),
+        );
+    }
     if config.scope.max_requests > 350 {
         return Err(
             "authorized production Developer Mode is capped at 350 requests".to_string(),
@@ -471,6 +476,31 @@ fn validate_environment_policy(
     if config.scope.concurrency > 2 {
         return Err(
             "authorized production Developer Mode is capped at concurrency 2".to_string(),
+        );
+    }
+    if config.scope.timeout_ms > 5_000 {
+        return Err(
+            "authorized production Developer Mode is capped at a 5000 ms timeout".to_string(),
+        );
+    }
+    if config.scope.response_limit_bytes > 512_000 {
+        return Err(
+            "authorized production Developer Mode is capped at 512000 response bytes".to_string(),
+        );
+    }
+    if config.scope.redirect_limit > 3 {
+        return Err(
+            "authorized production Developer Mode is capped at three redirects".to_string(),
+        );
+    }
+    if config.scope.retry_limit > 0 {
+        return Err(
+            "authorized production Developer Mode cannot retry requests automatically".to_string(),
+        );
+    }
+    if config.scope.allow_private_networks {
+        return Err(
+            "authorized production Developer Mode cannot enable private-network targeting".to_string(),
         );
     }
     Ok(())
