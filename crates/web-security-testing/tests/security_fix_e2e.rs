@@ -13,8 +13,9 @@ use std::{
 
 use codetwin_core::{
     AuthorizedWebSecurityStore, Database, FixEligibility, GuidedRetestInput, GuidedSecurityStore,
-    PatchSafetyClass, ProjectIndexService, RepairApplicationService, SecurityFixService,
-    ValidationResultInput,
+    PatchSafetyClass, ProjectIndexService, RepairApplicationService,
+    SecurityFixService, SecurityRemediationCampaignCreate,
+    SecurityRemediationCampaignService, ValidationResultInput,
     WebEndpointInput, WebEvidenceInput, WebFindingInput, WebFindingRecord, WebScanCreate,
 };
 use tempfile::tempdir;
@@ -1614,4 +1615,282 @@ fn targeted_retest_transport_scope_and_auth_failures_never_verify() {
         Arc::new(AtomicBool::new(false)),
     );
     assert!(matches!(scope_rejected, Err(web_security_testing::ScanError::Scope(_))));
+}
+
+
+fn apply_campaign_guided_idor_fix(
+    database: &Database,
+    project_root: &Path,
+    lab: &SourceBackedLab,
+    config: &ScanConfig,
+    finding: &WebFindingRecord,
+    primary: &AuthContext,
+    secondary: &AuthContext,
+) -> String {
+    let service = SecurityFixService::new(database);
+    let prepared = service
+        .prepare_fix(&finding.id, false)
+        .expect("prepare campaign authorization fix");
+    assert_eq!(
+        prepared.eligibility.result,
+        FixEligibility::GuidedFixCandidate
+    );
+    assert!(
+        service.generate_patch(&prepared.attempt.id).is_err(),
+        "campaign membership must not turn authorization into an automatic rewrite"
+    );
+
+    let file_id = prepared.root_causes[0].file_id.clone();
+    let safe_patch =
+        "export async function getObject(id: string, user: User) {\n  return repository.findOwned(id, user.id);\n}\n";
+    let review = service
+        .propose_replacement(&prepared.attempt.id, &file_id, safe_patch)
+        .expect("review campaign guided authorization patch");
+    assert_ne!(review.safety.classification, PatchSafetyClass::Rejected);
+    service
+        .approve_attempt(
+            &prepared.attempt.id,
+            &review.safety.patch_hash,
+            review.safety.classification == PatchSafetyClass::Caution,
+        )
+        .expect("approve exact guided campaign patch");
+    let repair_id = service
+        .assert_application_allowed(&prepared.attempt.id)
+        .expect("revalidate approved campaign authorization patch");
+    let backups = tempdir().expect("campaign idor backup");
+    let application = RepairApplicationService::new(database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply campaign authorization patch");
+    service
+        .record_application(&prepared.attempt.id, &application.id)
+        .expect("record campaign authorization application");
+    GuidedSecurityStore::new(database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync campaign authorization guided lifecycle");
+    ProjectIndexService::new(database)
+        .index_project(project_root)
+        .expect("reindex campaign authorization source");
+
+    let (a_own, _) = blocking_get(
+        &format!("{}/api/object?id=a", lab.base_url),
+        Some("Bearer user-a-token"),
+    );
+    let (b_own, _) = blocking_get(
+        &format!("{}/api/object?id=b", lab.base_url),
+        Some("Bearer user-b-token"),
+    );
+    let (a_cross, _) = blocking_get(
+        &format!("{}/api/object?id=b", lab.base_url),
+        Some("Bearer user-a-token"),
+    );
+    let (b_cross, _) = blocking_get(
+        &format!("{}/api/object?id=a", lab.base_url),
+        Some("Bearer user-b-token"),
+    );
+    assert_eq!(a_own, 200);
+    assert_eq!(b_own, 200);
+    assert_eq!(a_cross, 403);
+    assert_eq!(b_cross, 403);
+
+    record_runtime_validation(
+        database,
+        &prepared.attempt.id,
+        "Campaign owner/cross-owner authorization regression",
+    );
+    targeted_retest_and_sync(
+        database,
+        config,
+        finding,
+        primary,
+        Some(secondary),
+    );
+    prepared.attempt.id
+}
+
+#[test]
+fn remediation_campaign_orchestrates_source_backed_fixes_without_bypassing_fix_verify() {
+    let project = tempdir().expect("campaign project");
+    write_project(project.path());
+    let lab = SourceBackedLab::start(project.path().to_path_buf());
+    let config = lab.config();
+    let primary = primary_auth();
+    let secondary = secondary_auth();
+
+    let database = Database::open_in_memory().expect("campaign database");
+    let index = ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("index campaign project");
+    let outcome = run_authorized_scan(
+        &config,
+        &primary,
+        Some(&secondary),
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .expect("campaign baseline scan");
+    let findings = persist_outcome(
+        &database,
+        &index.project_id,
+        &config,
+        &primary,
+        Some(&secondary),
+        outcome,
+    );
+
+    let sql = findings
+        .iter()
+        .find(|item| {
+            item.category == "sql_injection" && item.endpoint_url.contains("/api/search")
+        })
+        .expect("campaign SQLi finding");
+    let xss = findings
+        .iter()
+        .find(|item| {
+            item.category == "xss"
+                && item.endpoint_url.contains("/api/render?q=")
+                && !item.endpoint_url.contains("ambiguous")
+        })
+        .expect("campaign XSS finding");
+    let idor = findings
+        .iter()
+        .find(|item| {
+            item.category == "access_control" && item.endpoint_url.contains("/api/object")
+        })
+        .expect("campaign IDOR finding");
+
+    database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (?1,?2,?3,'local','standard','test_accounts_a_b','completed',1,?4,?5)",
+            rusqlite::params![
+                "campaign-e2e-session",
+                index.project_id,
+                config.scope.target_url,
+                serde_json::to_string(&config).expect("campaign config json"),
+                sql.scan_id,
+            ],
+        )
+        .expect("persist campaign guided session");
+
+    let campaigns = SecurityRemediationCampaignService::new(&database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-e2e-session".into(),
+            finding_ids: vec![sql.id.clone(), xss.id.clone(), idor.id.clone()],
+        })
+        .expect("create campaign");
+    assert_eq!(campaign.status, "DRAFT");
+
+    let analyzed = campaigns.analyze(&campaign.id).expect("analyze campaign");
+    assert_eq!(analyzed.status, "READY_FOR_REVIEW");
+    let plan_hash = analyzed.plan_hash.clone().expect("campaign plan hash");
+
+    // Campaign-plan approval is intentionally weaker than patch approval.
+    let attempt_count_before_approval: i64 = database
+        .connection()
+        .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| row.get(0))
+        .expect("attempt count before campaign approval");
+    assert_eq!(attempt_count_before_approval, 0);
+    campaigns
+        .approve_plan(&campaign.id, &plan_hash)
+        .expect("approve campaign plan");
+    let attempt_count_after_approval: i64 = database
+        .connection()
+        .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| row.get(0))
+        .expect("attempt count after campaign approval");
+    assert_eq!(
+        attempt_count_after_approval, 0,
+        "campaign approval must not pre-authorize any code patch"
+    );
+
+    campaigns.start(&campaign.id).expect("start campaign");
+    campaigns.pause(&campaign.id).expect("pause campaign");
+    let resumed = campaigns.resume(&campaign.id).expect("resume campaign");
+    assert_eq!(resumed.status, "IN_PROGRESS");
+
+    let (sql_attempt, _) = apply_generated_fix(&database, project.path(), sql);
+    record_runtime_validation(&database, &sql_attempt, "Campaign SQL regression");
+    targeted_retest_and_sync(&database, &config, sql, &primary, None);
+    campaigns.sync(&campaign.id).expect("sync SQL campaign result");
+    assert_eq!(
+        campaigns
+            .findings(&campaign.id)
+            .expect("campaign findings")
+            .into_iter()
+            .find(|item| item.finding_id == sql.id)
+            .expect("SQL campaign member")
+            .status,
+        "VERIFIED"
+    );
+
+    let (xss_attempt, _) = apply_generated_fix(&database, project.path(), xss);
+    record_runtime_validation(&database, &xss_attempt, "Campaign XSS regression");
+    targeted_retest_and_sync(&database, &config, xss, &primary, None);
+    campaigns.sync(&campaign.id).expect("sync XSS campaign result");
+    assert_eq!(
+        campaigns
+            .findings(&campaign.id)
+            .expect("campaign findings")
+            .into_iter()
+            .find(|item| item.finding_id == xss.id)
+            .expect("XSS campaign member")
+            .status,
+        "VERIFIED"
+    );
+
+    let idor_attempt = apply_campaign_guided_idor_fix(
+        &database,
+        project.path(),
+        &lab,
+        &config,
+        idor,
+        &primary,
+        &secondary,
+    );
+    campaigns.sync(&campaign.id).expect("sync IDOR campaign result");
+    assert_eq!(
+        SecurityFixService::new(&database)
+            .get_attempt(&idor_attempt)
+            .expect("IDOR attempt")
+            .expect("IDOR attempt exists")
+            .status,
+        "fix_verified"
+    );
+
+    // Completion verification stays bounded to the selected findings and uses the same
+    // targeted runtime retest primitive. Re-running a verified retest does not forge a new fix.
+    targeted_retest_and_sync(&database, &config, sql, &primary, None);
+    targeted_retest_and_sync(&database, &config, xss, &primary, None);
+    targeted_retest_and_sync(&database, &config, idor, &primary, Some(&secondary));
+    campaigns
+        .sync(&campaign.id)
+        .expect("sync bounded completion verification");
+
+    let summary = campaigns.summary(&campaign.id).expect("campaign summary");
+    assert_eq!(summary.selected_findings, 3);
+    assert_eq!(summary.verified_fixed, 3);
+    assert_eq!(summary.still_vulnerable, 0);
+    assert_eq!(summary.unable_to_verify, 0);
+    assert_eq!(summary.regression_detected, 0);
+    assert_eq!(summary.queued_or_in_progress, 0);
+
+    let completed = campaigns.complete(&campaign.id).expect("complete campaign");
+    assert_eq!(completed.status, "COMPLETED");
+    let comparison = campaigns
+        .before_after(&campaign.id)
+        .expect("campaign before/after");
+    assert_eq!(comparison.len(), 3);
+    assert!(comparison
+        .iter()
+        .all(|item| item.campaign_status == "VERIFIED"));
+    assert_eq!(
+        campaigns
+            .security_debt(&campaign.id)
+            .expect("campaign debt")
+            .unresolved_total,
+        0
+    );
 }
