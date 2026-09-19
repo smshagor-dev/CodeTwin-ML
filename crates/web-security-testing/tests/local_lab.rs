@@ -229,7 +229,7 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<String>>>) {
                 .replace('<', "&lt;")
                 .replace('>', "&gt;")
                 .replace('"', "&quot;")
-                .replace(''', "&#39;");
+                .replace('\'', "&#39;");
             respond(
                 &mut stream,
                 "200 OK",
