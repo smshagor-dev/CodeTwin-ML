@@ -22,6 +22,7 @@ pub struct TargetedRetestRequest {
 pub struct TargetedRetestOutcome {
     pub requests_performed: usize,
     pub responses_observed: usize,
+    pub baseline_status: Option<u16>,
     pub verification_completed: bool,
     pub failure_reason: Option<String>,
     pub findings: Vec<FindingObservation>,
@@ -47,6 +48,7 @@ pub fn run_targeted_retest(
         return Ok(TargetedRetestOutcome {
             requests_performed: 0,
             responses_observed: 0,
+            baseline_status: None,
             verification_completed: false,
             failure_reason: Some("unsupported HTTP method for targeted retest".into()),
             findings: Vec::new(),
@@ -56,6 +58,7 @@ pub fn run_targeted_retest(
         return Ok(TargetedRetestOutcome {
             requests_performed: 0,
             responses_observed: 0,
+            baseline_status: None,
             verification_completed: false,
             failure_reason: Some("state-changing targeted retest is disabled by the approved scope".into()),
             findings: Vec::new(),
@@ -111,8 +114,10 @@ pub fn run_targeted_retest(
     };
 
     let mut baselines = HashMap::new();
+    let mut baseline_status = None;
     if method == "GET" {
         if let Ok(response) = requester.get(&url) {
+            baseline_status = Some(response.status);
             baselines.insert(normalized_key(&url), response);
         }
     }
@@ -135,10 +140,27 @@ pub fn run_targeted_retest(
     let responses_observed = budget.responses_observed();
     let minimum_responses = minimum_responses_for(&request.category);
     let identity_missing = request.category == "access_control" && secondary_auth.is_none();
+    let baseline_unusable = method == "GET"
+        && !baseline_status.is_some_and(|status| (200..400).contains(&status));
+    let authentication_rejected = matches!(baseline_status, Some(401 | 403 | 407));
     let verification_completed =
-        !identity_missing && responses_observed >= minimum_responses;
+        !identity_missing
+            && !baseline_unusable
+            && responses_observed >= minimum_responses;
     let failure_reason = if identity_missing {
         Some("targeted authorization verification requires the approved secondary test identity".into())
+    } else if authentication_rejected {
+        Some(format!(
+            "targeted retest baseline returned HTTP {}; authentication/authorization evidence is insufficient to conclude the vulnerability disappeared",
+            baseline_status.unwrap_or_default()
+        ))
+    } else if baseline_unusable {
+        Some(format!(
+            "targeted retest baseline did not return a usable success/redirect response (status: {})",
+            baseline_status
+                .map(|status| status.to_string())
+                .unwrap_or_else(|| "no response".to_string())
+        ))
     } else if verification_completed {
         None
     } else {
@@ -150,6 +172,7 @@ pub fn run_targeted_retest(
     Ok(TargetedRetestOutcome {
         requests_performed: budget.used(),
         responses_observed,
+        baseline_status,
         verification_completed,
         failure_reason,
         findings,
