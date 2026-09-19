@@ -31,6 +31,7 @@ pub fn run_active_checks(
     endpoints: &[EndpointObservation],
     baselines: &HashMap<String, ObservedResponse>,
     cancelled: Arc<AtomicBool>,
+    on_progress: &mut impl FnMut(usize),
 ) -> Result<Vec<FindingObservation>, ScanError> {
     let mut findings = Vec::new();
     let mut tasks = Vec::new();
@@ -79,6 +80,7 @@ pub fn run_active_checks(
             return Err(ScanError::Cancelled);
         }
         findings.append(&mut chunk_results);
+        on_progress(findings.len());
     }
 
     for endpoint in endpoints.iter().filter(|item| item.method == "GET").take(256) {
@@ -87,6 +89,7 @@ pub fn run_active_checks(
         }
         if config.checks.cors || config.checks.method_misconfiguration {
             findings.extend(probe_options(requester, endpoint, config)?);
+            on_progress(findings.len());
         }
     }
 
@@ -134,6 +137,7 @@ pub fn run_active_checks(
                                     response_evidence("secondary identity", "GET", &url, &secondary_response),
                                 ],
                             });
+                            on_progress(findings.len());
                         }
                     }
                     Err(RequestError::BudgetExhausted) => break,
@@ -740,7 +744,12 @@ fn send_payload(
                 &[("Content-Type", "application/json")],
             )
         }
-        "header" => requester.send(method, base, None, &[(parameter, payload)]),
+        "header" if active_header_probe_allowed(parameter) => {
+            requester.send(method, base, None, &[(parameter, payload)])
+        }
+        "header" => Err(RequestError::Http(
+            "sensitive or transport-controlled header probes are intentionally disabled".to_string(),
+        )),
         "path" => {
             let url = replace_path_parameter(base, parameter, payload)
                 .ok_or_else(|| RequestError::Http("path parameter placeholder was not found".to_string()))?;
@@ -928,7 +937,24 @@ fn looks_object_specific(endpoint: &EndpointObservation) -> bool {
 }
 
 fn method_probe_allowed(method: &str, allow_non_idempotent: bool) -> bool {
-    matches!(method, "GET" | "HEAD") || (allow_non_idempotent && matches!(method, "POST" | "PUT" | "PATCH" | "DELETE"))
+    matches!(method, "GET" | "HEAD")
+        || (allow_non_idempotent && matches!(method, "POST" | "PUT" | "PATCH"))
+}
+
+fn active_header_probe_allowed(name: &str) -> bool {
+    !matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "set-cookie"
+            | "x-api-key"
+            | "api-key"
+            | "host"
+            | "content-length"
+            | "transfer-encoding"
+            | "connection"
+    )
 }
 
 fn normalized_key(raw: &str) -> String {

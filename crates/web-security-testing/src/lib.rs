@@ -287,6 +287,15 @@ pub fn run_authorized_scan(
             requests_performed: budget.used(),
             findings_observed: findings.len(),
         });
+        let passive_count = findings.len();
+        let mut active_progress = |active_count: usize| {
+            on_progress(ScanProgress {
+                phase: ScanPhase::ActiveTesting,
+                endpoints_discovered: discovery.endpoints.len(),
+                requests_performed: budget.used(),
+                findings_observed: passive_count + active_count,
+            });
+        };
         let active_findings = active::run_active_checks(
             &policy,
             &requester,
@@ -295,6 +304,7 @@ pub fn run_authorized_scan(
             &discovery.endpoints,
             &discovery.responses,
             Arc::clone(&cancelled),
+            &mut active_progress,
         )?;
         findings.extend(active_findings);
     }

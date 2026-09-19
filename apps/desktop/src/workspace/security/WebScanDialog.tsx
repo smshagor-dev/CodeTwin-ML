@@ -79,6 +79,9 @@ export function WebScanDialog({
   }
 
   function targetChanged(value: string) {
+    if (selectedWebsite && selectedWebsite.url !== value) {
+      setWebsiteId("");
+    }
     let host = "";
     try {
       host = new URL(value).hostname.toLowerCase();
@@ -232,7 +235,7 @@ export function WebScanDialog({
           </label>
           {config.scope.active_testing && (
             <div className="ws-webscan-risk-options">
-              <label className="ws-check-field"><input type="checkbox" checked={config.scope.allow_non_idempotent_methods} onChange={(event) => patchScope({ allow_non_idempotent_methods: event.target.checked })}/><span>Allow probes against discovered POST/PUT/PATCH/DELETE inputs <small>Off by default because these methods may change application state.</small></span></label>
+              <label className="ws-check-field"><input type="checkbox" checked={config.scope.allow_non_idempotent_methods} onChange={(event) => patchScope({ allow_non_idempotent_methods: event.target.checked })}/><span>Allow probes against discovered POST/PUT/PATCH inputs <small>Off by default because these methods may change application state.</small></span></label>
               <label className="ws-check-field"><input type="checkbox" checked={config.scope.enable_timing_probes} onChange={(event) => patchScope({ enable_timing_probes: event.target.checked })}/><span>Enable bounded one-second SQL timing indicator probes <small>Off by default; timing anomalies remain Potential, never automatically Confirmed.</small></span></label>
             </div>
           )}
