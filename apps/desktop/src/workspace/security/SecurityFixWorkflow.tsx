@@ -671,11 +671,20 @@ export function SecurityFixWorkflow({
 
           {shouldOfferRollback && (
             <div className="ws-security-fix-danger">
-              <strong>Rollback recommended for review</strong>
+              <strong>
+                {attempt.status === "validation_failed"
+                  || attempt.status === "still_vulnerable"
+                  || attempt.retest_state === "REGRESSION_DETECTED"
+                  ? "Rollback recommended for review"
+                  : "Rollback available"}
+              </strong>
               <p>
-                Repository validation or the targeted security result indicates the applied patch
-                may be insufficient or regressive. Rollback restores the hash-pinned backup and
-                keeps the audit history.
+                {attempt.status === "validation_failed"
+                  || attempt.status === "still_vulnerable"
+                  || attempt.retest_state === "REGRESSION_DETECTED"
+                  ? "Repository validation or the targeted security result indicates the applied patch may be insufficient or regressive."
+                  : "The applied patch can still be deliberately reverted from its hash-pinned backup."}{" "}
+                Rollback keeps the immutable Fix & Verify audit history.
               </p>
               <button
                 className="ws-button ws-button-danger-ghost"
