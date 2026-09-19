@@ -4,8 +4,8 @@ use std::{
 };
 
 use codetwin_core::{
-    CodeSecurityService, Database, FixEligibilityAssessment, GuidedSecurityStore,
-    MultiFindingOverlap, PatchReview, RepairApplicationRunRecord, RepairApplicationService,
+    CodeSecurityService, Database, FixEligibilityAssessment, MultiFindingOverlap, PatchReview,
+    RepairApplicationRunRecord, RepairApplicationService,
     SecurityFixAttemptRecord, SecurityFixEventRecord, SecurityFixPreparation, SecurityFixService,
     SecurityFixValidationRecord, ValidationResultInput, ProjectIndexService,
 };
