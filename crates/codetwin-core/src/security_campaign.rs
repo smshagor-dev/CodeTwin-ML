@@ -2929,6 +2929,88 @@ mod tests {
     }
 
     #[test]
+    fn before_after_reports_only_new_fingerprints_observed_during_final_verification() {
+        let (database, session_id, _, finding_a, _) = fixture();
+        let service = SecurityRemediationCampaignService::new(&database);
+        let campaign = service
+            .create(&SecurityRemediationCampaignCreate {
+                session_id: session_id.clone(),
+                finding_ids: vec![finding_a.clone()],
+            })
+            .expect("create");
+        let analyzed = service.analyze(&campaign.id).expect("analyze");
+        service
+            .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+            .expect("approve");
+        service.start(&campaign.id).expect("start");
+        service
+            .skip_finding(&campaign.id, &finding_a, "deferred for comparison test")
+            .expect("skip selected finding");
+        service
+            .begin_completion_verification(&campaign.id)
+            .expect("begin final verification");
+
+        crate::GuidedSecurityStore::new(&database)
+            .record_retest(crate::GuidedRetestInput {
+                finding_id: &finding_a,
+                session_id: Some(&session_id),
+                status: "still_vulnerable",
+                original_confidence: "Likely",
+                observed_confidence: Some("Likely"),
+                requests_performed: 2,
+                detail_json: r#"{"fixture":"comparison-final-retest"}"#,
+            })
+            .expect("fresh selected finding retest");
+
+        database
+            .connection()
+            .execute_batch(
+                "INSERT INTO web_security_scans(
+                    id,project_id,target_url,status,phase,authorization_confirmed,
+                    scope_json,config_json,auth_metadata_json
+                 ) VALUES (
+                    'verification-window-scan','campaign-project','http://127.0.0.1:33001',
+                    'completed','completed',1,
+                    '{"allowed_hostnames":["127.0.0.1"]}','{}','{}'
+                 );
+                 INSERT INTO web_security_findings(
+                    id,scan_id,fingerprint,category,severity,confidence,target,
+                    endpoint_url,method,title,description,reproduction_summary,
+                    impact,remediation,references_json
+                 ) VALUES
+                 (
+                    'verification-new-finding','verification-window-scan','new-verification-fp',
+                    'security_headers','medium','Likely','http://127.0.0.1:33001',
+                    'http://127.0.0.1:33001/new','GET',
+                    'New header observation','fixture','fixture','fixture','fixture','[]'
+                 ),
+                 (
+                    'verification-reobserved-existing','verification-window-scan','campaign-fp-a',
+                    'sql_injection','high','Likely','http://127.0.0.1:33001',
+                    'http://127.0.0.1:33001/search?q=a','GET',
+                    'Reobserved SQL injection','fixture','fixture','fixture','fixture','[]'
+                 );",
+            )
+            .expect("verification window findings");
+
+        service
+            .finalize_completion_verification(&campaign.id)
+            .expect("finalize verification");
+        let comparison = service.before_after(&campaign.id).expect("before after");
+        assert!(comparison.iter().any(|item| {
+            item.finding_id == "verification-new-finding"
+                && item.comparison_status == "NEWLY_OBSERVED_DURING_VERIFICATION"
+                && !item.selected
+        }));
+        assert!(!comparison
+            .iter()
+            .any(|item| item.finding_id == "verification-reobserved-existing"));
+        assert!(comparison
+            .iter()
+            .any(|item| item.finding_id == finding_a && item.selected));
+    }
+
+    #[test]
     fn campaign_completion_requires_fresh_retest_for_every_selected_finding() {
         let (database, session_id, _, finding_a, finding_b) = fixture();
         let service = SecurityRemediationCampaignService::new(&database);
