@@ -1401,6 +1401,92 @@ fn remediation_campaign_dependency_gate_is_stable_and_requires_verified_prerequi
 }
 
 #[test]
+fn remediation_campaign_before_after_uses_campaign_attempt_floor_and_source_mapping() {
+    let fixture = sql_fixture();
+    let scan_id: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT scan_id FROM web_security_findings WHERE id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("scan id");
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (
+                'campaign-comparison-evidence-session',?1,'http://127.0.0.1:3000','local',
+                'standard','none','completed',1,'{}',?2
+             )",
+            rusqlite::params![fixture.project_id, scan_id],
+        )
+        .expect("guided campaign session");
+
+    let fixes = SecurityFixService::new(&fixture.database);
+    let before_campaign = fixes
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("pre-campaign fix attempt");
+    assert_eq!(before_campaign.attempt.attempt_number, 1);
+
+    let campaigns = SecurityRemediationCampaignService::new(&fixture.database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-comparison-evidence-session".into(),
+            finding_ids: vec![fixture.finding_id.clone()],
+        })
+        .expect("campaign");
+    let analyzed = campaigns.analyze(&campaign.id).expect("analyze");
+    campaigns
+        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+        .expect("approve");
+    campaigns.start(&campaign.id).expect("start");
+
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO security_fix_attempts(
+                id,finding_id,session_id,project_id,attempt_number,eligibility,
+                category,status,root_cause_json,strategy_json,test_plan_json
+             )
+             SELECT
+                'campaign-comparison-attempt',finding_id,?2,project_id,attempt_number+1,
+                eligibility,category,'prepared',root_cause_json,strategy_json,test_plan_json
+             FROM security_fix_attempts WHERE id=?1",
+            rusqlite::params![
+                before_campaign.attempt.id,
+                "campaign-comparison-evidence-session"
+            ],
+        )
+        .expect("campaign-scoped second attempt");
+    campaigns.sync(&campaign.id).expect("sync campaign attempt");
+
+    let comparison = campaigns.before_after(&campaign.id).expect("before after");
+    let item = comparison
+        .iter()
+        .find(|item| item.finding_id == fixture.finding_id)
+        .expect("comparison item");
+    assert_eq!(
+        item.patch_attempt_count, 1,
+        "pre-campaign Fix & Verify attempts must be excluded from the campaign attempt count"
+    );
+    assert_eq!(
+        item.current_source_relative_path.as_deref(),
+        Some("src/api/searchController.ts")
+    );
+    assert_eq!(item.eligibility, Some(FixEligibility::AutoFixCandidate));
+    assert_eq!(
+        item.attempt_id.as_deref(),
+        Some("campaign-comparison-attempt")
+    );
+}
+
+#[test]
 fn remediation_campaign_terminal_history_does_not_adopt_future_fix_attempts() {
     let fixture = sql_fixture();
     let scan_id: String = fixture
