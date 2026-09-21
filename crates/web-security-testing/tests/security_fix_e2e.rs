@@ -1901,10 +1901,17 @@ fn remediation_campaign_orchestrates_source_backed_fixes_without_bypassing_fix_v
     );
 
     // Completion verification stays bounded to the selected findings and uses the same
-    // targeted runtime retest primitive. Re-running a verified retest does not forge a new fix.
+    // targeted runtime retest primitive. The backend takes a fresh retest floor first and
+    // refuses completion unless every selected finding has persisted post-floor evidence.
+    campaigns
+        .begin_completion_verification(&campaign.id)
+        .expect("begin bounded completion verification");
     targeted_retest_and_sync(&database, &config, sql, &primary, None);
     targeted_retest_and_sync(&database, &config, xss, &primary, None);
     targeted_retest_and_sync(&database, &config, idor, &primary, Some(&secondary));
+    campaigns
+        .finalize_completion_verification(&campaign.id)
+        .expect("finalize bounded completion verification");
     campaigns
         .sync(&campaign.id)
         .expect("sync bounded completion verification");
