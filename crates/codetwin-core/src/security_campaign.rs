@@ -1700,7 +1700,67 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                     .into(),
             ));
         }
+
+        let memberships = self.active_campaign_memberships_for_attempt(expected_attempt_id)?;
+        if memberships.is_empty() {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign rollback attempt is no longer linked to an active remediation campaign"
+                    .into(),
+            ));
+        }
+        if !memberships
+            .iter()
+            .any(|(member_campaign_id, member_finding_id)| {
+                member_campaign_id == campaign_id && member_finding_id == finding_id
+            })
+        {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign rollback request does not match the active campaign membership".into(),
+            ));
+        }
+        for (member_campaign_id, member_finding_id) in &memberships {
+            let member_assessment =
+                self.rollback_assessment(member_campaign_id, member_finding_id)?;
+            if !member_assessment.allowed {
+                return Err(SecurityRemediationCampaignError::State(format!(
+                    "rollback is blocked by dependency safety in active campaign {member_campaign_id}: {}",
+                    member_assessment.reason
+                )));
+            }
+            if member_assessment.attempt_id.as_deref() != Some(expected_attempt_id) {
+                return Err(SecurityRemediationCampaignError::State(format!(
+                    "rollback attempt identity is stale in active campaign {member_campaign_id}"
+                )));
+            }
+        }
         Ok(bound_attempt_id.to_string())
+    }
+
+    pub fn rollback_requires_campaign_authorization(
+        &self,
+        attempt_id: &str,
+    ) -> Result<bool, SecurityRemediationCampaignError> {
+        Ok(!self
+            .active_campaign_memberships_for_attempt(attempt_id)?
+            .is_empty())
+    }
+
+    fn active_campaign_memberships_for_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Vec<(String, String)>, SecurityRemediationCampaignError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT cf.campaign_id,cf.finding_id
+             FROM security_remediation_campaign_findings cf
+             JOIN security_remediation_campaigns c ON c.id=cf.campaign_id
+             WHERE cf.active_attempt_id=?1
+               AND c.status IN ('IN_PROGRESS','PAUSED','BLOCKED')
+             ORDER BY c.created_at,cf.ordinal,cf.campaign_id",
+        )?;
+        let rows = statement.query_map([attempt_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn security_debt(
