@@ -1046,6 +1046,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 fix.latest_attempt_for_finding(&finding.finding_id)?
             };
             let latest_retest = self.latest_campaign_retest(
+                campaign_id,
                 &finding.finding_id,
                 finding.retest_floor_rowid,
             )?;
@@ -1730,6 +1731,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
 
             if finding.shared_root_primary_finding_id.is_some() {
                 let latest_retest = self.latest_campaign_retest(
+                    &campaign_id,
                     finding_id,
                     finding.retest_floor_rowid,
                 )?;
@@ -2275,10 +2277,13 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         let mut statement = self.database.connection().prepare(
             "SELECT cf.finding_id
              FROM security_remediation_campaign_findings cf
+             JOIN security_remediation_campaigns c ON c.id=cf.campaign_id
              WHERE cf.campaign_id=?1
                AND NOT EXISTS (
                  SELECT 1 FROM guided_security_retests gr
-                 WHERE gr.finding_id=cf.finding_id AND gr.rowid>?2
+                 WHERE gr.finding_id=cf.finding_id
+                   AND gr.session_id=c.session_id
+                   AND gr.rowid>?2
                )
              ORDER BY cf.ordinal",
         )?;
@@ -2340,16 +2345,21 @@ impl<'a> SecurityRemediationCampaignService<'a> {
 
     fn latest_campaign_retest(
         &self,
+        campaign_id: &str,
         finding_id: &str,
         retest_floor_rowid: i64,
     ) -> Result<Option<String>, SecurityRemediationCampaignError> {
         self.database
             .connection()
             .query_row(
-                "SELECT status FROM guided_security_retests
-                 WHERE finding_id=?1 AND rowid>?2
-                 ORDER BY rowid DESC LIMIT 1",
-                params![finding_id, retest_floor_rowid],
+                "SELECT gr.status
+                 FROM guided_security_retests gr
+                 JOIN security_remediation_campaigns c ON c.id=?1
+                 WHERE gr.finding_id=?2
+                   AND gr.session_id=c.session_id
+                   AND gr.rowid>?3
+                 ORDER BY gr.rowid DESC LIMIT 1",
+                params![campaign_id, finding_id, retest_floor_rowid],
                 |row| row.get(0),
             )
             .optional()
