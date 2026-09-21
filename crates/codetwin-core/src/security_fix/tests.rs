@@ -1412,13 +1412,27 @@ fn remediation_campaign_completion_rejects_external_source_change_after_final_ve
     )
     .expect("external source change after verification");
 
+    let synced = campaigns
+        .sync(&campaign.id)
+        .expect("polling sync must invalidate stale final verification");
+    assert!(
+        synced.completion_verification_completed_at.is_none(),
+        "stale final verification must disappear from the campaign state before completion"
+    );
+    assert!(campaigns
+        .events(&campaign.id, 100)
+        .expect("campaign events")
+        .iter()
+        .any(|event| event.event_type == "completion_verification_invalidated"));
+
     let error = campaigns
         .complete(&campaign.id)
-        .expect_err("external source change must invalidate final verification");
+        .expect_err("external source change must require a new final verification pass");
     assert!(
-        error.to_string().contains("live integrity revalidation")
-            || error.to_string().contains("source changed"),
-        "completion must fail closed on external source mutation: {error}"
+        error
+            .to_string()
+            .contains("requires a fresh bounded verification pass"),
+        "completion must fail closed after sync invalidates stale verification: {error}"
     );
 }
 
