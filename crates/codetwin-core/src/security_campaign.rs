@@ -1647,6 +1647,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         campaign_id: &str,
     ) -> Result<SecurityRemediationDebtView, SecurityRemediationCampaignError> {
         let mut view = SecurityRemediationDebtView::default();
+        let fix = SecurityFixService::new(self.database);
         for finding in self.findings(campaign_id)? {
             if finding.status == "VERIFIED" {
                 continue;
@@ -1655,7 +1656,14 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             increment(&mut view.by_severity, &finding.severity);
             increment(&mut view.by_eligibility, finding.eligibility.as_db());
             increment(&mut view.by_endpoint, &finding.endpoint_url);
-            increment(&mut view.by_reason, unresolved_reason(&finding));
+            let reason = if finding.status == "STILL_VULNERABLE"
+                && fix.standard_attempt_limit_reached(&finding.finding_id)?
+            {
+                "fix attempt limit reached"
+            } else {
+                unresolved_reason(&finding)
+            };
+            increment(&mut view.by_reason, reason);
 
             let module = finding
                 .root_file_id
@@ -3049,6 +3057,66 @@ mod tests {
         assert!(comparison
             .iter()
             .any(|item| item.finding_id == finding_a && item.selected));
+    }
+
+    #[test]
+    fn campaign_security_debt_reports_standard_fix_attempt_limit() {
+        let (database, session_id, _, finding_a, _) = fixture();
+        let service = SecurityRemediationCampaignService::new(&database);
+        let campaign = service
+            .create(&SecurityRemediationCampaignCreate {
+                session_id,
+                finding_ids: vec![finding_a.clone()],
+            })
+            .expect("create");
+        let analyzed = service.analyze(&campaign.id).expect("analyze");
+        service
+            .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+            .expect("approve");
+        service.start(&campaign.id).expect("start");
+
+        for attempt_number in 1..=3 {
+            database
+                .connection()
+                .execute(
+                    "INSERT INTO security_fix_attempts(
+                        id,finding_id,session_id,project_id,attempt_number,eligibility,
+                        category,status,root_cause_json,strategy_json,test_plan_json,
+                        retest_state
+                     ) VALUES (
+                        ?1,?2,'campaign-session','campaign-project',?3,
+                        'MANUAL_REMEDIATION','sql_injection','still_vulnerable',
+                        '[]','{}','{}','STILL_VULNERABLE'
+                     )",
+                    params![
+                        format!("campaign-limit-attempt-{attempt_number}"),
+                        finding_a,
+                        attempt_number
+                    ],
+                )
+                .expect("persist unresolved fix attempt");
+        }
+
+        service.sync(&campaign.id).expect("sync attempt-limit state");
+        assert_eq!(
+            service
+                .findings(&campaign.id)
+                .expect("findings")
+                .into_iter()
+                .next()
+                .expect("campaign finding")
+                .status,
+            "STILL_VULNERABLE"
+        );
+        assert!(SecurityFixService::new(&database)
+            .standard_attempt_limit_reached(&finding_a)
+            .expect("attempt limit"));
+        let debt = service.security_debt(&campaign.id).expect("security debt");
+        assert_eq!(
+            debt.by_reason.get("fix attempt limit reached"),
+            Some(&1),
+            "security debt must expose the existing Fix & Verify standard attempt limit factually"
+        );
     }
 
     #[test]
