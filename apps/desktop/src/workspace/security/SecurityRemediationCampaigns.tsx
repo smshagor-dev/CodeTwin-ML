@@ -224,6 +224,11 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
     ? findings.find((finding) => finding.id === current.finding_id) ?? null
     : null;
   const currentRollback = current ? rollbackAssessments[current.finding_id] ?? null : null;
+  const currentUnsatisfiedDependencies = current
+    ? current.depends_on
+      .map((dependencyId) => campaignFindings.find((item) => item.finding_id === dependencyId))
+      .filter((item): item is SecurityRemediationCampaignFindingRecord => Boolean(item && item.status !== "VERIFIED"))
+    : [];
 
   function toggleFinding(findingId: string) {
     setSelected((currentSelection) => {
@@ -653,8 +658,12 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
           </header>
           {!!current.depends_on.length && (
             <p className="ws-security-fix-warning">
-              Dependency: {current.depends_on.join(", ")}. Dependent source mutation remains blocked
-              when a prerequisite regression or stale approval is detected.
+              Depends on: {current.depends_on.join(", ")}.
+              {currentUnsatisfiedDependencies.length
+                ? ` Waiting for verified prerequisites: ${currentUnsatisfiedDependencies
+                  .map((item) => `${item.finding_id} (${item.status.replaceAll("_", " ")})`)
+                  .join(", ")}.`
+                : " All planned prerequisites are verified."}
             </p>
           )}
           {!!current.expected_affected.length && (
@@ -670,6 +679,14 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
               <p>
                 New remediation and retest actions are paused. Any atomic Fix & Verify operation
                 that already started may finish; refresh or resume to reconcile its persisted evidence.
+              </p>
+            </div>
+          ) : currentUnsatisfiedDependencies.length ? (
+            <div className="ws-security-campaign-callout">
+              <strong>Waiting for prerequisite verification</strong>
+              <p>
+                This finding cannot prepare or apply another patch until every planned prerequisite
+                is verified. Independent queued findings remain available to continue.
               </p>
             </div>
           ) : current.eligibility === "INSUFFICIENT_EVIDENCE" ? (
