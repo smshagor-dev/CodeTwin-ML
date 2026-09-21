@@ -437,6 +437,13 @@ impl<'a> SecurityFixService<'a> {
         Ok(to_usize(value))
     }
 
+    pub fn standard_attempt_limit_reached(
+        &self,
+        finding_id: &str,
+    ) -> Result<bool, SecurityFixError> {
+        Ok(self.next_attempt_number(finding_id)? > MAX_FIX_ATTEMPTS)
+    }
+
     pub(crate) fn configuration_candidate(
         &self,
         project_id: &str,
