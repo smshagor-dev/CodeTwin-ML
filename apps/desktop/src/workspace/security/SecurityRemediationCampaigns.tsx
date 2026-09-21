@@ -774,12 +774,13 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
         </section>
       )}
 
-      {!terminal && campaignFindings.some((item) => item.active_attempt_id) && (
+      {campaignFindings.some((item) => item.active_attempt_id) && (
         <details className="ws-security-campaign-rollback-list">
           <summary>Rollback selected applied fix</summary>
           <p>
             Rollback always uses the individual Fix & Verify / RepairApplicationService path.
-            Campaign dependencies can block an earlier rollback when later verified/applied work depends on it.
+            Campaign dependencies are revalidated server-side across every campaign that references the fix.
+            {terminal ? " Historical campaign status is preserved, but a rolled-back item is no longer considered verified." : ""}
           </p>
           <div>
             {campaignFindings.filter((item) => item.active_attempt_id).map((item) => {
