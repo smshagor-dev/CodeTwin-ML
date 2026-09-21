@@ -1690,6 +1690,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
              JOIN security_remediation_campaigns c ON c.id=cf.campaign_id
              WHERE cf.finding_id=?1
                AND c.status IN ('IN_PROGRESS','PAUSED','BLOCKED')
+               AND cf.status<>'SKIPPED'
              ORDER BY c.created_at,cf.ordinal,cf.campaign_id",
         )?;
         let rows = statement.query_map([finding_id], |row| row.get::<_, String>(0))?;
