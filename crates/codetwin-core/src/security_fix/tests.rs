@@ -1346,6 +1346,114 @@ fn remediation_campaign_resume_blocks_approved_patch_after_external_source_chang
 }
 
 #[test]
+fn remediation_campaign_completion_rejects_external_source_change_after_final_verification() {
+    let fixture = sql_fixture();
+    let scan_id: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT scan_id FROM web_security_findings WHERE id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("scan id");
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (
+                'campaign-final-source-session',?1,'http://127.0.0.1:3000','local',
+                'standard','none','completed',1,'{}',?2
+             )",
+            rusqlite::params![fixture.project_id, scan_id],
+        )
+        .expect("guided campaign session");
+
+    let campaigns = SecurityRemediationCampaignService::new(&fixture.database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-final-source-session".into(),
+            finding_ids: vec![fixture.finding_id.clone()],
+        })
+        .expect("campaign");
+    let analyzed = campaigns.analyze(&campaign.id).expect("analyze");
+    campaigns
+        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+        .expect("approve");
+    campaigns.start(&campaign.id).expect("start");
+    campaigns
+        .skip_finding(&campaign.id, &fixture.finding_id, "deferred for final source guard")
+        .expect("skip");
+
+    campaigns
+        .begin_completion_verification(&campaign.id)
+        .expect("begin final verification");
+    GuidedSecurityStore::new(&fixture.database)
+        .record_retest(GuidedRetestInput {
+            finding_id: &fixture.finding_id,
+            session_id: Some("campaign-final-source-session"),
+            status: "still_vulnerable",
+            original_confidence: "Likely",
+            observed_confidence: Some("Likely"),
+            requests_performed: 4,
+            detail_json: r#"{"fixture":"final-source-guard"}"#,
+        })
+        .expect("fresh final retest");
+    campaigns
+        .finalize_completion_verification(&campaign.id)
+        .expect("finalize final verification");
+
+    fs::write(
+        &fixture.source_path,
+        "export async function getSearch(q: string) { return db.query('externally changed'); }\n",
+    )
+    .expect("external source change after verification");
+
+    let error = campaigns
+        .complete(&campaign.id)
+        .expect_err("external source change must invalidate final verification");
+    assert!(
+        error.to_string().contains("live integrity revalidation")
+            || error.to_string().contains("source changed"),
+        "completion must fail closed on external source mutation: {error}"
+    );
+}
+
+#[test]
+fn security_fix_apply_boundary_rejects_duplicate_application() {
+    let (fixture, attempt_id, repair_id) = approved_sql_attempt();
+    let fixes = SecurityFixService::new(&fixture.database);
+    let backups = tempdir().expect("duplicate apply backups");
+    let application = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("first apply");
+    fixes
+        .record_application(&attempt_id, &application.id)
+        .expect("record first apply");
+
+    assert!(
+        matches!(
+            fixes.assert_application_allowed(&attempt_id),
+            Err(SecurityFixError::AttemptNotApproved)
+        ),
+        "an applied security fix cannot pass the exact approval gate a second time"
+    );
+    let run_count: i64 = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM repair_application_runs WHERE repair_id=?1",
+            [&repair_id],
+            |row| row.get(0),
+        )
+        .expect("repair application run count");
+    assert_eq!(run_count, 1);
+}
+
+#[test]
 fn remediation_campaign_blocks_rollback_when_verified_dependent_relies_on_applied_fix() {
     let fixture = sql_fixture();
     let second_id = add_overlapping_sql_finding(&fixture, "campaign-rollback-dependency");
