@@ -1687,41 +1687,25 @@ fn remediation_campaign_rollback_checks_dependencies_across_all_active_campaigns
             |row| row.get(0),
         )
         .expect("scan id");
-    for (session_id, campaign_suffix) in [
-        ("cross-campaign-session-a", "a"),
-        ("cross-campaign-session-b", "b"),
-    ] {
-        fixture
-            .database
-            .connection()
-            .execute(
-                "INSERT INTO guided_security_sessions(
-                    id,project_id,target_url,environment,testing_depth,auth_mode,status,
-                    authorization_confirmed,config_json,scan_id
-                 ) VALUES (?1,?2,'http://127.0.0.1:3000','local',
-                           'standard','none','completed',1,'{}',?3)",
-                rusqlite::params![session_id, fixture.project_id, scan_id],
-            )
-            .expect("guided campaign session");
-        let _ = campaign_suffix;
-    }
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (
+                'cross-campaign-session',?1,'http://127.0.0.1:3000','local',
+                'standard','none','completed',1,'{}',?2
+             )",
+            rusqlite::params![fixture.project_id, scan_id],
+        )
+        .expect("guided campaign session");
 
     let campaigns = SecurityRemediationCampaignService::new(&fixture.database);
-    let campaign_a = campaigns
-        .create(&SecurityRemediationCampaignCreate {
-            session_id: "cross-campaign-session-a".into(),
-            finding_ids: vec![fixture.finding_id.clone()],
-        })
-        .expect("campaign A");
-    let analyzed_a = campaigns.analyze(&campaign_a.id).expect("analyze A");
-    campaigns
-        .approve_plan(&campaign_a.id, analyzed_a.plan_hash.as_deref().expect("hash A"))
-        .expect("approve A");
-    campaigns.start(&campaign_a.id).expect("start A");
-
     let campaign_b = campaigns
         .create(&SecurityRemediationCampaignCreate {
-            session_id: "cross-campaign-session-b".into(),
+            session_id: "cross-campaign-session".into(),
             finding_ids: vec![fixture.finding_id.clone(), second_id.clone()],
         })
         .expect("campaign B");
@@ -1738,14 +1722,22 @@ fn remediation_campaign_rollback_checks_dependencies_across_all_active_campaigns
         .expect("campaign B overlap dependency")
         .clone();
     let prerequisite_id = dependent.depends_on[0].clone();
-    assert_eq!(
-        prerequisite_id, fixture.finding_id,
-        "fixture primary must be the rollback prerequisite in campaign B"
-    );
+
+    let campaign_a = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "cross-campaign-session".into(),
+            finding_ids: vec![prerequisite_id.clone()],
+        })
+        .expect("campaign A");
+    let analyzed_a = campaigns.analyze(&campaign_a.id).expect("analyze A");
+    campaigns
+        .approve_plan(&campaign_a.id, analyzed_a.plan_hash.as_deref().expect("hash A"))
+        .expect("approve A");
+    campaigns.start(&campaign_a.id).expect("start A");
 
     let fixes = SecurityFixService::new(&fixture.database);
     let prepared = fixes
-        .prepare_fix(&fixture.finding_id, false)
+        .prepare_fix(&prerequisite_id, false)
         .expect("prepare shared attempt");
     let review = fixes.generate_patch(&prepared.attempt.id).expect("patch");
     fixes
@@ -1776,7 +1768,7 @@ fn remediation_campaign_rollback_checks_dependencies_across_all_active_campaigns
                 id,finding_id,session_id,status,original_confidence,
                 observed_confidence,requests_performed,detail_json
              ) VALUES (
-                'cross-campaign-dependent-retest',?1,'cross-campaign-session-b',
+                'cross-campaign-dependent-retest',?1,'cross-campaign-session',
                 'retest_passed','Likely','Likely',2,'{}'
              )",
             [&dependent.finding_id],
@@ -1785,18 +1777,14 @@ fn remediation_campaign_rollback_checks_dependencies_across_all_active_campaigns
     campaigns.sync(&campaign_b.id).expect("sync verified dependent");
 
     let assessment_a = campaigns
-        .rollback_assessment(&campaign_a.id, &fixture.finding_id)
+        .rollback_assessment(&campaign_a.id, &prerequisite_id)
         .expect("campaign A isolated assessment");
     assert!(
         assessment_a.allowed,
         "campaign A alone has no dependent work, demonstrating why cross-campaign authorization is required"
     );
     let error = campaigns
-        .authorize_rollback(
-            &campaign_a.id,
-            &fixture.finding_id,
-            &prepared.attempt.id,
-        )
+        .authorize_rollback(&campaign_a.id, &prerequisite_id, &prepared.attempt.id)
         .expect_err("campaign B dependency must block rollback initiated from campaign A");
     assert!(
         error.to_string().contains(&campaign_b.id),
