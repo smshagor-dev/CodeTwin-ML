@@ -3060,6 +3060,57 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_campaign_retests_do_not_inflate_summary_or_state_history() {
+        let (database, session_id, _, finding_a, _) = fixture();
+        let service = SecurityRemediationCampaignService::new(&database);
+        let campaign = service
+            .create(&SecurityRemediationCampaignCreate {
+                session_id: session_id.clone(),
+                finding_ids: vec![finding_a.clone()],
+            })
+            .expect("create");
+        let analyzed = service.analyze(&campaign.id).expect("analyze");
+        service
+            .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+            .expect("approve");
+        service.start(&campaign.id).expect("start");
+
+        let guided = crate::GuidedSecurityStore::new(&database);
+        for suffix in ["one", "two"] {
+            guided
+                .record_retest(crate::GuidedRetestInput {
+                    finding_id: &finding_a,
+                    session_id: Some(&session_id),
+                    status: "still_vulnerable",
+                    original_confidence: "Likely",
+                    observed_confidence: Some("Likely"),
+                    requests_performed: 2,
+                    detail_json: &format!(r#"{{"fixture":"duplicate-{suffix}"}}"#),
+                })
+                .expect("persist duplicate retest");
+            service.sync(&campaign.id).expect("sync duplicate retest");
+        }
+
+        let summary = service.summary(&campaign.id).expect("summary");
+        assert_eq!(summary.selected_findings, 1);
+        assert_eq!(summary.still_vulnerable, 1);
+        assert_eq!(summary.verified_fixed, 0);
+        let state_events = service
+            .events(&campaign.id, 100)
+            .expect("events")
+            .into_iter()
+            .filter(|event| {
+                event.event_type == "finding_state_changed"
+                    && event.detail_json.contains("STILL_VULNERABLE")
+            })
+            .count();
+        assert_eq!(
+            state_events, 1,
+            "repeating the same factual retest outcome must not duplicate campaign state transitions"
+        );
+    }
+
+    #[test]
     fn campaign_security_debt_reports_standard_fix_attempt_limit() {
         let (database, session_id, _, finding_a, _) = fixture();
         let service = SecurityRemediationCampaignService::new(&database);
