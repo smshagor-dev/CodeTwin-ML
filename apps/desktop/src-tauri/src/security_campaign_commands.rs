@@ -107,6 +107,30 @@ pub(crate) fn sync_security_remediation_campaign(
 }
 
 #[tauri::command]
+pub(crate) fn begin_security_remediation_campaign_completion_verification(
+    campaign_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<SecurityRemediationCampaignRecord, String> {
+    with_database(&state, |database| {
+        SecurityRemediationCampaignService::new(database)
+            .begin_completion_verification(&campaign_id)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+pub(crate) fn finalize_security_remediation_campaign_completion_verification(
+    campaign_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<SecurityRemediationCampaignRecord, String> {
+    with_database(&state, |database| {
+        SecurityRemediationCampaignService::new(database)
+            .finalize_completion_verification(&campaign_id)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
 pub(crate) fn complete_security_remediation_campaign(
     campaign_id: String,
     state: tauri::State<'_, AppState>,
