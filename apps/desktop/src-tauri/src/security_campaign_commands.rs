@@ -301,7 +301,7 @@ pub(crate) async fn rollback_security_remediation_campaign_fix(
         let result =
             execute_security_fix_rollback(&database, &authorized_attempt_id, &backup_root)?;
         campaigns
-            .sync(&campaign_id)
+            .reconcile_rollback(&authorized_attempt_id)
             .map_err(|error| error.to_string())?;
         Ok(result)
     })
