@@ -161,10 +161,14 @@ pub struct SecurityRemediationBeforeAfterItem {
     pub endpoint_url: String,
     pub severity: String,
     pub confidence: String,
+    pub eligibility: Option<FixEligibility>,
     pub baseline_status: String,
     pub campaign_status: String,
     pub comparison_status: String,
     pub selected: bool,
+    pub baseline_source_relative_path: Option<String>,
+    pub current_source_relative_path: Option<String>,
+    pub patch_attempt_count: usize,
     pub attempt_id: Option<String>,
     pub validation_state: Option<String>,
     pub retest_state: Option<String>,
@@ -368,6 +372,10 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 )));
             };
             let eligibility = fix_service.evaluate_eligibility(finding_id)?.result;
+            let attempt_floor_number = fix_service
+                .latest_attempt_for_finding(finding_id)?
+                .map(|attempt| attempt.attempt_number)
+                .unwrap_or_default();
             let retest_floor_rowid: i64 = self.database.connection().query_row(
                 "SELECT COALESCE(MAX(rowid),0) FROM guided_security_retests WHERE finding_id=?1",
                 [finding_id],
@@ -385,6 +393,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 remediation,
                 eligibility,
                 retest_floor_rowid,
+                attempt_floor_number,
             ));
         }
 
@@ -403,6 +412,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 "source_symbol_id": item.7,
                 "eligibility": item.9,
                 "retest_floor_rowid": item.10,
+                "attempt_floor_number": item.11,
             })).collect::<Vec<_>>(),
         });
         reject_sensitive_json(&baseline)?;
@@ -1498,12 +1508,34 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 [&finding.finding_id],
                 |row| row.get(0),
             )?;
+            let baseline_source_file_id = baseline
+                .and_then(|value| value.get("source_file_id"))
+                .and_then(serde_json::Value::as_str);
+            let baseline_source_relative_path =
+                self.relative_path_for_file_id(baseline_source_file_id)?;
+            let current_source_relative_path = self.relative_path_for_file_id(
+                finding
+                    .root_file_id
+                    .as_deref()
+                    .or(finding.source_file_id.as_deref()),
+            )?;
+            let attempt_floor_number = baseline
+                .and_then(|value| value.get("attempt_floor_number"))
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or_default();
+            let patch_attempt_count = attempt
+                .as_ref()
+                .map(|attempt| attempt.attempt_number.saturating_sub(attempt_floor_number))
+                .unwrap_or_default();
+
             output.push(SecurityRemediationBeforeAfterItem {
                 finding_id: finding.finding_id,
                 title,
                 endpoint_url: finding.endpoint_url,
                 severity: finding.severity,
                 confidence: finding.confidence,
+                eligibility: Some(finding.eligibility),
                 baseline_status: baseline
                     .and_then(|value| value.get("status"))
                     .and_then(serde_json::Value::as_str)
@@ -1512,6 +1544,9 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 comparison_status: comparison_status_for_campaign_state(&finding.status).into(),
                 campaign_status: finding.status,
                 selected: true,
+                baseline_source_relative_path,
+                current_source_relative_path,
+                patch_attempt_count,
                 attempt_id: attempt.as_ref().map(|attempt| attempt.id.clone()),
                 validation_state: attempt
                     .as_ref()
@@ -1528,9 +1563,11 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 .as_deref()
                 .unwrap_or("9999-12-31 23:59:59");
             let mut statement = self.database.connection().prepare(
-                "SELECT wf.id,wf.title,wf.endpoint_url,wf.severity,wf.confidence,wf.status
+                "SELECT wf.id,wf.title,wf.endpoint_url,wf.severity,wf.confidence,wf.status,
+                        source_file.relative_path
                  FROM web_security_findings wf
                  JOIN web_security_scans ws ON ws.id=wf.scan_id
+                 LEFT JOIN files source_file ON source_file.id=wf.source_file_id
                  WHERE ws.project_id=?1
                    AND ws.target_url=?2
                    AND ws.scope_json=?3
@@ -1580,10 +1617,14 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                         endpoint_url: row.get(2)?,
                         severity: row.get(3)?,
                         confidence: row.get(4)?,
+                        eligibility: None,
                         baseline_status: "not_observed".into(),
                         campaign_status: row.get(5)?,
                         comparison_status: "NEWLY_OBSERVED_DURING_VERIFICATION".into(),
                         selected: false,
+                        baseline_source_relative_path: None,
+                        current_source_relative_path: row.get(6)?,
+                        patch_attempt_count: 0,
                         attempt_id: None,
                         validation_state: None,
                         retest_state: None,
@@ -2158,6 +2199,24 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 },
             )
             .collect()
+    }
+
+    fn relative_path_for_file_id(
+        &self,
+        file_id: Option<&str>,
+    ) -> Result<Option<String>, SecurityRemediationCampaignError> {
+        let Some(file_id) = file_id else {
+            return Ok(None);
+        };
+        self.database
+            .connection()
+            .query_row(
+                "SELECT relative_path FROM files WHERE id=?1",
+                [file_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     fn invalidate_completion_verification_if_stale(
