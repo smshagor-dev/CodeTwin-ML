@@ -840,8 +840,8 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         self.append_event(
             campaign_id,
             "campaign_paused",
-            "Campaign paused. Existing Fix & Verify history was preserved.",
-            &json!({}),
+            "Campaign paused. No new campaign remediation action may start; any already-started atomic Fix & Verify operation may finish and will be reconciled without resuming the campaign.",
+            &json!({"in_flight_policy": "reconcile_without_resume"}),
         )?;
         self.require_campaign(campaign_id)
     }
@@ -950,6 +950,13 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         finding_id: &str,
         reason: &str,
     ) -> Result<SecurityRemediationCampaignFindingRecord, SecurityRemediationCampaignError> {
+        let campaign = self.require_campaign(campaign_id)?;
+        if !matches!(campaign.status.as_str(), "IN_PROGRESS" | "BLOCKED") {
+            return Err(SecurityRemediationCampaignError::State(format!(
+                "skipping a campaign finding requires IN_PROGRESS or BLOCKED; observed {}",
+                campaign.status
+            )));
+        }
         let reason = reason.trim();
         if reason.is_empty() {
             return Err(SecurityRemediationCampaignError::State(
