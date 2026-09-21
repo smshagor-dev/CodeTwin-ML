@@ -1019,7 +1019,18 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             if finding.status == "SKIPPED" {
                 continue;
             }
-            let attempt = fix.latest_attempt_for_finding(&finding.finding_id)?;
+            let attempt = if matches!(
+                campaign.status.as_str(),
+                "COMPLETED" | "COMPLETED_WITH_UNRESOLVED_FINDINGS" | "CANCELLED"
+            ) {
+                if let Some(attempt_id) = finding.active_attempt_id.as_deref() {
+                    fix.get_attempt(attempt_id)?
+                } else {
+                    None
+                }
+            } else {
+                fix.latest_attempt_for_finding(&finding.finding_id)?
+            };
             let latest_retest = self.latest_campaign_retest(
                 &finding.finding_id,
                 finding.retest_floor_rowid,
@@ -1060,16 +1071,28 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             ) {
                 continue;
             }
-            let dependency_failed = finding.depends_on.iter().any(|dependency_id| {
-                evidence_map.get(dependency_id).is_some_and(|dependency| {
-                    matches!(
-                        dependency.status.as_str(),
-                        "REGRESSION_DETECTED" | "BLOCKED"
-                    )
+            let unsatisfied_dependencies = finding
+                .depends_on
+                .iter()
+                .filter_map(|dependency_id| {
+                    let dependency = evidence_map.get(dependency_id)?;
+                    (dependency.status != "VERIFIED").then_some((
+                        dependency.finding_id.clone(),
+                        dependency.status.clone(),
+                    ))
                 })
-            });
-            if dependency_failed && finding.status != "BLOCKED" {
+                .collect::<Vec<_>>();
+            if !unsatisfied_dependencies.is_empty() && finding.status != "BLOCKED" {
                 self.set_finding_state(campaign_id, &finding.finding_id, "BLOCKED")?;
+                self.append_event(
+                    campaign_id,
+                    "finding_blocked_by_dependency",
+                    "Campaign finding remains blocked until every planned prerequisite is verified.",
+                    &json!({
+                        "finding_id": finding.finding_id,
+                        "dependencies": unsatisfied_dependencies,
+                    }),
+                )?;
             }
         }
 
@@ -1593,6 +1616,70 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 })
             })
             .collect()
+    }
+
+    pub fn authorize_fix_mutation(
+        &self,
+        finding_id: &str,
+    ) -> Result<(), SecurityRemediationCampaignError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT cf.campaign_id
+             FROM security_remediation_campaign_findings cf
+             JOIN security_remediation_campaigns c ON c.id=cf.campaign_id
+             WHERE cf.finding_id=?1
+               AND c.status IN ('IN_PROGRESS','PAUSED','BLOCKED')
+             ORDER BY c.created_at,cf.ordinal,cf.campaign_id",
+        )?;
+        let rows = statement.query_map([finding_id], |row| row.get::<_, String>(0))?;
+        let campaign_ids = rows.collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        for campaign_id in campaign_ids {
+            let campaign = self.require_campaign(&campaign_id)?;
+            if campaign.status == "PAUSED" {
+                return Err(SecurityRemediationCampaignError::State(format!(
+                    "security fix mutation is paused by remediation campaign {campaign_id}"
+                )));
+            }
+
+            self.sync(&campaign_id)?;
+            let finding = self.require_finding(&campaign_id, finding_id)?;
+            let all = self.findings(&campaign_id)?;
+            let by_id = all
+                .into_iter()
+                .map(|member| (member.finding_id.clone(), member))
+                .collect::<HashMap<_, _>>();
+            let unsatisfied = finding
+                .depends_on
+                .iter()
+                .filter_map(|dependency_id| {
+                    let dependency = by_id.get(dependency_id)?;
+                    (dependency.status != "VERIFIED").then_some(format!(
+                        "{}:{}",
+                        dependency.finding_id, dependency.status
+                    ))
+                })
+                .collect::<Vec<_>>();
+            if !unsatisfied.is_empty() {
+                return Err(SecurityRemediationCampaignError::State(format!(
+                    "security fix mutation is blocked by remediation campaign {campaign_id}; prerequisite findings are not verified: {}",
+                    unsatisfied.join(", ")
+                )));
+            }
+
+            if finding.shared_root_primary_finding_id.is_some() {
+                let latest_retest = self.latest_campaign_retest(
+                    finding_id,
+                    finding.retest_floor_rowid,
+                )?;
+                if latest_retest.as_deref() != Some("still_vulnerable") {
+                    return Err(SecurityRemediationCampaignError::State(format!(
+                        "security fix mutation is blocked by remediation campaign {campaign_id}; shared-root secondary findings must be retested and remain vulnerable before another patch is prepared or applied"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn rollback_assessment(
