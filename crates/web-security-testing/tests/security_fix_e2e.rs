@@ -173,6 +173,9 @@ fn handle_source_backed(mut stream: TcpStream, project_root: &Path) {
             &query,
             authorization.as_deref(),
         ),
+        "/headers/a" | "/headers/b" | "/headers/c" | "/headers/d" | "/headers/e" => {
+            handle_security_headers(&mut stream, project_root)
+        }
         _ => respond(
             &mut stream,
             "404 Not Found",
@@ -326,6 +329,34 @@ fn handle_object(
     );
 }
 
+fn handle_security_headers(stream: &mut TcpStream, project_root: &Path) {
+    let source = fs::read_to_string(
+        project_root.join("src/middleware/security_headers.config.ts"),
+    )
+    .unwrap_or_default();
+    if source.contains("browserSecurityHeaders = true") {
+        respond(
+            stream,
+            "200 OK",
+            &[
+                ("Content-Type", "text/html"),
+                ("Content-Security-Policy", "default-src 'self'"),
+                ("X-Content-Type-Options", "nosniff"),
+                ("Referrer-Policy", "strict-origin-when-cross-origin"),
+                ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
+            ],
+            "<html><body>header fixture</body></html>",
+        );
+    } else {
+        respond(
+            stream,
+            "200 OK",
+            &[("Content-Type", "text/html")],
+            "<html><body>header fixture</body></html>",
+        );
+    }
+}
+
 fn request_header(request: &str, name: &str) -> Option<String> {
     request.lines().skip(1).find_map(|line| {
         let (header_name, value) = line.split_once(':')?;
@@ -406,6 +437,13 @@ fn write_project(root: &Path) {
         "export async function getObject(id: string, user: User) {\n  return repository.find(id);\n}\n",
     )
     .expect("write idor source");
+    let middleware = root.join("src/middleware");
+    fs::create_dir_all(&middleware).expect("create middleware directory");
+    fs::write(
+        middleware.join("security_headers.config.ts"),
+        "export const browserSecurityHeaders = false;\n",
+    )
+    .expect("write shared security header configuration");
 }
 
 fn persist_outcome(
