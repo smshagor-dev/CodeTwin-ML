@@ -615,13 +615,15 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
           >
             Refresh Evidence
           </button>
-          <button
-            className="ws-button ws-button-secondary"
-            disabled={Boolean(busy)}
-            onClick={() => void boundedVerification()}
-          >
-            Verify Selected Findings
-          </button>
+          {campaign.status !== "PAUSED" && (
+            <button
+              className="ws-button ws-button-secondary"
+              disabled={Boolean(busy)}
+              onClick={() => void boundedVerification()}
+            >
+              Verify Selected Findings
+            </button>
+          )}
           <button
             className="ws-button ws-button-danger-ghost"
             disabled={Boolean(busy)}
@@ -658,7 +660,15 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
             </p>
           )}
 
-          {current.eligibility === "INSUFFICIENT_EVIDENCE" ? (
+          {campaign.status === "PAUSED" ? (
+            <div className="ws-security-campaign-callout">
+              <strong>Campaign paused</strong>
+              <p>
+                New remediation and retest actions are paused. Any atomic Fix & Verify operation
+                that already started may finish; refresh or resume to reconcile its persisted evidence.
+              </p>
+            </div>
+          ) : current.eligibility === "INSUFFICIENT_EVIDENCE" ? (
             <div className="ws-security-campaign-callout">
               <strong>Insufficient evidence</strong>
               <p>Campaign membership does not upgrade remediation eligibility. Gather stronger runtime/source evidence before preparing a fix.</p>
@@ -693,7 +703,7 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
             <p className="ws-form-error">The campaign finding is no longer present in the loaded scan result.</p>
           )}
 
-          {current.status !== "VERIFIED" && (
+          {campaign.status !== "PAUSED" && current.status !== "VERIFIED" && (
             <div className="ws-security-campaign-skip">
               <input
                 value={skipReason}
@@ -712,7 +722,7 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
         </section>
       )}
 
-      {!terminal && summary && summary.queued_or_in_progress === 0 && (
+      {!terminal && campaign.status !== "PAUSED" && summary && summary.queued_or_in_progress === 0 && (
         <section className="ws-security-campaign-callout">
           <strong>Selected finding work has factual outcomes</strong>
           <p>
