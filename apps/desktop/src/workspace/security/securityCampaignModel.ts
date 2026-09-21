@@ -38,9 +38,21 @@ export function eligibleForCampaignSelection(
 export function currentCampaignFinding(
   findings: SecurityRemediationCampaignFindingRecord[],
 ): SecurityRemediationCampaignFindingRecord | null {
-  return findings.find((finding) =>
-    !["VERIFIED", "SKIPPED", "MANUAL_ACTION_REQUIRED"].includes(finding.status)
-  ) ?? findings.find((finding) => finding.status === "MANUAL_ACTION_REQUIRED") ?? null;
+  const activeStatuses = new Set([
+    "PREPARING_FIX",
+    "AWAITING_REVIEW",
+    "APPLYING",
+    "VALIDATING",
+    "RETESTING",
+    "STILL_VULNERABLE",
+    "UNABLE_TO_VERIFY",
+  ]);
+  return findings.find((finding) => activeStatuses.has(finding.status))
+    ?? findings.find((finding) => finding.status === "QUEUED")
+    ?? findings.find((finding) => finding.status === "REGRESSION_DETECTED")
+    ?? findings.find((finding) => finding.status === "BLOCKED")
+    ?? findings.find((finding) => finding.status === "MANUAL_ACTION_REQUIRED")
+    ?? null;
 }
 
 export function campaignProgressPercent(summary: SecurityRemediationCampaignSummary | null): number {
