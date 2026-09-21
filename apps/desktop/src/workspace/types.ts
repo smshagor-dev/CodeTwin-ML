@@ -620,6 +620,10 @@ export type SecurityRemediationCampaignRecord = {
   approved_plan_hash: string | null;
   baseline_json: string;
   completion_json: string;
+  completion_retest_floor_rowid: number;
+  completion_verification_started_at: string | null;
+  completion_verification_completed_at: string | null;
+  completion_source_hashes_json: string;
   created_at: string;
   analyzed_at: string | null;
   approved_at: string | null;
