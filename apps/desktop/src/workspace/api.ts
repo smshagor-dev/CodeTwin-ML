@@ -297,6 +297,18 @@ export const workspaceApi = {
       findingId,
     });
   },
+  rollbackSecurityRemediationCampaignFix(
+    campaignId: string,
+    findingId: string,
+    expectedAttemptId: string,
+  ) {
+    return invoke<SecurityFixApplicationResult>("rollback_security_remediation_campaign_fix", {
+      campaignId,
+      findingId,
+      expectedAttemptId,
+    });
+  },
+
   securityRemediationCampaignDebt(campaignId: string) {
     return invoke<SecurityRemediationDebtView>("security_remediation_campaign_debt", { campaignId });
   },
