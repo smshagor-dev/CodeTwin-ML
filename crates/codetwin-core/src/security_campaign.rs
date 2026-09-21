@@ -1676,35 +1676,42 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         expected_attempt_id: &str,
     ) -> Result<String, SecurityRemediationCampaignError> {
         let campaign = self.require_campaign(campaign_id)?;
-        if !matches!(campaign.status.as_str(), "IN_PROGRESS" | "PAUSED" | "BLOCKED") {
+        if !matches!(
+            campaign.status.as_str(),
+            "IN_PROGRESS"
+                | "PAUSED"
+                | "BLOCKED"
+                | "COMPLETED"
+                | "COMPLETED_WITH_UNRESOLVED_FINDINGS"
+                | "CANCELLED"
+        ) {
             return Err(SecurityRemediationCampaignError::State(format!(
-                "campaign rollback requires IN_PROGRESS, PAUSED, or BLOCKED; observed {}",
+                "campaign rollback requires a started or historical campaign; observed {}",
                 campaign.status
             )));
         }
-        let assessment = self.rollback_assessment(campaign_id, finding_id)?;
-        if !assessment.allowed {
-            return Err(SecurityRemediationCampaignError::State(format!(
-                "campaign rollback is blocked by dependency safety: {}",
-                assessment.reason
-            )));
-        }
-        let bound_attempt_id = assessment.attempt_id.as_deref().ok_or_else(|| {
-            SecurityRemediationCampaignError::State(
-                "campaign finding has no rollback-eligible fix attempt".into(),
-            )
-        })?;
-        if bound_attempt_id != expected_attempt_id {
+
+        let finding = self.require_finding(campaign_id, finding_id)?;
+        if finding.active_attempt_id.as_deref() != Some(expected_attempt_id) {
             return Err(SecurityRemediationCampaignError::State(
                 "campaign rollback attempt identity changed; refresh dependency assessment before retrying"
                     .into(),
             ));
         }
+        let fix = SecurityFixService::new(self.database);
+        let attempt = fix
+            .get_attempt(expected_attempt_id)?
+            .ok_or_else(|| {
+                SecurityRemediationCampaignError::State(
+                    "campaign-linked Fix & Verify attempt no longer exists".into(),
+                )
+            })?;
+        let already_rolled_back = attempt.status == "rolled_back";
 
-        let memberships = self.active_campaign_memberships_for_attempt(expected_attempt_id)?;
+        let memberships = self.campaign_memberships_for_attempt(expected_attempt_id)?;
         if memberships.is_empty() {
             return Err(SecurityRemediationCampaignError::State(
-                "campaign rollback attempt is no longer linked to an active remediation campaign"
+                "campaign rollback attempt is no longer linked to remediation campaign history"
                     .into(),
             ));
         }
@@ -1715,25 +1722,44 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             })
         {
             return Err(SecurityRemediationCampaignError::State(
-                "campaign rollback request does not match the active campaign membership".into(),
+                "campaign rollback request does not match campaign membership".into(),
             ));
         }
+
+        if already_rolled_back {
+            return Ok(expected_attempt_id.to_string());
+        }
+
+        let assessment = self.rollback_assessment(campaign_id, finding_id)?;
+        if !assessment.allowed {
+            return Err(SecurityRemediationCampaignError::State(format!(
+                "campaign rollback is blocked by dependency safety: {}",
+                assessment.reason
+            )));
+        }
+        if assessment.attempt_id.as_deref() != Some(expected_attempt_id) {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign rollback attempt identity changed; refresh dependency assessment before retrying"
+                    .into(),
+            ));
+        }
+
         for (member_campaign_id, member_finding_id) in &memberships {
             let member_assessment =
                 self.rollback_assessment(member_campaign_id, member_finding_id)?;
             if !member_assessment.allowed {
                 return Err(SecurityRemediationCampaignError::State(format!(
-                    "rollback is blocked by dependency safety in active campaign {member_campaign_id}: {}",
+                    "rollback is blocked by dependency safety in campaign {member_campaign_id}: {}",
                     member_assessment.reason
                 )));
             }
             if member_assessment.attempt_id.as_deref() != Some(expected_attempt_id) {
                 return Err(SecurityRemediationCampaignError::State(format!(
-                    "rollback attempt identity is stale in active campaign {member_campaign_id}"
+                    "rollback attempt identity is stale in campaign {member_campaign_id}"
                 )));
             }
         }
-        Ok(bound_attempt_id.to_string())
+        Ok(expected_attempt_id.to_string())
     }
 
     pub fn rollback_requires_campaign_authorization(
@@ -1741,11 +1767,53 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         attempt_id: &str,
     ) -> Result<bool, SecurityRemediationCampaignError> {
         Ok(!self
-            .active_campaign_memberships_for_attempt(attempt_id)?
+            .campaign_memberships_for_attempt(attempt_id)?
             .is_empty())
     }
 
-    fn active_campaign_memberships_for_attempt(
+    pub fn reconcile_rollback(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Vec<String>, SecurityRemediationCampaignError> {
+        let memberships = self.campaign_memberships_for_attempt(attempt_id)?;
+        let mut campaign_ids = BTreeSet::new();
+        for (campaign_id, finding_id) in memberships {
+            self.sync(&campaign_id)?;
+            let already_recorded = self
+                .events(&campaign_id, MAX_EVENTS)?
+                .into_iter()
+                .filter(|event| event.event_type == "campaign_fix_rolled_back")
+                .any(|event| {
+                    serde_json::from_str::<serde_json::Value>(&event.detail_json)
+                        .ok()
+                        .is_some_and(|detail| {
+                            detail
+                                .get("attempt_id")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(attempt_id)
+                                && detail
+                                    .get("finding_id")
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some(finding_id.as_str())
+                        })
+                });
+            if !already_recorded {
+                self.append_event(
+                    &campaign_id,
+                    "campaign_fix_rolled_back",
+                    "A campaign-linked Fix & Verify application was rolled back. Source history is preserved and the campaign item is no longer considered verified.",
+                    &json!({
+                        "finding_id": finding_id,
+                        "attempt_id": attempt_id,
+                    }),
+                )?;
+            }
+            campaign_ids.insert(campaign_id);
+        }
+        Ok(campaign_ids.into_iter().collect())
+    }
+
+    fn campaign_memberships_for_attempt(
         &self,
         attempt_id: &str,
     ) -> Result<Vec<(String, String)>, SecurityRemediationCampaignError> {
@@ -1754,7 +1822,6 @@ impl<'a> SecurityRemediationCampaignService<'a> {
              FROM security_remediation_campaign_findings cf
              JOIN security_remediation_campaigns c ON c.id=cf.campaign_id
              WHERE cf.active_attempt_id=?1
-               AND c.status IN ('IN_PROGRESS','PAUSED','BLOCKED')
              ORDER BY c.created_at,cf.ordinal,cf.campaign_id",
         )?;
         let rows = statement.query_map([attempt_id], |row| {
