@@ -103,6 +103,14 @@ describe("security remediation campaign frontend model", () => {
     expect(current?.finding_id).toBe("f-2");
   });
 
+  it("continues independent queued work before blocked or regression-only items", () => {
+    const blocked = campaignFinding("BLOCKED", 1);
+    blocked.depends_on = ["f-prerequisite"];
+    const regression = campaignFinding("REGRESSION_DETECTED", 2);
+    const independent = campaignFinding("QUEUED", 3);
+    expect(currentCampaignFinding([blocked, regression, independent])?.finding_id).toBe("f-3");
+  });
+
   it("reports only factual settled progress and never a security score", () => {
     const summary: SecurityRemediationCampaignSummary = {
       selected_findings: 10,
