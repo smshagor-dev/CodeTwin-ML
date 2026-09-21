@@ -744,17 +744,18 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
           <h4>Before / after security state</h4>
           <p>{factualCampaignOutcome(summary)}</p>
           <div className="ws-security-campaign-before-after">
-            {beforeAfter.map((item) => {
-              const source = findings.find((finding) => finding.id === item.finding_id);
-              return (
-                <div key={item.finding_id}>
-                  <span>{source?.title ?? item.finding_id}</span>
-                  <small>{item.severity} · {item.confidence}</small>
-                  <em>{item.baseline_status} → {item.campaign_status.replaceAll("_", " ")}</em>
-                  <StatusBadge status={item.retest_state ?? item.campaign_status}/>
-                </div>
-              );
-            })}
+            {beforeAfter.map((item) => (
+              <div key={item.finding_id}>
+                <span>{item.title}</span>
+                <small>
+                  {item.severity} · {item.confidence} · {item.selected ? "selected" : "new observation"}
+                </small>
+                <em>
+                  {item.baseline_status.replaceAll("_", " ")} → {item.comparison_status.replaceAll("_", " ")}
+                </em>
+                <StatusBadge status={item.comparison_status}/>
+              </div>
+            ))}
           </div>
         </section>
       )}
