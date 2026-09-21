@@ -1,4 +1,5 @@
 use std::{
+    path::Path,
     sync::atomic::Ordering,
     time::Instant,
 };
@@ -220,6 +221,47 @@ pub(crate) async fn apply_security_fix(
     task.map_err(|error| error.to_string())?
 }
 
+pub(crate) fn execute_security_fix_rollback(
+    database: &Database,
+    attempt_id: &str,
+    backup_root: &Path,
+) -> Result<SecurityFixApplicationResult, String> {
+    let service = SecurityFixService::new(database);
+    let current = service
+        .get_attempt(attempt_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "security fix attempt not found".to_string())?;
+    let run_id = current
+        .application_run_id
+        .as_deref()
+        .ok_or_else(|| "security fix has no applied patch to roll back".to_string())?;
+    let applications = RepairApplicationService::new(database);
+    let persisted = applications
+        .get_run(run_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "repair application not found".to_string())?;
+    let application = if persisted.status == "rolled_back" {
+        persisted
+    } else {
+        applications
+            .rollback_application(run_id, backup_root)
+            .map_err(|error| error.to_string())?
+    };
+    let attempt = if application.status == "rolled_back" {
+        let repair_id = current
+            .repair_id
+            .as_deref()
+            .ok_or_else(|| "security fix has no linked repair plan".to_string())?;
+        finalize_security_fix_rollback(database, attempt_id, repair_id, &application)?
+    } else {
+        current
+    };
+    Ok(SecurityFixApplicationResult {
+        attempt,
+        application,
+    })
+}
+
 #[tauri::command]
 pub(crate) async fn rollback_security_fix(
     attempt_id: String,
@@ -237,45 +279,7 @@ pub(crate) async fn rollback_security_fix(
 
     let task = tauri::async_runtime::spawn_blocking(move || {
         let database = Database::open(&database_path).map_err(|error| error.to_string())?;
-        let service = SecurityFixService::new(&database);
-        let current = service
-            .get_attempt(&attempt_id)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "security fix attempt not found".to_string())?;
-        let run_id = current
-            .application_run_id
-            .as_deref()
-            .ok_or_else(|| "security fix has no applied patch to roll back".to_string())?;
-        let applications = RepairApplicationService::new(&database);
-        let persisted = applications
-            .get_run(run_id)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "repair application not found".to_string())?;
-        let application = if persisted.status == "rolled_back" {
-            persisted
-        } else {
-            applications
-                .rollback_application(run_id, &backup_root)
-                .map_err(|error| error.to_string())?
-        };
-        let attempt = if application.status == "rolled_back" {
-            let repair_id = current
-                .repair_id
-                .as_deref()
-                .ok_or_else(|| "security fix has no linked repair plan".to_string())?;
-            finalize_security_fix_rollback(
-                &database,
-                &attempt_id,
-                repair_id,
-                &application,
-            )?
-        } else {
-            current
-        };
-        Ok(SecurityFixApplicationResult {
-            attempt,
-            application,
-        })
+        execute_security_fix_rollback(&database, &attempt_id, &backup_root)
     })
     .await;
 
