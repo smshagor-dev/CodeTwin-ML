@@ -54,6 +54,10 @@ pub struct SecurityRemediationCampaignRecord {
     pub approved_plan_hash: Option<String>,
     pub baseline_json: String,
     pub completion_json: String,
+    pub completion_retest_floor_rowid: i64,
+    pub completion_verification_started_at: Option<String>,
+    pub completion_verification_completed_at: Option<String>,
+    pub completion_source_hashes_json: String,
     pub created_at: String,
     pub analyzed_at: Option<String>,
     pub approved_at: Option<String>,
@@ -1066,6 +1070,105 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         self.require_campaign(campaign_id)
     }
 
+    pub fn begin_completion_verification(
+        &self,
+        campaign_id: &str,
+    ) -> Result<SecurityRemediationCampaignRecord, SecurityRemediationCampaignError> {
+        self.sync(campaign_id)?;
+        let campaign = self.require_campaign(campaign_id)?;
+        self.assert_scope_binding(&campaign)?;
+        if !matches!(campaign.status.as_str(), "IN_PROGRESS" | "BLOCKED") {
+            return Err(SecurityRemediationCampaignError::State(format!(
+                "final campaign verification requires IN_PROGRESS or BLOCKED; observed {}",
+                campaign.status
+            )));
+        }
+        let summary = self.summary(campaign_id)?;
+        if summary.queued_or_in_progress > 0 {
+            return Err(SecurityRemediationCampaignError::State(
+                "finish or explicitly resolve/skip current campaign work before starting final verification".into(),
+            ));
+        }
+        let floor: i64 = self.database.connection().query_row(
+            "SELECT COALESCE(MAX(rowid),0) FROM guided_security_retests",
+            [],
+            |row| row.get(0),
+        )?;
+        self.database.connection().execute(
+            "UPDATE security_remediation_campaigns
+             SET completion_retest_floor_rowid=?2,
+                 completion_verification_started_at=CURRENT_TIMESTAMP,
+                 completion_verification_completed_at=NULL,
+                 completion_source_hashes_json='{}',
+                 updated_at=CURRENT_TIMESTAMP
+             WHERE id=?1 AND status IN ('IN_PROGRESS','BLOCKED')",
+            params![campaign_id, floor],
+        )?;
+        self.append_event(
+            campaign_id,
+            "completion_verification_started",
+            "Bounded final verification started for every selected finding within the authorized campaign scope.",
+            &json!({
+                "selected_count": campaign.selected_count,
+                "retest_floor_rowid": floor,
+            }),
+        )?;
+        self.require_campaign(campaign_id)
+    }
+
+    pub fn finalize_completion_verification(
+        &self,
+        campaign_id: &str,
+    ) -> Result<SecurityRemediationCampaignRecord, SecurityRemediationCampaignError> {
+        let campaign = self.require_campaign(campaign_id)?;
+        self.assert_scope_binding(&campaign)?;
+        if !matches!(campaign.status.as_str(), "IN_PROGRESS" | "BLOCKED") {
+            return Err(SecurityRemediationCampaignError::State(format!(
+                "final campaign verification requires IN_PROGRESS or BLOCKED; observed {}",
+                campaign.status
+            )));
+        }
+        if campaign.completion_verification_started_at.is_none() {
+            return Err(SecurityRemediationCampaignError::State(
+                "begin final campaign verification before recording completion evidence".into(),
+            ));
+        }
+        let missing = self.completion_retest_missing(
+            campaign_id,
+            campaign.completion_retest_floor_rowid,
+        )?;
+        if !missing.is_empty() {
+            return Err(SecurityRemediationCampaignError::State(format!(
+                "final campaign verification is incomplete; {} selected finding(s) have no fresh persisted targeted retest evidence: {}",
+                missing.len(),
+                missing.join(", ")
+            )));
+        }
+
+        self.sync(campaign_id)?;
+        let source_hashes = self.completion_source_snapshot(campaign_id)?;
+        let source_hashes_json = serde_json::to_string(&source_hashes)?;
+        reject_sensitive_json(&serde_json::from_str(&source_hashes_json)?)?;
+        self.database.connection().execute(
+            "UPDATE security_remediation_campaigns
+             SET completion_verification_completed_at=CURRENT_TIMESTAMP,
+                 completion_source_hashes_json=?2,
+                 updated_at=CURRENT_TIMESTAMP
+             WHERE id=?1 AND status IN ('IN_PROGRESS','BLOCKED')",
+            params![campaign_id, source_hashes_json],
+        )?;
+        self.append_event(
+            campaign_id,
+            "completion_verification_completed",
+            "Fresh targeted retest evidence was persisted for every selected finding; source identity was snapshotted for completion.",
+            &json!({
+                "selected_count": campaign.selected_count,
+                "source_file_count": source_hashes.len(),
+            }),
+        )?;
+        self.require_campaign(campaign_id)
+    }
+
     pub fn complete(
         &self,
         campaign_id: &str,
@@ -1077,6 +1180,29 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 "campaign completion requires IN_PROGRESS or BLOCKED; observed {}",
                 campaign.status
             )));
+        }
+        self.assert_scope_binding(&campaign)?;
+        if campaign.completion_verification_completed_at.is_none() {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign completion requires a fresh bounded verification pass covering every selected finding".into(),
+            ));
+        }
+        let missing = self.completion_retest_missing(
+            campaign_id,
+            campaign.completion_retest_floor_rowid,
+        )?;
+        if !missing.is_empty() {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign completion verification evidence is incomplete or no longer available".into(),
+            ));
+        }
+        let persisted_hashes: BTreeMap<String, String> =
+            serde_json::from_str(&campaign.completion_source_hashes_json)?;
+        let current_hashes = self.completion_source_snapshot(campaign_id)?;
+        if persisted_hashes != current_hashes {
+            return Err(SecurityRemediationCampaignError::State(
+                "project source changed after final campaign verification; rerun the bounded selected-finding verification pass".into(),
+            ));
         }
         let summary = self.summary(campaign_id)?;
         if summary.queued_or_in_progress > 0 {
@@ -1124,7 +1250,9 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             .query_row(
                 "SELECT id,session_id,scan_id,project_id,target_url,environment,scope_json,status,
                         selected_count,plan_revision,plan_json,plan_hash,approved_plan_hash,
-                        baseline_json,completion_json,created_at,analyzed_at,approved_at,started_at,
+                        baseline_json,completion_json,completion_retest_floor_rowid,
+                        completion_verification_started_at,completion_verification_completed_at,
+                        completion_source_hashes_json,created_at,analyzed_at,approved_at,started_at,
                         paused_at,finished_at,updated_at
                  FROM security_remediation_campaigns WHERE id=?1",
                 [campaign_id],
@@ -1145,7 +1273,9 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             let mut statement = self.database.connection().prepare(
                 "SELECT id,session_id,scan_id,project_id,target_url,environment,scope_json,status,
                         selected_count,plan_revision,plan_json,plan_hash,approved_plan_hash,
-                        baseline_json,completion_json,created_at,analyzed_at,approved_at,started_at,
+                        baseline_json,completion_json,completion_retest_floor_rowid,
+                        completion_verification_started_at,completion_verification_completed_at,
+                        completion_source_hashes_json,created_at,analyzed_at,approved_at,started_at,
                         paused_at,finished_at,updated_at
                  FROM security_remediation_campaigns WHERE project_id=?1
                  ORDER BY created_at DESC LIMIT ?2",
@@ -1156,7 +1286,9 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             let mut statement = self.database.connection().prepare(
                 "SELECT id,session_id,scan_id,project_id,target_url,environment,scope_json,status,
                         selected_count,plan_revision,plan_json,plan_hash,approved_plan_hash,
-                        baseline_json,completion_json,created_at,analyzed_at,approved_at,started_at,
+                        baseline_json,completion_json,completion_retest_floor_rowid,
+                        completion_verification_started_at,completion_verification_completed_at,
+                        completion_source_hashes_json,created_at,analyzed_at,approved_at,started_at,
                         paused_at,finished_at,updated_at
                  FROM security_remediation_campaigns
                  ORDER BY created_at DESC LIMIT ?1",
@@ -1611,6 +1743,61 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             .collect()
     }
 
+    fn completion_retest_missing(
+        &self,
+        campaign_id: &str,
+        floor_rowid: i64,
+    ) -> Result<Vec<String>, SecurityRemediationCampaignError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT cf.finding_id
+             FROM security_remediation_campaign_findings cf
+             WHERE cf.campaign_id=?1
+               AND NOT EXISTS (
+                 SELECT 1 FROM guided_security_retests gr
+                 WHERE gr.finding_id=cf.finding_id AND gr.rowid>?2
+               )
+             ORDER BY cf.ordinal",
+        )?;
+        let rows = statement.query_map(params![campaign_id, floor_rowid], |row| row.get(0))?;
+        rows.collect::<Result<Vec<String>, _>>().map_err(Into::into)
+    }
+
+    fn completion_source_snapshot(
+        &self,
+        campaign_id: &str,
+    ) -> Result<BTreeMap<String, String>, SecurityRemediationCampaignError> {
+        let mut statement = self.database.connection().prepare(
+            "WITH referenced_paths(relative_path) AS (
+                 SELECT f.relative_path
+                 FROM security_remediation_campaign_findings cf
+                 JOIN files f ON f.id=cf.root_file_id
+                 WHERE cf.campaign_id=?1
+                 UNION
+                 SELECT f.relative_path
+                 FROM security_remediation_campaign_findings cf
+                 JOIN files f ON f.id=cf.source_file_id
+                 WHERE cf.campaign_id=?1
+             )
+             SELECT rp.relative_path, COALESCE(active.content_hash,'<missing>')
+             FROM referenced_paths rp
+             JOIN security_remediation_campaigns c ON c.id=?1
+             LEFT JOIN files active
+               ON active.project_id=c.project_id
+              AND active.relative_path=rp.relative_path
+              AND active.is_active=1
+             ORDER BY rp.relative_path",
+        )?;
+        let rows = statement.query_map([campaign_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut output = BTreeMap::new();
+        for row in rows {
+            let (path, hash) = row?;
+            output.insert(path, hash);
+        }
+        Ok(output)
+    }
+
     fn latest_campaign_retest(
         &self,
         finding_id: &str,
@@ -1849,13 +2036,17 @@ fn map_campaign(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecurityRemediation
         approved_plan_hash: row.get(12)?,
         baseline_json: row.get(13)?,
         completion_json: row.get(14)?,
-        created_at: row.get(15)?,
-        analyzed_at: row.get(16)?,
-        approved_at: row.get(17)?,
-        started_at: row.get(18)?,
-        paused_at: row.get(19)?,
-        finished_at: row.get(20)?,
-        updated_at: row.get(21)?,
+        completion_retest_floor_rowid: row.get(15)?,
+        completion_verification_started_at: row.get(16)?,
+        completion_verification_completed_at: row.get(17)?,
+        completion_source_hashes_json: row.get(18)?,
+        created_at: row.get(19)?,
+        analyzed_at: row.get(20)?,
+        approved_at: row.get(21)?,
+        started_at: row.get(22)?,
+        paused_at: row.get(23)?,
+        finished_at: row.get(24)?,
+        updated_at: row.get(25)?,
     })
 }
 
