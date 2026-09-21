@@ -1019,10 +1019,14 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             if finding.status == "SKIPPED" {
                 continue;
             }
-            let attempt = if matches!(
+            let terminal_campaign = matches!(
                 campaign.status.as_str(),
                 "COMPLETED" | "COMPLETED_WITH_UNRESOLVED_FINDINGS" | "CANCELLED"
-            ) {
+            );
+            if terminal_campaign && finding.active_attempt_id.is_none() {
+                continue;
+            }
+            let attempt = if terminal_campaign {
                 if let Some(attempt_id) = finding.active_attempt_id.as_deref() {
                     fix.get_attempt(attempt_id)?
                 } else {
@@ -1959,19 +1963,20 @@ impl<'a> SecurityRemediationCampaignService<'a> {
              FROM security_remediation_campaign_findings cf
              JOIN security_remediation_campaigns c ON c.id=cf.campaign_id
              WHERE cf.finding_id=?1
-               AND c.status IN (
-                 'IN_PROGRESS','PAUSED','BLOCKED',
-                 'COMPLETED','COMPLETED_WITH_UNRESOLVED_FINDINGS','CANCELLED'
-               )
                AND (
-                 cf.active_attempt_id=?2
-                 OR c.finished_at IS NULL
-                 OR ?3<=c.finished_at
+                 (
+                   c.status IN ('IN_PROGRESS','PAUSED','BLOCKED')
+                   AND cf.status<>'SKIPPED'
+                 )
+                 OR (
+                   c.status IN ('COMPLETED','COMPLETED_WITH_UNRESOLVED_FINDINGS','CANCELLED')
+                   AND cf.active_attempt_id=?2
+                 )
                )
              ORDER BY c.created_at,cf.ordinal,cf.campaign_id",
         )?;
         let rows = statement.query_map(
-            params![attempt.finding_id, attempt_id, attempt.created_at],
+            params![attempt.finding_id, attempt_id],
             |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             },
