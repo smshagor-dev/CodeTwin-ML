@@ -996,6 +996,20 @@ impl<'a> SecurityRemediationCampaignService<'a> {
     ) -> Result<SecurityRemediationCampaignRecord, SecurityRemediationCampaignError> {
         let campaign = self.require_campaign(campaign_id)?;
         self.assert_scope_binding(&campaign)?;
+        if !matches!(
+            campaign.status.as_str(),
+            "IN_PROGRESS"
+                | "PAUSED"
+                | "BLOCKED"
+                | "COMPLETED"
+                | "COMPLETED_WITH_UNRESOLVED_FINDINGS"
+                | "CANCELLED"
+        ) {
+            return Err(SecurityRemediationCampaignError::State(format!(
+                "campaign evidence synchronization requires a started or historical campaign; observed {}",
+                campaign.status
+            )));
+        }
         let existing = self.findings(campaign_id)?;
         let fix = SecurityFixService::new(self.database);
 
