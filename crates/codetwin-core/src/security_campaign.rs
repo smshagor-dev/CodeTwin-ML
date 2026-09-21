@@ -2044,31 +2044,30 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         }
         reject_sensitive_json(detail)?;
         let detail_json = serde_json::to_string(detail)?;
-        let sequence: i64 = self.database.connection().query_row(
-            "SELECT COALESCE(MAX(sequence),0)+1
-             FROM security_remediation_campaign_events WHERE campaign_id=?1",
-            [campaign_id],
-            |row| row.get(0),
+        let id = random_id(self.database.connection(), "seccampevent")?;
+        let inserted = self.database.connection().execute(
+            "INSERT INTO security_remediation_campaign_events(
+                id,campaign_id,sequence,event_type,message,detail_json
+             )
+             SELECT
+                ?1,?2,COALESCE(MAX(sequence),0)+1,?3,?4,?5
+             FROM security_remediation_campaign_events
+             WHERE campaign_id=?2
+             HAVING COALESCE(MAX(sequence),0) < ?6",
+            params![
+                id,
+                campaign_id,
+                bounded_text(event_type, 120),
+                bounded_text(message, 4_000),
+                detail_json,
+                MAX_EVENTS as i64,
+            ],
         )?;
-        if sequence > MAX_EVENTS as i64 {
+        if inserted != 1 {
             return Err(SecurityRemediationCampaignError::State(
                 "campaign event limit reached".into(),
             ));
         }
-        let id = random_id(self.database.connection(), "seccampevent")?;
-        self.database.connection().execute(
-            "INSERT INTO security_remediation_campaign_events(
-                id,campaign_id,sequence,event_type,message,detail_json
-             ) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![
-                id,
-                campaign_id,
-                sequence,
-                bounded_text(event_type, 120),
-                bounded_text(message, 4_000),
-                detail_json,
-            ],
-        )?;
         self.database.connection().query_row(
             "SELECT id,campaign_id,sequence,event_type,message,detail_json,created_at
              FROM security_remediation_campaign_events WHERE id=?1",
