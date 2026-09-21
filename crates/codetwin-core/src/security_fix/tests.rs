@@ -1563,6 +1563,106 @@ fn security_fix_apply_boundary_rejects_duplicate_application() {
 }
 
 #[test]
+fn remediation_campaign_rollback_authorization_rejects_tampered_and_terminal_requests() {
+    let fixture = sql_fixture();
+    let scan_id: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT scan_id FROM web_security_findings WHERE id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("scan id");
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (
+                'campaign-rollback-auth-session',?1,'http://127.0.0.1:3000','local',
+                'standard','none','completed',1,'{}',?2
+             )",
+            rusqlite::params![fixture.project_id, scan_id],
+        )
+        .expect("guided campaign session");
+
+    let campaigns = SecurityRemediationCampaignService::new(&fixture.database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-rollback-auth-session".into(),
+            finding_ids: vec![fixture.finding_id.clone()],
+        })
+        .expect("campaign");
+    let analyzed = campaigns.analyze(&campaign.id).expect("analyze");
+    campaigns
+        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+        .expect("approve");
+    campaigns.start(&campaign.id).expect("start");
+
+    let fixes = SecurityFixService::new(&fixture.database);
+    let prepared = fixes
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare");
+    let review = fixes.generate_patch(&prepared.attempt.id).expect("patch");
+    fixes
+        .approve_attempt(
+            &prepared.attempt.id,
+            &review.safety.patch_hash,
+            review.safety.classification == PatchSafetyClass::Caution,
+        )
+        .expect("approve exact patch");
+    let repair_id = fixes
+        .assert_application_allowed(&prepared.attempt.id)
+        .expect("application allowed");
+    let backups = tempdir().expect("rollback auth backups");
+    let application = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply");
+    fixes
+        .record_application(&prepared.attempt.id, &application.id)
+        .expect("record application");
+    campaigns.sync(&campaign.id).expect("sync applied attempt");
+
+    let assessment = campaigns
+        .rollback_assessment(&campaign.id, &fixture.finding_id)
+        .expect("rollback assessment");
+    assert!(assessment.allowed);
+    assert_eq!(
+        assessment.attempt_id.as_deref(),
+        Some(prepared.attempt.id.as_str())
+    );
+    assert!(campaigns
+        .authorize_rollback(
+            &campaign.id,
+            &fixture.finding_id,
+            "tampered-attempt-id",
+        )
+        .is_err());
+    assert_eq!(
+        campaigns
+            .authorize_rollback(
+                &campaign.id,
+                &fixture.finding_id,
+                &prepared.attempt.id,
+            )
+            .expect("correct bound rollback authorization"),
+        prepared.attempt.id
+    );
+
+    campaigns.cancel(&campaign.id).expect("cancel campaign");
+    assert!(campaigns
+        .authorize_rollback(
+            &campaign.id,
+            &fixture.finding_id,
+            &prepared.attempt.id,
+        )
+        .is_err());
+}
+
+#[test]
 fn remediation_campaign_blocks_rollback_when_verified_dependent_relies_on_applied_fix() {
     let fixture = sql_fixture();
     let second_id = add_overlapping_sql_finding(&fixture, "campaign-rollback-dependency");
@@ -1660,6 +1760,13 @@ fn remediation_campaign_blocks_rollback_when_verified_dependent_relies_on_applie
         .iter()
         .any(|finding_id| finding_id == &dependent.finding_id));
     assert!(assessment.reason.contains("depend"));
+    assert!(campaigns
+        .authorize_rollback(
+            &campaign.id,
+            &prerequisite_id,
+            &prepared.attempt.id,
+        )
+        .is_err());
 }
 
 #[cfg(unix)]
