@@ -7,7 +7,6 @@ import type {
   GuidedApplicationMap,
   GuidedAuthMode,
   GuidedEnvironment,
-  GuidedFixPreparation,
   GuidedPlanItemRecord,
   GuidedPreflight,
   GuidedRetestRecord,
@@ -26,6 +25,7 @@ import type {
 } from "../types";
 import { Panel, StatusBadge, formatDate, shortPath } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
+import { SecurityFixWorkflow } from "./SecurityFixWorkflow";
 import {
   GUIDED_AUTHORIZATION_STATEMENT,
   buildGuidedRequests,
@@ -110,7 +110,6 @@ export function GuidedSecurityOperator() {
   const [scorecard, setScorecard] = useState<GuidedSecurityScorecard | null>(null);
   const [riskGraph, setRiskGraph] = useState<GuidedRiskGraph | null>(null);
   const [expertView, setExpertView] = useState(false);
-  const [fixPreparation, setFixPreparation] = useState<GuidedFixPreparation | null>(null);
   const [retesting, setRetesting] = useState(false);
   const [compareScanId, setCompareScanId] = useState("");
   const [availableScans, setAvailableScans] = useState<WebScanRecord[]>([]);
@@ -192,7 +191,6 @@ export function GuidedSecurityOperator() {
       setEvidence([]);
       setSourceCandidates([]);
       setRetests([]);
-      setFixPreparation(null);
       return;
     }
     void Promise.all([
@@ -399,20 +397,6 @@ export function GuidedSecurityOperator() {
     }
   }
 
-  async function prepareFix() {
-    if (!selectedFinding) return;
-    try {
-      const prepared = await workspaceApi.prepareGuidedSecurityFix(selectedFinding.id);
-      setFixPreparation(prepared);
-      setToast({
-        tone: "success",
-        message: "Draft repair plan created. No source code was changed; review it in the existing Repair workflow before applying anything.",
-      });
-    } catch (value) {
-      setToast({ tone: "error", message: "Could not prepare a repair plan: " + String(value) });
-    }
-  }
-
   async function compareScans() {
     if (!session?.scan_id || !compareScanId) return;
     try {
@@ -440,7 +424,6 @@ export function GuidedSecurityOperator() {
     setRetests([]);
     setScorecard(null);
     setRiskGraph(null);
-    setFixPreparation(null);
     setComparison(null);
     setError(null);
   }
@@ -787,10 +770,8 @@ export function GuidedSecurityOperator() {
               evidence={evidence}
               sourceCandidates={sourceCandidates}
               retests={retests}
-              fixPreparation={fixPreparation}
               retesting={retesting}
-              onRetest={() => void retestFinding(selectedFinding)}
-              onPrepareFix={() => void prepareFix()}
+              onRetest={() => retestFinding(selectedFinding)}
             />
           </Panel>
         ) : (
@@ -836,20 +817,16 @@ function FindingDetail({
   evidence,
   sourceCandidates,
   retests,
-  fixPreparation,
   retesting,
   onRetest,
-  onPrepareFix,
 }: {
   finding: WebFindingRecord;
   expert: boolean;
   evidence: WebEvidenceRecord[];
   sourceCandidates: GuidedSourceCandidate[];
   retests: GuidedRetestRecord[];
-  fixPreparation: GuidedFixPreparation | null;
   retesting: boolean;
-  onRetest: () => void;
-  onPrepareFix: () => void;
+  onRetest: () => Promise<void>;
 }) {
   const explanation = developerFindingExplanation(finding.category);
   return (
@@ -877,15 +854,9 @@ function FindingDetail({
       <h4>How should I fix it?</h4><p>{finding.remediation || explanation.fix}</p>
       <h4>How do I verify the fix?</h4><p>{explanation.verify}</p>
       <div className="ws-button-row">
-        <button className="ws-button ws-button-primary" onClick={onPrepareFix}>Prepare Fix</button>
-        <button className="ws-button ws-button-secondary" disabled={retesting} onClick={onRetest}>{retesting ? "Retesting…" : "Retest Finding"}</button>
+        <button className="ws-button ws-button-secondary" disabled={retesting} onClick={() => void onRetest()}>{retesting ? "Retesting…" : "Retest Finding"}</button>
       </div>
-      {fixPreparation && fixPreparation.finding_id === finding.id && (
-        <div className="ws-guided-fix-note">
-          <strong>Draft repair plan: {fixPreparation.repair.id}</strong>
-          <p>No code was edited. Continue in CodeTwin's existing Repair workflow to review a proposed file replacement, approve it, run repository verification and apply/rollback explicitly.</p>
-        </div>
-      )}
+      <SecurityFixWorkflow finding={finding} onRetest={onRetest}/>
       {!!retests.length && (
         <div className="ws-guided-retests">
           <h4>Retest history</h4>

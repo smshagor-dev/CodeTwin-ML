@@ -1468,3 +1468,232 @@ html[data-theme="dark"] .ws-guided-fix-note p { color: #9fc7b4; }
   .ws-guided-finding-list > button { grid-template-columns: 64px minmax(0,1fr) !important; }
   .ws-guided-finding-list > button > .ws-status:last-child { display: none; }
 }
+
+
+/* Guided Security Fix & Verify */
+.ws-security-fix {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--ws-border);
+  border-radius: 10px;
+  background: var(--ws-surface-soft);
+}
+.ws-security-fix-heading,
+.ws-security-fix-review-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ws-security-fix-heading h4,
+.ws-security-fix-section h5 {
+  margin: 0;
+}
+.ws-security-fix-heading p,
+.ws-security-fix-section > p,
+.ws-security-fix-start p {
+  margin: 4px 0 0;
+  color: var(--ws-muted);
+  font-size: 8px;
+  line-height: 1.55;
+}
+.ws-security-fix-start { display: grid; gap: 10px; }
+.ws-security-fix-grid {
+  display: grid;
+  grid-template-columns: repeat(3,minmax(0,1fr));
+  gap: 7px;
+}
+.ws-security-fix-grid article {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  border: 1px solid var(--ws-border);
+  border-radius: 7px;
+  background: var(--ws-surface);
+}
+.ws-security-fix-grid span,
+.ws-security-fix-grid small { color: var(--ws-muted); font-size: 7px; }
+.ws-security-fix-grid strong { font-size: 9px; }
+.ws-security-fix-section {
+  padding: 10px;
+  border: 1px solid var(--ws-border);
+  border-radius: 8px;
+  background: var(--ws-surface);
+}
+details.ws-security-fix-section > summary {
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+}
+.ws-root-cause {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--ws-border);
+  border-radius: 7px;
+}
+.ws-root-cause > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ws-root-cause strong { font-size: 8px; overflow-wrap: anywhere; }
+.ws-root-cause small { display: block; margin-top: 3px; color: var(--ws-muted); font-size: 7px; }
+.ws-root-cause ul,
+.ws-security-fix-danger ul,
+.ws-security-fix-warning ul {
+  margin: 7px 0 0;
+  padding-left: 18px;
+  color: var(--ws-muted);
+  font-size: 8px;
+  line-height: 1.5;
+}
+.ws-security-fix-danger,
+.ws-security-fix-warning {
+  margin-top: 8px;
+  padding: 8px 9px;
+  border-radius: 7px;
+  font-size: 8px;
+  line-height: 1.5;
+}
+.ws-security-fix-danger {
+  border: 1px solid #efb8bf;
+  background: #fdecee;
+  color: #9e2735;
+}
+.ws-security-fix-warning {
+  border: 1px solid #dfd4b2;
+  background: #faf4df;
+  color: #755a18;
+}
+html[data-theme="dark"] .ws-security-fix-danger {
+  border-color: #6d3540;
+  background: #30191e;
+  color: #ef9ba7;
+}
+html[data-theme="dark"] .ws-security-fix-warning {
+  border-color: #695829;
+  background: #2b2517;
+  color: #e6cb80;
+}
+.ws-security-fix-tests {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+.ws-security-fix-tests > div {
+  display: grid;
+  gap: 2px;
+  padding: 7px;
+  border: 1px solid var(--ws-border);
+  border-radius: 6px;
+}
+.ws-security-fix-tests strong { font-size: 8px; }
+.ws-security-fix-tests span,
+.ws-security-fix-tests small { color: var(--ws-muted); font-size: 7px; }
+.ws-security-fix-file-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 8px 0;
+  color: var(--ws-muted);
+  font-size: 8px;
+}
+.ws-security-fix-editor {
+  width: 100%;
+  min-height: 320px;
+  resize: vertical;
+  padding: 9px;
+  border: 1px solid var(--ws-border);
+  border-radius: 7px;
+  background: var(--ws-surface-soft);
+  color: var(--ws-text);
+  font: 8px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.ws-security-fix-diff { margin-top: 9px; }
+.ws-security-fix-diff summary { cursor: pointer; font-size: 8px; font-weight: 700; }
+.ws-security-fix-diff pre {
+  max-height: 420px;
+  overflow: auto;
+  padding: 9px;
+  border: 1px solid var(--ws-border);
+  border-radius: 6px;
+  background: var(--ws-surface-soft);
+  color: var(--ws-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 7px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.ws-security-fix-validation {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+.ws-security-fix-validation > div {
+  display: grid;
+  grid-template-columns: 84px minmax(0,1fr);
+  gap: 7px;
+  align-items: center;
+  padding: 7px;
+  border-bottom: 1px solid var(--ws-border);
+}
+.ws-security-fix-validation p { display: grid; gap: 2px; margin: 0; }
+.ws-security-fix-validation strong { font-size: 8px; }
+.ws-security-fix-validation span,
+.ws-security-fix-validation small { color: var(--ws-muted); font-size: 7px; }
+.ws-security-fix-validation small { grid-column: 2; overflow-wrap: anywhere; }
+.ws-security-fix-events {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+.ws-security-fix-events > div {
+  display: grid;
+  grid-template-columns: 26px minmax(0,1fr);
+  gap: 7px;
+}
+.ws-security-fix-events b {
+  width: 23px;
+  height: 23px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--ws-surface-soft);
+  font-size: 7px;
+}
+.ws-security-fix-events p { display: grid; gap: 2px; margin: 0; }
+.ws-security-fix-events strong { font-size: 8px; }
+.ws-security-fix-events small { color: var(--ws-muted); font-size: 7px; }
+.ws-security-fix-attempts {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+.ws-security-fix-attempts button {
+  display: grid;
+  grid-template-columns: 80px minmax(0,1fr) auto;
+  gap: 7px;
+  align-items: center;
+  padding: 7px;
+  border: 1px solid var(--ws-border);
+  border-radius: 6px;
+  text-align: left;
+}
+.ws-security-fix-attempts strong { font-size: 8px; }
+.ws-security-fix-attempts span,
+.ws-security-fix-attempts small { color: var(--ws-muted); font-size: 7px; }
+.ws-mono {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (max-width: 700px) {
+  .ws-security-fix-grid { grid-template-columns: 1fr; }
+  .ws-security-fix-heading,
+  .ws-security-fix-review-head,
+  .ws-security-fix-file-meta { flex-direction: column; }
+  .ws-security-fix-validation > div { grid-template-columns: 1fr; }
+  .ws-security-fix-validation small { grid-column: 1; }
+  .ws-security-fix-attempts button { grid-template-columns: 1fr; }
+}

@@ -554,3 +554,221 @@ export type GuidedFixPreparation = {
   source_candidates: GuidedSourceCandidate[];
   remediation: string;
 };
+
+
+export type FixEligibility =
+  | "AUTO_FIX_CANDIDATE"
+  | "GUIDED_FIX_CANDIDATE"
+  | "MANUAL_REMEDIATION"
+  | "INSUFFICIENT_EVIDENCE";
+
+export type PatchSafetyClass = "SAFE_TO_REVIEW" | "CAUTION" | "REJECTED";
+
+export type FixEligibilityAssessment = {
+  finding_id: string;
+  result: FixEligibility;
+  reasons: string[];
+  evidence_count: number;
+  source_candidate_count: number;
+  best_source_confidence: number | null;
+  supported_language: string | null;
+  bounded_patch_available: boolean;
+};
+
+export type RootCauseCandidate = {
+  file_id: string;
+  relative_path: string;
+  symbol_id: string | null;
+  symbol_name: string | null;
+  source_start_line: number | null;
+  source_end_line: number | null;
+  confidence: number;
+  reasoning: string[];
+};
+
+export type FixStrategy = {
+  category: string;
+  change_summary: string;
+  rationale: string;
+  likely_files: string[];
+  expected_behavior: string;
+  compatibility_risks: string[];
+  prohibited_shortcuts: string[];
+  regression_test_suggestion: string;
+};
+
+export type PatchSafetyReport = {
+  classification: PatchSafetyClass;
+  patch_hash: string;
+  files_changed: number;
+  changed_lines: number;
+  risk_notes: string[];
+  rejected_reasons: string[];
+};
+
+export type SelectedValidation = {
+  label: string;
+  runner_kind: string;
+  targets: string[];
+  reason: string;
+  repository_command_execution_required: boolean;
+};
+
+export type SecurityFixTestPlan = {
+  targeted: SelectedValidation[];
+  full_suite_optional: boolean;
+  qa_execution_available: boolean;
+  qa_execution_reason: string;
+  security_retest: string;
+  regression_test_proposal: string;
+  regression_generation_status: "EXISTING_TEST_SELECTED" | "RECOMMENDATION_ONLY";
+  regression_generation_reason: string;
+};
+
+export type SecurityFixAttemptRecord = {
+  id: string;
+  finding_id: string;
+  session_id: string | null;
+  project_id: string;
+  repair_id: string | null;
+  attempt_number: number;
+  eligibility: FixEligibility;
+  category: string;
+  status:
+    | "prepared"
+    | "patch_proposed"
+    | "rejected"
+    | "approved"
+    | "applied"
+    | "validation_failed"
+    | "verification_pending"
+    | "fix_verified"
+    | "still_vulnerable"
+    | "unable_to_verify"
+    | "rolled_back";
+  root_causes: RootCauseCandidate[];
+  strategy: FixStrategy;
+  test_plan: SecurityFixTestPlan;
+  patch_hash: string | null;
+  safety_class: PatchSafetyClass | null;
+  safety: PatchSafetyReport | null;
+  approved_patch_hash: string | null;
+  approved_files_json: string | null;
+  approved_safety_class: PatchSafetyClass | null;
+  caution_acknowledged: boolean;
+  approved_at: string | null;
+  application_run_id: string | null;
+  retest_floor_rowid: number;
+  validation_state: "not_executed" | "passed" | "failed" | "partial";
+  retest_state:
+    | "not_executed"
+    | "FIX_VERIFIED"
+    | "STILL_VULNERABLE"
+    | "UNABLE_TO_VERIFY"
+    | "REGRESSION_DETECTED";
+  static_before_json: string;
+  static_after_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SecurityFixPreparation = {
+  attempt: SecurityFixAttemptRecord;
+  eligibility: FixEligibilityAssessment;
+  root_causes: RootCauseCandidate[];
+  strategy: FixStrategy;
+  test_plan: SecurityFixTestPlan;
+  repair: {
+    id: string;
+    project_id: string;
+    finding_id: string | null;
+    title: string;
+    rationale: string;
+    status: string;
+    created_at: string;
+    updated_at: string;
+    approved_at: string | null;
+    verified_at: string | null;
+  } | null;
+};
+
+export type PatchReview = {
+  attempt_id: string;
+  repair_id: string;
+  unified_diff: string;
+  safety: PatchSafetyReport;
+  affected_files: string[];
+  expected_behavior: string;
+  tests_to_run: string[];
+  security_retest: string;
+};
+
+export type SecurityFixValidationRecord = {
+  id: string;
+  attempt_id: string;
+  sequence: number;
+  command_label: string;
+  runner_kind: string;
+  targets: string[];
+  status: "PASS" | "FAIL" | "NOT_EXECUTED";
+  exit_code: number | null;
+  duration_ms: number | null;
+  classification:
+    | "NONE"
+    | "PRE_EXISTING_FAILURE"
+    | "PATCH_INTRODUCED_FAILURE"
+    | "INFRASTRUCTURE_FAILURE"
+    | "UNKNOWN";
+  stdout_summary: string;
+  stderr_summary: string;
+  created_at: string;
+};
+
+export type SecurityFixEventRecord = {
+  id: string;
+  attempt_id: string;
+  sequence: number;
+  event_type: string;
+  message: string;
+  detail_json: string;
+  created_at: string;
+};
+
+export type SecurityFixApplicationResult = {
+  attempt: SecurityFixAttemptRecord;
+  application: {
+    id: string;
+    repair_id: string;
+    project_id: string;
+    status: string;
+    changes_total: number;
+    changes_applied: number;
+    rollback_performed: boolean;
+    backup_dir_name: string;
+    error_message: string | null;
+    created_at: string;
+    completed_at: string | null;
+  };
+};
+
+export type SecurityFixValidationRun = {
+  attempt: SecurityFixAttemptRecord;
+  results: SecurityFixValidationRecord[];
+};
+
+export type MultiFindingOverlap = {
+  finding_ids: string[];
+  overlapping_files: string[];
+  requires_combined_review: boolean;
+  message: string;
+};
+
+export type RepairSourceSnapshot = {
+  file_id: string;
+  project_id: string;
+  relative_path: string;
+  language: string | null;
+  content_hash: string;
+  byte_size: number;
+  content: string;
+};
