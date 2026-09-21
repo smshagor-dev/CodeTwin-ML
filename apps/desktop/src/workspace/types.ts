@@ -715,10 +715,23 @@ export type SecurityRemediationCampaignSummary = {
 
 export type SecurityRemediationBeforeAfterItem = {
   finding_id: string;
+  title: string;
+  endpoint_url: string;
   severity: string;
   confidence: string;
   baseline_status: string;
-  campaign_status: SecurityRemediationFindingStatus;
+  campaign_status: string;
+  comparison_status:
+    | "VERIFIED_RESOLVED"
+    | "STILL_VULNERABLE"
+    | "NEWLY_OBSERVED_DURING_VERIFICATION"
+    | "UNABLE_TO_VERIFY"
+    | "MANUAL_ACTION_REQUIRED"
+    | "REGRESSION_DETECTED"
+    | "SKIPPED"
+    | "BLOCKED"
+    | "IN_PROGRESS";
+  selected: boolean;
   attempt_id: string | null;
   validation_state: string | null;
   retest_state: string | null;
