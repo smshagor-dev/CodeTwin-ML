@@ -1690,28 +1690,13 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         expected_attempt_id: &str,
     ) -> Result<String, SecurityRemediationCampaignError> {
         let campaign = self.require_campaign(campaign_id)?;
-        if !matches!(
-            campaign.status.as_str(),
-            "IN_PROGRESS"
-                | "PAUSED"
-                | "BLOCKED"
-                | "COMPLETED"
-                | "COMPLETED_WITH_UNRESOLVED_FINDINGS"
-                | "CANCELLED"
-        ) {
+        if !started_or_historical_campaign(&campaign.status) {
             return Err(SecurityRemediationCampaignError::State(format!(
                 "campaign rollback requires a started or historical campaign; observed {}",
                 campaign.status
             )));
         }
 
-        let finding = self.require_finding(campaign_id, finding_id)?;
-        if finding.active_attempt_id.as_deref() != Some(expected_attempt_id) {
-            return Err(SecurityRemediationCampaignError::State(
-                "campaign rollback attempt identity changed; refresh dependency assessment before retrying"
-                    .into(),
-            ));
-        }
         let fix = SecurityFixService::new(self.database);
         let attempt = fix
             .get_attempt(expected_attempt_id)?
@@ -1720,7 +1705,11 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                     "campaign-linked Fix & Verify attempt no longer exists".into(),
                 )
             })?;
-        let already_rolled_back = attempt.status == "rolled_back";
+        if attempt.finding_id != finding_id {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign rollback finding/attempt identity mismatch".into(),
+            ));
+        }
 
         let memberships = self.campaign_memberships_for_attempt(expected_attempt_id)?;
         if memberships.is_empty() {
@@ -1740,25 +1729,48 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             ));
         }
 
-        if already_rolled_back {
-            return Ok(expected_attempt_id.to_string());
+        // Reconcile every campaign selecting this finding before trusting its cached active
+        // attempt identity. This closes the apply->polling race and makes cross-campaign
+        // dependency checks use the latest persisted Fix & Verify state.
+        let mut campaign_ids = memberships
+            .iter()
+            .map(|(member_campaign_id, _)| member_campaign_id.clone())
+            .collect::<BTreeSet<_>>();
+        for member_campaign_id in &campaign_ids {
+            self.sync(member_campaign_id)?;
         }
 
-        let assessment = self.rollback_assessment(campaign_id, finding_id)?;
-        if !assessment.allowed {
-            return Err(SecurityRemediationCampaignError::State(format!(
-                "campaign rollback is blocked by dependency safety: {}",
-                assessment.reason
-            )));
-        }
-        if assessment.attempt_id.as_deref() != Some(expected_attempt_id) {
+        let finding = self.require_finding(campaign_id, finding_id)?;
+        if finding.active_attempt_id.as_deref() != Some(expected_attempt_id) {
             return Err(SecurityRemediationCampaignError::State(
                 "campaign rollback attempt identity changed; refresh dependency assessment before retrying"
                     .into(),
             ));
         }
 
-        for (member_campaign_id, member_finding_id) in &memberships {
+        let refreshed_attempt = fix
+            .get_attempt(expected_attempt_id)?
+            .ok_or_else(|| {
+                SecurityRemediationCampaignError::State(
+                    "campaign-linked Fix & Verify attempt no longer exists".into(),
+                )
+            })?;
+        if refreshed_attempt.status == "rolled_back" {
+            return Ok(expected_attempt_id.to_string());
+        }
+
+        for member_campaign_id in campaign_ids.iter() {
+            let member_finding_id = memberships
+                .iter()
+                .find_map(|(candidate_campaign_id, candidate_finding_id)| {
+                    (candidate_campaign_id == member_campaign_id)
+                        .then_some(candidate_finding_id.as_str())
+                })
+                .ok_or_else(|| {
+                    SecurityRemediationCampaignError::State(
+                        "campaign rollback membership disappeared during revalidation".into(),
+                    )
+                })?;
             let member_assessment =
                 self.rollback_assessment(member_campaign_id, member_finding_id)?;
             if !member_assessment.allowed {
@@ -1831,14 +1843,26 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         &self,
         attempt_id: &str,
     ) -> Result<Vec<(String, String)>, SecurityRemediationCampaignError> {
+        let fix = SecurityFixService::new(self.database);
+        let attempt = fix
+            .get_attempt(attempt_id)?
+            .ok_or_else(|| {
+                SecurityRemediationCampaignError::State(
+                    "security fix attempt not found while resolving campaign membership".into(),
+                )
+            })?;
         let mut statement = self.database.connection().prepare(
             "SELECT cf.campaign_id,cf.finding_id
              FROM security_remediation_campaign_findings cf
              JOIN security_remediation_campaigns c ON c.id=cf.campaign_id
-             WHERE cf.active_attempt_id=?1
+             WHERE cf.finding_id=?1
+               AND c.status IN (
+                 'IN_PROGRESS','PAUSED','BLOCKED',
+                 'COMPLETED','COMPLETED_WITH_UNRESOLVED_FINDINGS','CANCELLED'
+               )
              ORDER BY c.created_at,cf.ordinal,cf.campaign_id",
         )?;
-        let rows = statement.query_map([attempt_id], |row| {
+        let rows = statement.query_map([attempt.finding_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -2564,6 +2588,18 @@ fn order_reason(node: &AnalysisNode, depends_on: &[String], expected: &[String])
         }
         _ => "No stronger dependency was established. The finding is ordered deterministically by eligibility, vulnerability family, severity and source identity.".into(),
     }
+}
+
+fn started_or_historical_campaign(status: &str) -> bool {
+    matches!(
+        status,
+        "IN_PROGRESS"
+            | "PAUSED"
+            | "BLOCKED"
+            | "COMPLETED"
+            | "COMPLETED_WITH_UNRESOLVED_FINDINGS"
+            | "CANCELLED"
+    )
 }
 
 fn comparison_status_for_campaign_state(status: &str) -> &'static str {
