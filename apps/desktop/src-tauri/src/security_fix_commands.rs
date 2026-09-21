@@ -8,6 +8,7 @@ use codetwin_core::{
     CodeSecurityService, Database, FixEligibilityAssessment, MultiFindingOverlap, PatchReview,
     RepairApplicationRunRecord, RepairApplicationService,
     SecurityFixAttemptRecord, SecurityFixEventRecord, SecurityFixPreparation, SecurityFixService,
+    SecurityRemediationCampaignService,
     SecurityFixValidationRecord, ValidationResultInput, ProjectIndexService,
 };
 use serde::Serialize;
@@ -279,6 +280,15 @@ pub(crate) async fn rollback_security_fix(
 
     let task = tauri::async_runtime::spawn_blocking(move || {
         let database = Database::open(&database_path).map_err(|error| error.to_string())?;
+        if SecurityRemediationCampaignService::new(&database)
+            .rollback_requires_campaign_authorization(&attempt_id)
+            .map_err(|error| error.to_string())?
+        {
+            return Err(
+                "security fix is active in a remediation campaign; use the campaign rollback action so dependency safety is revalidated server-side"
+                    .to_string(),
+            );
+        }
         execute_security_fix_rollback(&database, &attempt_id, &backup_root)
     })
     .await;
