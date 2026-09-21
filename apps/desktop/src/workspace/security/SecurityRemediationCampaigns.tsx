@@ -323,15 +323,20 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
   async function boundedVerification() {
     if (!campaign || busy) return;
     const candidates = campaignFindings
-      .filter((item) => !["SKIPPED"].includes(item.status))
       .map((item) => findings.find((finding) => finding.id === item.finding_id))
       .filter((finding): finding is WebFindingRecord => Boolean(finding));
+    if (candidates.length !== campaignFindings.length) {
+      setError("Final verification cannot start because one or more selected findings are missing from the loaded authorized scan.");
+      return;
+    }
     setBusy("Running bounded selected-finding verification");
     setError(null);
     try {
+      await workspaceApi.beginSecurityRemediationCampaignCompletionVerification(campaign.id);
       for (const finding of candidates) {
         await onRetest(finding);
       }
+      await workspaceApi.finalizeSecurityRemediationCampaignCompletionVerification(campaign.id);
       await refreshCampaign(campaign.id, true);
     } catch (value) {
       setError(String(value));
@@ -710,19 +715,27 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
       {!terminal && summary && summary.queued_or_in_progress === 0 && (
         <section className="ws-security-campaign-callout">
           <strong>Selected finding work has factual outcomes</strong>
-          <p>Run the bounded selected-finding verification pass before recording campaign completion when runtime context is available.</p>
+          <p>
+            Campaign completion is backend-gated on a fresh bounded retest for every selected finding.
+            Any source change after that pass requires verification again.
+          </p>
           <div className="ws-button-row">
             <button className="ws-button ws-button-secondary" disabled={Boolean(busy)} onClick={() => void boundedVerification()}>
-              Verify Selected Findings
+              {campaign.completion_verification_completed_at ? "Re-run Final Verification" : "Run Final Verification"}
             </button>
             <button
               className="ws-button ws-button-primary"
-              disabled={Boolean(busy)}
+              disabled={Boolean(busy) || !campaign.completion_verification_completed_at}
               onClick={() => void runAction("Recording campaign completion", () => workspaceApi.completeSecurityRemediationCampaign(campaign.id))}
             >
               Record Factual Completion
             </button>
           </div>
+          {campaign.completion_verification_completed_at && (
+            <p className="ws-form-help">
+              Final selected-finding verification completed {formatDate(campaign.completion_verification_completed_at)}.
+            </p>
+          )}
         </section>
       )}
 
