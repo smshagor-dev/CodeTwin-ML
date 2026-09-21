@@ -111,6 +111,14 @@ describe("security remediation campaign frontend model", () => {
     expect(currentCampaignFinding([blocked, regression, independent])?.finding_id).toBe("f-3");
   });
 
+  it("continues independent queued work after still-vulnerable or unable-to-verify outcomes", () => {
+    expect(currentCampaignFinding([
+      campaignFinding("STILL_VULNERABLE", 1),
+      campaignFinding("UNABLE_TO_VERIFY", 2),
+      campaignFinding("QUEUED", 3),
+    ])?.finding_id).toBe("f-3");
+  });
+
   it("reports only factual settled progress and never a security score", () => {
     const summary: SecurityRemediationCampaignSummary = {
       selected_findings: 10,
