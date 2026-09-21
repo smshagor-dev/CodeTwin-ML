@@ -1262,6 +1262,242 @@ fn remediation_campaign_blocks_overlapping_approved_patch_after_prior_source_mut
 }
 
 #[test]
+fn remediation_campaign_dependency_gate_is_stable_and_requires_verified_prerequisites() {
+    let fixture = sql_fixture();
+    let second_id = add_overlapping_sql_finding(&fixture, "campaign-dependency-gate");
+    let scan_id: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT scan_id FROM web_security_findings WHERE id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("scan id");
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (
+                'campaign-dependency-gate-session',?1,'http://127.0.0.1:3000','local',
+                'standard','none','completed',1,'{}',?2
+             )",
+            rusqlite::params![fixture.project_id, scan_id],
+        )
+        .expect("guided campaign session");
+
+    let campaigns = SecurityRemediationCampaignService::new(&fixture.database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-dependency-gate-session".into(),
+            finding_ids: vec![fixture.finding_id.clone(), second_id],
+        })
+        .expect("campaign");
+    let analyzed = campaigns.analyze(&campaign.id).expect("analyze");
+    campaigns
+        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+        .expect("approve");
+    campaigns.start(&campaign.id).expect("start");
+
+    let members = campaigns.findings(&campaign.id).expect("members");
+    let dependent = members
+        .iter()
+        .find(|finding| !finding.depends_on.is_empty())
+        .expect("dependent finding")
+        .clone();
+    let prerequisite_id = dependent.depends_on[0].clone();
+
+    let first_error = campaigns
+        .authorize_fix_mutation(&dependent.finding_id)
+        .expect_err("dependent fix must wait for prerequisite verification");
+    assert!(first_error.to_string().contains("prerequisite"));
+
+    let first_block_events = campaigns
+        .events(&campaign.id, 200)
+        .expect("events")
+        .into_iter()
+        .filter(|event| {
+            event.event_type == "finding_blocked_by_dependency"
+                && event.detail_json.contains(&dependent.finding_id)
+        })
+        .count();
+    assert_eq!(first_block_events, 1);
+
+    let second_error = campaigns
+        .authorize_fix_mutation(&dependent.finding_id)
+        .expect_err("repeated polling must remain blocked");
+    assert!(second_error.to_string().contains("prerequisite"));
+    let second_block_events = campaigns
+        .events(&campaign.id, 200)
+        .expect("events after repeated gate")
+        .into_iter()
+        .filter(|event| {
+            event.event_type == "finding_blocked_by_dependency"
+                && event.detail_json.contains(&dependent.finding_id)
+        })
+        .count();
+    assert_eq!(
+        second_block_events, 1,
+        "an unresolved dependency must not oscillate BLOCKED -> QUEUED -> BLOCKED on each poll"
+    );
+
+    GuidedSecurityStore::new(&fixture.database)
+        .record_retest(GuidedRetestInput {
+            finding_id: &prerequisite_id,
+            session_id: Some("campaign-dependency-gate-session"),
+            status: "retest_passed",
+            original_confidence: "Likely",
+            observed_confidence: Some("Likely"),
+            requests_performed: 2,
+            detail_json: r#"{"fixture":"dependency-prerequisite-verified"}"#,
+        })
+        .expect("verify prerequisite");
+    campaigns.sync(&campaign.id).expect("sync verified prerequisite");
+
+    let dependent_after_prerequisite = campaigns
+        .findings(&campaign.id)
+        .expect("members after prerequisite")
+        .into_iter()
+        .find(|finding| finding.finding_id == dependent.finding_id)
+        .expect("dependent member");
+    if dependent_after_prerequisite
+        .shared_root_primary_finding_id
+        .is_some()
+    {
+        assert!(
+            campaigns
+                .authorize_fix_mutation(&dependent.finding_id)
+                .is_err(),
+            "shared-root secondary must be retested before another patch"
+        );
+        GuidedSecurityStore::new(&fixture.database)
+            .record_retest(GuidedRetestInput {
+                finding_id: &dependent.finding_id,
+                session_id: Some("campaign-dependency-gate-session"),
+                status: "still_vulnerable",
+                original_confidence: "Likely",
+                observed_confidence: Some("Likely"),
+                requests_performed: 2,
+                detail_json: r#"{"fixture":"shared-root-still-vulnerable"}"#,
+            })
+            .expect("retest shared-root secondary");
+        campaigns.sync(&campaign.id).expect("sync secondary retest");
+    }
+
+    campaigns
+        .authorize_fix_mutation(&dependent.finding_id)
+        .expect("verified prerequisites and required shared-root retest should unlock mutation");
+
+    campaigns.pause(&campaign.id).expect("pause");
+    assert!(
+        campaigns
+            .authorize_fix_mutation(&dependent.finding_id)
+            .is_err(),
+        "paused campaign must reject new fix mutation"
+    );
+}
+
+#[test]
+fn remediation_campaign_terminal_history_does_not_adopt_future_fix_attempts() {
+    let fixture = sql_fixture();
+    let scan_id: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT scan_id FROM web_security_findings WHERE id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("scan id");
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (
+                'campaign-terminal-freeze-session',?1,'http://127.0.0.1:3000','local',
+                'standard','none','completed',1,'{}',?2
+             )",
+            rusqlite::params![fixture.project_id, scan_id],
+        )
+        .expect("guided campaign session");
+
+    let campaigns = SecurityRemediationCampaignService::new(&fixture.database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-terminal-freeze-session".into(),
+            finding_ids: vec![fixture.finding_id.clone()],
+        })
+        .expect("campaign");
+    let analyzed = campaigns.analyze(&campaign.id).expect("analyze");
+    campaigns
+        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+        .expect("approve");
+    campaigns.start(&campaign.id).expect("start");
+
+    let fixes = SecurityFixService::new(&fixture.database);
+    let first = fixes
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare campaign attempt");
+    campaigns.sync(&campaign.id).expect("bind campaign attempt");
+    let bound_before_cancel = campaigns
+        .findings(&campaign.id)
+        .expect("campaign members")
+        .into_iter()
+        .next()
+        .expect("campaign member");
+    assert_eq!(
+        bound_before_cancel.active_attempt_id.as_deref(),
+        Some(first.attempt.id.as_str())
+    );
+
+    campaigns.cancel(&campaign.id).expect("cancel historical campaign");
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO security_fix_attempts(
+                id,finding_id,session_id,project_id,attempt_number,eligibility,
+                category,status,root_cause_json,strategy_json,test_plan_json,created_at,updated_at
+             )
+             SELECT
+                'future-fix-attempt',finding_id,session_id,project_id,attempt_number+1,
+                eligibility,category,'prepared',root_cause_json,strategy_json,test_plan_json,
+                datetime(CURRENT_TIMESTAMP,'+1 day'),datetime(CURRENT_TIMESTAMP,'+1 day')
+             FROM security_fix_attempts WHERE id=?1",
+            [&first.attempt.id],
+        )
+        .expect("persist later independent attempt");
+
+    let synced = campaigns
+        .sync(&campaign.id)
+        .expect("refresh terminal campaign history");
+    assert_eq!(synced.status, "CANCELLED");
+    let frozen = campaigns
+        .findings(&campaign.id)
+        .expect("frozen campaign members")
+        .into_iter()
+        .next()
+        .expect("campaign member");
+    assert_eq!(
+        frozen.active_attempt_id.as_deref(),
+        Some(first.attempt.id.as_str()),
+        "terminal campaign history must not adopt a later Fix & Verify attempt"
+    );
+    assert!(
+        !campaigns
+            .rollback_requires_campaign_authorization("future-fix-attempt")
+            .expect("future attempt membership"),
+        "future attempts created after campaign termination must not be captured by historical rollback routing"
+    );
+}
+
+#[test]
 fn remediation_campaign_pause_reconciles_inflight_apply_without_resuming() {
     let fixture = sql_fixture();
     let scan_id: String = fixture
