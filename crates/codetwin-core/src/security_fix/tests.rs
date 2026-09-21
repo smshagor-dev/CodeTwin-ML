@@ -1651,8 +1651,20 @@ fn remediation_campaign_rollback_authorization_rejects_tampered_and_terminal_req
             .expect("correct bound rollback authorization"),
         prepared.attempt.id
     );
+    assert!(
+        campaigns
+            .rollback_requires_campaign_authorization(&prepared.attempt.id)
+            .expect("active campaign rollback routing"),
+        "generic rollback must be blocked while an active campaign references the attempt"
+    );
 
     campaigns.cancel(&campaign.id).expect("cancel campaign");
+    assert!(
+        !campaigns
+            .rollback_requires_campaign_authorization(&prepared.attempt.id)
+            .expect("terminal campaign rollback routing"),
+        "terminal campaign history must not permanently block ordinary Fix & Verify rollback"
+    );
     assert!(campaigns
         .authorize_rollback(
             &campaign.id,
@@ -1660,6 +1672,136 @@ fn remediation_campaign_rollback_authorization_rejects_tampered_and_terminal_req
             &prepared.attempt.id,
         )
         .is_err());
+}
+
+#[test]
+fn remediation_campaign_rollback_checks_dependencies_across_all_active_campaigns() {
+    let fixture = sql_fixture();
+    let second_id = add_overlapping_sql_finding(&fixture, "cross-campaign-rollback");
+    let scan_id: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT scan_id FROM web_security_findings WHERE id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("scan id");
+    for (session_id, campaign_suffix) in [
+        ("cross-campaign-session-a", "a"),
+        ("cross-campaign-session-b", "b"),
+    ] {
+        fixture
+            .database
+            .connection()
+            .execute(
+                "INSERT INTO guided_security_sessions(
+                    id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                    authorization_confirmed,config_json,scan_id
+                 ) VALUES (?1,?2,'http://127.0.0.1:3000','local',
+                           'standard','none','completed',1,'{}',?3)",
+                rusqlite::params![session_id, fixture.project_id, scan_id],
+            )
+            .expect("guided campaign session");
+        let _ = campaign_suffix;
+    }
+
+    let campaigns = SecurityRemediationCampaignService::new(&fixture.database);
+    let campaign_a = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "cross-campaign-session-a".into(),
+            finding_ids: vec![fixture.finding_id.clone()],
+        })
+        .expect("campaign A");
+    let analyzed_a = campaigns.analyze(&campaign_a.id).expect("analyze A");
+    campaigns
+        .approve_plan(&campaign_a.id, analyzed_a.plan_hash.as_deref().expect("hash A"))
+        .expect("approve A");
+    campaigns.start(&campaign_a.id).expect("start A");
+
+    let campaign_b = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "cross-campaign-session-b".into(),
+            finding_ids: vec![fixture.finding_id.clone(), second_id.clone()],
+        })
+        .expect("campaign B");
+    let analyzed_b = campaigns.analyze(&campaign_b.id).expect("analyze B");
+    campaigns
+        .approve_plan(&campaign_b.id, analyzed_b.plan_hash.as_deref().expect("hash B"))
+        .expect("approve B");
+    campaigns.start(&campaign_b.id).expect("start B");
+
+    let members_b = campaigns.findings(&campaign_b.id).expect("members B");
+    let dependent = members_b
+        .iter()
+        .find(|finding| !finding.depends_on.is_empty())
+        .expect("campaign B overlap dependency")
+        .clone();
+    let prerequisite_id = dependent.depends_on[0].clone();
+    assert_eq!(
+        prerequisite_id, fixture.finding_id,
+        "fixture primary must be the rollback prerequisite in campaign B"
+    );
+
+    let fixes = SecurityFixService::new(&fixture.database);
+    let prepared = fixes
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare shared attempt");
+    let review = fixes.generate_patch(&prepared.attempt.id).expect("patch");
+    fixes
+        .approve_attempt(
+            &prepared.attempt.id,
+            &review.safety.patch_hash,
+            review.safety.classification == PatchSafetyClass::Caution,
+        )
+        .expect("approve patch");
+    let repair_id = fixes
+        .assert_application_allowed(&prepared.attempt.id)
+        .expect("application allowed");
+    let backups = tempdir().expect("cross-campaign backups");
+    let application = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply");
+    fixes
+        .record_application(&prepared.attempt.id, &application.id)
+        .expect("record application");
+    campaigns.sync(&campaign_a.id).expect("sync A");
+    campaigns.sync(&campaign_b.id).expect("sync B");
+
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_retests(
+                id,finding_id,session_id,status,original_confidence,
+                observed_confidence,requests_performed,detail_json
+             ) VALUES (
+                'cross-campaign-dependent-retest',?1,'cross-campaign-session-b',
+                'retest_passed','Likely','Likely',2,'{}'
+             )",
+            [&dependent.finding_id],
+        )
+        .expect("persist dependent evidence");
+    campaigns.sync(&campaign_b.id).expect("sync verified dependent");
+
+    let assessment_a = campaigns
+        .rollback_assessment(&campaign_a.id, &fixture.finding_id)
+        .expect("campaign A isolated assessment");
+    assert!(
+        assessment_a.allowed,
+        "campaign A alone has no dependent work, demonstrating why cross-campaign authorization is required"
+    );
+    let error = campaigns
+        .authorize_rollback(
+            &campaign_a.id,
+            &fixture.finding_id,
+            &prepared.attempt.id,
+        )
+        .expect_err("campaign B dependency must block rollback initiated from campaign A");
+    assert!(
+        error.to_string().contains(&campaign_b.id),
+        "blocking active campaign identity should be reported"
+    );
 }
 
 #[test]
