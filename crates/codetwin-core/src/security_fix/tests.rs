@@ -1262,6 +1262,101 @@ fn remediation_campaign_blocks_overlapping_approved_patch_after_prior_source_mut
 }
 
 #[test]
+fn remediation_campaign_pause_reconciles_inflight_apply_without_resuming() {
+    let fixture = sql_fixture();
+    let scan_id: String = fixture
+        .database
+        .connection()
+        .query_row(
+            "SELECT scan_id FROM web_security_findings WHERE id=?1",
+            [&fixture.finding_id],
+            |row| row.get(0),
+        )
+        .expect("scan id");
+    fixture
+        .database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (
+                'campaign-pause-inflight-session',?1,'http://127.0.0.1:3000','local',
+                'standard','none','completed',1,'{}',?2
+             )",
+            rusqlite::params![fixture.project_id, scan_id],
+        )
+        .expect("guided campaign session");
+
+    let campaigns = SecurityRemediationCampaignService::new(&fixture.database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-pause-inflight-session".into(),
+            finding_ids: vec![fixture.finding_id.clone()],
+        })
+        .expect("campaign");
+    let analyzed = campaigns.analyze(&campaign.id).expect("analyze");
+    campaigns
+        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+        .expect("approve campaign");
+    campaigns.start(&campaign.id).expect("start campaign");
+
+    let fixes = SecurityFixService::new(&fixture.database);
+    let prepared = fixes
+        .prepare_fix(&fixture.finding_id, false)
+        .expect("prepare fix");
+    let review = fixes.generate_patch(&prepared.attempt.id).expect("generate patch");
+    fixes
+        .approve_attempt(
+            &prepared.attempt.id,
+            &review.safety.patch_hash,
+            review.safety.classification == PatchSafetyClass::Caution,
+        )
+        .expect("approve exact patch");
+    let repair_id = fixes
+        .assert_application_allowed(&prepared.attempt.id)
+        .expect("application allowed");
+
+    let backups = tempdir().expect("pause inflight backups");
+    let application = RepairApplicationService::new(&fixture.database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("atomic source apply");
+    assert_eq!(application.status, "applied");
+
+    let paused = campaigns.pause(&campaign.id).expect("pause during bookkeeping gap");
+    assert_eq!(paused.status, "PAUSED");
+    assert!(campaigns
+        .skip_finding(&campaign.id, &fixture.finding_id, "must not mutate while paused")
+        .is_err());
+
+    fixes
+        .record_application(&prepared.attempt.id, &application.id)
+        .expect("finish already-started fix bookkeeping");
+    GuidedSecurityStore::new(&fixture.database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync guided lifecycle");
+
+    let synced = campaigns
+        .sync(&campaign.id)
+        .expect("reconcile persisted inflight completion");
+    assert_eq!(
+        synced.status, "PAUSED",
+        "evidence reconciliation must never auto-resume a paused campaign"
+    );
+    let member = campaigns
+        .findings(&campaign.id)
+        .expect("campaign findings")
+        .into_iter()
+        .find(|finding| finding.finding_id == fixture.finding_id)
+        .expect("campaign finding");
+    assert_eq!(member.status, "VALIDATING");
+    assert_eq!(
+        member.active_attempt_id.as_deref(),
+        Some(prepared.attempt.id.as_str())
+    );
+}
+
+#[test]
 fn remediation_campaign_resume_blocks_approved_patch_after_external_source_change() {
     let fixture = sql_fixture();
     let scan_id: String = fixture
