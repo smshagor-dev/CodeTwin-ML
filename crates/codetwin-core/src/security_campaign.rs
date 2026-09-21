@@ -1470,12 +1470,30 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                    AND ws.target_url=?2
                    AND ws.scope_json=?3
                    AND ws.authorization_confirmed=1
+                   AND ws.status='completed'
                    AND ws.created_at>=?4
                    AND ws.created_at<=?5
                    AND wf.fingerprint NOT IN (
                      SELECT baseline.fingerprint
                      FROM web_security_findings baseline
                      WHERE baseline.scan_id=?6
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM web_security_findings prior
+                     JOIN web_security_scans prior_scan ON prior_scan.id=prior.scan_id
+                     WHERE prior.fingerprint=wf.fingerprint
+                       AND prior_scan.project_id=ws.project_id
+                       AND prior_scan.target_url=ws.target_url
+                       AND prior_scan.scope_json=ws.scope_json
+                       AND prior_scan.authorization_confirmed=1
+                       AND prior_scan.status='completed'
+                       AND prior_scan.created_at>=?4
+                       AND prior_scan.created_at<=?5
+                       AND (
+                         prior.first_detected<wf.first_detected OR
+                         (prior.first_detected=wf.first_detected AND prior.id<wf.id)
+                       )
                    )
                  ORDER BY wf.first_detected,wf.id
                  LIMIT ?7",
