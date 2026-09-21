@@ -2469,6 +2469,47 @@ mod tests {
     }
 
     #[test]
+    fn campaign_scope_binding_rejects_cross_project_and_cross_target_finding_reuse() {
+        let (database, session_id, _, finding_a, _) = fixture();
+        database
+            .connection()
+            .execute_batch(
+                "INSERT INTO projects(id,root_path,display_name)
+                 VALUES ('other-project','/tmp/codetwin-other-project','other project');
+                 INSERT INTO web_security_scans(
+                    id,project_id,target_url,status,phase,authorization_confirmed,
+                    scope_json,config_json,auth_metadata_json
+                 ) VALUES (
+                    'other-project-scan','other-project','http://127.0.0.1:44001',
+                    'completed','completed',1,
+                    '{\"allowed_hostnames\":[\"127.0.0.1\"]}','{}','{}'
+                 );
+                 INSERT INTO web_security_findings(
+                    id,scan_id,fingerprint,category,severity,confidence,target,
+                    endpoint_url,method,title,description,reproduction_summary,
+                    impact,remediation,references_json
+                 ) VALUES (
+                    'other-project-finding','other-project-scan','other-project-fp',
+                    'xss','medium','Likely','http://127.0.0.1:44001',
+                    'http://127.0.0.1:44001/render?q=a','GET',
+                    'other project XSS','fixture','fixture','fixture','fixture','[]'
+                 );",
+            )
+            .expect("cross-project fixture");
+
+        let error = SecurityRemediationCampaignService::new(&database)
+            .create(&SecurityRemediationCampaignCreate {
+                session_id,
+                finding_ids: vec![finding_a, "other-project-finding".into()],
+            })
+            .expect_err("cross-project/target finding reuse must fail");
+        assert!(
+            error.to_string().contains("does not belong"),
+            "campaign membership must remain bound to the original authorized scan"
+        );
+    }
+
+    #[test]
     fn campaign_plan_approval_is_hash_bound_and_does_not_approve_patches() {
         let (database, session_id, _, finding_a, finding_b) = fixture();
         let service = SecurityRemediationCampaignService::new(&database);
