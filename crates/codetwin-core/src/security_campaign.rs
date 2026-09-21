@@ -3702,6 +3702,140 @@ mod tests {
     }
 
     #[test]
+    fn campaign_verified_state_rejects_null_session_retest_evidence() {
+        let (database, session_id, _, finding_a, _) = fixture();
+        let service = SecurityRemediationCampaignService::new(&database);
+        let campaign = service
+            .create(&SecurityRemediationCampaignCreate {
+                session_id: session_id.clone(),
+                finding_ids: vec![finding_a.clone()],
+            })
+            .expect("create");
+        let analyzed = service.analyze(&campaign.id).expect("analyze");
+        service
+            .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+            .expect("approve");
+        service.start(&campaign.id).expect("start");
+
+        crate::GuidedSecurityStore::new(&database)
+            .record_retest(crate::GuidedRetestInput {
+                finding_id: &finding_a,
+                session_id: None,
+                status: "retest_passed",
+                original_confidence: "Likely",
+                observed_confidence: Some("Likely"),
+                requests_performed: 2,
+                detail_json: r#"{"fixture":"null-session-must-not-verify"}"#,
+            })
+            .expect("null-session retest");
+
+        service.sync(&campaign.id).expect("sync null-session evidence");
+        let member = service
+            .findings(&campaign.id)
+            .expect("findings")
+            .into_iter()
+            .next()
+            .expect("campaign member");
+        assert_ne!(
+            member.status, "VERIFIED",
+            "retest evidence without the campaign session must not verify a campaign finding"
+        );
+        assert!(
+            database
+                .connection()
+                .execute(
+                    "UPDATE security_remediation_campaign_findings
+                     SET status='VERIFIED'
+                     WHERE campaign_id=?1 AND finding_id=?2",
+                    params![campaign.id, finding_a],
+                )
+                .is_err(),
+            "persistence trigger must reject VERIFIED from a null-session retest"
+        );
+
+        crate::GuidedSecurityStore::new(&database)
+            .record_retest(crate::GuidedRetestInput {
+                finding_id: &finding_a,
+                session_id: Some(&session_id),
+                status: "retest_passed",
+                original_confidence: "Likely",
+                observed_confidence: Some("Likely"),
+                requests_performed: 2,
+                detail_json: r#"{"fixture":"campaign-session-verifies"}"#,
+            })
+            .expect("campaign-session retest");
+        service.sync(&campaign.id).expect("sync bound evidence");
+        assert_eq!(
+            service
+                .findings(&campaign.id)
+                .expect("findings")
+                .into_iter()
+                .next()
+                .expect("campaign member")
+                .status,
+            "VERIFIED"
+        );
+    }
+
+    #[test]
+    fn campaign_completion_rejects_fresh_retest_from_wrong_session_identity() {
+        let (database, session_id, _, finding_a, _) = fixture();
+        let service = SecurityRemediationCampaignService::new(&database);
+        let campaign = service
+            .create(&SecurityRemediationCampaignCreate {
+                session_id: session_id.clone(),
+                finding_ids: vec![finding_a.clone()],
+            })
+            .expect("create");
+        let analyzed = service.analyze(&campaign.id).expect("analyze");
+        service
+            .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+            .expect("approve");
+        service.start(&campaign.id).expect("start");
+        service
+            .skip_finding(&campaign.id, &finding_a, "deferred for session-bound completion test")
+            .expect("skip");
+        service
+            .begin_completion_verification(&campaign.id)
+            .expect("begin final verification");
+
+        crate::GuidedSecurityStore::new(&database)
+            .record_retest(crate::GuidedRetestInput {
+                finding_id: &finding_a,
+                session_id: None,
+                status: "still_vulnerable",
+                original_confidence: "Likely",
+                observed_confidence: Some("Likely"),
+                requests_performed: 2,
+                detail_json: r#"{"fixture":"null-session-final-retest"}"#,
+            })
+            .expect("null-session final retest");
+
+        let error = service
+            .finalize_completion_verification(&campaign.id)
+            .expect_err("wrong-session evidence must not satisfy campaign completion");
+        assert!(
+            error.to_string().contains(&finding_a),
+            "missing session-bound evidence should identify the selected finding"
+        );
+
+        crate::GuidedSecurityStore::new(&database)
+            .record_retest(crate::GuidedRetestInput {
+                finding_id: &finding_a,
+                session_id: Some(&session_id),
+                status: "still_vulnerable",
+                original_confidence: "Likely",
+                observed_confidence: Some("Likely"),
+                requests_performed: 2,
+                detail_json: r#"{"fixture":"bound-session-final-retest"}"#,
+            })
+            .expect("campaign-session final retest");
+        service
+            .finalize_completion_verification(&campaign.id)
+            .expect("exact campaign session evidence satisfies final verification");
+    }
+
+    #[test]
     fn campaign_completion_requires_fresh_retest_for_every_selected_finding() {
         let (database, session_id, _, finding_a, finding_b) = fixture();
         let service = SecurityRemediationCampaignService::new(&database);
