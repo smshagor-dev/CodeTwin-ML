@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use codetwin_core::{
     SecurityRemediationBeforeAfterItem, SecurityRemediationCampaignCreate,
     SecurityRemediationCampaignEventRecord, SecurityRemediationCampaignFindingRecord,
@@ -7,7 +9,11 @@ use codetwin_core::{
     SecurityRemediationRollbackAssessment,
 };
 
-use super::{with_database, AppState};
+use super::{
+    repair_commands::REPAIR_APPLICATION_RUNNING,
+    security_fix_commands::{execute_security_fix_rollback, SecurityFixApplicationResult},
+    with_database, AppState,
+};
 
 #[tauri::command]
 pub(crate) fn create_security_remediation_campaign(
@@ -265,6 +271,60 @@ pub(crate) fn assess_security_remediation_campaign_rollback(
             .rollback_assessment(&campaign_id, &finding_id)
             .map_err(|error| error.to_string())
     })
+}
+
+#[tauri::command]
+pub(crate) async fn rollback_security_remediation_campaign_fix(
+    campaign_id: String,
+    finding_id: String,
+    expected_attempt_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<SecurityFixApplicationResult, String> {
+    let database_path = state.database_path.clone();
+    let backup_root = database_path
+        .parent()
+        .ok_or_else(|| "database path has no parent directory".to_string())?
+        .join("repair-backups");
+
+    if REPAIR_APPLICATION_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("a repair application or rollback is already running".to_string());
+    }
+
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let database = codetwin_core::Database::open(&database_path)
+            .map_err(|error| error.to_string())?;
+        let campaigns = SecurityRemediationCampaignService::new(&database);
+        let assessment = campaigns
+            .rollback_assessment(&campaign_id, &finding_id)
+            .map_err(|error| error.to_string())?;
+        if !assessment.allowed {
+            return Err(format!(
+                "campaign rollback is blocked by dependency safety: {}",
+                assessment.reason
+            ));
+        }
+        let bound_attempt_id = assessment
+            .attempt_id
+            .as_deref()
+            .ok_or_else(|| "campaign finding has no rollback-eligible fix attempt".to_string())?;
+        if bound_attempt_id != expected_attempt_id {
+            return Err(
+                "campaign rollback attempt identity changed; refresh dependency assessment before retrying"
+                    .to_string(),
+            );
+        }
+
+        let result =
+            execute_security_fix_rollback(&database, &expected_attempt_id, &backup_root)?;
+        campaigns
+            .sync(&campaign_id)
+            .map_err(|error| error.to_string())?;
+        Ok(result)
+    })
+    .await;
+
+    REPAIR_APPLICATION_RUNNING.store(false, Ordering::SeqCst);
+    task.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
