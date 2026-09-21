@@ -38,17 +38,17 @@ export function eligibleForCampaignSelection(
 export function currentCampaignFinding(
   findings: SecurityRemediationCampaignFindingRecord[],
 ): SecurityRemediationCampaignFindingRecord | null {
-  const activeStatuses = new Set([
+  const inFlightStatuses = new Set([
     "PREPARING_FIX",
     "AWAITING_REVIEW",
     "APPLYING",
     "VALIDATING",
     "RETESTING",
-    "STILL_VULNERABLE",
-    "UNABLE_TO_VERIFY",
   ]);
-  return findings.find((finding) => activeStatuses.has(finding.status))
+  return findings.find((finding) => inFlightStatuses.has(finding.status))
     ?? findings.find((finding) => finding.status === "QUEUED")
+    ?? findings.find((finding) => finding.status === "STILL_VULNERABLE")
+    ?? findings.find((finding) => finding.status === "UNABLE_TO_VERIFY")
     ?? findings.find((finding) => finding.status === "REGRESSION_DETECTED")
     ?? findings.find((finding) => finding.status === "BLOCKED")
     ?? findings.find((finding) => finding.status === "MANUAL_ACTION_REQUIRED")
