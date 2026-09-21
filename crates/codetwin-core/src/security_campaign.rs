@@ -1732,7 +1732,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         // Reconcile every campaign selecting this finding before trusting its cached active
         // attempt identity. This closes the apply->polling race and makes cross-campaign
         // dependency checks use the latest persisted Fix & Verify state.
-        let mut campaign_ids = memberships
+        let campaign_ids = memberships
             .iter()
             .map(|(member_campaign_id, _)| member_campaign_id.clone())
             .collect::<BTreeSet<_>>();
@@ -1860,11 +1860,19 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                  'IN_PROGRESS','PAUSED','BLOCKED',
                  'COMPLETED','COMPLETED_WITH_UNRESOLVED_FINDINGS','CANCELLED'
                )
+               AND (
+                 cf.active_attempt_id=?2
+                 OR c.finished_at IS NULL
+                 OR ?3<=c.finished_at
+               )
              ORDER BY c.created_at,cf.ordinal,cf.campaign_id",
         )?;
-        let rows = statement.query_map([attempt.finding_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
+        let rows = statement.query_map(
+            params![attempt.finding_id, attempt_id, attempt.created_at],
+            |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            },
+        )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
