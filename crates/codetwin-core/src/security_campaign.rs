@@ -3073,6 +3073,37 @@ mod tests {
                     'sql_injection','high','Likely','http://127.0.0.1:33001',
                     'http://127.0.0.1:33001/search?q=a','GET',
                     'Reobserved SQL injection','fixture','fixture','fixture','fixture','[]'
+                 );
+                 INSERT INTO web_security_scans(
+                    id,project_id,target_url,status,phase,authorization_confirmed,
+                    scope_json,config_json,auth_metadata_json
+                 ) VALUES
+                 (
+                    'verification-window-duplicate','campaign-project','http://127.0.0.1:33001',
+                    'completed','completed',1,
+                    '{"allowed_hostnames":["127.0.0.1"]}','{}','{}'
+                 ),
+                 (
+                    'verification-window-failed','campaign-project','http://127.0.0.1:33001',
+                    'failed','failed',1,
+                    '{"allowed_hostnames":["127.0.0.1"]}','{}','{}'
+                 );
+                 INSERT INTO web_security_findings(
+                    id,scan_id,fingerprint,category,severity,confidence,target,
+                    endpoint_url,method,title,description,reproduction_summary,
+                    impact,remediation,references_json
+                 ) VALUES
+                 (
+                    'zz-verification-new-duplicate','verification-window-duplicate','new-verification-fp',
+                    'security_headers','medium','Likely','http://127.0.0.1:33001',
+                    'http://127.0.0.1:33001/new','GET',
+                    'Duplicate new header observation','fixture','fixture','fixture','fixture','[]'
+                 ),
+                 (
+                    'verification-failed-scan-finding','verification-window-failed','failed-verification-fp',
+                    'security_headers','medium','Likely','http://127.0.0.1:33001',
+                    'http://127.0.0.1:33001/failed','GET',
+                    'Partial scan observation','fixture','fixture','fixture','fixture','[]'
                  );",
             )
             .expect("verification window findings");
@@ -3089,6 +3120,20 @@ mod tests {
         assert!(!comparison
             .iter()
             .any(|item| item.finding_id == "verification-reobserved-existing"));
+        assert!(!comparison
+            .iter()
+            .any(|item| item.finding_id == "verification-failed-scan-finding"));
+        assert_eq!(
+            comparison
+                .iter()
+                .filter(|item| {
+                    item.comparison_status == "NEWLY_OBSERVED_DURING_VERIFICATION"
+                        && item.title.to_ascii_lowercase().contains("header observation")
+                })
+                .count(),
+            1,
+            "the same new fingerprint observed by multiple completed scans must be reported once"
+        );
         assert!(comparison
             .iter()
             .any(|item| item.finding_id == finding_a && item.selected));
