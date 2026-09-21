@@ -1051,22 +1051,33 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 )?;
             }
 
-            if !finding.depends_on.is_empty() {
-                let mut dependency_unsatisfied = false;
-                for dependency_id in &finding.depends_on {
-                    let dependency = self.require_finding(campaign_id, dependency_id)?;
-                    if dependency.status != "VERIFIED" {
-                        dependency_unsatisfied = true;
-                        break;
-                    }
+            let mut unsatisfied_dependencies = Vec::new();
+            for dependency_id in &finding.depends_on {
+                let dependency = self.require_finding(campaign_id, dependency_id)?;
+                if dependency.status != "VERIFIED" {
+                    unsatisfied_dependencies.push((
+                        dependency.finding_id.clone(),
+                        dependency.status.clone(),
+                    ));
                 }
-                if dependency_unsatisfied {
-                    target = "BLOCKED";
-                }
+            }
+            if !unsatisfied_dependencies.is_empty() {
+                target = "BLOCKED";
             }
 
             if target != finding.status {
                 self.set_finding_state(campaign_id, &finding.finding_id, target)?;
+                if target == "BLOCKED" && !unsatisfied_dependencies.is_empty() {
+                    self.append_event(
+                        campaign_id,
+                        "finding_blocked_by_dependency",
+                        "Campaign finding remains blocked until every planned prerequisite is verified.",
+                        &json!({
+                            "finding_id": finding.finding_id,
+                            "dependencies": unsatisfied_dependencies,
+                        }),
+                    )?;
+                }
             }
         }
 
@@ -1098,15 +1109,6 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 .collect::<Vec<_>>();
             if !unsatisfied_dependencies.is_empty() && finding.status != "BLOCKED" {
                 self.set_finding_state(campaign_id, &finding.finding_id, "BLOCKED")?;
-                self.append_event(
-                    campaign_id,
-                    "finding_blocked_by_dependency",
-                    "Campaign finding remains blocked until every planned prerequisite is verified.",
-                    &json!({
-                        "finding_id": finding.finding_id,
-                        "dependencies": unsatisfied_dependencies,
-                    }),
-                )?;
             }
         }
 
