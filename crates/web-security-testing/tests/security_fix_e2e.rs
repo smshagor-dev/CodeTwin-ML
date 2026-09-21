@@ -1786,6 +1786,304 @@ fn apply_campaign_guided_idor_fix(
 }
 
 #[test]
+fn remediation_campaign_collapses_shared_security_header_root_but_retests_every_finding() {
+    let project = tempdir().expect("shared-header project");
+    write_project(project.path());
+    let lab = SourceBackedLab::start(project.path().to_path_buf());
+    let config = lab.config();
+    let primary = primary_auth();
+
+    let database = Database::open_in_memory().expect("shared-header database");
+    let index = ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("index shared-header project");
+    let web = AuthorizedWebSecurityStore::new(&database);
+    let scan = web
+        .create_scan(&WebScanCreate {
+            website_id: None,
+            project_id: Some(index.project_id.clone()),
+            target_url: config.scope.target_url.clone(),
+            authorization_confirmed: true,
+            scope_json: serde_json::to_string(&config.scope).expect("scope json"),
+            config_json: serde_json::to_string(&config).expect("config json"),
+            auth_metadata_json: serde_json::json!({"primary": primary.metadata()}).to_string(),
+        })
+        .expect("create shared-header scan");
+
+    let mut findings = Vec::new();
+    for suffix in ["a", "b", "c", "d", "e"] {
+        let endpoint_url = format!("{}/headers/{suffix}", lab.base_url);
+        let retest = run_targeted_retest(
+            &config,
+            &primary,
+            None,
+            &TargetedRetestRequest {
+                endpoint_url: endpoint_url.clone(),
+                method: "GET".into(),
+                parameter_name: None,
+                parameter_location: None,
+                category: "security_headers".into(),
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("initial passive header observation");
+        assert!(retest.verification_completed);
+        let observed = retest
+            .findings
+            .iter()
+            .find(|item| item.title == "X-Content-Type-Options header is missing")
+            .expect("missing nosniff finding");
+        let record = web
+            .record_finding(
+                &scan.id,
+                &WebFindingInput {
+                    fingerprint: observed.stable_fingerprint(),
+                    category: observed.category.clone(),
+                    severity: observed.severity.clone(),
+                    confidence: observed.confidence.clone(),
+                    target: observed.target.clone(),
+                    endpoint_url: observed.endpoint.clone(),
+                    method: observed.method.clone(),
+                    parameter_name: observed.parameter.clone(),
+                    title: observed.title.clone(),
+                    description: observed.description.clone(),
+                    reproduction_summary: observed.reproduction_summary.clone(),
+                    impact: observed.impact.clone(),
+                    remediation: observed.remediation.clone(),
+                    references: observed.references.clone(),
+                    source: None,
+                },
+            )
+            .expect("persist shared-header finding");
+        for evidence in &observed.evidence {
+            web.record_evidence(
+                &record.id,
+                &WebEvidenceInput {
+                    summary: evidence.summary.clone(),
+                    request_metadata_json: evidence.request_metadata.to_string(),
+                    response_metadata_json: evidence.response_metadata.to_string(),
+                },
+            )
+            .expect("persist shared-header evidence");
+        }
+        findings.push(record);
+    }
+    web.update_progress(&scan.id, "completed", "completed", 5, 5, findings.len())
+        .expect("complete shared-header scan");
+
+    database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (
+                'campaign-shared-header-session',?1,?2,'local','standard','none',
+                'completed',1,?3,?4
+             )",
+            rusqlite::params![
+                index.project_id,
+                config.scope.target_url,
+                serde_json::to_string(&config).expect("guided config"),
+                scan.id,
+            ],
+        )
+        .expect("persist shared-header guided session");
+
+    let campaigns = SecurityRemediationCampaignService::new(&database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-shared-header-session".into(),
+            finding_ids: findings.iter().map(|item| item.id.clone()).collect(),
+        })
+        .expect("create shared-header campaign");
+    let analyzed = campaigns
+        .analyze(&campaign.id)
+        .expect("analyze shared-header campaign");
+    let relationships = campaigns
+        .relationships(&campaign.id)
+        .expect("shared-header relationships");
+    assert_eq!(
+        relationships
+            .iter()
+            .filter(|item| item.relationship == "SHARED_ROOT_CAUSE")
+            .count(),
+        4,
+        "five identical header observations should collapse to one probable shared root"
+    );
+    campaigns
+        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("plan hash"))
+        .expect("approve shared-header campaign");
+    campaigns.start(&campaign.id).expect("start shared-header campaign");
+
+    let members = campaigns.findings(&campaign.id).expect("campaign members");
+    let primary_member = members
+        .iter()
+        .find(|item| item.shared_root_primary_finding_id.is_none())
+        .expect("shared-root primary");
+    let primary_finding = findings
+        .iter()
+        .find(|item| item.id == primary_member.finding_id)
+        .expect("primary finding");
+
+    let fixes = SecurityFixService::new(&database);
+    let prepared = fixes
+        .prepare_fix(&primary_finding.id, false)
+        .expect("prepare shared header fix");
+    assert_eq!(
+        prepared.eligibility.result,
+        FixEligibility::GuidedFixCandidate,
+        "configuration remediation must remain guided"
+    );
+    assert!(prepared.root_causes[0]
+        .relative_path
+        .ends_with("src/middleware/security_headers.config.ts"));
+    assert!(
+        fixes.generate_patch(&prepared.attempt.id).is_err(),
+        "configuration remediation must not invent an automatic patch"
+    );
+    let review = fixes
+        .propose_replacement(
+            &prepared.attempt.id,
+            &prepared.root_causes[0].file_id,
+            "export const browserSecurityHeaders = true;\n",
+        )
+        .expect("review exact shared-header config patch");
+    assert_ne!(review.safety.classification, PatchSafetyClass::Rejected);
+    fixes
+        .approve_attempt(
+            &prepared.attempt.id,
+            &review.safety.patch_hash,
+            review.safety.classification == PatchSafetyClass::Caution,
+        )
+        .expect("approve exact shared-header patch");
+    let repair_id = fixes
+        .assert_application_allowed(&prepared.attempt.id)
+        .expect("revalidate shared-header patch identity");
+    let backups = tempdir().expect("shared-header backups");
+    let application = RepairApplicationService::new(&database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply shared-header config patch");
+    fixes
+        .record_application(&prepared.attempt.id, &application.id)
+        .expect("record shared-header application");
+    GuidedSecurityStore::new(&database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync shared-header repair lifecycle");
+    ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("reindex shared-header source");
+    record_runtime_validation(
+        &database,
+        &prepared.attempt.id,
+        "shared security header configuration behavior",
+    );
+
+    for finding in &findings {
+        let retest = run_targeted_retest(
+            &config,
+            &primary,
+            None,
+            &TargetedRetestRequest {
+                endpoint_url: finding.endpoint_url.clone(),
+                method: finding.method.clone(),
+                parameter_name: None,
+                parameter_location: None,
+                category: "security_headers".into(),
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("retest affected shared-header finding");
+        assert!(retest.verification_completed);
+        assert!(
+            !retest
+                .findings
+                .iter()
+                .any(|observed| observed.category == "security_headers"),
+            "each affected endpoint must independently confirm the header family is no longer missing"
+        );
+        GuidedSecurityStore::new(&database)
+            .record_retest(GuidedRetestInput {
+                finding_id: &finding.id,
+                session_id: Some("campaign-shared-header-session"),
+                status: "retest_passed",
+                original_confidence: &finding.confidence,
+                observed_confidence: None,
+                requests_performed: retest.requests_performed,
+                detail_json: r#"{"fixture":"shared-header-independent-retest"}"#,
+            })
+            .expect("persist independent shared-header retest");
+    }
+    let primary_attempt = fixes
+        .sync_retest_result(&primary_finding.id, "retest_passed")
+        .expect("sync primary shared-header retest")
+        .expect("primary attempt");
+    assert_eq!(primary_attempt.status, "fix_verified");
+
+    campaigns
+        .sync(&campaign.id)
+        .expect("sync shared-root campaign outcomes");
+    let members = campaigns.findings(&campaign.id).expect("updated members");
+    assert!(members.iter().all(|item| item.status == "VERIFIED"));
+    let attempt_count: i64 = database
+        .connection()
+        .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| row.get(0))
+        .expect("fix attempt count");
+    assert_eq!(
+        attempt_count, 1,
+        "shared root handling must not blindly generate five independent patches"
+    );
+
+    campaigns
+        .begin_completion_verification(&campaign.id)
+        .expect("begin final shared-header verification");
+    for finding in &findings {
+        let retest = run_targeted_retest(
+            &config,
+            &primary,
+            None,
+            &TargetedRetestRequest {
+                endpoint_url: finding.endpoint_url.clone(),
+                method: finding.method.clone(),
+                parameter_name: None,
+                parameter_location: None,
+                category: "security_headers".into(),
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("final shared-header retest");
+        assert!(retest.verification_completed);
+        assert!(!retest
+            .findings
+            .iter()
+            .any(|observed| observed.category == "security_headers"));
+        GuidedSecurityStore::new(&database)
+            .record_retest(GuidedRetestInput {
+                finding_id: &finding.id,
+                session_id: Some("campaign-shared-header-session"),
+                status: "retest_passed",
+                original_confidence: &finding.confidence,
+                observed_confidence: None,
+                requests_performed: retest.requests_performed,
+                detail_json: r#"{"fixture":"shared-header-final-verification"}"#,
+            })
+            .expect("persist final shared-header retest");
+    }
+    campaigns
+        .finalize_completion_verification(&campaign.id)
+        .expect("finalize shared-header verification");
+    let completed = campaigns.complete(&campaign.id).expect("complete shared-header campaign");
+    assert_eq!(completed.status, "COMPLETED");
+    assert_eq!(
+        campaigns
+            .summary(&campaign.id)
+            .expect("shared-header summary")
+            .verified_fixed,
+        5
+    );
+}
+
+#[test]
 fn remediation_campaign_orchestrates_source_backed_fixes_without_bypassing_fix_verify() {
     let project = tempdir().expect("campaign project");
     write_project(project.path());
