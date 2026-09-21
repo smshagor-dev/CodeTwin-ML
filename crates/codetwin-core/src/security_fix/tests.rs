@@ -1563,7 +1563,7 @@ fn security_fix_apply_boundary_rejects_duplicate_application() {
 }
 
 #[test]
-fn remediation_campaign_rollback_authorization_rejects_tampered_and_terminal_requests() {
+fn remediation_campaign_rollback_preserves_terminal_history_and_rejects_tampering() {
     let fixture = sql_fixture();
     let scan_id: String = fixture
         .database
@@ -1660,18 +1660,75 @@ fn remediation_campaign_rollback_authorization_rejects_tampered_and_terminal_req
 
     campaigns.cancel(&campaign.id).expect("cancel campaign");
     assert!(
-        !campaigns
+        campaigns
             .rollback_requires_campaign_authorization(&prepared.attempt.id)
             .expect("terminal campaign rollback routing"),
-        "terminal campaign history must not permanently block ordinary Fix & Verify rollback"
+        "campaign-linked rollback must remain campaign-authorized even after terminal history is recorded"
     );
-    assert!(campaigns
-        .authorize_rollback(
-            &campaign.id,
-            &fixture.finding_id,
-            &prepared.attempt.id,
-        )
-        .is_err());
+    assert_eq!(
+        campaigns
+            .authorize_rollback(
+                &campaign.id,
+                &fixture.finding_id,
+                &prepared.attempt.id,
+            )
+            .expect("terminal history rollback authorization"),
+        prepared.attempt.id
+    );
+
+    let rolled = RepairApplicationService::new(&fixture.database)
+        .rollback_application(&application.id, backups.path())
+        .expect("rollback source");
+    assert_eq!(rolled.status, "rolled_back");
+    fixes
+        .record_rollback(&prepared.attempt.id, &application.id)
+        .expect("record rollback");
+    GuidedSecurityStore::new(&fixture.database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync rollback lifecycle");
+    campaigns
+        .reconcile_rollback(&prepared.attempt.id)
+        .expect("reconcile campaign rollback");
+
+    let historical = campaigns
+        .get(&campaign.id)
+        .expect("campaign")
+        .expect("campaign exists");
+    assert_eq!(
+        historical.status, "CANCELLED",
+        "rollback must not rewrite historical campaign terminal status"
+    );
+    let member = campaigns
+        .findings(&campaign.id)
+        .expect("campaign findings")
+        .into_iter()
+        .find(|finding| finding.finding_id == fixture.finding_id)
+        .expect("campaign member");
+    assert_eq!(
+        member.status, "QUEUED",
+        "rolled-back campaign item must no longer be considered verified/applied"
+    );
+    let rollback_events = campaigns
+        .events(&campaign.id, 100)
+        .expect("campaign events")
+        .into_iter()
+        .filter(|event| event.event_type == "campaign_fix_rolled_back")
+        .count();
+    assert_eq!(rollback_events, 1);
+
+    campaigns
+        .reconcile_rollback(&prepared.attempt.id)
+        .expect("retry rollback reconciliation");
+    let retry_events = campaigns
+        .events(&campaign.id, 100)
+        .expect("campaign events after retry")
+        .into_iter()
+        .filter(|event| event.event_type == "campaign_fix_rolled_back")
+        .count();
+    assert_eq!(
+        retry_events, 1,
+        "rollback reconciliation retry must not duplicate campaign rollback history"
+    );
 }
 
 #[test]
