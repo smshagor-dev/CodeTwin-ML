@@ -1051,6 +1051,17 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 )?;
             }
 
+            if !finding.depends_on.is_empty() {
+                let dependency_unsatisfied = finding.depends_on.iter().any(|dependency_id| {
+                    self.require_finding(campaign_id, dependency_id)
+                        .map(|dependency| dependency.status != "VERIFIED")
+                        .unwrap_or(true)
+                });
+                if dependency_unsatisfied {
+                    target = "BLOCKED";
+                }
+            }
+
             if target != finding.status {
                 self.set_finding_state(campaign_id, &finding.finding_id, target)?;
             }
