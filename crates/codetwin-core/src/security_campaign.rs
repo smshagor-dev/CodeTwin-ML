@@ -1052,11 +1052,14 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             }
 
             if !finding.depends_on.is_empty() {
-                let dependency_unsatisfied = finding.depends_on.iter().any(|dependency_id| {
-                    self.require_finding(campaign_id, dependency_id)
-                        .map(|dependency| dependency.status != "VERIFIED")
-                        .unwrap_or(true)
-                });
+                let mut dependency_unsatisfied = false;
+                for dependency_id in &finding.depends_on {
+                    let dependency = self.require_finding(campaign_id, dependency_id)?;
+                    if dependency.status != "VERIFIED" {
+                        dependency_unsatisfied = true;
+                        break;
+                    }
+                }
                 if dependency_unsatisfied {
                     target = "BLOCKED";
                 }
