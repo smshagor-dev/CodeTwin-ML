@@ -231,6 +231,18 @@ export const workspaceApi = {
   syncSecurityRemediationCampaign(campaignId: string) {
     return invoke<SecurityRemediationCampaignRecord>("sync_security_remediation_campaign", { campaignId });
   },
+  beginSecurityRemediationCampaignCompletionVerification(campaignId: string) {
+    return invoke<SecurityRemediationCampaignRecord>(
+      "begin_security_remediation_campaign_completion_verification",
+      { campaignId },
+    );
+  },
+  finalizeSecurityRemediationCampaignCompletionVerification(campaignId: string) {
+    return invoke<SecurityRemediationCampaignRecord>(
+      "finalize_security_remediation_campaign_completion_verification",
+      { campaignId },
+    );
+  },
   completeSecurityRemediationCampaign(campaignId: string) {
     return invoke<SecurityRemediationCampaignRecord>("complete_security_remediation_campaign", { campaignId });
   },
