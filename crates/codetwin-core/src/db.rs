@@ -628,6 +628,95 @@ mod tests {
     }
 
     #[test]
+    fn remediation_campaign_schema_enforces_guards_and_has_no_secret_columns() {
+        let db = Database::open_in_memory().expect("database");
+
+        let campaign_sql: String = db
+            .connection()
+            .query_row(
+                "SELECT sql FROM sqlite_master
+                 WHERE type='table' AND name='security_remediation_campaigns'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("campaign schema");
+        assert!(campaign_sql.contains("completion_retest_floor_rowid"));
+        assert!(campaign_sql.contains("completion_verification_started_at"));
+        assert!(campaign_sql.contains("completion_verification_completed_at"));
+        assert!(campaign_sql.contains("completion_source_hashes_json"));
+        assert!(campaign_sql.contains("'COMPLETED_WITH_UNRESOLVED_FINDINGS'"));
+
+        let indexes: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN (
+                    'idx_security_remediation_campaigns_project_created',
+                    'idx_security_remediation_campaigns_scan_status',
+                    'idx_security_remediation_campaign_findings_state',
+                    'idx_security_remediation_campaign_findings_attempt',
+                    'idx_security_remediation_relationships_campaign',
+                    'idx_security_remediation_campaign_events_campaign'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("campaign indexes");
+        assert_eq!(indexes, 6);
+
+        let triggers: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+                    'security_remediation_campaign_finding_scope_guard',
+                    'security_remediation_campaign_approved_plan_immutable',
+                    'security_remediation_campaign_finding_plan_immutable',
+                    'security_remediation_campaign_status_transition_guard',
+                    'security_remediation_campaign_finding_transition_guard',
+                    'security_remediation_campaign_verified_requires_evidence',
+                    'security_remediation_campaign_completion_verification_guard',
+                    'security_remediation_campaign_events_immutable',
+                    'security_remediation_campaign_events_delete_guard'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("campaign triggers");
+        assert_eq!(triggers, 9);
+
+        for table in [
+            "security_remediation_campaigns",
+            "security_remediation_campaign_findings",
+            "security_remediation_campaign_relationships",
+            "security_remediation_campaign_events",
+        ] {
+            let mut statement = db
+                .connection()
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .expect("campaign columns");
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("campaign column rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("campaign columns");
+            assert!(columns.iter().all(|column| {
+                !matches!(
+                    column.as_str(),
+                    "cookie"
+                        | "cookie_header"
+                        | "authorization"
+                        | "bearer_token"
+                        | "api_key"
+                        | "password"
+                        | "secret"
+                        | "token"
+                        | "access_token"
+                        | "refresh_token"
+                )
+            }));
+        }
+    }
+
+    #[test]
     fn guided_security_schema_enforces_constraints_indexes_and_foreign_keys() {
         let db = Database::open_in_memory().expect("database");
 
