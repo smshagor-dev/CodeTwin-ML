@@ -270,6 +270,7 @@ WHEN NEW.status = 'VERIFIED' AND OLD.status <> 'VERIFIED' AND NOT (
     FROM guided_security_retests gr
     JOIN security_remediation_campaigns c ON c.id = NEW.campaign_id
     WHERE gr.finding_id = NEW.finding_id
+      AND gr.session_id = c.session_id
       AND gr.status = 'retest_passed'
       AND gr.rowid > NEW.retest_floor_rowid
   )
@@ -290,6 +291,7 @@ WHEN NEW.status IN ('COMPLETED','COMPLETED_WITH_UNRESOLVED_FINDINGS') AND (
         SELECT 1
         FROM guided_security_retests gr
         WHERE gr.finding_id = cf.finding_id
+          AND gr.session_id = NEW.session_id
           AND gr.rowid > NEW.completion_retest_floor_rowid
       )
   )
