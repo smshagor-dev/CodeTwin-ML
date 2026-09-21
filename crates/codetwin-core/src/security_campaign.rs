@@ -1072,6 +1072,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             )?;
         }
 
+        self.invalidate_completion_verification_if_stale(campaign_id)?;
         self.require_campaign(campaign_id)
     }
 
@@ -1836,6 +1837,54 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 },
             )
             .collect()
+    }
+
+    fn invalidate_completion_verification_if_stale(
+        &self,
+        campaign_id: &str,
+    ) -> Result<(), SecurityRemediationCampaignError> {
+        let campaign = self.require_campaign(campaign_id)?;
+        if campaign.completion_verification_completed_at.is_none()
+            || matches!(
+                campaign.status.as_str(),
+                "COMPLETED" | "COMPLETED_WITH_UNRESOLVED_FINDINGS" | "CANCELLED"
+            )
+        {
+            return Ok(());
+        }
+
+        let persisted =
+            serde_json::from_str::<BTreeMap<String, String>>(&campaign.completion_source_hashes_json);
+        let stale = match persisted {
+            Ok(persisted) => match self.completion_source_snapshot(campaign_id) {
+                Ok(current) => current != persisted,
+                Err(_) => true,
+            },
+            Err(_) => true,
+        };
+        if !stale {
+            return Ok(());
+        }
+
+        let updated = self.database.connection().execute(
+            "UPDATE security_remediation_campaigns
+             SET completion_verification_completed_at=NULL,
+                 completion_source_hashes_json='{}',
+                 updated_at=CURRENT_TIMESTAMP
+             WHERE id=?1
+               AND completion_verification_completed_at IS NOT NULL
+               AND status IN ('IN_PROGRESS','BLOCKED','PAUSED')",
+            [campaign_id],
+        )?;
+        if updated == 1 {
+            self.append_event(
+                campaign_id,
+                "completion_verification_invalidated",
+                "Final campaign verification was invalidated because referenced project source changed or failed live integrity revalidation.",
+                &json!({"reason": "SOURCE_IDENTITY_CHANGED"}),
+            )?;
+        }
+        Ok(())
     }
 
     fn completion_retest_missing(
