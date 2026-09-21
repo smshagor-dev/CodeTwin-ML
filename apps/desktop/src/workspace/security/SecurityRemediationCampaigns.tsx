@@ -311,7 +311,11 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
     setBusy("Rolling back selected Fix & Verify application");
     setError(null);
     try {
-      await workspaceApi.rollbackSecurityFix(assessment.attempt_id);
+      await workspaceApi.rollbackSecurityRemediationCampaignFix(
+        campaign.id,
+        finding.finding_id,
+        assessment.attempt_id,
+      );
       await refreshCampaign(campaign.id, true);
     } catch (value) {
       setError(String(value));
