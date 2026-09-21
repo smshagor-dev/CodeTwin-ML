@@ -18,6 +18,10 @@ CREATE TABLE security_remediation_campaigns (
   approved_plan_hash TEXT,
   baseline_json TEXT NOT NULL,
   completion_json TEXT NOT NULL DEFAULT '{}',
+  completion_retest_floor_rowid INTEGER NOT NULL DEFAULT 0 CHECK(completion_retest_floor_rowid >= 0),
+  completion_verification_started_at TEXT,
+  completion_verification_completed_at TEXT,
+  completion_source_hashes_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   analyzed_at TEXT,
   approved_at TEXT,
@@ -272,6 +276,26 @@ WHEN NEW.status = 'VERIFIED' AND OLD.status <> 'VERIFIED' AND NOT (
 )
 BEGIN
   SELECT RAISE(ABORT, 'campaign VERIFIED requires persisted Fix & Verify or targeted retest evidence');
+END;
+
+CREATE TRIGGER security_remediation_campaign_completion_verification_guard
+BEFORE UPDATE OF status ON security_remediation_campaigns
+WHEN NEW.status IN ('COMPLETED','COMPLETED_WITH_UNRESOLVED_FINDINGS') AND (
+  NEW.completion_verification_completed_at IS NULL OR
+  EXISTS (
+    SELECT 1
+    FROM security_remediation_campaign_findings cf
+    WHERE cf.campaign_id = NEW.id
+      AND NOT EXISTS (
+        SELECT 1
+        FROM guided_security_retests gr
+        WHERE gr.finding_id = cf.finding_id
+          AND gr.rowid > NEW.completion_retest_floor_rowid
+      )
+  )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'campaign completion requires fresh targeted retest evidence for every selected finding');
 END;
 
 CREATE TRIGGER security_remediation_campaign_events_immutable
