@@ -2813,8 +2813,82 @@ mod tests {
         assert_eq!(summary.still_vulnerable, 1);
         assert_eq!(summary.unable_to_verify, 1);
         assert_eq!(summary.queued_or_in_progress, 0);
+        assert!(service.complete(&campaign.id).is_err());
+
+        service
+            .begin_completion_verification(&campaign.id)
+            .expect("begin final verification");
+        guided
+            .record_retest(crate::GuidedRetestInput {
+                finding_id: &finding_a,
+                session_id: Some(&session_id),
+                status: "still_vulnerable",
+                original_confidence: "Likely",
+                observed_confidence: Some("Likely"),
+                requests_performed: 2,
+                detail_json: r#"{"fixture":"campaign-final-still-vulnerable"}"#,
+            })
+            .expect("final still vulnerable retest");
+        guided
+            .record_retest(crate::GuidedRetestInput {
+                finding_id: &finding_b,
+                session_id: Some(&session_id),
+                status: "unable_to_verify",
+                original_confidence: "Likely",
+                observed_confidence: None,
+                requests_performed: 2,
+                detail_json: r#"{"fixture":"campaign-final-unable"}"#,
+            })
+            .expect("final unable retest");
+        service
+            .finalize_completion_verification(&campaign.id)
+            .expect("finalize final verification");
         let completed = service.complete(&campaign.id).expect("factual completion");
         assert_eq!(completed.status, "COMPLETED_WITH_UNRESOLVED_FINDINGS");
+    }
+
+    #[test]
+    fn campaign_completion_requires_fresh_retest_for_every_selected_finding() {
+        let (database, session_id, _, finding_a, finding_b) = fixture();
+        let service = SecurityRemediationCampaignService::new(&database);
+        let campaign = service
+            .create(&SecurityRemediationCampaignCreate {
+                session_id: session_id.clone(),
+                finding_ids: vec![finding_a.clone(), finding_b.clone()],
+            })
+            .expect("create");
+        let analyzed = service.analyze(&campaign.id).expect("analyze");
+        service
+            .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
+            .expect("approve");
+        service.start(&campaign.id).expect("start");
+        service
+            .skip_finding(&campaign.id, &finding_a, "deferred A")
+            .expect("skip A");
+        service
+            .skip_finding(&campaign.id, &finding_b, "deferred B")
+            .expect("skip B");
+
+        service
+            .begin_completion_verification(&campaign.id)
+            .expect("begin completion verification");
+        crate::GuidedSecurityStore::new(&database)
+            .record_retest(crate::GuidedRetestInput {
+                finding_id: &finding_a,
+                session_id: Some(&session_id),
+                status: "still_vulnerable",
+                original_confidence: "Likely",
+                observed_confidence: Some("Likely"),
+                requests_performed: 2,
+                detail_json: r#"{"fixture":"only-one-final-retest"}"#,
+            })
+            .expect("one final retest");
+
+        let error = service
+            .finalize_completion_verification(&campaign.id)
+            .expect_err("missing selected finding retest must block completion verification");
+        assert!(error.to_string().contains(&finding_b));
+        assert!(service.complete(&campaign.id).is_err());
     }
 
     #[test]
@@ -2836,6 +2910,24 @@ mod tests {
         service
             .skip_finding(&campaign.id, "campaign-finding-a", "Deferred for manual review.")
             .expect("skip");
+        assert!(service.complete(&campaign.id).is_err());
+        service
+            .begin_completion_verification(&campaign.id)
+            .expect("begin final verification");
+        crate::GuidedSecurityStore::new(&database)
+            .record_retest(crate::GuidedRetestInput {
+                finding_id: "campaign-finding-a",
+                session_id: Some("campaign-session"),
+                status: "still_vulnerable",
+                original_confidence: "Likely",
+                observed_confidence: Some("Likely"),
+                requests_performed: 2,
+                detail_json: r#"{"fixture":"campaign-skipped-final-verification"}"#,
+            })
+            .expect("fresh skipped finding retest");
+        service
+            .finalize_completion_verification(&campaign.id)
+            .expect("finalize final verification");
         let completed = service.complete(&campaign.id).expect("complete");
         assert_eq!(completed.status, "COMPLETED_WITH_UNRESOLVED_FINDINGS");
         let summary = service.summary(&campaign.id).expect("summary");
