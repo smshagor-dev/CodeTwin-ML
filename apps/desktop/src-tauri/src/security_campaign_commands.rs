@@ -294,28 +294,12 @@ pub(crate) async fn rollback_security_remediation_campaign_fix(
         let database = codetwin_core::Database::open(&database_path)
             .map_err(|error| error.to_string())?;
         let campaigns = SecurityRemediationCampaignService::new(&database);
-        let assessment = campaigns
-            .rollback_assessment(&campaign_id, &finding_id)
+        let authorized_attempt_id = campaigns
+            .authorize_rollback(&campaign_id, &finding_id, &expected_attempt_id)
             .map_err(|error| error.to_string())?;
-        if !assessment.allowed {
-            return Err(format!(
-                "campaign rollback is blocked by dependency safety: {}",
-                assessment.reason
-            ));
-        }
-        let bound_attempt_id = assessment
-            .attempt_id
-            .as_deref()
-            .ok_or_else(|| "campaign finding has no rollback-eligible fix attempt".to_string())?;
-        if bound_attempt_id != expected_attempt_id {
-            return Err(
-                "campaign rollback attempt identity changed; refresh dependency assessment before retrying"
-                    .to_string(),
-            );
-        }
 
         let result =
-            execute_security_fix_rollback(&database, &expected_attempt_id, &backup_root)?;
+            execute_security_fix_rollback(&database, &authorized_attempt_id, &backup_root)?;
         campaigns
             .sync(&campaign_id)
             .map_err(|error| error.to_string())?;
