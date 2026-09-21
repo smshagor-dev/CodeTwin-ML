@@ -1669,6 +1669,40 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         }
     }
 
+    pub fn authorize_rollback(
+        &self,
+        campaign_id: &str,
+        finding_id: &str,
+        expected_attempt_id: &str,
+    ) -> Result<String, SecurityRemediationCampaignError> {
+        let campaign = self.require_campaign(campaign_id)?;
+        if !matches!(campaign.status.as_str(), "IN_PROGRESS" | "PAUSED" | "BLOCKED") {
+            return Err(SecurityRemediationCampaignError::State(format!(
+                "campaign rollback requires IN_PROGRESS, PAUSED, or BLOCKED; observed {}",
+                campaign.status
+            )));
+        }
+        let assessment = self.rollback_assessment(campaign_id, finding_id)?;
+        if !assessment.allowed {
+            return Err(SecurityRemediationCampaignError::State(format!(
+                "campaign rollback is blocked by dependency safety: {}",
+                assessment.reason
+            )));
+        }
+        let bound_attempt_id = assessment.attempt_id.as_deref().ok_or_else(|| {
+            SecurityRemediationCampaignError::State(
+                "campaign finding has no rollback-eligible fix attempt".into(),
+            )
+        })?;
+        if bound_attempt_id != expected_attempt_id {
+            return Err(SecurityRemediationCampaignError::State(
+                "campaign rollback attempt identity changed; refresh dependency assessment before retrying"
+                    .into(),
+            ));
+        }
+        Ok(bound_attempt_id.to_string())
+    }
+
     pub fn security_debt(
         &self,
         campaign_id: &str,
