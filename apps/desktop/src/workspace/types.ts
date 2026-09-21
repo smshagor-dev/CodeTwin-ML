@@ -719,6 +719,7 @@ export type SecurityRemediationBeforeAfterItem = {
   endpoint_url: string;
   severity: string;
   confidence: string;
+  eligibility: FixEligibility | null;
   baseline_status: string;
   campaign_status: string;
   comparison_status:
@@ -732,6 +733,9 @@ export type SecurityRemediationBeforeAfterItem = {
     | "BLOCKED"
     | "IN_PROGRESS";
   selected: boolean;
+  baseline_source_relative_path: string | null;
+  current_source_relative_path: string | null;
+  patch_attempt_count: number;
   attempt_id: string | null;
   validation_state: string | null;
   retest_state: string | null;
