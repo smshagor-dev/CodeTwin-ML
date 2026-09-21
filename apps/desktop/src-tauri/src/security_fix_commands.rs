@@ -52,6 +52,9 @@ pub(crate) fn prepare_security_fix(
     state: tauri::State<'_, AppState>,
 ) -> Result<SecurityFixPreparation, String> {
     with_database(&state, |database| {
+        SecurityRemediationCampaignService::new(database)
+            .authorize_fix_mutation(&finding_id)
+            .map_err(|error| error.to_string())?;
         SecurityFixService::new(database)
             .prepare_fix(&finding_id, allow_additional_attempt)
             .map_err(|error| error.to_string())
@@ -191,6 +194,13 @@ pub(crate) async fn apply_security_fix(
     let task = tauri::async_runtime::spawn_blocking(move || {
         let database = Database::open(&database_path).map_err(|error| error.to_string())?;
         let service = SecurityFixService::new(&database);
+        let current = service
+            .get_attempt(&attempt_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "security fix attempt not found".to_string())?;
+        SecurityRemediationCampaignService::new(&database)
+            .authorize_fix_mutation(&current.finding_id)
+            .map_err(|error| error.to_string())?;
         let repair_id = service
             .assert_application_allowed(&attempt_id)
             .map_err(|error| error.to_string())?;
