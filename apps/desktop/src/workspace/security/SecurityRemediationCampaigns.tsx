@@ -763,10 +763,19 @@ export function SecurityRemediationCampaigns({ session, findings, onRetest }: Pr
                 <span>{item.title}</span>
                 <small>
                   {item.severity} · {item.confidence} · {item.selected ? "selected" : "new observation"}
+                  {item.eligibility ? ` · ${item.eligibility.replaceAll("_", " ")}` : ""}
                 </small>
                 <em>
                   {item.baseline_status.replaceAll("_", " ")} → {item.comparison_status.replaceAll("_", " ")}
                 </em>
+                {expertView && (
+                  <small>
+                    Source: {item.baseline_source_relative_path ?? "unmapped"} → {item.current_source_relative_path ?? "unmapped"}
+                    {" · "}Fix & Verify attempts: {item.patch_attempt_count}
+                    {" · "}Validation: {(item.validation_state ?? "not executed").replaceAll("_", " ")}
+                    {" · "}Retest: {(item.retest_state ?? "not executed").replaceAll("_", " ")}
+                  </small>
+                )}
                 <StatusBadge status={item.comparison_status}/>
               </div>
             ))}
