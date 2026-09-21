@@ -156,10 +156,14 @@ pub struct SecurityRemediationCampaignSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SecurityRemediationBeforeAfterItem {
     pub finding_id: String,
+    pub title: String,
+    pub endpoint_url: String,
     pub severity: String,
     pub confidence: String,
     pub baseline_status: String,
     pub campaign_status: String,
+    pub comparison_status: String,
+    pub selected: bool,
     pub attempt_id: Option<String>,
     pub validation_state: Option<String>,
     pub retest_state: Option<String>,
@@ -1414,33 +1418,97 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             })
             .collect::<HashMap<_, _>>();
         let fix = SecurityFixService::new(self.database);
-        self.findings(campaign_id)?
-            .into_iter()
-            .map(|finding| {
-                let attempt = if let Some(attempt_id) = finding.active_attempt_id.as_deref() {
-                    fix.get_attempt(attempt_id)?
-                } else {
-                    None
-                };
-                let baseline = baseline_map.get(&finding.finding_id);
-                Ok(SecurityRemediationBeforeAfterItem {
-                    finding_id: finding.finding_id,
-                    severity: finding.severity,
-                    confidence: finding.confidence,
-                    baseline_status: baseline
-                        .and_then(|value| value.get("status"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("open")
-                        .to_string(),
-                    campaign_status: finding.status,
-                    attempt_id: attempt.as_ref().map(|attempt| attempt.id.clone()),
-                    validation_state: attempt
-                        .as_ref()
-                        .map(|attempt| attempt.validation_state.clone()),
-                    retest_state: attempt.as_ref().map(|attempt| attempt.retest_state.clone()),
-                })
-            })
-            .collect()
+
+        let mut output = Vec::new();
+        for finding in self.findings(campaign_id)? {
+            let attempt = if let Some(attempt_id) = finding.active_attempt_id.as_deref() {
+                fix.get_attempt(attempt_id)?
+            } else {
+                None
+            };
+            let baseline = baseline_map.get(&finding.finding_id);
+            let title: String = self.database.connection().query_row(
+                "SELECT title FROM web_security_findings WHERE id=?1",
+                [&finding.finding_id],
+                |row| row.get(0),
+            )?;
+            output.push(SecurityRemediationBeforeAfterItem {
+                finding_id: finding.finding_id,
+                title,
+                endpoint_url: finding.endpoint_url,
+                severity: finding.severity,
+                confidence: finding.confidence,
+                baseline_status: baseline
+                    .and_then(|value| value.get("status"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("open")
+                    .to_string(),
+                comparison_status: comparison_status_for_campaign_state(&finding.status).into(),
+                campaign_status: finding.status,
+                selected: true,
+                attempt_id: attempt.as_ref().map(|attempt| attempt.id.clone()),
+                validation_state: attempt
+                    .as_ref()
+                    .map(|attempt| attempt.validation_state.clone()),
+                retest_state: attempt.as_ref().map(|attempt| attempt.retest_state.clone()),
+            });
+        }
+
+        if let Some(verification_started_at) =
+            campaign.completion_verification_started_at.as_deref()
+        {
+            let verification_end = campaign
+                .completion_verification_completed_at
+                .as_deref()
+                .unwrap_or("9999-12-31 23:59:59");
+            let mut statement = self.database.connection().prepare(
+                "SELECT wf.id,wf.title,wf.endpoint_url,wf.severity,wf.confidence,wf.status
+                 FROM web_security_findings wf
+                 JOIN web_security_scans ws ON ws.id=wf.scan_id
+                 WHERE ws.project_id=?1
+                   AND ws.target_url=?2
+                   AND ws.scope_json=?3
+                   AND ws.authorization_confirmed=1
+                   AND ws.created_at>=?4
+                   AND ws.created_at<=?5
+                   AND wf.fingerprint NOT IN (
+                     SELECT baseline.fingerprint
+                     FROM web_security_findings baseline
+                     WHERE baseline.scan_id=?6
+                   )
+                 ORDER BY wf.first_detected,wf.id
+                 LIMIT ?7",
+            )?;
+            let rows = statement.query_map(
+                params![
+                    campaign.project_id,
+                    campaign.target_url,
+                    campaign.scope_json,
+                    verification_started_at,
+                    verification_end,
+                    campaign.scan_id,
+                    to_i64(MAX_CAMPAIGN_FINDINGS),
+                ],
+                |row| {
+                    Ok(SecurityRemediationBeforeAfterItem {
+                        finding_id: row.get(0)?,
+                        title: row.get(1)?,
+                        endpoint_url: row.get(2)?,
+                        severity: row.get(3)?,
+                        confidence: row.get(4)?,
+                        baseline_status: "not_observed".into(),
+                        campaign_status: row.get(5)?,
+                        comparison_status: "NEWLY_OBSERVED_DURING_VERIFICATION".into(),
+                        selected: false,
+                        attempt_id: None,
+                        validation_state: None,
+                        retest_state: None,
+                    })
+                },
+            )?;
+            output.extend(rows.collect::<Result<Vec<_>, _>>()?);
+        }
+        Ok(output)
     }
 
     pub fn regression_tracking(
@@ -2221,6 +2289,19 @@ fn order_reason(node: &AnalysisNode, depends_on: &[String], expected: &[String])
             "Shared middleware/configuration/validation controls are ordered before narrower endpoint changes when no stronger dependency is known.".into()
         }
         _ => "No stronger dependency was established. The finding is ordered deterministically by eligibility, vulnerability family, severity and source identity.".into(),
+    }
+}
+
+fn comparison_status_for_campaign_state(status: &str) -> &'static str {
+    match status {
+        "VERIFIED" => "VERIFIED_RESOLVED",
+        "STILL_VULNERABLE" => "STILL_VULNERABLE",
+        "UNABLE_TO_VERIFY" => "UNABLE_TO_VERIFY",
+        "MANUAL_ACTION_REQUIRED" => "MANUAL_ACTION_REQUIRED",
+        "REGRESSION_DETECTED" => "REGRESSION_DETECTED",
+        "SKIPPED" => "SKIPPED",
+        "BLOCKED" => "BLOCKED",
+        _ => "IN_PROGRESS",
     }
 }
 
