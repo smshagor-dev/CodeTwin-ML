@@ -8,7 +8,8 @@ use thiserror::Error;
 
 use crate::{
     security_fix::{contains_sensitive_text, reject_sensitive_json},
-    Database, FixEligibility, SecurityFixAttemptRecord, SecurityFixError, SecurityFixService,
+    Database, FixEligibility, RepairWorkspaceQueryService, SecurityFixAttemptRecord,
+    SecurityFixError, SecurityFixService,
 };
 
 const MAX_CAMPAIGN_FINDINGS: usize = 500;
@@ -1854,7 +1855,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                  JOIN files f ON f.id=cf.source_file_id
                  WHERE cf.campaign_id=?1
              )
-             SELECT rp.relative_path, COALESCE(active.content_hash,'<missing>')
+             SELECT rp.relative_path, active.id
              FROM referenced_paths rp
              JOIN security_remediation_campaigns c ON c.id=?1
              LEFT JOIN files active
@@ -1864,12 +1865,28 @@ impl<'a> SecurityRemediationCampaignService<'a> {
              ORDER BY rp.relative_path",
         )?;
         let rows = statement.query_map([campaign_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
         })?;
+        let referenced = rows.collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let workspace = RepairWorkspaceQueryService::new(self.database);
         let mut output = BTreeMap::new();
-        for row in rows {
-            let (path, hash) = row?;
-            output.insert(path, hash);
+        for (relative_path, file_id) in referenced {
+            let file_id = file_id.ok_or_else(|| {
+                SecurityRemediationCampaignError::State(format!(
+                    "final verification source {relative_path} is no longer an active indexed file"
+                ))
+            })?;
+            let snapshot = workspace.read_source_snapshot(&file_id).map_err(|error| {
+                SecurityRemediationCampaignError::State(format!(
+                    "final verification source {relative_path} failed live integrity revalidation: {error}"
+                ))
+            })?;
+            output.insert(relative_path, snapshot.content_hash);
         }
         Ok(output)
     }
