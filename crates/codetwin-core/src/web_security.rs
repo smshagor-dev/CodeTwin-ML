@@ -99,6 +99,27 @@ pub struct WebSourceCorrelation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceRouteRecord {
+    pub id: String,
+    pub project_id: String,
+    pub file_id: String,
+    pub relative_path: String,
+    pub symbol_id: Option<String>,
+    pub symbol_name: Option<String>,
+    pub framework: String,
+    pub router_name: String,
+    pub http_method: String,
+    pub path_template: String,
+    pub handler_name: Option<String>,
+    pub parameter_names: Vec<String>,
+    pub parameter_locations: BTreeMap<String, String>,
+    pub request_content_type: Option<String>,
+    pub source_content_hash: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WebFindingInput {
     pub fingerprint: String,
     pub category: String,
@@ -591,10 +612,69 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         )? > 0)
     }
 
+    pub fn list_source_routes(
+        &self,
+        project_id: &str,
+        limit: usize,
+    ) -> Result<Vec<SourceRouteRecord>, WebSecurityStoreError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT sr.id, sr.project_id, sr.file_id, f.relative_path,
+                    sr.symbol_id, s.name, sr.framework, sr.router_name,
+                    sr.http_method, sr.path_template, sr.handler_name,
+                    sr.parameter_names_json, sr.parameter_locations_json,
+                    sr.request_content_type, sr.source_content_hash,
+                    sr.start_line, sr.end_line
+             FROM source_routes sr
+             JOIN files f ON f.id = sr.file_id
+             LEFT JOIN symbols s ON s.id = sr.symbol_id AND s.is_active = 1
+             WHERE sr.project_id = ?1 AND sr.is_active = 1 AND f.is_active = 1
+             ORDER BY sr.path_template, sr.http_method, sr.start_line
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![project_id, bounded(limit) as i64], |row| {
+            let parameter_names_json: String = row.get(11)?;
+            let parameter_locations_json: String = row.get(12)?;
+            Ok(SourceRouteRecord {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                file_id: row.get(2)?,
+                relative_path: row.get(3)?,
+                symbol_id: row.get(4)?,
+                symbol_name: row.get(5)?,
+                framework: row.get(6)?,
+                router_name: row.get(7)?,
+                http_method: row.get(8)?,
+                path_template: row.get(9)?,
+                handler_name: row.get(10)?,
+                parameter_names: serde_json::from_str(&parameter_names_json).unwrap_or_default(),
+                parameter_locations: serde_json::from_str(&parameter_locations_json).unwrap_or_default(),
+                request_content_type: row.get(13)?,
+                source_content_hash: row.get(14)?,
+                start_line: row.get::<_, i64>(15)?.max(0) as usize,
+                end_line: row.get::<_, i64>(16)?.max(0) as usize,
+            })
+        })?;
+        let mut values = Vec::new();
+        for row in rows {
+            values.push(row?);
+        }
+        Ok(values)
+    }
+
     pub fn correlate_source(
         &self,
         project_id: Option<&str>,
         endpoint_url: &str,
+        parameter_name: Option<&str>,
+    ) -> Result<Option<WebSourceCorrelation>, WebSecurityStoreError> {
+        self.correlate_source_for_request(project_id, endpoint_url, None, parameter_name)
+    }
+
+    pub fn correlate_source_for_request(
+        &self,
+        project_id: Option<&str>,
+        endpoint_url: &str,
+        method: Option<&str>,
         parameter_name: Option<&str>,
     ) -> Result<Option<WebSourceCorrelation>, WebSecurityStoreError> {
         let Some(project_id) = project_id else {
@@ -602,6 +682,55 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         };
         let url = Url::parse(endpoint_url)
             .map_err(|error| WebSecurityStoreError::InvalidConfig(error.to_string()))?;
+        let request_method = method.unwrap_or("").trim().to_ascii_uppercase();
+        let parameter = parameter_name.unwrap_or("").trim();
+
+        let routes = self.list_source_routes(project_id, 1_000)?;
+        let mut best: Option<(f64, SourceRouteRecord)> = None;
+        for route in routes {
+            if !request_method.is_empty() && route.http_method != request_method {
+                continue;
+            }
+            let Some(exact_path) = route_template_match(&route.path_template, url.path()) else {
+                continue;
+            };
+            let mut confidence: f64 = if exact_path { 0.96 } else { 0.90 };
+            if !request_method.is_empty() {
+                confidence += 0.02;
+            }
+            if !parameter.is_empty()
+                && route
+                    .parameter_names
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(parameter))
+            {
+                confidence += 0.01;
+            }
+            confidence = confidence.min(0.99);
+            if best.as_ref().map_or(true, |(score, _)| confidence > *score) {
+                best = Some((confidence, route));
+            }
+        }
+
+        if let Some((confidence, route)) = best {
+            return Ok(Some(WebSourceCorrelation {
+                file_id: route.file_id,
+                relative_path: route.relative_path,
+                symbol_id: route.symbol_id,
+                symbol_name: route.symbol_name.or(route.handler_name),
+                confidence,
+            }));
+        }
+
+        self.correlate_source_heuristic(project_id, &url, parameter)
+    }
+
+    fn correlate_source_heuristic(
+        &self,
+        project_id: &str,
+        url: &Url,
+        parameter: &str,
+    ) -> Result<Option<WebSourceCorrelation>, WebSecurityStoreError> {
         let segment = url
             .path_segments()
             .into_iter()
@@ -614,7 +743,6 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             })
             .unwrap_or("")
             .to_string();
-        let parameter = parameter_name.unwrap_or("").trim().to_string();
         if segment.is_empty() && parameter.is_empty() {
             return Ok(None);
         }
@@ -1009,6 +1137,41 @@ fn stable_id(prefix: &str, parts: &[&str]) -> String {
         hasher.update([0]);
     }
     format!("{prefix}_{:x}", hasher.finalize())
+}
+
+fn route_template_match(template: &str, observed: &str) -> Option<bool> {
+    let normalize = |value: &str| {
+        let trimmed = value.trim();
+        if trimmed.len() > 1 {
+            trimmed.trim_end_matches('/').to_string()
+        } else if trimmed.is_empty() {
+            "/".to_string()
+        } else {
+            trimmed.to_string()
+        }
+    };
+    let template = normalize(template);
+    let observed = normalize(observed);
+    if template == observed {
+        return Some(true);
+    }
+
+    let left: Vec<&str> = template.trim_matches('/').split('/').collect();
+    let right: Vec<&str> = observed.trim_matches('/').split('/').collect();
+    if left.len() != right.len() {
+        return None;
+    }
+    for (expected, actual) in left.iter().zip(right.iter()) {
+        let dynamic = (expected.starts_with(':') && expected.len() > 1)
+            || (expected.starts_with('{') && expected.ends_with('}') && expected.len() > 2);
+        if !dynamic && expected != actual {
+            return None;
+        }
+        if dynamic && actual.is_empty() {
+            return None;
+        }
+    }
+    Some(false)
 }
 
 fn bounded(value: usize) -> usize {
