@@ -76,11 +76,17 @@ pub fn crawl_with_seeds(
             continue;
         }
 
+        let concrete_url = seed
+            .discovery_url
+            .as_deref()
+            .and_then(|raw| policy.normalize_and_assert(raw).ok())
+            .unwrap_or_else(|| template_url.clone());
         add_endpoint(
             &mut endpoints,
             &mut endpoint_keys,
             EndpointObservation {
-                url: template_url.to_string(),
+                url: concrete_url.to_string(),
+                route_template: Some(template_url.to_string()),
                 method,
                 depth: 0,
                 source: seed.source_label.clone(),
@@ -131,9 +137,8 @@ pub fn crawl_with_seeds(
         }
         let (response_header_names, cookie_names) = response_inventory(&response);
         let endpoint = EndpointObservation {
-            url: source_seed
-                .map(|seed| seed.url.clone())
-                .unwrap_or_else(|| url.to_string()),
+            url: url.to_string(),
+            route_template: source_seed.map(|seed| seed.url.clone()),
             method: "GET".to_string(),
             depth,
             source: source_seed
@@ -188,6 +193,7 @@ pub fn crawl_with_seeds(
                             .collect();
                         let form_endpoint = EndpointObservation {
                             url: form.action.to_string(),
+                            route_template: None,
                             method: form.method.clone(),
                             depth: depth + 1,
                             source: "form".to_string(),
@@ -222,6 +228,7 @@ pub fn crawl_with_seeds(
                                         .collect();
                                     EndpointObservation {
                                         url: next.to_string(),
+                                        route_template: None,
                                         method: "GET".to_string(),
                                         depth: depth + 1,
                                         source: "javascript_reference".to_string(),
@@ -468,6 +475,7 @@ fn discover_openapi(
                 keys,
                 EndpointObservation {
                     url: url.to_string(),
+                    route_template: None,
                     method: method_upper,
                     depth: depth + 1,
                     source: "openapi".to_string(),
