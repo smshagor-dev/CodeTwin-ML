@@ -476,10 +476,11 @@ fn javascript_object_pattern_fields(value: &str) -> Vec<String> {
         let property = item
             .split_once(':')
             .map(|(property, _)| property)
-            .unwrap_or(item)
+            .unwrap_or(item);
+        let property = property
             .split_once('=')
             .map(|(property, _)| property)
-            .unwrap_or(item)
+            .unwrap_or(property)
             .trim();
         let name = strip_quotes(property).unwrap_or_else(|| property.to_string());
         if is_identifier(&name) && name.len() <= 256 {
