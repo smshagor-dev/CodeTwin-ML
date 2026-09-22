@@ -4,6 +4,7 @@ import hashlib
 import os
 import pathlib
 import subprocess
+import tempfile
 from typing import Any
 
 from codetwin_ml.inference import InferenceInputError, InferenceRuntimeError
@@ -136,23 +137,6 @@ def run_generation(
     temperature = float(generation["temperature"])
     top_p = float(generation["top_p"])
 
-    command = [
-        str(cli),
-        "-m",
-        str(model_path),
-        "-p",
-        prompt,
-        "-n",
-        str(max_new_tokens),
-        "-c",
-        str(context_tokens),
-        "--temp",
-        str(temperature),
-        "--top-p",
-        str(top_p),
-        "--no-display-prompt",
-        "--simple-io",
-    ]
     environment = {
         key: value
         for key in _ENV_ALLOWLIST
@@ -164,25 +148,52 @@ def run_generation(
         "MKL_NUM_THREADS": "1",
         "NO_COLOR": "1",
     })
-    kwargs: dict[str, Any] = {
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.DEVNULL,
-        "cwd": str(model_dir),
-        "env": environment,
-        "timeout": GENERATION_TIMEOUT_SECONDS,
-        "check": False,
-    }
-    if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-    try:
-        completed = subprocess.run(command, **kwargs)
-    except subprocess.TimeoutExpired as error:
-        raise InferenceRuntimeError(
-            f"local generation exceeded the {GENERATION_TIMEOUT_SECONDS} second timeout"
-        ) from error
-    except OSError as error:
-        raise InferenceRuntimeError(f"cannot start trusted llama.cpp CLI: {error}") from error
+    # Keep source-bearing prompts out of the process command line. Besides avoiding
+    # Windows' command-line length ceiling, this prevents prompt text from being
+    # exposed through ordinary process-list inspection.
+    with tempfile.TemporaryDirectory(prefix="codetwin-generation-") as temporary:
+        prompt_path = pathlib.Path(temporary) / "prompt.txt"
+        prompt_path.write_bytes(prompt_bytes)
+        if os.name == "posix":
+            prompt_path.chmod(0o600)
+
+        command = [
+            str(cli),
+            "-m",
+            str(model_path),
+            "-f",
+            str(prompt_path),
+            "-n",
+            str(max_new_tokens),
+            "-c",
+            str(context_tokens),
+            "--temp",
+            str(temperature),
+            "--top-p",
+            str(top_p),
+            "--no-display-prompt",
+            "--simple-io",
+        ]
+        kwargs: dict[str, Any] = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.DEVNULL,
+            "cwd": str(model_dir),
+            "env": environment,
+            "timeout": GENERATION_TIMEOUT_SECONDS,
+            "check": False,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        try:
+            completed = subprocess.run(command, **kwargs)
+        except subprocess.TimeoutExpired as error:
+            raise InferenceRuntimeError(
+                f"local generation exceeded the {GENERATION_TIMEOUT_SECONDS} second timeout"
+            ) from error
+        except OSError as error:
+            raise InferenceRuntimeError(f"cannot start trusted llama.cpp CLI: {error}") from error
 
     if completed.returncode != 0:
         raise InferenceRuntimeError(
