@@ -213,12 +213,15 @@ pub fn source_endpoint_seed(
         return None;
     }
     let normalized_template = normalize_route_template(path_template)?;
-    let materialized_path = materialize_route_path(&normalized_template)?;
+    let deployment_prefix = normalize_deployment_prefix(base.path());
+    let effective_template =
+        apply_deployment_prefix(&deployment_prefix, &normalized_template);
+    let materialized_path = materialize_route_path(&effective_template)?;
     base.set_path("/");
     base.set_query(None);
     base.set_fragment(None);
 
-    let mut template_url = base.join(normalized_template.trim_start_matches('/')).ok()?;
+    let mut template_url = base.join(effective_template.trim_start_matches('/')).ok()?;
     let mut discovery_url = base.join(materialized_path.trim_start_matches('/')).ok()?;
     for url in [&mut template_url, &mut discovery_url] {
         let mut query = url.query_pairs_mut();
@@ -241,6 +244,36 @@ pub fn source_endpoint_seed(
         content_type: content_type.map(ToString::to_string),
         source_label: source_label.to_string(),
     })
+}
+
+fn normalize_deployment_prefix(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return String::new();
+    }
+    let mut prefix = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    if prefix.len() > 1 {
+        prefix = prefix.trim_end_matches('/').to_string();
+    }
+    prefix
+}
+
+fn apply_deployment_prefix(prefix: &str, route: &str) -> String {
+    if prefix.is_empty() || prefix == "/" {
+        return route.to_string();
+    }
+    if route == prefix || route.starts_with(&format!("{prefix}/")) {
+        return route.to_string();
+    }
+    format!(
+        "{}/{}",
+        prefix.trim_end_matches('/'),
+        route.trim_start_matches('/')
+    )
 }
 
 fn normalize_route_template(template: &str) -> Option<String> {
@@ -612,13 +645,49 @@ mod source_seed_tests {
         )
         .expect("seed");
         assert_eq!(seed.method, "POST");
-        assert!(seed.url.contains("/api/login/%7Btenant%7D"));
+        assert!(seed.url.contains("/root/api/login/%7Btenant%7D"));
         assert!(seed.url.contains("next=codetwin-test"));
         assert!(!seed.url.contains("email="));
         let discovery = seed.discovery_url.as_deref().expect("discovery url");
-        assert!(discovery.starts_with("https://example.test/api/login/codetwin-test"));
+        assert!(discovery.starts_with("https://example.test/root/api/login/codetwin-test"));
         assert!(discovery.contains("next=codetwin-test"));
         assert_eq!(seed.parameter_locations.get("email").map(String::as_str), Some("json"));
+    }
+
+    #[test]
+    fn preserves_deployment_base_path_without_double_prefix() {
+        let parameters = vec!["id".to_string()];
+        let locations = BTreeMap::from([("id".to_string(), "path".to_string())]);
+
+        let prefixed = source_endpoint_seed(
+            "https://example.test/app",
+            "GET",
+            "/api/users/:id",
+            &parameters,
+            &locations,
+            None,
+            "source_route:test",
+        )
+        .expect("seed");
+        assert_eq!(
+            prefixed.discovery_url.as_deref(),
+            Some("https://example.test/app/api/users/codetwin-test")
+        );
+
+        let already_prefixed = source_endpoint_seed(
+            "https://example.test/app",
+            "GET",
+            "/app/api/users/:id",
+            &parameters,
+            &locations,
+            None,
+            "source_route:test",
+        )
+        .expect("seed");
+        assert_eq!(
+            already_prefixed.discovery_url.as_deref(),
+            Some("https://example.test/app/api/users/codetwin-test")
+        );
     }
 
     #[test]
