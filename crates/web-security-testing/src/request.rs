@@ -1,10 +1,12 @@
 use std::{
+    collections::HashMap,
     io::Read,
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -27,6 +29,12 @@ pub enum RequestError {
     Cancelled,
     #[error("request budget exhausted")]
     BudgetExhausted,
+    #[error("per-endpoint request budget exhausted")]
+    EndpointBudgetExhausted,
+    #[error("request pacing state is unavailable")]
+    PacingUnavailable,
+    #[error("active payload blocked by safety policy: {0}")]
+    PayloadPolicy(String),
     #[error("invalid request header: {0}")]
     Header(String),
     #[error("HTTP request failed: {0}")]
@@ -73,12 +81,19 @@ impl RequestBudget {
     }
 }
 
+#[derive(Default)]
+struct RequestPacing {
+    last_request_at: Option<Instant>,
+    per_endpoint: HashMap<String, usize>,
+}
+
 #[derive(Clone)]
 pub struct ScopedRequester {
     policy: ScopePolicy,
     auth: AuthContext,
     budget: RequestBudget,
     cancelled: Arc<AtomicBool>,
+    pacing: Arc<Mutex<RequestPacing>>,
 }
 
 impl ScopedRequester {
@@ -93,6 +108,7 @@ impl ScopedRequester {
             auth,
             budget,
             cancelled,
+            pacing: Arc::new(Mutex::new(RequestPacing::default())),
         }
     }
 
@@ -102,6 +118,35 @@ impl ScopedRequester {
 
     pub fn get(&self, url: &Url) -> Result<ObservedResponse, RequestError> {
         self.send(Method::GET, url, None, &[])
+    }
+
+    fn claim_request_slot(&self, method: &Method, url: &Url) -> Result<(), RequestError> {
+        let host = url.host_str().unwrap_or("").to_ascii_lowercase();
+        let port = url.port_or_known_default().unwrap_or(0);
+        let key = format!("{}://{}:{} {} {}", url.scheme(), host, port, method, url.path());
+        let mut pacing = self
+            .pacing
+            .lock()
+            .map_err(|_| RequestError::PacingUnavailable)?;
+
+        let used = pacing.per_endpoint.get(&key).copied().unwrap_or(0);
+        if used >= self.policy.config().max_requests_per_endpoint {
+            return Err(RequestError::EndpointBudgetExhausted);
+        }
+
+        let interval = Duration::from_millis(self.policy.config().min_request_interval_ms);
+        if !interval.is_zero() {
+            if let Some(last) = pacing.last_request_at {
+                let elapsed = last.elapsed();
+                if elapsed < interval {
+                    thread::sleep(interval - elapsed);
+                }
+            }
+        }
+
+        pacing.last_request_at = Some(Instant::now());
+        pacing.per_endpoint.insert(key, used + 1);
+        Ok(())
     }
 
     pub fn send(
@@ -139,6 +184,7 @@ impl ScopedRequester {
             // Resolve again for every attempt and pin the checked address into reqwest.
             // This prevents redirects/DNS changes from bypassing the authorized network scope.
             let pinned = self.policy.resolve_and_pin(url)?;
+            self.claim_request_slot(&method, url)?;
             self.budget.claim()?;
             if self.cancelled.load(Ordering::SeqCst) {
                 return Err(RequestError::Cancelled);
