@@ -534,3 +534,54 @@ pub(crate) fn headers_map(response: &ObservedResponse) -> HashMap<String, String
         .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
         .collect()
 }
+
+
+#[cfg(test)]
+mod source_seed_tests {
+    use std::collections::BTreeMap;
+
+    use super::source_endpoint_seed;
+
+    #[test]
+    fn materializes_dynamic_path_and_query_fields_without_body_execution() {
+        let names = vec![
+            "tenant".to_string(),
+            "next".to_string(),
+            "email".to_string(),
+        ];
+        let locations = BTreeMap::from([
+            ("tenant".to_string(), "path".to_string()),
+            ("next".to_string(), "query".to_string()),
+            ("email".to_string(), "json".to_string()),
+        ]);
+        let seed = source_endpoint_seed(
+            "https://example.test/root",
+            "POST",
+            "/api/login/:tenant",
+            &names,
+            &locations,
+            Some("application/json"),
+            "source_route:express:src/server.ts:10",
+        )
+        .expect("seed");
+        assert_eq!(seed.method, "POST");
+        assert!(seed.url.starts_with("https://example.test/api/login/codetwin-test"));
+        assert!(seed.url.contains("next=codetwin-test"));
+        assert!(!seed.url.contains("email="));
+        assert_eq!(seed.parameter_locations.get("email").map(String::as_str), Some("json"));
+    }
+
+    #[test]
+    fn refuses_wildcard_source_routes_for_automatic_live_seeding() {
+        assert!(source_endpoint_seed(
+            "https://example.test",
+            "GET",
+            "/files/*",
+            &[],
+            &BTreeMap::new(),
+            None,
+            "source_route:express:src/files.ts:1",
+        )
+        .is_none());
+    }
+}
