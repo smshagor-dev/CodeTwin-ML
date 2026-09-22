@@ -11,7 +11,7 @@ use reqwest::Method;
 use url::Url;
 
 use crate::{
-    body_hash, fingerprint, operator::check_applicable, response_evidence, response_header, AuthContext, EndpointObservation,
+    body_hash, fingerprint, operator::check_applicable, payload_policy::validate_active_payload, response_evidence, response_header, AuthContext, EndpointObservation,
     FindingObservation, ObservedResponse, RequestError, ScanConfig, ScanError, ScopePolicy,
     ScopedRequester,
 };
@@ -703,6 +703,8 @@ fn send_payload(
     parameter: &str,
     payload: &str,
 ) -> Result<ObservedResponse, RequestError> {
+    validate_active_payload(payload)
+        .map_err(|reason| RequestError::PayloadRejected(reason.to_string()))?;
     let location = endpoint
         .parameter_locations
         .get(parameter)
