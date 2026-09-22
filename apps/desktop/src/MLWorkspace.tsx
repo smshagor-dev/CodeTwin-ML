@@ -58,6 +58,7 @@ type MlInferenceRecord = {
 
 type SidecarCapabilities = {
   inference?: string[];
+  generation?: string[];
   models?: {
     installed?: number;
     ready?: number;
@@ -83,6 +84,26 @@ type InferencePlan = {
   note?: string;
 };
 
+type MlGenerationResult = {
+  action: string;
+  model: {
+    id: string;
+    version: string;
+    backend: string;
+    package_digest: string;
+  };
+  advisory: {
+    summary: string;
+    probe_intents: Array<{
+      family: string;
+      parameter: string | null;
+      rationale: string;
+    }>;
+    repair_notes: string[];
+  };
+  runtime: Record<string, unknown>;
+};
+
 const PYTHON_KEY = "codetwin.ml.pythonExecutable";
 const ROOT_KEY = "codetwin.ml.sidecarRoot";
 
@@ -98,6 +119,8 @@ export function MLWorkspace() {
   const [models, setModels] = useState<ModelInventory | null>(null);
   const [action, setAction] = useState("defect_detection");
   const [plan, setPlan] = useState<InferencePlan | null>(null);
+  const [generationPlan, setGenerationPlan] = useState<InferencePlan | null>(null);
+  const [generationResult, setGenerationResult] = useState<MlGenerationResult | null>(null);
   const [history, setHistory] = useState<MlInferenceRecord[]>([]);
   const [selectedRecord, setSelectedRecord] = useState<MlInferenceRecord | null>(null);
   const [busy, setBusy] = useState(false);
@@ -111,6 +134,7 @@ export function MLWorkspace() {
   const availableActions = useMemo(() => {
     const actions = new Set<string>();
     for (const value of capabilities?.inference ?? []) actions.add(value);
+    for (const value of capabilities?.generation ?? []) actions.add(value);
     for (const value of capabilities?.datasets?.actions ?? []) actions.add(value);
     if (action) actions.add(action);
     return [...actions].sort();
@@ -160,6 +184,8 @@ export function MLWorkspace() {
       setCapabilities(caps);
       setModels(inventory);
       setPlan(null);
+      setGenerationPlan(null);
+      setGenerationResult(null);
     } catch (value) {
       setSidecarStatus(null);
       setCapabilities(null);
@@ -204,6 +230,46 @@ export function MLWorkspace() {
       setSelectedRecord(record);
       await loadProject(projectId);
     } catch (value) {
+      setError(String(value));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function inspectGenerationPlan() {
+    if (!action.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const nextPlan = await invoke<InferencePlan>("ml_generation_plan", {
+        action: action.trim(),
+        config,
+      });
+      setGenerationPlan(nextPlan);
+    } catch (value) {
+      setGenerationPlan(null);
+      setError(String(value));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runGeneration() {
+    if (!projectId || !selectedFileId || !action.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await invoke<MlGenerationResult>("run_ml_file_generation", {
+        projectId,
+        fileId: selectedFileId,
+        action: action.trim(),
+        modelId: null,
+        modelVersion: null,
+        config,
+      });
+      setGenerationResult(result);
+    } catch (value) {
+      setGenerationResult(null);
       setError(String(value));
     } finally {
       setBusy(false);
@@ -290,17 +356,24 @@ export function MLWorkspace() {
                 </div>
               )}
               <div className="row ml-actions-row">
-                <button onClick={() => void inspectPlan()} disabled={busy || !sidecarStatus || !action.trim()}>Check plan</button>
-                <button onClick={() => void runInference()} disabled={busy || !sidecarStatus || !selectedFileId || !action.trim()}>{busy ? "Running…" : "Run & record"}</button>
+                <button onClick={() => void inspectPlan()} disabled={busy || !sidecarStatus || !action.trim()}>Classifier plan</button>
+                <button onClick={() => void runInference()} disabled={busy || !sidecarStatus || !selectedFileId || !action.trim()}>{busy ? "Running…" : "Run classifier"}</button>
+                <button onClick={() => void inspectGenerationPlan()} disabled={busy || !sidecarStatus || !action.trim()}>Generator plan</button>
+                <button onClick={() => void runGeneration()} disabled={busy || !sidecarStatus || !selectedFileId || !action.trim() || generationPlan?.status !== "ready"}>{busy ? "Running…" : "Generate advisory"}</button>
               </div>
               {plan && (
                 <div className="relationship-item">
-                  <strong>{plan.status ?? "unknown plan"}</strong>
-                  <span>runtime {plan.runtime_available === false ? "unavailable" : "available or not reported"}</span>
+                  <strong>Classifier · {plan.status ?? "unknown plan"}</strong>
                   <small>{plan.note ?? "No additional plan note."}</small>
                 </div>
               )}
-              <p className="warning banner">The selected file is read only after its current bytes match the persisted index hash. Raw source text is sent to the explicitly configured local sidecar process but is not written to the CodeTwin database.</p>
+              {generationPlan && (
+                <div className="relationship-item">
+                  <strong>Generator · {generationPlan.status ?? "unknown plan"}</strong>
+                  <small>{generationPlan.note ?? "No additional plan note."}</small>
+                </div>
+              )}
+              <p className="warning banner">The selected file is read only after its current bytes match the persisted index hash. Generative models return a strict safe-advisory schema with allow-listed probe intents; raw model-generated payloads are never sent directly to live targets.</p>
             </section>
 
             <section className="panel compact">
@@ -319,6 +392,37 @@ export function MLWorkspace() {
           </div>
 
           <div className="twin-column wide">
+            <section className="panel compact detail-panel">
+              <h2>Local generative advisory</h2>
+              {generationResult ? (
+                <>
+                  <div className="finding-title-row">
+                    <span className="severity severity-info">LOCAL GEN</span>
+                    <strong>{generationResult.model.id} · {generationResult.model.version}</strong>
+                  </div>
+                  <p>{generationResult.advisory.summary}</p>
+                  <div className="relationship-list">
+                    {generationResult.advisory.probe_intents.map((intent, index) => (
+                      <div className="relationship-item" key={intent.family + "-" + index}>
+                        <strong>{intent.family}</strong>
+                        <span>{intent.parameter ? "input " + intent.parameter : "route-level intent"}</span>
+                        <small>{intent.rationale}</small>
+                      </div>
+                    ))}
+                    {generationResult.advisory.repair_notes.map((note, index) => (
+                      <div className="relationship-item" key={"repair-" + index}>
+                        <strong>Repair note</strong>
+                        <small>{note}</small>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="warning banner">Probe intents are symbolic. The deterministic security engine, authorization scope, payload filter, and rate limits remain the only authority allowed to materialize a live request.</p>
+                </>
+              ) : (
+                <p className="empty">No bounded generative advisory has been produced yet.</p>
+              )}
+            </section>
+
             <section className="panel compact detail-panel">
               <h2>Selected prediction</h2>
               {selectedRecord ? (
