@@ -1,4 +1,5 @@
 mod backend;
+mod docker;
 mod external_provenance;
 #[cfg(windows)]
 mod windows_project_mirror;
@@ -10,6 +11,9 @@ pub use backend::{
     snapshot_execution_inputs, verify_execution_inputs, BackendControls, BackendExecutionError,
     ExecutionBackendInfo, ExecutionBackendKind, ExecutionInputSnapshot, RawExecutionOutcome,
     MAX_EXECUTION_INPUT_BYTES,
+};
+pub use docker::{
+    docker_backend_info, execute_approved_plan_in_docker, validate_pinned_container_image,
 };
 pub use external_provenance::{
     capture_external_read_surface, validate_approved_external_read_surface_shape,
