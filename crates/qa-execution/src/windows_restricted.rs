@@ -275,6 +275,7 @@ fn verify_toolchain(plan: &TestExecutionPlan, root: &Path) -> Result<(), Backend
     Ok(())
 }
 
+#[allow(dead_code)]
 fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
     let mut file = File::open(path)?;
     let mut digest = Sha256::new();
