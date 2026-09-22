@@ -97,6 +97,7 @@ pub fn run_targeted_retest(
 
     let endpoint = EndpointObservation {
         url: url.to_string(),
+        route_template: None,
         method: method.clone(),
         depth: 0,
         source: if matches!(request.category.as_str(), "api_input_validation" | "api_validation") {
