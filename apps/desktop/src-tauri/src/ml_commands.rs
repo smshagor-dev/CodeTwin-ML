@@ -30,6 +30,8 @@ const ML_SIDECAR_JOB_MEMORY_BYTES: u64 = 12 * 1024 * 1024 * 1024;
 #[cfg(windows)]
 const ML_SIDECAR_JOB_MAX_PROCESSES: u32 = 8;
 #[cfg(windows)]
+const ML_SIDECAR_JOB_CPU_SECONDS: u64 = 120;
+#[cfg(windows)]
 const ML_SIDECAR_TERMINATION_WAIT_MS: u32 = 5_000;
 
 struct MlSidecarContainment {
@@ -53,10 +55,17 @@ impl MlSidecarContainment {
                         TH32CS_SNAPTHREAD,
                     },
                     JobObjects::{
-                        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-                        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-                        JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
-                        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicUIRestrictions,
+                        JobObjectExtendedLimitInformation, SetInformationJobObject,
+                        JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                        JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+                        JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
+                        JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_JOB_TIME,
+                        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_UILIMIT_DESKTOP,
+                        JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
+                        JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES,
+                        JOB_OBJECT_UILIMIT_READCLIPBOARD, JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
+                        JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
                     },
                     Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
                 },
@@ -75,8 +84,13 @@ impl MlSidecarContainment {
             let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
                 | JOB_OBJECT_LIMIT_JOB_MEMORY
-                | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+                | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+                | JOB_OBJECT_LIMIT_JOB_TIME
+                | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
             limits.BasicLimitInformation.ActiveProcessLimit = ML_SIDECAR_JOB_MAX_PROCESSES;
+            limits.BasicLimitInformation.PerJobUserTimeLimit =
+                i64::try_from(ML_SIDECAR_JOB_CPU_SECONDS.saturating_mul(10_000_000))
+                    .map_err(|_| "ML sidecar CPU time limit overflow".to_string())?;
             limits.JobMemoryLimit =
                 usize::try_from(ML_SIDECAR_JOB_MEMORY_BYTES).unwrap_or(usize::MAX / 2);
             let configured = unsafe {
@@ -93,6 +107,34 @@ impl MlSidecarContainment {
                 let _ = child.wait();
                 return Err(format!(
                     "cannot configure ML sidecar Job Object: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+
+            let ui_restrictions = JOBOBJECT_BASIC_UI_RESTRICTIONS {
+                UIRestrictionsClass: JOB_OBJECT_UILIMIT_HANDLES
+                    | JOB_OBJECT_UILIMIT_READCLIPBOARD
+                    | JOB_OBJECT_UILIMIT_WRITECLIPBOARD
+                    | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS
+                    | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
+                    | JOB_OBJECT_UILIMIT_GLOBALATOMS
+                    | JOB_OBJECT_UILIMIT_DESKTOP
+                    | JOB_OBJECT_UILIMIT_EXITWINDOWS,
+            };
+            let ui_configured = unsafe {
+                SetInformationJobObject(
+                    job,
+                    JobObjectBasicUIRestrictions,
+                    (&ui_restrictions as *const JOBOBJECT_BASIC_UI_RESTRICTIONS).cast(),
+                    size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
+                )
+            };
+            if ui_configured == 0 {
+                unsafe { CloseHandle(job) };
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "cannot configure ML sidecar UI restrictions: {}",
                     std::io::Error::last_os_error()
                 ));
             }
@@ -244,11 +286,54 @@ pub(crate) struct MlSidecarConfig {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct MlContainmentStatus {
+    pub process_tree_containment: bool,
+    pub memory_limit_bytes: Option<u64>,
+    pub active_process_limit: Option<u32>,
+    pub cpu_time_limit_seconds: Option<u64>,
+    pub ui_restrictions: bool,
+    pub launch_suspended_before_assignment: bool,
+    pub filesystem_isolation: bool,
+    pub network_isolation: bool,
+}
+
+fn ml_containment_status() -> MlContainmentStatus {
+    #[cfg(windows)]
+    {
+        MlContainmentStatus {
+            process_tree_containment: true,
+            memory_limit_bytes: Some(ML_SIDECAR_JOB_MEMORY_BYTES),
+            active_process_limit: Some(ML_SIDECAR_JOB_MAX_PROCESSES),
+            cpu_time_limit_seconds: Some(ML_SIDECAR_JOB_CPU_SECONDS),
+            ui_restrictions: true,
+            launch_suspended_before_assignment: true,
+            filesystem_isolation: false,
+            network_isolation: false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        MlContainmentStatus {
+            process_tree_containment: false,
+            memory_limit_bytes: None,
+            active_process_limit: None,
+            cpu_time_limit_seconds: None,
+            ui_restrictions: false,
+            launch_suspended_before_assignment: false,
+            filesystem_isolation: false,
+            network_isolation: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct MlSidecarStatus {
     pub configured: bool,
     pub python_executable: String,
     pub sidecar_root: String,
     pub health: Value,
+    pub containment: MlContainmentStatus,
 }
 
 #[derive(Debug)]
@@ -276,6 +361,7 @@ pub(crate) async fn ml_sidecar_health(
             python_executable: validated.python_executable.display().to_string(),
             sidecar_root: validated.sidecar_root.display().to_string(),
             health,
+            containment: ml_containment_status(),
         })
     })
     .await
@@ -286,7 +372,15 @@ pub(crate) async fn ml_sidecar_health(
 pub(crate) async fn ml_sidecar_capabilities(config: MlSidecarConfig) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let validated = validate_sidecar(&config)?;
-        sidecar_request(&validated, "capabilities", json!({}))
+        let mut capabilities = sidecar_request(&validated, "capabilities", json!({}))?;
+        if let Some(object) = capabilities.as_object_mut() {
+            object.insert(
+                "desktop_containment".to_string(),
+                serde_json::to_value(ml_containment_status())
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        Ok(capabilities)
     })
     .await
     .map_err(|error| error.to_string())?
