@@ -680,23 +680,26 @@ def resolve_model_for_generation(
 
 
 def inference_plan(action: str, *, model_root: Path | str | None = None) -> dict[str, Any]:
-    model_route = route_model(action, model_root=model_root)
-    dataset_catalog = load_catalog()
-    dataset_ids = list(dataset_catalog["routes"][action])
-    if model_route["execution_ready"]:
-        status = "ready"
-    elif model_route["ready"]:
-        status = "model_ready_execution_pending"
-    else:
-        status = "model_unavailable"
+    catalog = load_catalog()
+    if action not in catalog["routes"]:
+        raise ModelError(f"unknown model action: {action}")
+    classifier_models = [
+        _public_model(metadata) | {"ready": True}
+        for _path, metadata in _ready_entries(model_root)
+        if metadata.get("backend") == "onnx-classification-v1"
+        and action in metadata["actions"]
+        and _execution_supported(metadata)
+    ]
+    dataset_ids = list(catalog["routes"][action])
+    status = "ready" if classifier_models else "model_unavailable"
     return {
         "action": action,
         "status": status,
-        "models": model_route["models"],
+        "models": classifier_models,
         "dataset_provenance": dataset_ids,
         "execution_implemented": True,
         "note": (
-            "Only integrity-checked models with an explicit bounded inference contract are execution-ready. "
-            "Evaluation metrics are package provenance and are not independently reproduced at runtime."
+            "This plan describes bounded ONNX classification only. "
+            "GGUF generation readiness is reported separately through generation capabilities."
         ),
     }
