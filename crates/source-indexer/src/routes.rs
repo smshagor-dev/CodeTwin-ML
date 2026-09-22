@@ -1396,7 +1396,7 @@ fn strip_quotes(value: &str) -> Option<String> {
 
 fn first_quoted_string(value: &str) -> Option<String> {
     for (index, character) in value.char_indices() {
-        if matches!(character, '"' | '\'') {
+        if matches!(character, '"' | '\'' | '`') {
             let tail = &value[index + character.len_utf8()..];
             let end = tail.find(character)?;
             return Some(tail[..end].to_string());
@@ -1445,7 +1445,7 @@ fn quoted_strings(value: &str) -> Vec<String> {
     let mut output = Vec::new();
     let mut chars = value.char_indices().peekable();
     while let Some((index, character)) = chars.next() {
-        if !matches!(character, '"' | '\'') {
+        if !matches!(character, '"' | '\'' | '`') {
             continue;
         }
         let start = index + character.len_utf8();
@@ -1977,7 +1977,7 @@ func main() {
     api := r.Group("/api")
     v1 := api.Group("/v1")
     v1.GET("/users/:id", showUser)
-    v1.POST("/users", createUser)
+    v1.POST(`/users`, createUser)
 }
 "#;
         let mut parser = Parser::new();
