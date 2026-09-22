@@ -307,6 +307,10 @@ export type SourceRouteRecord = {
   relative_path: string;
   symbol_id: string | null;
   symbol_name: string | null;
+  handler_file_id: string | null;
+  handler_relative_path: string | null;
+  handler_symbol_id: string | null;
+  handler_symbol_name: string | null;
   framework: string;
   router_name: string;
   http_method: string;
@@ -326,6 +330,7 @@ export type WebSourceEndpointLinkRecord = {
   endpoint_id: string;
   source_route_id: string;
   source_relative_path: string;
+  handler_relative_path: string | null;
   source_framework: string;
   source_method: string;
   source_path_template: string;
