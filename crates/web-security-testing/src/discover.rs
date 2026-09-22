@@ -44,7 +44,7 @@ pub fn crawl_with_seeds(
     cancelled: Arc<AtomicBool>,
     on_progress: &mut impl FnMut(usize, usize),
 ) -> Result<DiscoveryResult, ScanError> {
-    let mut queue = VecDeque::from([(policy.target().clone(), 0usize, "seed".to_string(), 0usize)]);
+    let mut queue = VecDeque::new();
     let mut seen = HashSet::new();
     let mut endpoint_keys = HashSet::new();
     let mut endpoints = Vec::new();
@@ -100,6 +100,12 @@ pub fn crawl_with_seeds(
             },
         );
     }
+
+    // Source-backed GET routes are queued before the generic target so the
+    // authorized crawl spends its bounded request budget on known application
+    // endpoints first. The ordinary target seed still runs afterwards to
+    // discover links/forms/routes that static source analysis did not see.
+    queue.push_back((policy.target().clone(), 0usize, "seed".to_string(), 0usize));
 
     while let Some((url, depth, source, redirects)) = queue.pop_front() {
         if cancelled.load(Ordering::SeqCst) {
