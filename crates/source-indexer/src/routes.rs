@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use tree_sitter::Node;
 
-use crate::{IndexedRoute, IndexedRouteMount, IndexedRouteParameter};
+use crate::{IndexedHandlerInput, IndexedRoute, IndexedRouteMount, IndexedRouteParameter};
 
 const HTTP_METHODS: &[&str] = &["get", "post", "put", "patch", "delete", "options", "head"];
 
@@ -10,11 +10,21 @@ pub fn extract_routes(
     language: &str,
     source: &str,
     root: Node<'_>,
-) -> (Vec<IndexedRoute>, Vec<IndexedRouteMount>) {
-    let (mut routes, mut mounts) = match language {
-        "JavaScript" | "TypeScript" | "TypeScript TSX" => extract_express_routes(source, root),
-        "Python" => extract_fastapi_routes(source, root),
-        _ => (Vec::new(), Vec::new()),
+) -> (
+    Vec<IndexedRoute>,
+    Vec<IndexedRouteMount>,
+    Vec<IndexedHandlerInput>,
+) {
+    let (mut routes, mut mounts, mut handler_inputs) = match language {
+        "JavaScript" | "TypeScript" | "TypeScript TSX" => {
+            let (routes, mounts) = extract_express_routes(source, root);
+            (routes, mounts, javascript_handler_inputs(source, root))
+        }
+        "Python" => {
+            let (routes, mounts) = extract_fastapi_routes(source, root);
+            (routes, mounts, Vec::new())
+        }
+        _ => (Vec::new(), Vec::new(), Vec::new()),
     };
     routes.sort_by(|left, right| {
         (
@@ -57,7 +67,16 @@ pub fn extract_routes(
             && left.prefix == right.prefix
             && left.start_line == right.start_line
     });
-    (routes, mounts)
+    handler_inputs.sort_by(|left, right| {
+        (&left.handler_name, left.start_line, left.end_line)
+            .cmp(&(&right.handler_name, right.start_line, right.end_line))
+    });
+    handler_inputs.dedup_by(|left, right| {
+        left.handler_name == right.handler_name
+            && left.start_line == right.start_line
+            && left.end_line == right.end_line
+    });
+    (routes, mounts, handler_inputs)
 }
 
 fn extract_express_routes(
@@ -88,26 +107,26 @@ fn extract_express_routes(
             return;
         };
 
-        let handler_arg = arguments.named_child(1);
-        let handler_name = handler_arg.and_then(|value| {
-            if value.kind() == "identifier" {
-                text(source, value).map(ToString::to_string)
-            } else {
-                None
-            }
-        });
-        let handler_node = handler_arg
-            .filter(|node| is_function_like(*node))
-            .or_else(|| {
-                handler_name
-                    .as_ref()
-                    .and_then(|name| handlers.get(name).copied())
-            });
+        let handler_args: Vec<Node<'_>> = (1..arguments.named_child_count())
+            .filter_map(|index| arguments.named_child(index))
+            .collect();
+        let handler_name = handler_args
+            .last()
+            .and_then(|value| handler_reference(source, *value));
 
         let full_path = combine_paths(prefixes.get(&router).map(String::as_str), &path);
         let mut parameters = path_parameters(&full_path);
-        if let Some(handler) = handler_node {
-            parameters.extend(express_handler_parameters(source, handler));
+        for handler_arg in &handler_args {
+            let handler_node = if is_function_like(*handler_arg) {
+                Some(*handler_arg)
+            } else {
+                handler_reference(source, *handler_arg)
+                    .filter(|name| !name.contains('.'))
+                    .and_then(|name| handlers.get(&name).copied())
+            };
+            if let Some(handler) = handler_node {
+                parameters.extend(express_handler_parameters(source, handler));
+            }
         }
         normalize_parameters(&mut parameters);
 
@@ -133,6 +152,47 @@ fn extract_express_routes(
         });
     });
     (routes, mounts)
+}
+
+fn javascript_handler_inputs(
+    source: &str,
+    root: Node<'_>,
+) -> Vec<IndexedHandlerInput> {
+    let mut output = Vec::new();
+    for (handler_name, node) in javascript_handlers(source, root) {
+        let mut parameters = express_handler_parameters(source, node);
+        normalize_parameters(&mut parameters);
+        if parameters.is_empty() {
+            continue;
+        }
+        let start = node.start_position();
+        let end = node.end_position();
+        output.push(IndexedHandlerInput {
+            handler_name,
+            parameters,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    }
+    output
+}
+
+fn handler_reference(source: &str, node: Node<'_>) -> Option<String> {
+    if node.kind() == "identifier" {
+        return text(source, node).map(ToString::to_string);
+    }
+    if node.kind() != "member_expression" {
+        return None;
+    }
+    let object = node.child_by_field_name("object")?;
+    let property = node.child_by_field_name("property")?;
+    let object = text(source, object)?.trim();
+    let property = text(source, property)?.trim();
+    if is_identifier(object) && is_identifier(property) {
+        Some(format!("{object}.{property}"))
+    } else {
+        None
+    }
 }
 
 fn javascript_handlers<'a>(source: &str, root: Node<'a>) -> BTreeMap<String, Node<'a>> {
