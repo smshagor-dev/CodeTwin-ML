@@ -20,7 +20,9 @@ pub fn extract_routes(
         "JavaScript" | "TypeScript" | "TypeScript TSX" => {
             let (mut routes, mounts) = extract_express_routes(source, root);
             routes.extend(extract_nextjs_app_routes(relative_path, source, root));
-            (routes, mounts, javascript_handler_inputs(source, root))
+            let mut handler_inputs = javascript_handler_inputs(source, root);
+            handler_inputs.extend(nextjs_handler_inputs(relative_path, source, root));
+            (routes, mounts, handler_inputs)
         }
         "Python" => {
             let (mut routes, mut mounts) = extract_fastapi_routes(source, root);
@@ -88,12 +90,22 @@ pub fn extract_routes(
         (&left.handler_name, left.start_line, left.end_line)
             .cmp(&(&right.handler_name, right.start_line, right.end_line))
     });
-    handler_inputs.dedup_by(|left, right| {
-        left.handler_name == right.handler_name
-            && left.start_line == right.start_line
-            && left.end_line == right.end_line
-    });
-    (routes, mounts, handler_inputs)
+    let mut merged_handler_inputs: Vec<IndexedHandlerInput> = Vec::new();
+    for mut input in handler_inputs {
+        normalize_parameters(&mut input.parameters);
+        if let Some(last) = merged_handler_inputs.last_mut() {
+            if last.handler_name == input.handler_name
+                && last.start_line == input.start_line
+                && last.end_line == input.end_line
+            {
+                last.parameters.extend(input.parameters);
+                normalize_parameters(&mut last.parameters);
+                continue;
+            }
+        }
+        merged_handler_inputs.push(input);
+    }
+    (routes, mounts, merged_handler_inputs)
 }
 
 fn extract_nextjs_app_routes(
@@ -104,6 +116,7 @@ fn extract_nextjs_app_routes(
     let Some(path_template) = nextjs_app_route_path(relative_path) else {
         return Vec::new();
     };
+    let handlers = javascript_handlers(source, root);
     let mut routes = Vec::new();
     walk(root, &mut |node| {
         if node.kind() != "export_statement" {
@@ -112,24 +125,34 @@ fn extract_nextjs_app_routes(
         let Some(value) = text(source, node) else {
             return;
         };
-        let methods = nextjs_exported_http_methods(value);
-        if methods.is_empty() {
+        let exported = nextjs_exported_http_handlers(value);
+        if exported.is_empty() {
             return;
         }
-        let mut parameters = path_parameters(&path_template);
-        normalize_parameters(&mut parameters);
         let start = node.start_position();
         let end = node.end_position();
-        for method in methods {
+        for (method, local_handler) in exported {
+            let mut parameters = path_parameters(&path_template);
+            if let Some(handler) = handlers.get(&local_handler).copied() {
+                parameters.extend(nextjs_handler_parameters(source, handler));
+            }
+            normalize_parameters(&mut parameters);
+            let request_content_type = if parameters.iter().any(|value| value.location == "json") {
+                Some("application/json".to_string())
+            } else if parameters.iter().any(|value| value.location == "form") {
+                Some("application/x-www-form-urlencoded".to_string())
+            } else {
+                None
+            };
             routes.push(IndexedRoute {
                 framework: "nextjs".to_string(),
                 router_name: "app_router".to_string(),
                 router_prefix: String::new(),
-                http_method: method.to_string(),
+                http_method: method,
                 path_template: path_template.clone(),
-                handler_name: Some(method.to_string()),
-                parameters: parameters.clone(),
-                request_content_type: None,
+                handler_name: Some(local_handler),
+                parameters,
+                request_content_type,
                 start_line: start.row + 1,
                 end_line: end.row + 1,
             });
@@ -137,7 +160,6 @@ fn extract_nextjs_app_routes(
     });
     routes
 }
-
 fn nextjs_app_route_path(relative_path: &str) -> Option<String> {
     let normalized = relative_path.replace('\\', "/");
     let app_tail = normalized
@@ -204,7 +226,7 @@ fn nextjs_app_route_path(relative_path: &str) -> Option<String> {
     })
 }
 
-fn nextjs_exported_http_methods(value: &str) -> Vec<&'static str> {
+fn nextjs_exported_http_handlers(value: &str) -> Vec<(String, String)> {
     const METHODS: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut output = Vec::new();
@@ -225,7 +247,7 @@ fn nextjs_exported_http_methods(value: &str) -> Vec<&'static str> {
             || normalized.contains(&let_handler)
             || normalized.contains(&var_handler)
         {
-            output.push(method);
+            output.push((method.to_string(), method.to_string()));
         }
     }
 
@@ -238,13 +260,16 @@ fn nextjs_exported_http_methods(value: &str) -> Vec<&'static str> {
                     if item.is_empty() {
                         continue;
                     }
-                    let exported = item
+                    let (local, exported) = item
                         .rsplit_once(" as ")
-                        .map(|(_, exported)| exported.trim())
-                        .unwrap_or(item);
+                        .map(|(local, exported)| (local.trim(), exported.trim()))
+                        .unwrap_or((item, item));
+                    if !is_identifier(local) {
+                        continue;
+                    }
                     for method in METHODS {
-                        if exported == method && !output.contains(&method) {
-                            output.push(method);
+                        if exported == method {
+                            output.push((method.to_string(), local.to_string()));
                         }
                     }
                 }
@@ -252,9 +277,220 @@ fn nextjs_exported_http_methods(value: &str) -> Vec<&'static str> {
         }
     }
 
+    output.sort();
+    output.dedup();
     output
 }
 
+fn nextjs_handler_inputs(
+    relative_path: &str,
+    source: &str,
+    root: Node<'_>,
+) -> Vec<IndexedHandlerInput> {
+    if nextjs_app_route_path(relative_path).is_none() {
+        return Vec::new();
+    }
+    let handlers = javascript_handlers(source, root);
+    let mut names = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "export_statement" {
+            return;
+        }
+        let Some(value) = text(source, node) else {
+            return;
+        };
+        for (_, local) in nextjs_exported_http_handlers(value) {
+            names.push(local);
+        }
+    });
+    names.sort();
+    names.dedup();
+
+    let mut output = Vec::new();
+    for name in names {
+        let Some(handler) = handlers.get(&name).copied() else {
+            continue;
+        };
+        let mut parameters = nextjs_handler_parameters(source, handler);
+        normalize_parameters(&mut parameters);
+        if parameters.is_empty() {
+            continue;
+        }
+        let start = handler.start_position();
+        let end = handler.end_position();
+        output.push(IndexedHandlerInput {
+            handler_name: name,
+            parameters,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    }
+    output
+}
+
+fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRouteParameter> {
+    let mut parameters = express_handler_parameters(source, handler);
+    let Some(request_name) = request_parameter_name(source, handler) else {
+        return parameters;
+    };
+    let Some(function_text) = text(source, handler) else {
+        return parameters;
+    };
+
+    for method in ["get", "getAll", "has"] {
+        let marker = format!("{request_name}.nextUrl.searchParams.{method}(");
+        for name in marker_quoted_arguments(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, "query"));
+            }
+        }
+    }
+    let header_marker = format!("{request_name}.headers.get(");
+    for name in marker_quoted_arguments(function_text, &header_marker) {
+        if !name.is_empty() && name.len() <= 256 {
+            parameters.push(route_parameter(&name, "header"));
+        }
+    }
+
+    let mut json_variables = Vec::new();
+    let mut form_variables = Vec::new();
+    let mut query_variables = Vec::new();
+    let mut header_variables = Vec::new();
+    walk(handler, &mut |node| {
+        if node.kind() != "variable_declarator" {
+            return;
+        }
+        let Some(name_node) = node.child_by_field_name("name") else {
+            return;
+        };
+        let Some(value_node) = node.child_by_field_name("value") else {
+            return;
+        };
+        let Some(value) = text(source, value_node).map(str::trim) else {
+            return;
+        };
+        let name_text = text(source, name_node).map(str::trim).unwrap_or("");
+
+        let json_marker = format!("{request_name}.json(");
+        if value.contains(&json_marker) {
+            if name_node.kind() == "identifier" && is_identifier(name_text) {
+                json_variables.push(name_text.to_string());
+            } else {
+                for field in javascript_object_pattern_fields(name_text) {
+                    parameters.push(route_parameter(&field, "json"));
+                }
+            }
+        }
+
+        let form_marker = format!("{request_name}.formData(");
+        if value.contains(&form_marker) && name_node.kind() == "identifier" && is_identifier(name_text) {
+            form_variables.push(name_text.to_string());
+        }
+        if value == format!("{request_name}.nextUrl.searchParams")
+            && name_node.kind() == "identifier"
+            && is_identifier(name_text)
+        {
+            query_variables.push(name_text.to_string());
+        }
+        if value == format!("{request_name}.headers")
+            && name_node.kind() == "identifier"
+            && is_identifier(name_text)
+        {
+            header_variables.push(name_text.to_string());
+        }
+    });
+
+    walk(handler, &mut |node| {
+        if node.kind() == "member_expression" {
+            let Some(value) = text(source, node).map(str::trim) else {
+                return;
+            };
+            if let Some((object, property)) = value.split_once('.') {
+                if !property.contains('.')
+                    && json_variables.iter().any(|candidate| candidate == object.trim())
+                    && is_identifier(property.trim())
+                {
+                    parameters.push(route_parameter(property.trim(), "json"));
+                }
+            }
+        }
+        if node.kind() == "subscript_expression" {
+            let Some(value) = text(source, node).map(str::trim) else {
+                return;
+            };
+            for variable in &json_variables {
+                let prefix = format!("{variable}[");
+                if value.starts_with(&prefix) {
+                    if let Some(name) = first_quoted_string(&value[prefix.len()..]) {
+                        if !name.is_empty() && name.len() <= 256 {
+                            parameters.push(route_parameter(&name, "json"));
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    for variable in form_variables {
+        for method in ["get", "getAll", "has"] {
+            let marker = format!("{variable}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, "form"));
+                }
+            }
+        }
+    }
+    for variable in query_variables {
+        for method in ["get", "getAll", "has"] {
+            let marker = format!("{variable}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, "query"));
+                }
+            }
+        }
+    }
+    for variable in header_variables {
+        let marker = format!("{variable}.get(");
+        for name in marker_quoted_arguments(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, "header"));
+            }
+        }
+    }
+    parameters
+}
+
+fn javascript_object_pattern_fields(value: &str) -> Vec<String> {
+    let value = value.trim();
+    let Some(inner) = value.strip_prefix('{').and_then(|value| value.strip_suffix('}')) else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    for item in inner.split(',') {
+        let item = item.trim();
+        if item.is_empty() || item.starts_with("...") {
+            continue;
+        }
+        let property = item
+            .split_once(':')
+            .map(|(property, _)| property)
+            .unwrap_or(item);
+        let property = property
+            .split_once('=')
+            .map(|(property, _)| property)
+            .unwrap_or(property)
+            .trim();
+        let name = strip_quotes(property).unwrap_or_else(|| property.to_string());
+        if is_identifier(&name) && name.len() <= 256 {
+            fields.push(name);
+        }
+    }
+    fields.sort();
+    fields.dedup();
+    fields
+}
 fn extract_express_routes(
     source: &str,
     root: Node<'_>,
@@ -1355,7 +1591,8 @@ fn marker_quoted_arguments(value: &str, marker: &str) -> Vec<String> {
     while let Some(relative) = value[offset..].find(marker) {
         let start = offset + relative + marker.len();
         let tail = &value[start..];
-        if let Some(argument) = first_quoted_string(tail) {
+        let arguments = bounded_call_arguments(tail);
+        if let Some(argument) = first_quoted_string(arguments) {
             output.push(argument);
         }
         offset = start;
@@ -1364,6 +1601,39 @@ fn marker_quoted_arguments(value: &str, marker: &str) -> Vec<String> {
         }
     }
     output
+}
+
+fn bounded_call_arguments(value: &str) -> &str {
+    let mut nested = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(character, '"' | '\'' | '`') {
+            quote = Some(character);
+            continue;
+        }
+        match character {
+            '(' => nested += 1,
+            ')' if nested == 0 => return &value[..index],
+            ')' => nested = nested.saturating_sub(1),
+            _ => {}
+        }
+    }
+    value
 }
 
 fn go_route_handler_reference(value: &str) -> Option<String> {
@@ -2592,6 +2862,147 @@ export const POST = async (request: Request) => {
             .any(|route| route.framework == "nextjs" && route.http_method == "POST"));
     }
 
+    #[test]
+    fn maps_nextjs_request_inputs_to_source_routes() {
+        let source = r#"
+import { NextRequest } from "next/server";
+
+export async function GET(request: NextRequest) {
+  const q = request.nextUrl.searchParams.get("q");
+  const params = request.nextUrl.searchParams;
+  const page = params.get("page");
+  const tenant = request.headers.get("X-Tenant");
+  const dynamic = "secret";
+  request.nextUrl.searchParams.get(dynamic);
+  return Response.json({ q, page, tenant });
+}
+
+export async function POST(request: Request) {
+  const { email, password: secret } = await request.json();
+  return Response.json({ email, secret });
+}
+
+export async function PUT(request: Request) {
+  const payload = await request.json();
+  return Response.json({
+    name: payload.displayName,
+    timezone: payload["timezone"],
+  });
+}
+
+export const PATCH = async (request: Request) => {
+  const form = await request.formData();
+  const avatar = form.get("avatar");
+  return Response.json({ avatar });
+};
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, handler_inputs) = extract_routes(
+            "TypeScript",
+            "src/app/users/[id]/route.ts",
+            source,
+            tree.root_node(),
+        );
+
+        let get = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "GET")
+            .expect("GET route");
+        assert_eq!(get.handler_name.as_deref(), Some("GET"));
+        for field in ["q", "page"] {
+            assert!(get.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "query"
+            }));
+        }
+        assert!(get.parameters.iter().any(|parameter| {
+            parameter.name == "X-Tenant" && parameter.location == "header"
+        }));
+        assert!(!get.parameters.iter().any(|parameter| parameter.name == "secret"));
+        assert!(get.parameters.iter().any(|parameter| {
+            parameter.name == "id" && parameter.location == "path"
+        }));
+
+        let post = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "POST")
+            .expect("POST route");
+        for field in ["email", "password"] {
+            assert!(post.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert_eq!(post.request_content_type.as_deref(), Some("application/json"));
+
+        let put = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PUT")
+            .expect("PUT route");
+        for field in ["displayName", "timezone"] {
+            assert!(put.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+
+        let patch = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PATCH")
+            .expect("PATCH route");
+        assert!(patch.parameters.iter().any(|parameter| {
+            parameter.name == "avatar" && parameter.location == "form"
+        }));
+        assert_eq!(
+            patch.request_content_type.as_deref(),
+            Some("application/x-www-form-urlencoded")
+        );
+
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "GET"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "X-Tenant" && parameter.location == "header"
+                })
+        }));
+    }
+
+    #[test]
+    fn preserves_local_handler_identity_for_nextjs_named_reexport() {
+        let source = r#"
+async function create(request: Request) {
+  const { email } = await request.json();
+  return Response.json({ email });
+}
+
+export { create as POST };
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, handler_inputs) = extract_routes(
+            "TypeScript",
+            "app/users/route.ts",
+            source,
+            tree.root_node(),
+        );
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "POST")
+            .expect("named re-export route");
+        assert_eq!(route.handler_name.as_deref(), Some("create"));
+        assert!(route.parameters.iter().any(|parameter| {
+            parameter.name == "email" && parameter.location == "json"
+        }));
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "create"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "email" && parameter.location == "json"
+                })
+        }));
+    }
     #[test]
     fn extracts_express_route_inputs_and_mount_prefix() {
         let source = r#"
