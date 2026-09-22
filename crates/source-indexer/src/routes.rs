@@ -33,6 +33,10 @@ pub fn extract_routes(
             let (routes, mounts) = extract_laravel_routes(source, root);
             (routes, mounts, Vec::new())
         }
+        "Go" => {
+            let (routes, mounts) = extract_go_routes(source, root);
+            (routes, mounts, Vec::new())
+        }
         _ => (Vec::new(), Vec::new(), Vec::new()),
     };
     routes.sort_by(|left, right| {
@@ -964,6 +968,184 @@ fn laravel_chain_prefix(value: &str) -> Option<String> {
     None
 }
 
+fn extract_go_routes(
+    source: &str,
+    root: Node<'_>,
+) -> (Vec<IndexedRoute>, Vec<IndexedRouteMount>) {
+    let Some(framework) = detect_go_route_framework(source) else {
+        return (Vec::new(), Vec::new());
+    };
+
+    let (prefixes, mounts) = go_group_prefixes(source, root, framework);
+    let mut routes = Vec::new();
+
+    walk(root, &mut |node| {
+        if node.kind() != "call_expression" {
+            return;
+        }
+        let Some(value) = text(source, node).map(str::trim) else {
+            return;
+        };
+        let Some(open) = value.find('(') else {
+            return;
+        };
+        let callee = value[..open].trim();
+        let Some((router, method_raw)) = callee.rsplit_once('.') else {
+            return;
+        };
+        let router = router.trim();
+        if !is_identifier(router) {
+            return;
+        }
+
+        let method_lower = method_raw.trim().to_ascii_lowercase();
+        let quoted = quoted_strings(&value[open + 1..]);
+        let (http_method, path) = if HTTP_METHODS.contains(&method_lower.as_str()) {
+            let Some(path) = quoted.first() else {
+                return;
+            };
+            (method_lower.to_ascii_uppercase(), path.clone())
+        } else if matches!(method_lower.as_str(), "handle" | "add") {
+            if quoted.len() < 2 {
+                return;
+            }
+            let candidate = quoted[0].to_ascii_lowercase();
+            if !HTTP_METHODS.contains(&candidate.as_str()) {
+                return;
+            }
+            (candidate.to_ascii_uppercase(), quoted[1].clone())
+        } else {
+            return;
+        };
+
+        let full_path = combine_paths(prefixes.get(router).map(String::as_str), &path);
+        let mut parameters = path_parameters(&full_path);
+        normalize_parameters(&mut parameters);
+        let start = node.start_position();
+        let end = node.end_position();
+        routes.push(IndexedRoute {
+            framework: framework.to_string(),
+            router_name: router.to_string(),
+            http_method,
+            path_template: full_path,
+            handler_name: None,
+            parameters,
+            request_content_type: None,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    });
+
+    (routes, mounts)
+}
+
+fn detect_go_route_framework(source: &str) -> Option<&'static str> {
+    if source.contains("github.com/gin-gonic/gin") {
+        return Some("gin");
+    }
+    if source.contains("github.com/labstack/echo") {
+        return Some("echo");
+    }
+    if source.contains("github.com/go-chi/chi") {
+        return Some("chi");
+    }
+    None
+}
+
+fn go_group_prefixes(
+    source: &str,
+    root: Node<'_>,
+    framework: &str,
+) -> (BTreeMap<String, String>, Vec<IndexedRouteMount>) {
+    let mut declarations = Vec::<(String, String, String, usize, usize)>::new();
+    walk(root, &mut |node| {
+        if !matches!(node.kind(), "short_var_declaration" | "var_declaration") {
+            return;
+        }
+        let Some(value) = text(source, node).map(str::trim) else {
+            return;
+        };
+        let Some(group_index) = value.find(".Group(") else {
+            return;
+        };
+        let left = value
+            .split_once(":=")
+            .or_else(|| value.split_once('='))
+            .map(|(left, _)| left.trim())
+            .unwrap_or("");
+        if !is_identifier(left) {
+            return;
+        }
+        let parent = value[..group_index]
+            .rsplit_once(['=', ' '])
+            .map(|(_, tail)| tail.trim())
+            .unwrap_or(&value[..group_index])
+            .trim();
+        if !is_identifier(parent) {
+            return;
+        }
+        let Some(prefix) = first_quoted_string(&value[group_index + ".Group(".len()..]) else {
+            return;
+        };
+        let start = node.start_position();
+        let end = node.end_position();
+        declarations.push((
+            left.to_string(),
+            parent.to_string(),
+            normalize_path(&prefix),
+            start.row + 1,
+            end.row + 1,
+        ));
+    });
+
+    let mut prefixes = BTreeMap::new();
+    let mut mounts = Vec::new();
+    for _ in 0..declarations.len().max(1) {
+        let mut changed = false;
+        for (child, parent, prefix, start_line, end_line) in &declarations {
+            let effective = combine_paths(prefixes.get(parent).map(String::as_str), prefix);
+            if prefixes.get(child) != Some(&effective) {
+                prefixes.insert(child.clone(), effective.clone());
+                changed = true;
+            }
+            mounts.push(IndexedRouteMount {
+                framework: framework.to_string(),
+                parent_router: parent.clone(),
+                mounted_binding: child.clone(),
+                prefix: prefix.clone(),
+                start_line: *start_line,
+                end_line: *end_line,
+            });
+        }
+        if !changed {
+            break;
+        }
+    }
+    mounts.sort_by(|left, right| {
+        (
+            &left.parent_router,
+            &left.mounted_binding,
+            &left.prefix,
+            left.start_line,
+        )
+            .cmp(&(
+                &right.parent_router,
+                &right.mounted_binding,
+                &right.prefix,
+                right.start_line,
+            ))
+    });
+    mounts.dedup_by(|left, right| {
+        left.framework == right.framework
+            && left.parent_router == right.parent_router
+            && left.mounted_binding == right.mounted_binding
+            && left.prefix == right.prefix
+            && left.start_line == right.start_line
+    });
+
+    (prefixes, mounts)
+}
+
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let mut models = BTreeMap::new();
     walk(root, &mut |node| {
@@ -1781,6 +1963,106 @@ Route::post('/login', [AuthController::class, 'login']);
                 && route.http_method == "POST"
                 && route.path_template == "/login"
         }));
+    }
+
+    #[test]
+    fn extracts_gin_routes_and_nested_groups() {
+        let source = r#"
+package main
+
+import "github.com/gin-gonic/gin"
+
+func main() {
+    r := gin.Default()
+    api := r.Group("/api")
+    v1 := api.Group("/v1")
+    v1.GET("/users/:id", showUser)
+    v1.POST("/users", createUser)
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_go::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, mounts, _handler_inputs) =
+            extract_routes("Go", "main.go", source, tree.root_node());
+        let get = routes
+            .iter()
+            .find(|route| {
+                route.framework == "gin"
+                    && route.http_method == "GET"
+                    && route.path_template == "/api/v1/users/:id"
+            })
+            .expect("gin GET route");
+        assert!(get
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "id" && parameter.location == "path"));
+        assert!(routes.iter().any(|route| {
+            route.framework == "gin"
+                && route.http_method == "POST"
+                && route.path_template == "/api/v1/users"
+        }));
+        assert!(mounts.iter().any(|mount| {
+            mount.framework == "gin"
+                && mount.parent_router == "r"
+                && mount.mounted_binding == "api"
+                && mount.prefix == "/api"
+        }));
+    }
+
+    #[test]
+    fn extracts_echo_and_chi_static_routes_without_generic_go_false_positives() {
+        let echo = r#"
+package main
+import "github.com/labstack/echo/v4"
+func routes(e *echo.Echo) {
+    e.GET("/health", health)
+    e.Add("POST", "/login", login)
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_go::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(echo, None).expect("tree");
+        let (routes, _, _) = extract_routes("Go", "echo.go", echo, tree.root_node());
+        assert!(routes.iter().any(|route| {
+            route.framework == "echo"
+                && route.http_method == "GET"
+                && route.path_template == "/health"
+        }));
+        assert!(routes.iter().any(|route| {
+            route.framework == "echo"
+                && route.http_method == "POST"
+                && route.path_template == "/login"
+        }));
+
+        let chi = r#"
+package main
+import "github.com/go-chi/chi/v5"
+func routes(r chi.Router) {
+    r.Get("/articles/{id}", show)
+}
+"#;
+        let tree = parser.parse(chi, None).expect("tree");
+        let (routes, _, _) = extract_routes("Go", "chi.go", chi, tree.root_node());
+        assert!(routes.iter().any(|route| {
+            route.framework == "chi"
+                && route.http_method == "GET"
+                && route.path_template == "/articles/{id}"
+        }));
+
+        let generic = r#"
+package main
+func fetch(client *Client) {
+    client.Get("/not-a-server-route")
+}
+"#;
+        let tree = parser.parse(generic, None).expect("tree");
+        let (routes, _, _) = extract_routes("Go", "client.go", generic, tree.root_node());
+        assert!(routes.is_empty());
     }
 
     #[test]
