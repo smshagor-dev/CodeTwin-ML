@@ -822,6 +822,7 @@ mod tests {
     fn endpoint(method: &str, source: &str, url: &str, parameter: &str, location: &str) -> EndpointObservation {
         EndpointObservation {
             url: url.into(),
+            route_template: None,
             method: method.into(),
             depth: 1,
             source: source.into(),
