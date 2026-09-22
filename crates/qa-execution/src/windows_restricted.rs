@@ -887,46 +887,6 @@ fn token_has_low_integrity(token: HANDLE) -> Result<bool, BackendExecutionError>
     Ok(unsafe { EqualSid(label.Label.Sid, low_sid.as_mut_ptr().cast::<c_void>()) } != 0)
 }
 
-fn token_information_buffer(
-    token: HANDLE,
-    information_class: i32,
-) -> Result<Vec<usize>, BackendExecutionError> {
-    let mut needed = 0u32;
-    unsafe {
-        GetTokenInformation(
-            token,
-            information_class,
-            std::ptr::null_mut(),
-            0,
-            &mut needed,
-        );
-    }
-    if needed == 0 {
-        return Err(BackendExecutionError::JobSetup(format!(
-            "GetTokenInformation({information_class}) reported a zero-sized result: {}",
-            std::io::Error::last_os_error()
-        )));
-    }
-    let words = (needed as usize).div_ceil(size_of::<usize>());
-    let mut storage = vec![0usize; words.max(1)];
-    if unsafe {
-        GetTokenInformation(
-            token,
-            information_class,
-            storage.as_mut_ptr().cast::<c_void>(),
-            needed,
-            &mut needed,
-        )
-    } == 0
-    {
-        return Err(BackendExecutionError::JobSetup(format!(
-            "GetTokenInformation({information_class}): {}",
-            std::io::Error::last_os_error()
-        )));
-    }
-    Ok(storage)
-}
-
 struct AppContainerProfileSid(PSID);
 
 impl AppContainerProfileSid {
