@@ -10,7 +10,7 @@ use std::{
 use codetwin_core::{
     AuthorizedWebSecurityStore, Database, GuidedSecurityStore, WebEndpointInput, WebEndpointRecord,
     WebEvidenceInput, WebEvidenceRecord, WebFindingFilter, WebFindingInput, WebFindingRecord,
-    WebScanCreate, WebScanRecord,
+    SourceRouteRecord, WebScanCreate, WebScanRecord, WebSourceEndpointLinkRecord,
 };
 use serde::Deserialize;
 use web_security_testing::{
@@ -443,6 +443,32 @@ pub fn list_web_security_endpoints(
     with_database(&state, |database| {
         AuthorizedWebSecurityStore::new(database)
             .list_endpoints(&scan_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+pub fn list_source_routes(
+    project_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SourceRouteRecord>, String> {
+    with_database(&state, |database| {
+        AuthorizedWebSecurityStore::new(database)
+            .list_source_routes(&project_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+pub fn list_web_source_endpoint_links(
+    scan_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<WebSourceEndpointLinkRecord>, String> {
+    with_database(&state, |database| {
+        AuthorizedWebSecurityStore::new(database)
+            .list_source_endpoint_links(&scan_id, limit)
             .map_err(|error| error.to_string())
     })
 }
