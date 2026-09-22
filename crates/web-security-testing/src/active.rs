@@ -703,6 +703,7 @@ fn send_payload(
     parameter: &str,
     payload: &str,
 ) -> Result<ObservedResponse, RequestError> {
+    crate::payload_policy::validate_active_payload(payload)?;
     let location = endpoint
         .parameter_locations
         .get(parameter)
