@@ -774,7 +774,9 @@ fn laravel_ancestor_prefix(source: &str, node: Node<'_>) -> Option<String> {
             current = parent.parent();
             continue;
         };
-        if value.contains("->group(") || value.contains("Route::group(") {
+        if parent.kind().contains("call")
+            && (value.contains("->group(") || value.contains("Route::group("))
+        {
             if let Some(prefix) = laravel_chain_prefix(value) {
                 prefixes.push(prefix);
             }
@@ -787,10 +789,12 @@ fn laravel_ancestor_prefix(source: &str, node: Node<'_>) -> Option<String> {
     prefixes.reverse();
     let mut combined = String::new();
     for prefix in prefixes {
-        combined = combine_paths(
-            (!combined.is_empty()).then_some(combined.as_str()),
-            &prefix,
-        );
+        let next = if combined.is_empty() {
+            combine_paths(None, &prefix)
+        } else {
+            combine_paths(Some(combined.as_str()), &prefix)
+        };
+        combined = next;
     }
     Some(combined)
 }
