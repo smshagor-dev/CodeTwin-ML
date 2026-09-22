@@ -123,12 +123,12 @@ mod tests {
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites','web_security_scans','web_security_endpoints','web_security_findings','web_security_evidence','guided_security_sessions','guided_security_plan_items','guided_security_activity','guided_security_source_candidates','guided_security_finding_lifecycle','guided_security_retests','guided_security_comparisons','guided_security_fix_links','security_fix_attempts','security_fix_validation_results','security_fix_events',
                               'security_remediation_campaigns','security_remediation_campaign_findings',
                               'security_remediation_campaign_relationships','security_remediation_campaign_events',
-                              'source_routes','source_route_mounts','web_source_endpoint_links')",
+                              'source_routes','source_handler_inputs','source_route_mounts','web_source_endpoint_links')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 53);
+        assert_eq!(count, 54);
     }
 
     #[test]
@@ -162,6 +162,7 @@ mod tests {
                     "ALTER TABLE import_references DROP COLUMN bindings_json;
                      DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_route_mounts;
+                     DROP TABLE source_handler_inputs;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
@@ -230,6 +231,7 @@ mod tests {
                     "ALTER TABLE import_references DROP COLUMN bindings_json;
                      DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_route_mounts;
+                     DROP TABLE source_handler_inputs;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
@@ -282,6 +284,7 @@ mod tests {
                      ALTER TABLE web_security_endpoints DROP COLUMN route_template;
                      DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_route_mounts;
+                     DROP TABLE source_handler_inputs;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
@@ -372,6 +375,7 @@ mod tests {
                      ALTER TABLE web_security_endpoints DROP COLUMN route_template;
                      DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_route_mounts;
+                     DROP TABLE source_handler_inputs;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
@@ -447,7 +451,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("schema-19 data preserved");
-        assert_eq!(tables, 3);
+        assert_eq!(tables, 4);
         assert_eq!(migration, 1);
         assert_eq!(preserved, 5);
         drop(upgraded);
@@ -507,6 +511,7 @@ mod tests {
                      ALTER TABLE web_security_endpoints DROP COLUMN route_template;
                      DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_route_mounts;
+                     DROP TABLE source_handler_inputs;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
@@ -579,6 +584,7 @@ mod tests {
                      ALTER TABLE web_security_endpoints DROP COLUMN route_template;
                      DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_route_mounts;
+                     DROP TABLE source_handler_inputs;
                      DROP TABLE source_routes;
                      DELETE FROM schema_migrations WHERE version=22;",
                 )
@@ -590,7 +596,7 @@ mod tests {
             .connection()
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
-                 AND name IN ('source_routes','source_route_mounts','web_source_endpoint_links')",
+                 AND name IN ('source_routes','source_handler_inputs','source_route_mounts','web_source_endpoint_links')",
                 [],
                 |row| row.get(0),
             )
