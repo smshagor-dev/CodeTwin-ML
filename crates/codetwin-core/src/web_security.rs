@@ -115,6 +115,7 @@ pub struct SourceRouteRecord {
     pub handler_symbol_name: Option<String>,
     pub framework: String,
     pub router_name: String,
+    pub router_prefix: String,
     pub http_method: String,
     pub path_template: String,
     pub handler_name: Option<String>,
@@ -141,6 +142,7 @@ struct ResolvedRouteMount {
     mounted_binding: String,
     imported_name: String,
     prefix: String,
+    prefix_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -667,7 +669,8 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                     sr.symbol_id, s.name,
                     sr.handler_file_id, hf.relative_path,
                     sr.handler_symbol_id, hs.name,
-                    sr.framework, sr.router_name, sr.http_method, sr.path_template,
+                    sr.framework, sr.router_name, sr.router_prefix,
+                    sr.http_method, sr.path_template,
                     sr.handler_name, sr.parameter_names_json, sr.parameter_locations_json,
                     sr.request_content_type, sr.source_content_hash,
                     sr.start_line, sr.end_line
@@ -681,8 +684,8 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
              LIMIT ?2",
         )?;
         let rows = statement.query_map(params![project_id, MAX_SOURCE_ROUTES as i64], |row| {
-            let parameter_names_json: String = row.get(15)?;
-            let parameter_locations_json: String = row.get(16)?;
+            let parameter_names_json: String = row.get(16)?;
+            let parameter_locations_json: String = row.get(17)?;
             Ok(SourceRouteRecord {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
@@ -696,15 +699,16 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 handler_symbol_name: row.get(9)?,
                 framework: row.get(10)?,
                 router_name: row.get(11)?,
-                http_method: row.get(12)?,
-                path_template: row.get(13)?,
-                handler_name: row.get(14)?,
+                router_prefix: row.get(12)?,
+                http_method: row.get(13)?,
+                path_template: row.get(14)?,
+                handler_name: row.get(15)?,
                 parameter_names: serde_json::from_str(&parameter_names_json).unwrap_or_default(),
                 parameter_locations: serde_json::from_str(&parameter_locations_json).unwrap_or_default(),
-                request_content_type: row.get(17)?,
-                source_content_hash: row.get(18)?,
-                start_line: row.get::<_, i64>(19)?.max(0) as usize,
-                end_line: row.get::<_, i64>(20)?.max(0) as usize,
+                request_content_type: row.get(18)?,
+                source_content_hash: row.get(19)?,
+                start_line: row.get::<_, i64>(20)?.max(0) as usize,
+                end_line: row.get::<_, i64>(21)?.max(0) as usize,
             })
         })?;
         let mut values = Vec::new();
@@ -725,7 +729,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
     ) -> Result<Vec<ResolvedRouteMount>, WebSecurityStoreError> {
         let mut statement = self.database.connection().prepare(
             "SELECT m.source_file_id, m.framework, m.parent_router,
-                    m.mounted_binding, m.prefix,
+                    m.mounted_binding, m.prefix, m.prefix_mode,
                     i.resolved_target_file_id, i.bindings_json
              FROM source_route_mounts m
              JOIN import_references i
@@ -746,6 +750,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
                 row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
             ))
         })?;
         let mut output = Vec::new();
@@ -757,6 +762,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 parent_router,
                 mounted_binding,
                 prefix,
+                prefix_mode,
                 target_file_id,
                 bindings_json,
             ) = row?;
@@ -774,6 +780,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                     mounted_binding.clone(),
                     binding.imported_name.clone(),
                     prefix.clone(),
+                    prefix_mode.clone(),
                 );
                 if !seen.insert(identity) {
                     continue;
@@ -786,6 +793,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                     mounted_binding: mounted_binding.clone(),
                     imported_name: binding.imported_name,
                     prefix: prefix.clone(),
+                    prefix_mode: prefix_mode.clone(),
                 });
             }
         }
@@ -1489,16 +1497,22 @@ fn expand_source_route_mounts(
             &mut path_edges,
             0,
             "",
+            false,
             &mut prefixes,
         );
         if prefixes.is_empty() {
-            prefixes.push(String::new());
+            prefixes.push((String::new(), false));
         }
         prefixes.sort();
         prefixes.dedup();
 
-        for prefix in prefixes {
-            let effective_path = combine_route_paths(&prefix, &route.path_template);
+        for (prefix, override_router_prefix) in prefixes {
+            let declared_path = if override_router_prefix {
+                strip_route_router_prefix(&route.path_template, &route.router_prefix)
+            } else {
+                route.path_template.clone()
+            };
+            let effective_path = combine_route_paths(&prefix, &declared_path);
             let identity = (route.id.clone(), effective_path.clone());
             if !seen.insert(identity) {
                 continue;
@@ -1534,11 +1548,12 @@ fn collect_route_mount_prefixes(
     path_edges: &mut BTreeSet<String>,
     depth: usize,
     accumulated_prefix: &str,
-    output: &mut Vec<String>,
+    override_router_prefix: bool,
+    output: &mut Vec<(String, bool)>,
 ) {
     if depth >= 8 {
         if !accumulated_prefix.is_empty() {
-            output.push(accumulated_prefix.to_string());
+            output.push((accumulated_prefix.to_string(), override_router_prefix));
         }
         return;
     }
@@ -1554,7 +1569,7 @@ fn collect_route_mount_prefixes(
 
     if incoming.is_empty() {
         if !accumulated_prefix.is_empty() {
-            output.push(accumulated_prefix.to_string());
+            output.push((accumulated_prefix.to_string(), override_router_prefix));
         }
         return;
     }
@@ -1574,6 +1589,8 @@ fn collect_route_mount_prefixes(
         }
         traversed = true;
         let next_prefix = combine_route_paths(&mount.prefix, accumulated_prefix);
+        let next_override =
+            override_router_prefix || mount.prefix_mode == "override_router_prefix";
         collect_route_mount_prefixes(
             &mount.source_file_id,
             framework,
@@ -1582,18 +1599,35 @@ fn collect_route_mount_prefixes(
             path_edges,
             depth + 1,
             &next_prefix,
+            next_override,
             output,
         );
         path_edges.remove(&edge_key);
     }
 
     if !traversed && !accumulated_prefix.is_empty() {
-        output.push(accumulated_prefix.to_string());
+        output.push((accumulated_prefix.to_string(), override_router_prefix));
     }
 }
 
 fn import_binding_matches_router(imported_name: &str, router_name: &str) -> bool {
     matches!(imported_name, "default" | "*") || imported_name == router_name
+}
+
+fn strip_route_router_prefix(path: &str, router_prefix: &str) -> String {
+    let path = normalize_route_path(path);
+    let prefix = normalize_route_path(router_prefix);
+    if router_prefix.trim().is_empty() || prefix == "/" {
+        return path;
+    }
+    if path == prefix {
+        return "/".to_string();
+    }
+    let marker = format!("{prefix}/");
+    if let Some(rest) = path.strip_prefix(&marker) {
+        return normalize_route_path(rest);
+    }
+    path
 }
 
 fn combine_route_paths(prefix: &str, path: &str) -> String {
