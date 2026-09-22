@@ -659,7 +659,11 @@ def resolve_model_for_inference(
 
     candidates = []
     for path, metadata in _ready_entries(model_root):
-        if action not in metadata["actions"] or not _execution_supported(metadata):
+        if (
+            action not in metadata["actions"]
+            or metadata.get("backend") != "onnx-classification-v1"
+            or not _execution_supported(metadata)
+        ):
             continue
         if model_id is not None and metadata["id"] != model_id:
             continue
@@ -708,6 +712,28 @@ def resolve_model_for_generation(
             "multiple generation-ready models match; specify both model_id and model_version"
         )
     return candidates[0]
+
+def generation_plan(action: str, *, model_root: Path | str | None = None) -> dict[str, Any]:
+    model_route = route_model(action, model_root=model_root)
+    models = [
+        item
+        for item in model_route["models"]
+        if item.get("backend") == "gguf-llama-cpp-v1"
+        and item.get("execution_supported")
+    ]
+    dataset_catalog = load_catalog()
+    return {
+        "action": action,
+        "status": "ready" if models else "model_unavailable",
+        "models": models,
+        "dataset_provenance": list(dataset_catalog["routes"][action]),
+        "execution_implemented": True,
+        "output_schema": "codetwin-safe-advisory-v1",
+        "note": (
+            "Generative models produce bounded structured advisory/probe-intent output only. "
+            "They cannot submit arbitrary payload text to live targets."
+        ),
+    }
 
 
 def inference_plan(action: str, *, model_root: Path | str | None = None) -> dict[str, Any]:
