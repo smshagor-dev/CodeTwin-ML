@@ -22,6 +22,7 @@ const MAX_SOURCE_BYTES: u64 = 65_536;
 const MAX_REQUEST_BYTES: usize = 131_072;
 const MAX_RESPONSE_BYTES: u64 = 1_048_576;
 const SIDECAR_TIMEOUT: Duration = Duration::from_secs(15);
+const GENERATION_SIDECAR_TIMEOUT: Duration = Duration::from_secs(100);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -361,6 +362,11 @@ fn sidecar_request(
         .map_err(|error| format!("cannot write ML sidecar request: {error}"))?;
     drop(stdin);
 
+    let timeout = if method == "generation.run" {
+        GENERATION_SIDECAR_TIMEOUT
+    } else {
+        SIDECAR_TIMEOUT
+    };
     let started = Instant::now();
     let status = loop {
         match child
@@ -368,12 +374,12 @@ fn sidecar_request(
             .map_err(|error| format!("cannot wait for ML sidecar: {error}"))?
         {
             Some(status) => break status,
-            None if started.elapsed() >= SIDECAR_TIMEOUT => {
+            None if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!(
                     "ML sidecar exceeded the {} second request timeout",
-                    SIDECAR_TIMEOUT.as_secs()
+                    timeout.as_secs()
                 ));
             }
             None => thread::sleep(Duration::from_millis(20)),
