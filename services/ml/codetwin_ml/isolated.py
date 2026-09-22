@@ -13,6 +13,7 @@ WORKER_PROTOCOL_VERSION = 1
 MAX_WORKER_REQUEST_BYTES = 131_072
 MAX_WORKER_RESPONSE_BYTES = 1_048_576
 WORKER_TIMEOUT_SECONDS = 15
+GENERATION_WORKER_TIMEOUT_SECONDS = 90
 
 _WORKER_ENV_ALLOWLIST = (
     "SYSTEMROOT",
@@ -82,7 +83,11 @@ def _run_isolated(
         "stderr": subprocess.DEVNULL,
         "cwd": str(root),
         "env": environment,
-        "timeout": WORKER_TIMEOUT_SECONDS,
+        "timeout": (
+            GENERATION_WORKER_TIMEOUT_SECONDS
+            if operation == "generation"
+            else WORKER_TIMEOUT_SECONDS
+        ),
         "check": False,
     }
     if os.name == "nt":
@@ -94,8 +99,13 @@ def _run_isolated(
             **kwargs,
         )
     except subprocess.TimeoutExpired as error:
+        timeout_seconds = (
+            GENERATION_WORKER_TIMEOUT_SECONDS
+            if operation == "generation"
+            else WORKER_TIMEOUT_SECONDS
+        )
         raise InferenceRuntimeError(
-            f"isolated ML worker exceeded the {WORKER_TIMEOUT_SECONDS} second timeout"
+            f"isolated ML worker exceeded the {timeout_seconds} second timeout"
         ) from error
     except OSError as error:
         raise InferenceRuntimeError(f"cannot start isolated ML worker: {error}") from error
