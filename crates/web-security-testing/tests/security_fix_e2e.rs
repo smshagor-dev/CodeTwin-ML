@@ -1042,6 +1042,8 @@ fn unable_to_verify_never_becomes_fixed_when_local_target_is_down() {
             excluded_paths: vec![],
             max_crawl_depth: 0,
             max_requests: 12,
+            max_requests_per_endpoint: 12,
+            min_request_interval_ms: 0,
             concurrency: 1,
             timeout_ms: 150,
             response_limit_bytes: 16_384,
