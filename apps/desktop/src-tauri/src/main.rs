@@ -46,7 +46,8 @@ use guided_security_commands::{
 };
 use ml_commands::{
     link_ml_finding, list_ml_finding_links, ml_inference_history, ml_inference_plan, ml_models,
-    ml_sidecar_capabilities, ml_sidecar_health, run_ml_file_generation, run_ml_file_inference,
+    ml_sidecar_capabilities, ml_sidecar_health, ml_sidecar_identity, run_ml_file_generation,
+    run_ml_file_inference,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
@@ -675,6 +676,7 @@ fn main() {
             list_qa_execution_runs,
             run_qa_execution_plan,
             cancel_qa_execution,
+            ml_sidecar_identity,
             ml_sidecar_health,
             ml_sidecar_capabilities,
             ml_models,

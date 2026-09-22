@@ -25,6 +25,8 @@ const MAX_REQUEST_BYTES: usize = 131_072;
 const MAX_RESPONSE_BYTES: u64 = 1_048_576;
 const SIDECAR_TIMEOUT: Duration = Duration::from_secs(15);
 const GENERATION_SIDECAR_TIMEOUT: Duration = Duration::from_secs(105);
+const MAX_SIDECAR_CODE_FILES: usize = 512;
+const MAX_SIDECAR_CODE_BYTES: u64 = 16 * 1024 * 1024;
 #[cfg(windows)]
 const ML_SIDECAR_JOB_MEMORY_BYTES: u64 = 12 * 1024 * 1024 * 1024;
 #[cfg(windows)]
@@ -282,6 +284,21 @@ impl Drop for MlSidecarContainment {
 pub(crate) struct MlSidecarConfig {
     pub python_executable: String,
     pub sidecar_root: String,
+    #[serde(default)]
+    pub python_executable_sha256: Option<String>,
+    #[serde(default)]
+    pub sidecar_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MlSidecarIdentity {
+    pub python_executable: String,
+    pub sidecar_root: String,
+    pub python_executable_sha256: String,
+    pub sidecar_digest: String,
+    pub code_file_count: usize,
+    pub code_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -334,12 +351,127 @@ pub(crate) struct MlSidecarStatus {
     pub sidecar_root: String,
     pub health: Value,
     pub containment: MlContainmentStatus,
+    pub identity: MlSidecarIdentity,
 }
 
 #[derive(Debug)]
 struct ValidatedSidecar {
     python_executable: PathBuf,
     sidecar_root: PathBuf,
+    python_executable_sha256: String,
+    sidecar_digest: String,
+    code_files: Vec<PathBuf>,
+    code_bytes: u64,
+}
+
+impl ValidatedSidecar {
+    fn public_identity(&self) -> MlSidecarIdentity {
+        MlSidecarIdentity {
+            python_executable: self.python_executable.display().to_string(),
+            sidecar_root: self.sidecar_root.display().to_string(),
+            python_executable_sha256: self.python_executable_sha256.clone(),
+            sidecar_digest: self.sidecar_digest.clone(),
+            code_file_count: self.code_files.len(),
+            code_bytes: self.code_bytes,
+        }
+    }
+}
+
+struct MlSidecarIntegrityLocks {
+    #[cfg(windows)]
+    handles: Vec<windows_sys::Win32::Foundation::HANDLE>,
+}
+
+impl MlSidecarIntegrityLocks {
+    fn acquire(sidecar: &ValidatedSidecar) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::{
+                Foundation::{CloseHandle, GENERIC_READ, INVALID_HANDLE_VALUE},
+                Storage::FileSystem::{
+                    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, OPEN_EXISTING,
+                },
+            };
+
+            let mut handles = Vec::with_capacity(sidecar.code_files.len() + 1);
+            let mut paths = Vec::with_capacity(sidecar.code_files.len() + 1);
+            paths.push(sidecar.python_executable.as_path());
+            paths.extend(sidecar.code_files.iter().map(PathBuf::as_path));
+
+            for path in paths {
+                let wide: Vec<u16> = path
+                    .as_os_str()
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let handle = unsafe {
+                    CreateFileW(
+                        wide.as_ptr(),
+                        GENERIC_READ,
+                        FILE_SHARE_READ,
+                        std::ptr::null(),
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if handle == INVALID_HANDLE_VALUE {
+                    for opened in handles.drain(..) {
+                        unsafe { CloseHandle(opened) };
+                    }
+                    return Err(format!(
+                        "cannot lock trusted ML file against write/delete replacement: {} ({})",
+                        path.display(),
+                        std::io::Error::last_os_error()
+                    ));
+                }
+                handles.push(handle);
+            }
+
+            return Ok(Self { handles });
+        }
+
+        #[cfg(not(windows))]
+        {
+            let _ = sidecar;
+            Ok(Self {})
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for MlSidecarIntegrityLocks {
+    fn drop(&mut self) {
+        for handle in self.handles.drain(..) {
+            if handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                unsafe {
+                    windows_sys::Win32::Foundation::CloseHandle(handle);
+                }
+            }
+        }
+    }
+}
+
+struct MlPycacheDirectory(PathBuf);
+
+impl MlPycacheDirectory {
+    fn create() -> Result<Self, String> {
+        let path = std::env::temp_dir().join(format!("codetwin-ml-pycache-{}", time_nonce()));
+        fs::create_dir(&path)
+            .map_err(|error| format!("cannot create isolated ML Python cache: {error}"))?;
+        Ok(Self(path))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for MlPycacheDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 #[derive(Debug)]
@@ -350,18 +482,31 @@ struct IndexedSource {
 }
 
 #[tauri::command]
+pub(crate) async fn ml_sidecar_identity(
+    config: MlSidecarConfig,
+) -> Result<MlSidecarIdentity, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        inspect_sidecar_identity(&config).map(|sidecar| sidecar.public_identity())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub(crate) async fn ml_sidecar_health(
     config: MlSidecarConfig,
 ) -> Result<MlSidecarStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let validated = validate_sidecar(&config)?;
         let health = sidecar_request(&validated, "health", json!({}))?;
+        let identity = validated.public_identity();
         Ok(MlSidecarStatus {
             configured: true,
             python_executable: validated.python_executable.display().to_string(),
             sidecar_root: validated.sidecar_root.display().to_string(),
             health,
             containment: ml_containment_status(),
+            identity,
         })
     })
     .await
@@ -574,6 +719,27 @@ pub(crate) fn list_ml_finding_links(
 }
 
 fn validate_sidecar(config: &MlSidecarConfig) -> Result<ValidatedSidecar, String> {
+    let validated = inspect_sidecar_identity(config)?;
+    let expected_python = config
+        .python_executable_sha256
+        .as_deref()
+        .ok_or_else(|| "Python executable SHA-256 pin is required; inspect and trust the sidecar first".to_string())?;
+    let expected_sidecar = config
+        .sidecar_digest
+        .as_deref()
+        .ok_or_else(|| "ML sidecar source digest pin is required; inspect and trust the sidecar first".to_string())?;
+    validate_sha256_pin(expected_python, "Python executable SHA-256")?;
+    validate_sha256_pin(expected_sidecar, "ML sidecar digest")?;
+    if !validated.python_executable_sha256.eq_ignore_ascii_case(expected_python) {
+        return Err("Python executable SHA-256 no longer matches the trusted pin".to_string());
+    }
+    if !validated.sidecar_digest.eq_ignore_ascii_case(expected_sidecar) {
+        return Err("ML sidecar source digest no longer matches the trusted pin".to_string());
+    }
+    Ok(validated)
+}
+
+fn inspect_sidecar_identity(config: &MlSidecarConfig) -> Result<ValidatedSidecar, String> {
     let python = validate_absolute_regular_file(&config.python_executable, "Python executable")?;
     #[cfg(unix)]
     {
@@ -614,10 +780,164 @@ fn validate_sidecar(config: &MlSidecarConfig) -> Result<ValidatedSidecar, String
         }
     }
 
+    let python_executable_sha256 = sha256_file(&python, None, "Python executable")?.0;
+    let (sidecar_digest, code_files, code_bytes) = sidecar_source_digest(&root)?;
+
     Ok(ValidatedSidecar {
         python_executable: python,
         sidecar_root: root,
+        python_executable_sha256,
+        sidecar_digest,
+        code_files,
+        code_bytes,
     })
+}
+
+fn validate_sha256_pin(value: &str, label: &str) -> Result<(), String> {
+    if value.len() != 64 || !value.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err(format!("{label} must be a 64-character hexadecimal SHA-256"));
+    }
+    Ok(())
+}
+
+fn sha256_file(
+    path: &Path,
+    max_bytes: Option<u64>,
+    label: &str,
+) -> Result<(String, u64), String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("cannot open {label} for hashing: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("cannot hash {label}: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read as u64);
+        if max_bytes.is_some_and(|limit| total > limit) {
+            return Err(format!("{label} exceeds the bounded hash size"));
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok((format!("{:x}", hasher.finalize()), total))
+}
+
+fn sidecar_source_digest(root: &Path) -> Result<(String, Vec<PathBuf>, u64), String> {
+    let mut files = Vec::new();
+    collect_sidecar_python_files(root, root, &mut files)?;
+    if files.is_empty() {
+        return Err("ML sidecar root contains no trusted Python source files".to_string());
+    }
+    if files.len() > MAX_SIDECAR_CODE_FILES {
+        return Err(format!(
+            "ML sidecar contains too many Python source files: {} > {MAX_SIDECAR_CODE_FILES}",
+            files.len()
+        ));
+    }
+    files.sort();
+
+    let mut digest = Sha256::new();
+    digest.update(b"codetwin-ml-sidecar-source-v1\0");
+    let mut total_bytes = 0u64;
+    for path in &files {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| "ML sidecar source escaped configured root".to_string())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let remaining = MAX_SIDECAR_CODE_BYTES.saturating_sub(total_bytes);
+        let (file_hash, size) = sha256_file(path, Some(remaining), &relative)?;
+        total_bytes = total_bytes.saturating_add(size);
+        if total_bytes > MAX_SIDECAR_CODE_BYTES {
+            return Err(format!(
+                "ML sidecar Python source exceeds {MAX_SIDECAR_CODE_BYTES} bytes"
+            ));
+        }
+        digest.update(relative.as_bytes());
+        digest.update([0]);
+        digest.update(size.to_le_bytes());
+        digest.update([0]);
+        digest.update(file_hash.as_bytes());
+        digest.update([0]);
+    }
+
+    Ok((format!("{:x}", digest.finalize()), files, total_bytes))
+}
+
+fn collect_sidecar_python_files(
+    root: &Path,
+    directory: &Path,
+    output: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let mut entries: Vec<_> = fs::read_dir(directory)
+        .map_err(|error| format!("cannot read ML sidecar directory {}: {error}", directory.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("cannot enumerate ML sidecar directory: {error}"))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if matches!(
+            name.as_ref(),
+            ".git" | ".venv" | "venv" | "__pycache__" | "node_modules" | "target" | "dist" | "build"
+        ) {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("cannot inspect ML sidecar entry {}: {error}", path.display()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "ML sidecar source tree contains a symlink: {}",
+                path.display()
+            ));
+        }
+        if metadata.is_dir() {
+            collect_sidecar_python_files(root, &path, output)?;
+            continue;
+        }
+        if !metadata.is_file() || path.extension().and_then(|value| value.to_str()) != Some("py") {
+            continue;
+        }
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("cannot canonicalize sidecar source {}: {error}", path.display()))?;
+        if !canonical.starts_with(root) {
+            return Err(format!(
+                "ML sidecar source escapes configured root: {}",
+                path.display()
+            ));
+        }
+        output.push(canonical);
+        if output.len() > MAX_SIDECAR_CODE_FILES {
+            return Err(format!(
+                "ML sidecar contains more than {MAX_SIDECAR_CODE_FILES} Python source files"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn revalidate_sidecar_identity(sidecar: &ValidatedSidecar) -> Result<(), String> {
+    let (python_hash, _) =
+        sha256_file(&sidecar.python_executable, None, "Python executable")?;
+    if !python_hash.eq_ignore_ascii_case(&sidecar.python_executable_sha256) {
+        return Err("Python executable changed during ML request".to_string());
+    }
+    let (sidecar_digest, current_files, current_bytes) =
+        sidecar_source_digest(&sidecar.sidecar_root)?;
+    if !sidecar_digest.eq_ignore_ascii_case(&sidecar.sidecar_digest)
+        || current_files != sidecar.code_files
+        || current_bytes != sidecar.code_bytes
+    {
+        return Err("ML sidecar source changed during ML request".to_string());
+    }
+    Ok(())
 }
 
 fn validate_absolute_regular_file(value: &str, label: &str) -> Result<PathBuf, String> {
@@ -657,6 +977,10 @@ fn sidecar_request(
         return Err(format!("ML sidecar request exceeds {MAX_REQUEST_BYTES} bytes"));
     }
 
+    let _integrity_locks = MlSidecarIntegrityLocks::acquire(sidecar)?;
+    revalidate_sidecar_identity(sidecar)?;
+    let pycache = MlPycacheDirectory::create()?;
+
     let mut command = Command::new(&sidecar.python_executable);
     command
         .arg("-m")
@@ -664,6 +988,9 @@ fn sidecar_request(
         .current_dir(&sidecar.sidecar_root)
         .env_clear()
         .env("PYTHONPATH", &sidecar.sidecar_root)
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONSAFEPATH", "1")
+        .env("PYTHONPYCACHEPREFIX", pycache.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -753,6 +1080,8 @@ fn sidecar_request(
     if !status.success() {
         return Err(format!("ML sidecar exited with status {status}"));
     }
+
+    revalidate_sidecar_identity(sidecar)?;
 
     let response: Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid ML sidecar JSON response: {error}"))?;
@@ -971,13 +1300,123 @@ fn time_nonce() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::ml_containment_status;
+    use std::{fs, path::PathBuf};
+
+    use super::{
+        inspect_sidecar_identity, ml_containment_status, time_nonce, validate_sidecar,
+        MlSidecarConfig,
+    };
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "codetwin-ml-identity-test-{}",
+                time_nonce()
+            ));
+            fs::create_dir(&path).expect("create test directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_sidecar() -> (TestDirectory, MlSidecarConfig) {
+        let directory = TestDirectory::new();
+        let package = directory.path().join("codetwin_ml");
+        fs::create_dir(&package).expect("create package");
+        fs::write(package.join("main.py"), "from codetwin_ml import protocol\n")
+            .expect("main.py");
+        fs::write(package.join("protocol.py"), "PROTOCOL = 1\n")
+            .expect("protocol.py");
+        fs::write(package.join("worker.py"), "VALUE = 1\n").expect("worker.py");
+
+        let config = MlSidecarConfig {
+            python_executable: std::env::current_exe()
+                .expect("current executable")
+                .display()
+                .to_string(),
+            sidecar_root: directory.path().display().to_string(),
+            python_executable_sha256: None,
+            sidecar_digest: None,
+        };
+        (directory, config)
+    }
 
     #[test]
     fn containment_status_does_not_claim_filesystem_or_network_isolation() {
         let status = ml_containment_status();
         assert!(!status.filesystem_isolation);
         assert!(!status.network_isolation);
+    }
+
+    #[test]
+    fn sidecar_identity_is_deterministic_and_execution_requires_pins() {
+        let (_directory, config) = test_sidecar();
+        let first = inspect_sidecar_identity(&config).expect("first identity");
+        let second = inspect_sidecar_identity(&config).expect("second identity");
+        assert_eq!(first.python_executable_sha256, second.python_executable_sha256);
+        assert_eq!(first.sidecar_digest, second.sidecar_digest);
+        assert_eq!(first.code_files, second.code_files);
+        assert_eq!(first.code_files.len(), 3);
+        assert!(validate_sidecar(&config)
+            .expect_err("missing pins must fail")
+            .contains("SHA-256 pin is required"));
+
+        let pinned = MlSidecarConfig {
+            python_executable: config.python_executable,
+            sidecar_root: config.sidecar_root,
+            python_executable_sha256: Some(first.python_executable_sha256),
+            sidecar_digest: Some(first.sidecar_digest),
+        };
+        validate_sidecar(&pinned).expect("matching pins");
+    }
+
+    #[test]
+    fn sidecar_source_change_invalidates_trusted_digest() {
+        let (directory, config) = test_sidecar();
+        let identity = inspect_sidecar_identity(&config).expect("identity");
+        let pinned = MlSidecarConfig {
+            python_executable: config.python_executable,
+            sidecar_root: config.sidecar_root,
+            python_executable_sha256: Some(identity.python_executable_sha256),
+            sidecar_digest: Some(identity.sidecar_digest),
+        };
+        fs::write(
+            directory.path().join("codetwin_ml/protocol.py"),
+            "PROTOCOL = 2\n",
+        )
+        .expect("mutate protocol");
+        assert!(validate_sidecar(&pinned)
+            .expect_err("changed sidecar must fail")
+            .contains("source digest no longer matches"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_source_tree_rejects_symlinked_python_files() {
+        use std::os::unix::fs::symlink;
+
+        let (directory, config) = test_sidecar();
+        let outside = directory.path().join("outside.py");
+        fs::write(&outside, "VALUE = 2\n").expect("outside source");
+        symlink(
+            &outside,
+            directory.path().join("codetwin_ml/linked.py"),
+        )
+        .expect("create source symlink");
+        assert!(inspect_sidecar_identity(&config)
+            .expect_err("source symlink must fail")
+            .contains("contains a symlink"));
     }
 
     #[cfg(windows)]

@@ -42,6 +42,21 @@ The implementation never raises an existing hard limit. Unsupported resource typ
 
 The existing ONNX adapter restrictions still apply inside the worker: one verified single-file ONNX model, no ONNX external tensor data, CPU provider only, sequential execution, one intra-op thread, one inter-op thread, bounded input, bounded labels/output, and manifest-checked model I/O.
 
+## Trusted sidecar identity
+
+The desktop no longer treats an arbitrary configured Python executable and `services/ml` directory as trusted merely because they contain the expected entrypoint files.
+
+Trust is established in two phases:
+
+1. `ml_sidecar_identity` performs a **non-executing** inspection. It canonicalizes the configured Python executable and sidecar root, hashes the Python executable, and builds a deterministic digest over the bounded regular, non-symlink `.py` source tree.
+2. Health, model inventory, classification and generation requests require the expected Python SHA-256 and sidecar source digest. Every request recomputes and compares those pins before launch.
+
+The sidecar digest is domain-separated, path-aware, size-aware, deterministic, and bounded to 512 Python files / 16 MiB. Source symlinks are rejected rather than followed. Path changes clear the desktop trust state. Existing persisted pins are verified on reconnect; an identity change is rejected until the user explicitly forgets the old trust pin and trusts the new identity.
+
+On Windows the desktop additionally keeps read-only handles to the pinned Python executable and all hashed sidecar Python source files for the request lifetime with write/delete sharing denied. The identity is re-attested again after the child exits before its response is accepted. On all platforms Python bytecode output is redirected to a fresh per-request cache directory, user-site imports are disabled, and the sidecar root is supplied explicitly through the sanitized environment.
+
+These pins do **not** hash the entire Python installation, system site-packages, native extension modules, operating-system DLLs, or every transitive dependency. Those components remain part of the explicitly trusted local runtime boundary; the identity mechanism must not be described as a complete supply-chain sandbox.
+
 ## Windows desktop process-tree containment
 
 When the desktop app starts the local ML sidecar on Windows, it creates the Python sidecar **suspended**, places it in a Job Object, and only then resumes its initial thread. The Job Object uses kill-on-close, an aggregate memory ceiling, an active-process limit, a bounded aggregate user-mode CPU-time budget, and terminate-on-unhandled-exception behavior. Because the inference worker and trusted llama.cpp CLI are descendants of that sidecar and no breakaway flag is requested, they remain in the same process-tree containment boundary.
