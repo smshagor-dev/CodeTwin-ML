@@ -181,13 +181,36 @@ impl MlSidecarContainment {
     fn terminate_tree(&self, child: &mut Child) {
         #[cfg(windows)]
         {
-            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::{
+                Foundation::{HANDLE, WAIT_OBJECT_0},
+                System::{
+                    JobObjects::TerminateJobObject,
+                    Threading::WaitForSingleObject,
+                },
+            };
             unsafe {
                 TerminateJobObject(self.job, 1);
             }
+            let wait = unsafe {
+                WaitForSingleObject(
+                    child.as_raw_handle() as HANDLE,
+                    ML_SIDECAR_TERMINATION_WAIT_MS,
+                )
+            };
+            if wait == WAIT_OBJECT_0 {
+                let _ = child.wait();
+            } else {
+                let _ = child.kill();
+            }
+            return;
         }
-        let _ = child.kill();
-        let _ = child.wait();
+
+        #[cfg(not(windows))]
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     fn terminate_descendants_after_exit(&self) {
