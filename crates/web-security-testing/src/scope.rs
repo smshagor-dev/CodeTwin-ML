@@ -35,6 +35,8 @@ impl ScopePolicy {
         config.max_crawl_depth = config.max_crawl_depth.min(8);
         config.max_requests = config.max_requests.clamp(1, 2_000);
         config.concurrency = config.concurrency.clamp(1, 8);
+        config.requests_per_second = config.requests_per_second.clamp(0.25, 20.0);
+        config.burst_requests = config.burst_requests.clamp(1, 16);
         config.timeout_ms = config.timeout_ms.clamp(500, 30_000);
         config.response_limit_bytes = config.response_limit_bytes.clamp(16_384, 2_097_152);
         config.redirect_limit = config.redirect_limit.min(8);
@@ -259,6 +261,8 @@ mod tests {
             max_crawl_depth: 3,
             max_requests: 100,
             concurrency: 2,
+            requests_per_second: 4.0,
+            burst_requests: 2,
             timeout_ms: 3_000,
             response_limit_bytes: 128_000,
             redirect_limit: 3,
