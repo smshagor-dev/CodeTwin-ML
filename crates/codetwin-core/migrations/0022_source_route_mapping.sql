@@ -36,6 +36,7 @@ CREATE TABLE source_route_mounts (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   source_file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   framework TEXT NOT NULL,
+  parent_router TEXT NOT NULL,
   mounted_binding TEXT NOT NULL,
   prefix TEXT NOT NULL,
   start_line INTEGER NOT NULL CHECK(start_line >= 1),
@@ -44,7 +45,7 @@ CREATE TABLE source_route_mounts (
   is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(project_id, source_file_id, mounted_binding, prefix, start_line)
+  UNIQUE(project_id, source_file_id, parent_router, mounted_binding, prefix, start_line)
 );
 
 CREATE INDEX idx_source_route_mounts_project_active
