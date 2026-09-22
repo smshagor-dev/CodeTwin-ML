@@ -12,7 +12,8 @@ from codetwin_ml.inference import InferenceRuntimeError
 WORKER_PROTOCOL_VERSION = 1
 MAX_WORKER_REQUEST_BYTES = 131_072
 MAX_WORKER_RESPONSE_BYTES = 1_048_576
-WORKER_TIMEOUT_SECONDS = 15
+CLASSIFICATION_WORKER_TIMEOUT_SECONDS = 15
+GENERATION_WORKER_TIMEOUT_SECONDS = 100
 
 _WORKER_ENV_ALLOWLIST = (
     "SYSTEMROOT",
@@ -82,7 +83,11 @@ def _run_isolated_worker(
         "stderr": subprocess.DEVNULL,
         "cwd": str(root),
         "env": environment,
-        "timeout": WORKER_TIMEOUT_SECONDS,
+        "timeout": (
+            GENERATION_WORKER_TIMEOUT_SECONDS
+            if mode == "generation"
+            else CLASSIFICATION_WORKER_TIMEOUT_SECONDS
+        ),
         "check": False,
     }
     if os.name == "nt":
@@ -95,7 +100,7 @@ def _run_isolated_worker(
         )
     except subprocess.TimeoutExpired as error:
         raise InferenceRuntimeError(
-            f"isolated inference exceeded the {WORKER_TIMEOUT_SECONDS} second timeout"
+            "isolated inference worker exceeded its bounded timeout"
         ) from error
     except OSError as error:
         raise InferenceRuntimeError(f"cannot start isolated inference worker: {error}") from error
