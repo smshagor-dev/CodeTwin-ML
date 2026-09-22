@@ -75,24 +75,18 @@ The external execution bundle lives inside the generated QA workspace and is rem
 
 ## Capability truth
 
-These controls are still readiness evidence, not a promoted filesystem sandbox.
+The readiness probe remains defense-in-depth evidence, but it is no longer the production isolation boundary. The production launcher now resumes the copied, hash-verified runner from the generated LPAC bundle, creates that real child with the same zero-capability LPAC identity, attests its token before resume, assigns it to the Job Object before untrusted code runs, and has no weaker Windows execution fallback.
 
-The real production lower launcher still uses the original approved runner path with the existing write-restricted low-integrity token and does not yet resume the copied runner as the attested LPAC child. Therefore the copied bundle and generated AppContainer grants are not yet the path that executes repository tests.
+Current capability semantics are deliberately scoped:
 
-Accordingly:
+- `filesystem_isolation=true` means the analyzed project and approved runtime/toolchain material used by the run are staged into CodeTwin-generated, ACL-bound paths and the real LPAC child executes from that generated surface. It is not a host-wide deny-all-read claim for Windows system objects.
+- `network_isolation=true` requires a zero-capability LPAC child and a stable AppContainer profile with **no Windows loopback exemption**. CodeTwin verifies the exemption state during readiness and re-attests it immediately before the production child is created.
+- CPU, memory, process-tree, timeout, output and cancellation controls are enforced by the production Job Object/launcher path.
+- Windows execution fails closed if any required LPAC, ACL, provenance, loopback, Job Object, token or parser gate cannot be established.
+- Non-Windows platforms remain planning-only.
 
-- `filesystem_isolation` remains false;
-- `network_isolation` remains false;
-- declared external provenance plus detached copying is not yet an enforced end-to-end read allow-list;
-- public QA execution remains disabled;
-- there is no fallback from a failed LPAC/bundle readiness check to a weaker execution path.
+## Remaining validation
 
-Zero AppContainer capabilities are deliberately required, but CodeTwin does not promote network isolation from that fact because the actual resumed test process is not yet the attested LPAC child and negative network tests have not executed.
+Fresh adversarial Windows execution remains a release gate, not an inferred success. The matrix should include undeclared-host-read attempts, source-write denial, approved runtime reads, artifact/temp writes, direct and loopback network attempts, descendant process containment, runner replacement, inherited-handle escape attempts, cancellation, CPU/memory limits, timeouts and cleanup.
 
-## Next enforcement step
-
-The next Windows slice should make the actual resumed runner the copied, hash-verified bundle executable and create that production child with the same zero-capability LPAC attributes while preserving the existing `CREATE_SUSPENDED` -> Job Object assignment -> exact primary-thread resume ordering and explicit standard-I/O handle list.
-
-Runner-specific path translation must also ensure Python, Rust, Go, Node, and PHP resolve required runtime/sysroot/package paths inside the copied approved roots rather than silently falling back to ambient host stores. The generated project mirror must remain the working tree, and only generated artifact/temp paths may be writable.
-
-Only after the resumed child is LPAC, uses the copied bundle, undeclared host-read attempts are denied, declared reads and intended writes succeed, and adversarial Windows tests execute should filesystem isolation be considered for capability promotion. Network isolation remains independently gated until the real resumed child is verified to have no network capability and negative network tests pass.
+Runner-specific path translation must also be validated for Python, Rust, Go, Node and PHP so the child cannot silently fall back to an ambient package/toolchain store that was not part of the approved bundle. GitHub-hosted Windows jobs that fail before runner allocation do not satisfy this validation requirement.
