@@ -2444,6 +2444,117 @@ Route::post('/login', [AuthController::class, 'login']);
     }
 
     #[test]
+    fn maps_go_json_struct_fields_from_explicit_body_binding() {
+        let source = r#"
+package main
+
+import (
+    "encoding/json"
+    "github.com/gin-gonic/gin"
+)
+
+type CreateUserRequest struct {
+    Email string `json:"email"`
+    Password string `json:"password,omitempty"`
+    DisplayName string
+    Ignored string `json:"-"`
+    private string `json:"private"`
+}
+
+func createUser(c *gin.Context) {
+    var payload CreateUserRequest
+    if err := c.ShouldBindJSON(&payload); err != nil {
+        return
+    }
+}
+
+func decodeUser(c *gin.Context) {
+    payload := CreateUserRequest{}
+    if err := json.NewDecoder(c.Request.Body).Decode(&payload); err != nil {
+        return
+    }
+}
+
+func routes(r *gin.Engine) {
+    r.POST("/users", createUser)
+    r.PUT("/users/:id", decodeUser)
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_go::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, handler_inputs) =
+            extract_routes("Go", "main.go", source, tree.root_node());
+
+        let create = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/users")
+            .expect("create route");
+        for field in ["email", "password", "DisplayName"] {
+            assert!(create.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert!(!create.parameters.iter().any(|parameter| parameter.name == "Ignored"));
+        assert!(!create.parameters.iter().any(|parameter| parameter.name == "private"));
+        assert_eq!(create.request_content_type.as_deref(), Some("application/json"));
+
+        let update = routes
+            .iter()
+            .find(|route| route.http_method == "PUT" && route.path_template == "/users/:id")
+            .expect("update route");
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "email" && parameter.location == "json"
+        }));
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "id" && parameter.location == "path"
+        }));
+
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "decodeUser"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "password" && parameter.location == "json"
+                })
+        }));
+    }
+
+    #[test]
+    fn does_not_infer_json_from_generic_bind_or_embedded_schema() {
+        let source = r#"
+package main
+
+import "github.com/labstack/echo/v4"
+
+type Address struct {
+    City string `json:"city"`
+}
+
+type Request struct {
+    Email string `json:"email"`
+    Address
+}
+
+func create(c echo.Context) error {
+    payload := Request{}
+    return c.Bind(&payload)
+}
+
+func routes(e *echo.Echo) {
+    e.POST("/users", create)
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_go::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes("Go", "echo.go", source, tree.root_node());
+        let route = routes.iter().find(|route| route.framework == "echo").expect("echo");
+        assert!(!route.parameters.iter().any(|parameter| parameter.location == "json"));
+    }
+    #[test]
     fn maps_gin_handler_inputs_back_to_source_route() {
         let source = r#"
 package main
