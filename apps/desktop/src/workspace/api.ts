@@ -186,7 +186,7 @@ export const workspaceApi = {
     });
   },
   runQaExecutionPlan(planId: string) {
-    return invoke<import("./types").QaExecutionRunRecord>("execute_qa_execution_plan", { planId });
+    return invoke<import("./types").QaExecutionRunRecord>("run_qa_execution_plan", { planId });
   },
   qaToolchainSha256(path: string) {
     return invoke<string>("qa_toolchain_sha256", { path });
