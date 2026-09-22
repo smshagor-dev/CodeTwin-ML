@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    fingerprint, run_authorized_scan, AuthContext, EndpointObservation, FindingObservation,
-    ScanConfig, ScanError, ScopePolicy,
+    fingerprint, run_authorized_scan_with_seeds, AuthContext, EndpointObservation,
+    FindingObservation, ScanConfig, ScanError, ScopePolicy, SourceEndpointSeed,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -223,6 +223,24 @@ pub fn prepare_guided_security(
     environment: SecurityEnvironment,
     cancelled: Arc<AtomicBool>,
 ) -> Result<GuidedPreparation, ScanError> {
+    prepare_guided_security_with_seeds(
+        config,
+        primary_auth,
+        secondary_auth,
+        &[],
+        environment,
+        cancelled,
+    )
+}
+
+pub fn prepare_guided_security_with_seeds(
+    config: &ScanConfig,
+    primary_auth: &AuthContext,
+    secondary_auth: Option<&AuthContext>,
+    source_seeds: &[SourceEndpointSeed],
+    environment: SecurityEnvironment,
+    cancelled: Arc<AtomicBool>,
+) -> Result<GuidedPreparation, ScanError> {
     let authentication_available = has_auth(primary_auth)
         || secondary_auth.is_some_and(has_auth);
     let preflight = preflight(config, authentication_available)?;
@@ -231,10 +249,11 @@ pub fn prepare_guided_security(
     mapping_config.scope.active_testing = false;
     mapping_config.scope.allow_non_idempotent_methods = false;
     mapping_config.scope.enable_timing_probes = false;
-    let outcome = run_authorized_scan(
+    let outcome = run_authorized_scan_with_seeds(
         &mapping_config,
         primary_auth,
         None,
+        source_seeds,
         cancelled,
         |_| {},
     )?;
