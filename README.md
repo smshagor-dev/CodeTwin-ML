@@ -109,7 +109,7 @@ When an authorized web target is associated with an indexed project, CodeTwin br
 
 The source-aware flow is:
 
-1. Tree-sitter extracts supported backend route declarations from Express/JavaScript/TypeScript, Next.js App Router `app/**/route.*` handlers, FastAPI/Python, Flask/Blueprint Python, direct Laravel `Route::get/post/put/patch/delete/options/head` PHP calls, static Gin/Echo/Chi Go routes (including nested Gin/Echo-style groups), and static Actix Web/Rocket attribute plus Axum `.route(...)` Rust routes.
+1. Tree-sitter extracts supported backend route declarations from Express/JavaScript/TypeScript, Next.js App Router `app/**/route.*` handlers, FastAPI/Python, Flask/Blueprint Python, direct Laravel `Route::get/post/put/patch/delete/options/head` PHP calls, static Gin/Echo/Chi Go routes (including nested Gin/Echo-style groups), Go 1.22+ method-qualified `net/http` ServeMux patterns, and static Actix Web/Rocket attribute plus Axum `.route(...)` Rust routes.
 2. Route method, path template, handler, path/query/form/JSON fields, framework, file, source hash, and line range are persisted.
 3. Router mount evidence and import bindings resolve same-file and supported cross-file prefixes, including nested mount chains. Python relative imports are resolved for Flask Blueprint mounts, and mount metadata distinguishes prefix prepend from explicit router-prefix override semantics.
 4. Effective source routes are converted into bounded live endpoint seeds under the existing authorized target and path scope.
