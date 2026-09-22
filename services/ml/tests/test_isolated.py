@@ -69,7 +69,7 @@ class IsolatedInferenceTests(unittest.TestCase):
         }
         with patch(
             "codetwin_ml.isolated.subprocess.run",
-            return_value=self._completed(result),
+            side_effect=self._run_with_result(result),
         ) as run:
             actual = run_isolated_generation(
                 "repair_generation",
