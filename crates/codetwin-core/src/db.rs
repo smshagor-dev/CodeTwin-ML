@@ -159,7 +159,8 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE web_source_endpoint_links;
+                    "ALTER TABLE import_references DROP COLUMN bindings_json;
+                     DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_route_mounts;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
@@ -226,7 +227,8 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE web_source_endpoint_links;
+                    "ALTER TABLE import_references DROP COLUMN bindings_json;
+                     DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_route_mounts;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
@@ -276,7 +278,9 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE web_source_endpoint_links;
+                    "ALTER TABLE import_references DROP COLUMN bindings_json;
+                     ALTER TABLE web_security_endpoints DROP COLUMN route_template;
+                     DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_route_mounts;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
@@ -364,7 +368,9 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE web_source_endpoint_links;
+                    "ALTER TABLE import_references DROP COLUMN bindings_json;
+                     ALTER TABLE web_security_endpoints DROP COLUMN route_template;
+                     DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_route_mounts;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
@@ -497,6 +503,8 @@ mod tests {
                         'attempt-v20','finding-v20','session-v20','project-v20',1,
                         'INSUFFICIENT_EVIDENCE','sql_injection','prepared','[]','{}','{}'
                      );
+                     ALTER TABLE import_references DROP COLUMN bindings_json;
+                     ALTER TABLE web_security_endpoints DROP COLUMN route_template;
                      DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_route_mounts;
                      DROP TABLE source_routes;
@@ -567,7 +575,9 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE web_source_endpoint_links;
+                    "ALTER TABLE import_references DROP COLUMN bindings_json;
+                     ALTER TABLE web_security_endpoints DROP COLUMN route_template;
+                     DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_route_mounts;
                      DROP TABLE source_routes;
                      DELETE FROM schema_migrations WHERE version=22;",
