@@ -10,12 +10,13 @@ use std::{
 use codetwin_core::{
     AuthorizedWebSecurityStore, Database, GuidedSecurityStore, WebEndpointInput, WebEndpointRecord,
     WebEvidenceInput, WebEvidenceRecord, WebFindingFilter, WebFindingInput, WebFindingRecord,
-    WebScanCreate, WebScanRecord,
+    SourceRouteRecord, WebScanCreate, WebScanRecord, WebSourceEndpointLinkRecord,
 };
 use serde::Deserialize;
 use web_security_testing::{
-    apply_approved_execution_policy, run_authorized_scan, ApprovedExecutionPolicy, AuthContext,
-    ScanConfig, ScanError, ScanPhase, ScopePolicy,
+    apply_approved_execution_policy, run_authorized_scan_with_seeds, source_endpoint_seed,
+    ApprovedExecutionPolicy, AuthContext, ScanConfig, ScanError, ScanPhase, ScopePolicy,
+    SourceEndpointSeed,
 };
 
 use crate::{with_database, AppState};
@@ -30,6 +31,37 @@ pub struct WebScanStartRequest {
     pub secondary_auth: Option<AuthContext>,
     #[serde(default)]
     pub guided_session_id: Option<String>,
+}
+
+pub(crate) fn source_endpoint_seeds_for_project(
+    database: &Database,
+    project_id: Option<&str>,
+    target_url: &str,
+) -> Result<Vec<SourceEndpointSeed>, String> {
+    let Some(project_id) = project_id else {
+        return Ok(Vec::new());
+    };
+    let routes = AuthorizedWebSecurityStore::new(database)
+        .list_source_routes(project_id, 1_000)
+        .map_err(|error| error.to_string())?;
+    let seeds = routes
+        .into_iter()
+        .filter_map(|route| {
+            source_endpoint_seed(
+                target_url,
+                &route.http_method,
+                &route.path_template,
+                &route.parameter_names,
+                &route.parameter_locations,
+                route.request_content_type.as_deref(),
+                &format!(
+                    "source_route:{}:{}:{}",
+                    route.framework, route.relative_path, route.start_line
+                ),
+            )
+        })
+        .collect();
+    Ok(seeds)
 }
 
 #[tauri::command]
@@ -140,10 +172,17 @@ fn run_scan_background(
         );
     }
 
-    let outcome = run_authorized_scan(
+    let source_seeds = source_endpoint_seeds_for_project(
+        &database,
+        request.project_id.as_deref(),
+        &execution_config.scope.target_url,
+    )?;
+
+    let outcome = run_authorized_scan_with_seeds(
         &execution_config,
         &request.primary_auth,
         request.secondary_auth.as_ref(),
+        &source_seeds,
         Arc::clone(&cancelled),
         |progress| {
             if cancelled.load(Ordering::SeqCst) {
@@ -190,11 +229,12 @@ fn run_scan_background(
             }
 
             for endpoint in &outcome.endpoints {
-                store
+                let persisted_endpoint = store
                     .record_endpoint(
                         scan_id,
                         &WebEndpointInput {
                             url: endpoint.url.clone(),
+                            route_template: endpoint.route_template.clone(),
                             method: endpoint.method.clone(),
                             depth: endpoint.depth,
                             source: endpoint.source.clone(),
@@ -208,14 +248,21 @@ fn run_scan_background(
                         },
                     )
                     .map_err(|error| error.to_string())?;
+                store
+                    .link_endpoint_to_source_route(
+                        request.project_id.as_deref(),
+                        &persisted_endpoint,
+                    )
+                    .map_err(|error| error.to_string())?;
             }
 
             let mut persisted_findings = 0usize;
             for finding in outcome.findings {
                 let source = store
-                    .correlate_source(
+                    .correlate_source_for_request(
                         request.project_id.as_deref(),
                         &finding.endpoint,
+                        Some(&finding.method),
                         finding.parameter.as_deref(),
                     )
                     .map_err(|error| error.to_string())?;
@@ -396,6 +443,32 @@ pub fn list_web_security_endpoints(
     with_database(&state, |database| {
         AuthorizedWebSecurityStore::new(database)
             .list_endpoints(&scan_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+pub fn list_source_routes(
+    project_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SourceRouteRecord>, String> {
+    with_database(&state, |database| {
+        AuthorizedWebSecurityStore::new(database)
+            .list_source_routes(&project_id, limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+pub fn list_web_source_endpoint_links(
+    scan_id: String,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<WebSourceEndpointLinkRecord>, String> {
+    with_database(&state, |database| {
+        AuthorizedWebSecurityStore::new(database)
+            .list_source_endpoint_links(&scan_id, limit)
             .map_err(|error| error.to_string())
     })
 }

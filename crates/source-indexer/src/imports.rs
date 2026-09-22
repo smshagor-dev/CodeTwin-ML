@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use tree_sitter::Node;
 
-use crate::IndexedImport;
+use crate::{IndexedImport, IndexedImportBinding};
 
 pub(crate) fn extract_imports(language: &str, source: &str, root: Node<'_>) -> Vec<IndexedImport> {
     let mut imports = Vec::new();
@@ -59,7 +59,10 @@ fn extract_javascript_like(node: Node<'_>, source: &str, imports: &mut Vec<Index
         "import_statement" => {
             if let Some(specifier) = node.child_by_field_name("source") {
                 if let Some(raw) = literal_text(specifier, source) {
-                    push(imports, "import", raw, specifier);
+                    let bindings = text(node, source)
+                        .map(|statement| javascript_import_bindings(&statement))
+                        .unwrap_or_default();
+                    push_with_bindings(imports, "import", raw, specifier, bindings);
                 }
             }
         }
@@ -82,7 +85,8 @@ fn extract_javascript_like(node: Node<'_>, source: &str, imports: &mut Vec<Index
             };
             if let Some(specifier) = find_descendant(arguments, &["string"]) {
                 if let Some(raw) = literal_text(specifier, source) {
-                    push(imports, "require", raw, specifier);
+                    let bindings = require_bindings(node, source);
+                    push_with_bindings(imports, "require", raw, specifier, bindings);
                 }
             }
         }
@@ -100,9 +104,26 @@ fn extract_python(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImport>
                 return;
             };
             for item in rest.split(',') {
-                let raw = item.split_once(" as ").map_or(item, |(name, _)| name).trim();
-                if !raw.is_empty() {
-                    push(imports, "import", raw.to_string(), node);
+                let item = item.trim();
+                let (raw, local) = item
+                    .split_once(" as ")
+                    .map(|(name, alias)| (name.trim(), alias.trim()))
+                    .unwrap_or_else(|| {
+                        let name = item.trim();
+                        let local = name.split('.').next().unwrap_or(name);
+                        (name, local)
+                    });
+                if !raw.is_empty() && !local.is_empty() {
+                    push_with_bindings(
+                        imports,
+                        "import",
+                        raw.to_string(),
+                        node,
+                        vec![IndexedImportBinding {
+                            local_name: local.to_string(),
+                            imported_name: "*".to_string(),
+                        }],
+                    );
                 }
             }
         }
@@ -111,12 +132,19 @@ fn extract_python(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImport>
             let Some(rest) = statement.strip_prefix("from ") else {
                 return;
             };
-            let Some((module, _)) = rest.split_once(" import ") else {
+            let Some((module, names)) = rest.split_once(" import ") else {
                 return;
             };
             let module = module.trim();
             if !module.is_empty() {
-                push(imports, "from_import", module.to_string(), node);
+                let bindings = python_from_bindings(names);
+                push_with_bindings(
+                    imports,
+                    "from_import",
+                    module.to_string(),
+                    node,
+                    bindings,
+                );
             }
         }
         _ => {}
@@ -224,6 +252,128 @@ fn extract_c_family(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImpor
     }
 }
 
+fn javascript_import_bindings(statement: &str) -> Vec<IndexedImportBinding> {
+    let trimmed = statement.trim();
+    let Some(rest) = trimmed.strip_prefix("import ") else {
+        return Vec::new();
+    };
+    let Some((clause, _source)) = rest.rsplit_once(" from ") else {
+        return Vec::new();
+    };
+    let clause = clause.trim();
+    let mut bindings = Vec::new();
+
+    if let Some(namespace) = clause.strip_prefix("* as ") {
+        let local = namespace.trim();
+        if is_identifier(local) {
+            bindings.push(IndexedImportBinding {
+                local_name: local.to_string(),
+                imported_name: "*".to_string(),
+            });
+        }
+        return bindings;
+    }
+
+    let mut remaining = clause;
+    if !remaining.starts_with('{') {
+        let default = remaining
+            .split(',')
+            .next()
+            .map(str::trim)
+            .unwrap_or("");
+        if is_identifier(default) {
+            bindings.push(IndexedImportBinding {
+                local_name: default.to_string(),
+                imported_name: "default".to_string(),
+            });
+        }
+        remaining = remaining
+            .split_once(',')
+            .map(|(_, tail)| tail.trim())
+            .unwrap_or("");
+    }
+
+    if let Some(named) = remaining
+        .strip_prefix('{')
+        .and_then(|value| value.rsplit_once('}').map(|(inside, _)| inside))
+    {
+        for item in named.split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            let (imported, local) = item
+                .split_once(" as ")
+                .map(|(name, alias)| (name.trim(), alias.trim()))
+                .unwrap_or((item, item));
+            if is_identifier(imported) && is_identifier(local) {
+                bindings.push(IndexedImportBinding {
+                    local_name: local.to_string(),
+                    imported_name: imported.to_string(),
+                });
+            }
+        }
+    }
+    bindings
+}
+
+fn require_bindings(node: Node<'_>, source: &str) -> Vec<IndexedImportBinding> {
+    let Some(parent) = node.parent() else {
+        return Vec::new();
+    };
+    if parent.kind() != "variable_declarator" {
+        return Vec::new();
+    }
+    let Some(name) = parent.child_by_field_name("name") else {
+        return Vec::new();
+    };
+    let Some(local) = text(name, source).map(|value| value.trim().to_string()) else {
+        return Vec::new();
+    };
+    if !is_identifier(&local) {
+        return Vec::new();
+    }
+    vec![IndexedImportBinding {
+        local_name: local,
+        imported_name: "default".to_string(),
+    }]
+}
+
+fn python_from_bindings(names: &str) -> Vec<IndexedImportBinding> {
+    let names = names
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .trim();
+    let mut bindings = Vec::new();
+    for item in names.split(',') {
+        let item = item.trim();
+        if item.is_empty() || item == "*" {
+            continue;
+        }
+        let (imported, local) = item
+            .split_once(" as ")
+            .map(|(name, alias)| (name.trim(), alias.trim()))
+            .unwrap_or((item, item));
+        if is_identifier(imported) && is_identifier(local) {
+            bindings.push(IndexedImportBinding {
+                local_name: local.to_string(),
+                imported_name: imported.to_string(),
+            });
+        }
+    }
+    bindings
+}
+
+fn is_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
 fn find_descendant<'tree>(node: Node<'tree>, kinds: &[&str]) -> Option<Node<'tree>> {
     if kinds.contains(&node.kind()) {
         return Some(node);
@@ -260,10 +410,21 @@ fn text(node: Node<'_>, source: &str) -> Option<String> {
 }
 
 fn push(imports: &mut Vec<IndexedImport>, kind: &str, raw_specifier: String, node: Node<'_>) {
+    push_with_bindings(imports, kind, raw_specifier, node, Vec::new());
+}
+
+fn push_with_bindings(
+    imports: &mut Vec<IndexedImport>,
+    kind: &str,
+    raw_specifier: String,
+    node: Node<'_>,
+    bindings: Vec<IndexedImportBinding>,
+) {
     let start = node.start_position();
     let end = node.end_position();
     imports.push(IndexedImport {
         raw_specifier,
+        bindings,
         kind: kind.to_string(),
         start_line: start.row + 1,
         start_column: start.column,

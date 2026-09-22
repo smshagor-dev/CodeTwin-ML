@@ -89,8 +89,9 @@ use security_fix_commands::{
 use tauri::Manager;
 use web_security_commands::{
     cancel_web_security_scan, export_web_security_report, generate_web_security_report,
-    get_web_security_scan, list_web_security_endpoints, list_web_security_evidence,
-    list_web_security_findings, list_web_security_scans, start_web_security_scan,
+    get_web_security_scan, list_source_routes, list_web_security_endpoints,
+    list_web_security_evidence, list_web_security_findings, list_web_security_scans,
+    list_web_source_endpoint_links, start_web_security_scan,
     update_web_security_finding_status,
 };
 use workspace_commands::{
@@ -754,6 +755,8 @@ fn main() {
             get_web_security_scan,
             list_web_security_scans,
             list_web_security_endpoints,
+            list_source_routes,
+            list_web_source_endpoint_links,
             list_web_security_findings,
             list_web_security_evidence,
             update_web_security_finding_status,

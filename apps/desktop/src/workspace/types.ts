@@ -286,6 +286,7 @@ export type WebEndpointRecord = {
   id: string;
   scan_id: string;
   url: string;
+  route_template: string | null;
   method: string;
   depth: number;
   source: string;
@@ -296,6 +297,47 @@ export type WebEndpointRecord = {
   content_type: string | null;
   status_code: number | null;
   redirect_to: string | null;
+  created_at: string;
+};
+
+export type SourceRouteRecord = {
+  id: string;
+  project_id: string;
+  file_id: string;
+  relative_path: string;
+  symbol_id: string | null;
+  symbol_name: string | null;
+  handler_file_id: string | null;
+  handler_relative_path: string | null;
+  handler_symbol_id: string | null;
+  handler_symbol_name: string | null;
+  framework: string;
+  router_name: string;
+  http_method: string;
+  path_template: string;
+  handler_name: string | null;
+  parameter_names: string[];
+  parameter_locations: Record<string, string>;
+  request_content_type: string | null;
+  source_content_hash: string;
+  start_line: number;
+  end_line: number;
+};
+
+export type WebSourceEndpointLinkRecord = {
+  id: string;
+  scan_id: string;
+  endpoint_id: string;
+  source_route_id: string;
+  source_relative_path: string;
+  handler_relative_path: string | null;
+  source_framework: string;
+  source_method: string;
+  source_path_template: string;
+  source_handler_name: string | null;
+  match_kind: "seeded" | "exact_static" | "template";
+  confidence: number;
+  parameter_overlap: string[];
   created_at: string;
 };
 

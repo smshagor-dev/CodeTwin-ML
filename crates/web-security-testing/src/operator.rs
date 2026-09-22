@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    fingerprint, run_authorized_scan, AuthContext, EndpointObservation, FindingObservation,
-    ScanConfig, ScanError, ScopePolicy,
+    fingerprint, run_authorized_scan_with_seeds, AuthContext, EndpointObservation,
+    FindingObservation, ScanConfig, ScanError, ScopePolicy, SourceEndpointSeed,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -223,6 +223,24 @@ pub fn prepare_guided_security(
     environment: SecurityEnvironment,
     cancelled: Arc<AtomicBool>,
 ) -> Result<GuidedPreparation, ScanError> {
+    prepare_guided_security_with_seeds(
+        config,
+        primary_auth,
+        secondary_auth,
+        &[],
+        environment,
+        cancelled,
+    )
+}
+
+pub fn prepare_guided_security_with_seeds(
+    config: &ScanConfig,
+    primary_auth: &AuthContext,
+    secondary_auth: Option<&AuthContext>,
+    source_seeds: &[SourceEndpointSeed],
+    environment: SecurityEnvironment,
+    cancelled: Arc<AtomicBool>,
+) -> Result<GuidedPreparation, ScanError> {
     let authentication_available = has_auth(primary_auth)
         || secondary_auth.is_some_and(has_auth);
     let preflight = preflight(config, authentication_available)?;
@@ -231,10 +249,11 @@ pub fn prepare_guided_security(
     mapping_config.scope.active_testing = false;
     mapping_config.scope.allow_non_idempotent_methods = false;
     mapping_config.scope.enable_timing_probes = false;
-    let outcome = run_authorized_scan(
+    let outcome = run_authorized_scan_with_seeds(
         &mapping_config,
         primary_auth,
         None,
+        source_seeds,
         cancelled,
         |_| {},
     )?;
@@ -705,6 +724,7 @@ fn xss_candidate(endpoint: &EndpointObservation, location: &str) -> bool {
         return false;
     }
     endpoint.source == "form"
+        || (location == "form" && endpoint.source.starts_with("source_route:"))
         || endpoint
             .content_type
             .as_deref()
@@ -803,6 +823,7 @@ mod tests {
     fn endpoint(method: &str, source: &str, url: &str, parameter: &str, location: &str) -> EndpointObservation {
         EndpointObservation {
             url: url.into(),
+            route_template: None,
             method: method.into(),
             depth: 1,
             source: source.into(),
@@ -843,6 +864,30 @@ mod tests {
         assert!(!constrained.checks.access_control);
         assert!(!constrained.scope.enable_timing_probes);
         assert!(!constrained.scope.allow_non_idempotent_methods);
+    }
+
+    #[test]
+    fn source_backed_form_input_can_enter_xss_plan_when_state_changes_are_approved() {
+        let mut source = config();
+        source.scope.allow_non_idempotent_methods = true;
+        let endpoints = vec![endpoint(
+            "POST",
+            "source_route:express:src/login.ts:10",
+            "http://localhost:3000/login",
+            "username",
+            "form",
+        )];
+        let plan = build_test_plan(
+            &source,
+            &endpoints,
+            false,
+            SecurityEnvironment::Staging,
+        );
+        assert!(plan.operations.iter().any(|item| {
+            item.category == "xss"
+                && item.parameter_name.as_deref() == Some("username")
+                && item.selected
+        }));
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::{
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
-use source_indexer::{IndexResult, IndexedFile, IndexedSymbol, ParseState};
+use source_indexer::{IndexResult, IndexedFile, IndexedImportBinding, IndexedSymbol, ParseState};
 use thiserror::Error;
 
 use crate::{
@@ -236,6 +236,27 @@ fn persist_index_result(
             &indexed.symbols,
             &mut delta,
         )?;
+        persist_handler_inputs(
+            &transaction,
+            &project.id,
+            &stable_file_id,
+            run_id,
+            indexed,
+        )?;
+        persist_routes(
+            &transaction,
+            &project.id,
+            &stable_file_id,
+            run_id,
+            indexed,
+        )?;
+        persist_route_mounts(
+            &transaction,
+            &project.id,
+            &stable_file_id,
+            run_id,
+            indexed,
+        )?;
         persist_imports(
             &transaction,
             &project.id,
@@ -267,6 +288,7 @@ fn persist_index_result(
     }
 
     resolve_all_imports(&transaction, project, case_insensitive)?;
+    resolve_imported_route_handlers(&transaction, &project.id)?;
     materialize_graph(&transaction, &project.id, run_id)?;
     let graph = graph_summary(&transaction, &project.id)?;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -556,6 +578,238 @@ fn load_active_symbols(
     Ok(symbols)
 }
 
+fn persist_handler_inputs(
+    connection: &Connection,
+    project_id: &str,
+    source_file_id: &str,
+    run_id: &str,
+    indexed: &IndexedFile,
+) -> Result<(), rusqlite::Error> {
+    connection.execute(
+        "UPDATE source_handler_inputs
+         SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
+         WHERE file_id = ?1 AND is_active = 1",
+        params![source_file_id, run_id],
+    )?;
+
+    for handler in &indexed.handler_inputs {
+        let id = deterministic_id(
+            "source-handler-input",
+            &[
+                project_id,
+                source_file_id,
+                &handler.handler_name,
+                &handler.start_line.to_string(),
+            ],
+        );
+        let parameter_names: Vec<String> = handler
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .collect();
+        let parameter_locations: BTreeMap<String, String> = handler
+            .parameters
+            .iter()
+            .map(|parameter| (parameter.name.clone(), parameter.location.clone()))
+            .collect();
+        connection.execute(
+            "INSERT INTO source_handler_inputs(
+               id, project_id, file_id, handler_name, parameter_names_json,
+               parameter_locations_json, start_line, end_line, last_index_run_id, is_active
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)
+             ON CONFLICT(id) DO UPDATE SET
+               handler_name = excluded.handler_name,
+               parameter_names_json = excluded.parameter_names_json,
+               parameter_locations_json = excluded.parameter_locations_json,
+               end_line = excluded.end_line,
+               last_index_run_id = excluded.last_index_run_id,
+               is_active = 1,
+               updated_at = CURRENT_TIMESTAMP",
+            params![
+                id,
+                project_id,
+                source_file_id,
+                handler.handler_name,
+                serde_json::to_string(&parameter_names).unwrap_or_else(|_| "[]".to_string()),
+                serde_json::to_string(&parameter_locations).unwrap_or_else(|_| "{}".to_string()),
+                to_i64(handler.start_line),
+                to_i64(handler.end_line),
+                run_id,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn persist_routes(
+    connection: &Connection,
+    project_id: &str,
+    source_file_id: &str,
+    run_id: &str,
+    indexed: &IndexedFile,
+) -> Result<(), rusqlite::Error> {
+    connection.execute(
+        "UPDATE source_routes
+         SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
+         WHERE file_id = ?1 AND is_active = 1",
+        params![source_file_id, run_id],
+    )?;
+
+    for route in &indexed.routes {
+        let id = deterministic_id(
+            "source-route",
+            &[
+                project_id,
+                source_file_id,
+                &route.http_method,
+                &route.path_template,
+                &route.start_line.to_string(),
+            ],
+        );
+        let parameter_names: Vec<String> = route
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .collect();
+        let parameter_locations: BTreeMap<String, String> = route
+            .parameters
+            .iter()
+            .map(|parameter| (parameter.name.clone(), parameter.location.clone()))
+            .collect();
+        let parameter_names_json = serde_json::to_string(&parameter_names)
+            .unwrap_or_else(|_| "[]".to_string());
+        let parameter_locations_json = serde_json::to_string(&parameter_locations)
+            .unwrap_or_else(|_| "{}".to_string());
+        let symbol_id: Option<String> = route.handler_name.as_deref().and_then(|handler| {
+            connection
+                .query_row(
+                    "SELECT CASE WHEN COUNT(*) = 1 THEN MIN(id) ELSE NULL END
+                     FROM symbols
+                     WHERE file_id = ?1 AND is_active = 1 AND name = ?2",
+                    params![source_file_id, handler],
+                    |row| row.get(0),
+                )
+                .ok()
+                .flatten()
+        });
+
+        connection.execute(
+            "INSERT INTO source_routes(
+               id, project_id, file_id, symbol_id, handler_file_id, handler_symbol_id,
+               framework, router_name, http_method, path_template, handler_name,
+               declared_parameter_names_json, declared_parameter_locations_json,
+               declared_request_content_type, parameter_names_json, parameter_locations_json,
+               request_content_type, source_content_hash, start_line, end_line,
+               last_index_run_id, is_active
+             ) VALUES (
+               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+               ?15, ?16, ?17, ?18, ?19, ?20, ?21, 1
+             )
+             ON CONFLICT(id) DO UPDATE SET
+               symbol_id = excluded.symbol_id,
+               handler_file_id = excluded.handler_file_id,
+               handler_symbol_id = excluded.handler_symbol_id,
+               framework = excluded.framework,
+               router_name = excluded.router_name,
+               handler_name = excluded.handler_name,
+               declared_parameter_names_json = excluded.declared_parameter_names_json,
+               declared_parameter_locations_json = excluded.declared_parameter_locations_json,
+               declared_request_content_type = excluded.declared_request_content_type,
+               parameter_names_json = excluded.parameter_names_json,
+               parameter_locations_json = excluded.parameter_locations_json,
+               request_content_type = excluded.request_content_type,
+               source_content_hash = excluded.source_content_hash,
+               end_line = excluded.end_line,
+               last_index_run_id = excluded.last_index_run_id,
+               is_active = 1,
+               updated_at = CURRENT_TIMESTAMP",
+            params![
+                id,
+                project_id,
+                source_file_id,
+                symbol_id,
+                symbol_id.as_ref().map(|_| source_file_id),
+                symbol_id,
+                route.framework,
+                route.router_name,
+                route.http_method,
+                route.path_template,
+                route.handler_name,
+                parameter_names_json,
+                parameter_locations_json,
+                route.request_content_type,
+                parameter_names_json,
+                parameter_locations_json,
+                route.request_content_type,
+                indexed.content_hash,
+                to_i64(route.start_line),
+                to_i64(route.end_line),
+                run_id,
+            ],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn persist_route_mounts(
+    connection: &Connection,
+    project_id: &str,
+    source_file_id: &str,
+    run_id: &str,
+    indexed: &IndexedFile,
+) -> Result<(), rusqlite::Error> {
+    connection.execute(
+        "UPDATE source_route_mounts
+         SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
+         WHERE source_file_id = ?1 AND is_active = 1",
+        params![source_file_id, run_id],
+    )?;
+
+    for mount in &indexed.route_mounts {
+        let id = deterministic_id(
+            "source-route-mount",
+            &[
+                project_id,
+                source_file_id,
+                &mount.framework,
+                &mount.parent_router,
+                &mount.mounted_binding,
+                &mount.prefix,
+                &mount.start_line.to_string(),
+            ],
+        );
+        connection.execute(
+            "INSERT INTO source_route_mounts(
+               id, project_id, source_file_id, framework, parent_router, mounted_binding,
+               prefix, start_line, end_line, last_index_run_id, is_active
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1)
+             ON CONFLICT(id) DO UPDATE SET
+               framework = excluded.framework,
+               parent_router = excluded.parent_router,
+               mounted_binding = excluded.mounted_binding,
+               prefix = excluded.prefix,
+               end_line = excluded.end_line,
+               last_index_run_id = excluded.last_index_run_id,
+               is_active = 1,
+               updated_at = CURRENT_TIMESTAMP",
+            params![
+                id,
+                project_id,
+                source_file_id,
+                mount.framework,
+                mount.parent_router,
+                mount.mounted_binding,
+                mount.prefix,
+                to_i64(mount.start_line),
+                to_i64(mount.end_line),
+                run_id,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn persist_imports(
     connection: &Connection,
     project_id: &str,
@@ -581,11 +835,13 @@ fn persist_imports(
                 &reference.end_column.to_string(),
             ],
         );
+        let bindings_json = serde_json::to_string(&reference.bindings)
+            .unwrap_or_else(|_| "[]".to_string());
         connection.execute(
             "INSERT INTO import_references(\
                id, project_id, source_file_id, raw_specifier, kind, start_line, start_column, end_line, end_column,\
-               resolution_state, resolved_target_file_id, last_index_run_id\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'observed', NULL, ?10)",
+               resolution_state, resolved_target_file_id, last_index_run_id, bindings_json\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'observed', NULL, ?10, ?11)",
             params![
                 id,
                 project_id,
@@ -597,6 +853,7 @@ fn persist_imports(
                 to_i64(reference.end_line),
                 to_i64(reference.end_column),
                 run_id,
+                bindings_json,
             ],
         )?;
     }
@@ -617,6 +874,24 @@ fn deactivate_file(
     connection.execute(
         "DELETE FROM import_references WHERE source_file_id = ?1",
         [file_id],
+    )?;
+    connection.execute(
+        "UPDATE source_routes
+         SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
+         WHERE file_id = ?1 AND is_active = 1",
+        params![file_id, run_id],
+    )?;
+    connection.execute(
+        "UPDATE source_route_mounts
+         SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
+         WHERE source_file_id = ?1 AND is_active = 1",
+        params![file_id, run_id],
+    )?;
+    connection.execute(
+        "UPDATE source_handler_inputs
+         SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
+         WHERE file_id = ?1 AND is_active = 1",
+        params![file_id, run_id],
     )?;
     connection.execute(
         "UPDATE symbols SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP\
@@ -673,6 +948,165 @@ fn resolve_all_imports(
         )?;
     }
     Ok(())
+}
+
+fn resolve_imported_route_handlers(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<(), IndexServiceError> {
+    connection.execute(
+        "UPDATE source_routes
+         SET handler_file_id = CASE WHEN symbol_id IS NOT NULL THEN file_id ELSE NULL END,
+             handler_symbol_id = symbol_id,
+             parameter_names_json = declared_parameter_names_json,
+             parameter_locations_json = declared_parameter_locations_json,
+             request_content_type = declared_request_content_type,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE project_id=?1 AND is_active=1",
+        [project_id],
+    )?;
+    let mut import_statement = connection.prepare(
+        "SELECT source_file_id, resolved_target_file_id, bindings_json
+         FROM import_references
+         WHERE project_id=?1
+           AND resolution_state='resolved_local'
+           AND resolved_target_file_id IS NOT NULL",
+    )?;
+    let import_rows = import_statement.query_map([project_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut bindings = Vec::<(String, String, IndexedImportBinding)>::new();
+    for row in import_rows {
+        let (source_file_id, target_file_id, bindings_json) = row?;
+        let parsed: Vec<IndexedImportBinding> =
+            serde_json::from_str(&bindings_json).unwrap_or_default();
+        for binding in parsed {
+            bindings.push((source_file_id.clone(), target_file_id.clone(), binding));
+        }
+    }
+    drop(import_statement);
+
+    let mut route_statement = connection.prepare(
+        "SELECT id, file_id, handler_name, parameter_locations_json, request_content_type
+         FROM source_routes
+         WHERE project_id=?1 AND is_active=1 AND handler_name IS NOT NULL",
+    )?;
+    let route_rows = route_statement.query_map([project_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    })?;
+    let mut routes = Vec::new();
+    for row in route_rows {
+        routes.push(row?);
+    }
+    drop(route_statement);
+
+    for (route_id, route_file_id, handler_reference, locations_json, current_content_type) in routes {
+        let (binding_name, member_name) = split_handler_reference(&handler_reference);
+        let Some((_, target_file_id, binding)) = bindings.iter().find(|(source, _, binding)| {
+            source == &route_file_id && binding.local_name == binding_name
+        }) else {
+            continue;
+        };
+
+        let target_handler_name = if let Some(member) = member_name {
+            member.to_string()
+        } else if !matches!(binding.imported_name.as_str(), "default" | "*") {
+            binding.imported_name.clone()
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT handler_name FROM source_handler_inputs
+                 WHERE file_id=?1 AND is_active=1
+                 ORDER BY start_line LIMIT 2",
+            )?;
+            let rows = statement.query_map([target_file_id], |row| row.get::<_, String>(0))?;
+            let names = rows.collect::<Result<Vec<_>, _>>()?;
+            if names.len() != 1 {
+                continue;
+            }
+            names[0].clone()
+        };
+
+        let handler = connection
+            .query_row(
+                "SELECT parameter_locations_json
+                 FROM source_handler_inputs
+                 WHERE file_id=?1 AND handler_name=?2 AND is_active=1
+                 ORDER BY start_line LIMIT 1",
+                params![target_file_id, target_handler_name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(handler_locations_json) = handler else {
+            continue;
+        };
+
+        let mut locations: BTreeMap<String, String> =
+            serde_json::from_str(&locations_json).unwrap_or_default();
+        let handler_locations: BTreeMap<String, String> =
+            serde_json::from_str(&handler_locations_json).unwrap_or_default();
+        for (name, location) in handler_locations {
+            locations.entry(name).or_insert(location);
+        }
+        let parameter_names: Vec<String> = locations.keys().cloned().collect();
+        let inferred_content_type = if locations.values().any(|value| value == "json") {
+            Some("application/json".to_string())
+        } else if locations.values().any(|value| value == "form") {
+            Some("application/x-www-form-urlencoded".to_string())
+        } else {
+            current_content_type.clone()
+        };
+
+        let handler_symbol_id: Option<String> = connection
+            .query_row(
+                "SELECT CASE WHEN COUNT(*)=1 THEN MIN(id) ELSE NULL END
+                 FROM symbols
+                 WHERE file_id=?1 AND is_active=1 AND name=?2",
+                params![target_file_id, target_handler_name],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+
+        connection.execute(
+            "UPDATE source_routes
+             SET handler_file_id=?2,
+                 handler_symbol_id=?3,
+                 parameter_names_json=?4,
+                 parameter_locations_json=?5,
+                 request_content_type=?6,
+                 updated_at=CURRENT_TIMESTAMP
+             WHERE id=?1",
+            params![
+                route_id,
+                target_file_id,
+                handler_symbol_id,
+                serde_json::to_string(&parameter_names).unwrap_or_else(|_| "[]".to_string()),
+                serde_json::to_string(&locations).unwrap_or_else(|_| "{}".to_string()),
+                inferred_content_type,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn split_handler_reference(value: &str) -> (&str, Option<&str>) {
+    let trimmed = value.trim();
+    if let Some((binding, member)) = trimmed.split_once('.') {
+        if !binding.is_empty() && !member.is_empty() && !member.contains('.') {
+            return (binding, Some(member));
+        }
+    }
+    (trimmed, None)
 }
 
 fn load_file_identity_map(

@@ -709,92 +709,151 @@ fn send_payload(
         .map(String::as_str)
         .unwrap_or_else(|| if endpoint.method == "GET" { "query" } else { "form" });
 
+    if location == "cookie" {
+        return Err(RequestError::Http(
+            "cookie parameter active probes are intentionally disabled".to_string(),
+        ));
+    }
+    if location == "header" && !active_header_probe_allowed(parameter) {
+        return Err(RequestError::Http(
+            "sensitive or transport-controlled header probes are intentionally disabled".to_string(),
+        ));
+    }
+
     let method = Method::from_bytes(endpoint.method.as_bytes())
         .map_err(|_| RequestError::Http("unsupported HTTP method".to_string()))?;
+    let mut url = if location == "path" && !payload.is_empty() {
+        let template_base = endpoint
+            .route_template
+            .as_deref()
+            .and_then(|value| Url::parse(value).ok())
+            .unwrap_or_else(|| base.clone());
+        replace_path_parameter(&template_base, parameter, payload)
+            .ok_or_else(|| RequestError::Http("path parameter placeholder was not found".to_string()))?
+    } else {
+        base.clone()
+    };
 
-    match location {
-        "query" => {
-            let mut url = base.clone();
-            let pairs: Vec<(String, String)> = url
-                .query_pairs()
-                .map(|(name, value)| {
-                    if name == parameter {
-                        (name.into_owned(), payload.to_string())
-                    } else {
-                        (name.into_owned(), value.into_owned())
-                    }
-                })
-                .collect();
-            url.set_query(None);
-            {
-                let mut query = url.query_pairs_mut();
-                let mut replaced = false;
-                for (name, value) in pairs {
-                    if name == parameter {
-                        replaced = true;
-                    }
-                    query.append_pair(&name, &value);
-                }
-                if !replaced {
-                    query.append_pair(parameter, payload);
-                }
-            }
-            requester.send(method, &url, None, &[])
-        }
-        "form" => {
-            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-            for name in &endpoint.parameter_names {
-                serializer.append_pair(name, if name == parameter { payload } else { "" });
-            }
-            if !endpoint.parameter_names.iter().any(|name| name == parameter) {
-                serializer.append_pair(parameter, payload);
-            }
-            let body = serializer.finish();
-            requester.send(
-                method,
-                base,
-                Some(&body),
-                &[("Content-Type", "application/x-www-form-urlencoded")],
-            )
-        }
-        "json" => {
-            let mut object = serde_json::Map::new();
-            for name in &endpoint.parameter_names {
-                object.insert(
-                    name.clone(),
-                    serde_json::Value::String(if name == parameter { payload } else { "" }.to_string()),
-                );
-            }
-            if !object.contains_key(parameter) {
-                object.insert(parameter.to_string(), serde_json::Value::String(payload.to_string()));
-            }
-            let body = serde_json::Value::Object(object).to_string();
-            requester.send(
-                method,
-                base,
-                Some(&body),
-                &[("Content-Type", "application/json")],
-            )
-        }
-        "header" if active_header_probe_allowed(parameter) => {
-            requester.send(method, base, None, &[(parameter, payload)])
-        }
-        "header" => Err(RequestError::Http(
-            "sensitive or transport-controlled header probes are intentionally disabled".to_string(),
-        )),
-        "path" => {
-            let url = replace_path_parameter(base, parameter, payload)
-                .ok_or_else(|| RequestError::Http("path parameter placeholder was not found".to_string()))?;
-            requester.send(method, &url, None, &[])
-        }
-        // Active mutation of authentication cookies is intentionally not performed.
-        "cookie" => Err(RequestError::Http(
-            "cookie parameter active probes are intentionally disabled".to_string(),
-        )),
-        _ => Err(RequestError::Http(
-            "unsupported parameter location".to_string(),
-        )),
+    if location == "query" {
+        replace_query_parameter(&mut url, parameter, payload);
     }
+
+    let body = contextual_request_body(endpoint, parameter, location, payload);
+    match (body.as_ref(), location) {
+        (Some((body, content_type)), "header") => requester.send(
+            method,
+            &url,
+            Some(body.as_str()),
+            &[("Content-Type", *content_type), (parameter, payload)],
+        ),
+        (None, "header") => requester.send(method, &url, None, &[(parameter, payload)]),
+        (Some((body, content_type)), _) => {
+            requester.send(
+                method,
+                &url,
+                Some(body.as_str()),
+                &[("Content-Type", *content_type)],
+            )
+        }
+        (None, _) => requester.send(method, &url, None, &[]),
+    }
+}
+
+fn replace_query_parameter(url: &mut Url, parameter: &str, payload: &str) {
+    let pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(name, value)| {
+            if name == parameter {
+                (name.into_owned(), payload.to_string())
+            } else {
+                (name.into_owned(), value.into_owned())
+            }
+        })
+        .collect();
+    url.set_query(None);
+    let mut query = url.query_pairs_mut();
+    let mut replaced = false;
+    for (name, value) in pairs {
+        if name == parameter {
+            replaced = true;
+        }
+        query.append_pair(&name, &value);
+    }
+    if !replaced {
+        query.append_pair(parameter, payload);
+    }
+}
+
+fn contextual_request_body(
+    endpoint: &EndpointObservation,
+    target_parameter: &str,
+    target_location: &str,
+    payload: &str,
+) -> Option<(String, &'static str)> {
+    if matches!(endpoint.method.as_str(), "GET" | "HEAD") {
+        return None;
+    }
+
+    let json_parameters: Vec<&str> = endpoint
+        .parameter_names
+        .iter()
+        .filter(|name| {
+            endpoint
+                .parameter_locations
+                .get(*name)
+                .is_some_and(|location| location == "json")
+        })
+        .map(String::as_str)
+        .collect();
+    let form_parameters: Vec<&str> = endpoint
+        .parameter_names
+        .iter()
+        .filter(|name| {
+            endpoint
+                .parameter_locations
+                .get(*name)
+                .is_some_and(|location| location == "form")
+        })
+        .map(String::as_str)
+        .collect();
+
+    let content_type = endpoint.content_type.as_deref().unwrap_or("");
+    let use_json = target_location == "json"
+        || (target_location != "form"
+            && (content_type.contains("application/json") || !json_parameters.is_empty()));
+    if use_json && !json_parameters.is_empty() {
+        let mut object = serde_json::Map::new();
+        for name in json_parameters {
+            let value = if target_location == "json" && name == target_parameter {
+                payload
+            } else {
+                "codetwin-test"
+            };
+            object.insert(name.to_string(), serde_json::Value::String(value.to_string()));
+        }
+        return Some((
+            serde_json::Value::Object(object).to_string(),
+            "application/json",
+        ));
+    }
+
+    if !form_parameters.is_empty() {
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        for name in form_parameters {
+            let value = if target_location == "form" && name == target_parameter {
+                payload
+            } else {
+                "codetwin-test"
+            };
+            serializer.append_pair(name, value);
+        }
+        return Some((
+            serializer.finish(),
+            "application/x-www-form-urlencoded",
+        ));
+    }
+
+    None
 }
 
 fn replace_path_parameter(base: &Url, parameter: &str, payload: &str) -> Option<Url> {
@@ -1014,6 +1073,49 @@ mod tests {
             truncated: false,
             redaction_secrets: Vec::new(),
         }
+    }
+
+    #[test]
+    fn contextual_body_keeps_fields_in_declared_locations() {
+        use std::collections::BTreeMap;
+
+        let endpoint = crate::EndpointObservation {
+            url: "http://localhost:3000/api/login/acme?next=home".into(),
+            route_template: Some("http://localhost:3000/api/login/%7Btenant%7D?next=home".into()),
+            method: "POST".into(),
+            depth: 0,
+            source: "source_route:express:src/auth.ts:10".into(),
+            parameter_names: vec![
+                "tenant".into(),
+                "next".into(),
+                "email".into(),
+                "password".into(),
+            ],
+            parameter_locations: BTreeMap::from([
+                ("tenant".into(), "path".into()),
+                ("next".into(), "query".into()),
+                ("email".into(), "json".into()),
+                ("password".into(), "json".into()),
+            ]),
+            response_header_names: vec![],
+            cookie_names: vec![],
+            content_type: Some("application/json".into()),
+            status_code: None,
+            redirect_to: None,
+        };
+
+        let (body, content_type) =
+            super::contextual_request_body(&endpoint, "email", "json", "probe")
+                .expect("json body");
+        let value: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(content_type, "application/json");
+        assert_eq!(value.get("email").and_then(|item| item.as_str()), Some("probe"));
+        assert_eq!(
+            value.get("password").and_then(|item| item.as_str()),
+            Some("codetwin-test")
+        );
+        assert!(value.get("tenant").is_none());
+        assert!(value.get("next").is_none());
     }
 
     #[test]

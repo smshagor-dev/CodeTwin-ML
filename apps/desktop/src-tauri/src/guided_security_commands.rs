@@ -11,11 +11,13 @@ use codetwin_core::{
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use web_security_testing::{
-    prepare_guided_security, run_targeted_retest, ApplicationSourceHint, AuthContext, ScanConfig,
-    SecurityEnvironment, TargetedRetestRequest,
+    prepare_guided_security_with_seeds, run_targeted_retest, ApplicationSourceHint, AuthContext,
+    ScanConfig, SecurityEnvironment, TargetedRetestRequest,
 };
 
-use crate::{with_database, AppState};
+use crate::{
+    web_security_commands::source_endpoint_seeds_for_project, with_database, AppState,
+};
 
 #[derive(Clone, Deserialize)]
 pub struct GuidedSecurityPrepareRequest {
@@ -71,10 +73,16 @@ pub async fn prepare_guided_security_test(
         let database = Database::open(database_path).map_err(|error| error.to_string())?;
         let store = GuidedSecurityStore::new(&database);
         let environment = parse_environment(&request.environment)?;
-        let prepared = prepare_guided_security(
+        let source_seeds = source_endpoint_seeds_for_project(
+            &database,
+            request.project_id.as_deref(),
+            &request.config.scope.target_url,
+        )?;
+        let prepared = prepare_guided_security_with_seeds(
             &request.config,
             &request.primary_auth,
             request.secondary_auth.as_ref(),
+            &source_seeds,
             environment,
             Arc::new(AtomicBool::new(false)),
         );
@@ -89,9 +97,10 @@ pub async fn prepare_guided_security_test(
                                 break 'groups;
                             }
                             correlated += 1;
-                            if let Ok(Some(source)) = source_store.correlate_source(
+                            if let Ok(Some(source)) = source_store.correlate_source_for_request(
                                 Some(project_id),
                                 &route.url,
+                                Some(&route.method),
                                 route.parameters.first().map(String::as_str),
                             ) {
                                 if source.confidence >= 0.50 {
@@ -324,26 +333,43 @@ pub async fn retest_guided_security_finding(
             context;
         let config: ScanConfig =
             serde_json::from_str(&config_json).map_err(|error| error.to_string())?;
-        let parameter_location = if let Some(parameter) = parameter_name.as_deref() {
-            database
-                .connection()
-                .query_row(
-                    "SELECT parameter_locations_json
-                     FROM web_security_endpoints
-                     WHERE scan_id=?1 AND method=?2 AND url=?3 LIMIT 1",
-                    params![scan_id, method, endpoint_url],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(|error| error.to_string())?
-                .and_then(|raw| serde_json::from_str::<BTreeMap<String, String>>(&raw).ok())
-                .and_then(|values| values.get(parameter).cloned())
-        } else {
-            None
-        };
+        let endpoint_metadata = database
+            .connection()
+            .query_row(
+                "SELECT parameter_names_json, parameter_locations_json, route_template
+                 FROM web_security_endpoints
+                 WHERE scan_id=?1 AND method=?2 AND url=?3 LIMIT 1",
+                params![scan_id, method, endpoint_url],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let endpoint_parameter_names = endpoint_metadata
+            .as_ref()
+            .and_then(|(raw, _, _)| serde_json::from_str::<Vec<String>>(raw).ok())
+            .unwrap_or_default();
+        let endpoint_parameter_locations = endpoint_metadata
+            .as_ref()
+            .and_then(|(_, raw, _)| serde_json::from_str::<BTreeMap<String, String>>(raw).ok())
+            .unwrap_or_default();
+        let parameter_location = parameter_name
+            .as_deref()
+            .and_then(|parameter| endpoint_parameter_locations.get(parameter).cloned());
+        let route_template = endpoint_metadata
+            .as_ref()
+            .and_then(|(_, _, route_template)| route_template.clone());
         let retest_request = TargetedRetestRequest {
             endpoint_url,
+            route_template,
             method,
+            parameter_names: endpoint_parameter_names,
+            parameter_locations: endpoint_parameter_locations,
             parameter_name,
             parameter_location,
             category: category.clone(),

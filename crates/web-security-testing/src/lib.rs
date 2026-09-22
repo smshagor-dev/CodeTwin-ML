@@ -19,7 +19,7 @@ use thiserror::Error;
 pub use evidence::{body_hash, fingerprint, redact_body, redact_headers, redact_url, response_evidence};
 pub use operator::{
     apply_approved_execution_policy, build_application_map, build_test_plan, preflight,
-    prepare_guided_security, ApplicationGroup, ApplicationMap, ApplicationRoute,
+    prepare_guided_security, prepare_guided_security_with_seeds, ApplicationGroup, ApplicationMap, ApplicationRoute,
     ApplicationSourceHint, ApprovedExecutionPolicy, AuthenticationMode, GuidedPreflight,
     GuidedPreparation,
     GuidedTestPlan, OperationRisk, PlannedOperation, SecurityEnvironment, TestingDepth,
@@ -189,8 +189,164 @@ pub struct ScanProgress {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceEndpointSeed {
+    pub url: String,
+    pub discovery_url: Option<String>,
+    pub method: String,
+    pub parameter_names: Vec<String>,
+    pub parameter_locations: BTreeMap<String, String>,
+    pub content_type: Option<String>,
+    pub source_label: String,
+}
+
+pub fn source_endpoint_seed(
+    target_url: &str,
+    method: &str,
+    path_template: &str,
+    parameter_names: &[String],
+    parameter_locations: &BTreeMap<String, String>,
+    content_type: Option<&str>,
+    source_label: &str,
+) -> Option<SourceEndpointSeed> {
+    let mut base = url::Url::parse(target_url).ok()?;
+    if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
+        return None;
+    }
+    let normalized_template = normalize_route_template(path_template)?;
+    let deployment_prefix = normalize_deployment_prefix(base.path());
+    let effective_template =
+        apply_deployment_prefix(&deployment_prefix, &normalized_template);
+    let materialized_path = materialize_route_path(&effective_template)?;
+    base.set_path("/");
+    base.set_query(None);
+    base.set_fragment(None);
+
+    let mut template_url = base.join(effective_template.trim_start_matches('/')).ok()?;
+    let mut discovery_url = base.join(materialized_path.trim_start_matches('/')).ok()?;
+    for url in [&mut template_url, &mut discovery_url] {
+        let mut query = url.query_pairs_mut();
+        for name in parameter_names {
+            if parameter_locations
+                .get(name)
+                .is_some_and(|location| location == "query")
+            {
+                query.append_pair(name, "codetwin-test");
+            }
+        }
+    }
+
+    Some(SourceEndpointSeed {
+        url: template_url.to_string(),
+        discovery_url: Some(discovery_url.to_string()),
+        method: method.trim().to_ascii_uppercase(),
+        parameter_names: parameter_names.to_vec(),
+        parameter_locations: parameter_locations.clone(),
+        content_type: content_type.map(ToString::to_string),
+        source_label: source_label.to_string(),
+    })
+}
+
+fn normalize_deployment_prefix(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return String::new();
+    }
+    let mut prefix = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    if prefix.len() > 1 {
+        prefix = prefix.trim_end_matches('/').to_string();
+    }
+    prefix
+}
+
+fn apply_deployment_prefix(prefix: &str, route: &str) -> String {
+    if prefix.is_empty() || prefix == "/" {
+        return route.to_string();
+    }
+    if route == prefix || route.starts_with(&format!("{prefix}/")) {
+        return route.to_string();
+    }
+    format!(
+        "{}/{}",
+        prefix.trim_end_matches('/'),
+        route.trim_start_matches('/')
+    )
+}
+
+fn normalize_route_template(template: &str) -> Option<String> {
+    let trimmed = template.trim();
+    if trimmed.contains('*') {
+        return None;
+    }
+    let mut segments = Vec::new();
+    for segment in trimmed.trim_matches('/').split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        if let Some(rest) = segment.strip_prefix(':') {
+            let name = rest
+                .split(['?', '(', '.'])
+                .next()
+                .unwrap_or(rest)
+                .trim();
+            if name.is_empty() {
+                return None;
+            }
+            segments.push(format!("{{{name}}}"));
+            continue;
+        }
+        if segment.starts_with('{') && segment.ends_with('}') && segment.len() > 2 {
+            let name = segment[1..segment.len() - 1]
+                .split(':')
+                .next()
+                .unwrap_or("")
+                .trim();
+            if name.is_empty() {
+                return None;
+            }
+            segments.push(format!("{{{name}}}"));
+            continue;
+        }
+        segments.push(segment.to_string());
+    }
+    Some(if segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segments.join("/"))
+    })
+}
+
+fn materialize_route_path(template: &str) -> Option<String> {
+    if template.contains('*') {
+        return None;
+    }
+    let mut segments = Vec::new();
+    for segment in template.trim_matches('/').split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        let dynamic = segment.starts_with('{') && segment.ends_with('}');
+        segments.push(if dynamic {
+            "codetwin-test".to_string()
+        } else {
+            segment.to_string()
+        });
+    }
+    Some(if segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segments.join("/"))
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EndpointObservation {
     pub url: String,
+    #[serde(default)]
+    pub route_template: Option<String>,
     pub method: String,
     pub depth: usize,
     pub source: String,
@@ -279,6 +435,24 @@ pub fn run_authorized_scan(
     primary_auth: &AuthContext,
     secondary_auth: Option<&AuthContext>,
     cancelled: Arc<AtomicBool>,
+    on_progress: impl FnMut(ScanProgress),
+) -> Result<ScanOutcome, ScanError> {
+    run_authorized_scan_with_seeds(
+        config,
+        primary_auth,
+        secondary_auth,
+        &[],
+        cancelled,
+        on_progress,
+    )
+}
+
+pub fn run_authorized_scan_with_seeds(
+    config: &ScanConfig,
+    primary_auth: &AuthContext,
+    secondary_auth: Option<&AuthContext>,
+    source_seeds: &[SourceEndpointSeed],
+    cancelled: Arc<AtomicBool>,
     mut on_progress: impl FnMut(ScanProgress),
 ) -> Result<ScanOutcome, ScanError> {
     let policy = ScopePolicy::new(config.scope.clone())?;
@@ -305,10 +479,11 @@ pub fn run_authorized_scan(
             findings_observed: findings,
         });
     };
-    let discovery = discover::crawl(
+    let discovery = discover::crawl_with_seeds(
         &policy,
         &requester,
         config,
+        source_seeds,
         Arc::clone(&cancelled),
         &mut progress_callback,
     )?;
@@ -438,4 +613,94 @@ pub(crate) fn headers_map(response: &ObservedResponse) -> HashMap<String, String
         .iter()
         .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
         .collect()
+}
+
+
+#[cfg(test)]
+mod source_seed_tests {
+    use std::collections::BTreeMap;
+
+    use super::source_endpoint_seed;
+
+    #[test]
+    fn materializes_dynamic_path_and_query_fields_without_body_execution() {
+        let names = vec![
+            "tenant".to_string(),
+            "next".to_string(),
+            "email".to_string(),
+        ];
+        let locations = BTreeMap::from([
+            ("tenant".to_string(), "path".to_string()),
+            ("next".to_string(), "query".to_string()),
+            ("email".to_string(), "json".to_string()),
+        ]);
+        let seed = source_endpoint_seed(
+            "https://example.test/root",
+            "POST",
+            "/api/login/:tenant",
+            &names,
+            &locations,
+            Some("application/json"),
+            "source_route:express:src/server.ts:10",
+        )
+        .expect("seed");
+        assert_eq!(seed.method, "POST");
+        assert!(seed.url.contains("/root/api/login/%7Btenant%7D"));
+        assert!(seed.url.contains("next=codetwin-test"));
+        assert!(!seed.url.contains("email="));
+        let discovery = seed.discovery_url.as_deref().expect("discovery url");
+        assert!(discovery.starts_with("https://example.test/root/api/login/codetwin-test"));
+        assert!(discovery.contains("next=codetwin-test"));
+        assert_eq!(seed.parameter_locations.get("email").map(String::as_str), Some("json"));
+    }
+
+    #[test]
+    fn preserves_deployment_base_path_without_double_prefix() {
+        let parameters = vec!["id".to_string()];
+        let locations = BTreeMap::from([("id".to_string(), "path".to_string())]);
+
+        let prefixed = source_endpoint_seed(
+            "https://example.test/app",
+            "GET",
+            "/api/users/:id",
+            &parameters,
+            &locations,
+            None,
+            "source_route:test",
+        )
+        .expect("seed");
+        assert_eq!(
+            prefixed.discovery_url.as_deref(),
+            Some("https://example.test/app/api/users/codetwin-test")
+        );
+
+        let already_prefixed = source_endpoint_seed(
+            "https://example.test/app",
+            "GET",
+            "/app/api/users/:id",
+            &parameters,
+            &locations,
+            None,
+            "source_route:test",
+        )
+        .expect("seed");
+        assert_eq!(
+            already_prefixed.discovery_url.as_deref(),
+            Some("https://example.test/app/api/users/codetwin-test")
+        );
+    }
+
+    #[test]
+    fn refuses_wildcard_source_routes_for_automatic_live_seeding() {
+        assert!(source_endpoint_seed(
+            "https://example.test",
+            "GET",
+            "/files/*",
+            &[],
+            &BTreeMap::new(),
+            None,
+            "source_route:express:src/files.ts:1",
+        )
+        .is_none());
+    }
 }

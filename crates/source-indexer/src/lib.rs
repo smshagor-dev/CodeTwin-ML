@@ -1,4 +1,5 @@
 mod imports;
+mod routes;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -16,7 +17,7 @@ use walkdir::{DirEntry, WalkDir};
 const MAX_SOURCE_BYTES: u64 = 5 * 1024 * 1024;
 const TYPESCRIPT_DEFINITIONS_QUERY: &str = include_str!("../queries/typescript.scm");
 pub const INDEXER_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const QUERY_VERSION: &str = "definitions-v2-imports-v1";
+pub const QUERY_VERSION: &str = "definitions-v2-imports-v2-routes-v3-handlers-v1";
 
 #[derive(Debug, Error)]
 pub enum IndexError {
@@ -47,14 +48,59 @@ pub struct IndexedSymbol {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedImportBinding {
+    pub local_name: String,
+    pub imported_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedImport {
     pub raw_specifier: String,
+    pub bindings: Vec<IndexedImportBinding>,
     pub kind: String,
     pub start_line: usize,
     pub start_column: usize,
     pub end_line: usize,
     pub end_column: usize,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedRouteParameter {
+    pub name: String,
+    pub location: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedHandlerInput {
+    pub handler_name: String,
+    pub parameters: Vec<IndexedRouteParameter>,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedRouteMount {
+    pub framework: String,
+    pub parent_router: String,
+    pub mounted_binding: String,
+    pub prefix: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedRoute {
+    pub framework: String,
+    pub router_name: String,
+    pub http_method: String,
+    pub path_template: String,
+    pub handler_name: Option<String>,
+    pub parameters: Vec<IndexedRouteParameter>,
+    pub request_content_type: Option<String>,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedFile {
@@ -66,6 +112,9 @@ pub struct IndexedFile {
     pub parse_state: ParseState,
     pub symbols: Vec<IndexedSymbol>,
     pub imports: Vec<IndexedImport>,
+    pub routes: Vec<IndexedRoute>,
+    pub route_mounts: Vec<IndexedRouteMount>,
+    pub handler_inputs: Vec<IndexedHandlerInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +276,8 @@ fn parse_source(
         .map_err(|error| format!("definition_query_error:{error}"))?;
     let symbols = collect_symbols(source, &tree, &query);
     let imports = imports::extract_imports(spec.name, source, tree.root_node());
+    let (routes, route_mounts, handler_inputs) =
+        routes::extract_routes(spec.name, source, tree.root_node());
 
     Ok(IndexedFile {
         relative_path,
@@ -237,6 +288,9 @@ fn parse_source(
         parse_state,
         symbols,
         imports,
+        routes,
+        route_mounts,
+        handler_inputs,
     })
 }
 

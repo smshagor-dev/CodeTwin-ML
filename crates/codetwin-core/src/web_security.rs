@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,7 @@ use url::Url;
 use crate::Database;
 
 const MAX_LIST: usize = 500;
+const MAX_SOURCE_ROUTES: usize = 2_000;
 
 #[derive(Debug, Error)]
 pub enum WebSecurityStoreError {
@@ -59,6 +60,7 @@ pub struct WebScanRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WebEndpointInput {
     pub url: String,
+    pub route_template: Option<String>,
     pub method: String,
     pub depth: usize,
     pub source: String,
@@ -76,6 +78,7 @@ pub struct WebEndpointRecord {
     pub id: String,
     pub scan_id: String,
     pub url: String,
+    pub route_template: Option<String>,
     pub method: String,
     pub depth: usize,
     pub source: String,
@@ -96,6 +99,66 @@ pub struct WebSourceCorrelation {
     pub symbol_id: Option<String>,
     pub symbol_name: Option<String>,
     pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceRouteRecord {
+    pub id: String,
+    pub project_id: String,
+    pub file_id: String,
+    pub relative_path: String,
+    pub symbol_id: Option<String>,
+    pub symbol_name: Option<String>,
+    pub handler_file_id: Option<String>,
+    pub handler_relative_path: Option<String>,
+    pub handler_symbol_id: Option<String>,
+    pub handler_symbol_name: Option<String>,
+    pub framework: String,
+    pub router_name: String,
+    pub http_method: String,
+    pub path_template: String,
+    pub handler_name: Option<String>,
+    pub parameter_names: Vec<String>,
+    pub parameter_locations: BTreeMap<String, String>,
+    pub request_content_type: Option<String>,
+    pub source_content_hash: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ImportBindingEvidence {
+    local_name: String,
+    imported_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedRouteMount {
+    source_file_id: String,
+    target_file_id: String,
+    framework: String,
+    parent_router: String,
+    mounted_binding: String,
+    imported_name: String,
+    prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebSourceEndpointLinkRecord {
+    pub id: String,
+    pub scan_id: String,
+    pub endpoint_id: String,
+    pub source_route_id: String,
+    pub source_relative_path: String,
+    pub handler_relative_path: Option<String>,
+    pub source_framework: String,
+    pub source_method: String,
+    pub source_path_template: String,
+    pub source_handler_name: Option<String>,
+    pub match_kind: String,
+    pub confidence: f64,
+    pub parameter_overlap: Vec<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -335,8 +398,8 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             "INSERT INTO web_security_endpoints(
                 id, scan_id, url, method, depth, source, parameter_names_json,
                 parameter_locations_json, response_header_names_json, cookie_names_json,
-                content_type, status_code, redirect_to
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                content_type, status_code, redirect_to, route_template
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(scan_id, method, url) DO UPDATE SET
                 depth = MIN(web_security_endpoints.depth, excluded.depth),
                 source = excluded.source,
@@ -346,7 +409,8 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 cookie_names_json = excluded.cookie_names_json,
                 content_type = COALESCE(excluded.content_type, web_security_endpoints.content_type),
                 status_code = COALESCE(excluded.status_code, web_security_endpoints.status_code),
-                redirect_to = COALESCE(excluded.redirect_to, web_security_endpoints.redirect_to)",
+                redirect_to = COALESCE(excluded.redirect_to, web_security_endpoints.redirect_to),
+                route_template = COALESCE(excluded.route_template, web_security_endpoints.route_template)",
             params![
                 id,
                 scan_id,
@@ -361,6 +425,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 endpoint.content_type,
                 endpoint.status_code.map(i64::from),
                 endpoint.redirect_to,
+                endpoint.route_template,
             ],
         )?;
         self.database
@@ -368,7 +433,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             .query_row(
                 "SELECT id, scan_id, url, method, depth, source, parameter_names_json,
                         parameter_locations_json, response_header_names_json, cookie_names_json,
-                        content_type, status_code, redirect_to, created_at
+                        content_type, status_code, redirect_to, route_template, created_at
                  FROM web_security_endpoints WHERE scan_id=?1 AND method=?2 AND url=?3",
                 params![scan_id, endpoint.method, endpoint.url],
                 map_endpoint,
@@ -384,7 +449,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         let mut statement = self.database.connection().prepare(
             "SELECT id, scan_id, url, method, depth, source, parameter_names_json,
                     parameter_locations_json, response_header_names_json, cookie_names_json,
-                    content_type, status_code, redirect_to, created_at
+                    content_type, status_code, redirect_to, route_template, created_at
              FROM web_security_endpoints WHERE scan_id=?1
              ORDER BY depth, url, method LIMIT ?2",
         )?;
@@ -591,10 +656,309 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         )? > 0)
     }
 
+    pub fn list_source_routes(
+        &self,
+        project_id: &str,
+        limit: usize,
+    ) -> Result<Vec<SourceRouteRecord>, WebSecurityStoreError> {
+        let requested_limit = limit.clamp(1, MAX_SOURCE_ROUTES);
+        let mut statement = self.database.connection().prepare(
+            "SELECT sr.id, sr.project_id, sr.file_id, f.relative_path,
+                    sr.symbol_id, s.name,
+                    sr.handler_file_id, hf.relative_path,
+                    sr.handler_symbol_id, hs.name,
+                    sr.framework, sr.router_name, sr.http_method, sr.path_template,
+                    sr.handler_name, sr.parameter_names_json, sr.parameter_locations_json,
+                    sr.request_content_type, sr.source_content_hash,
+                    sr.start_line, sr.end_line
+             FROM source_routes sr
+             JOIN files f ON f.id = sr.file_id
+             LEFT JOIN symbols s ON s.id = sr.symbol_id AND s.is_active = 1
+             LEFT JOIN files hf ON hf.id = sr.handler_file_id AND hf.is_active = 1
+             LEFT JOIN symbols hs ON hs.id = sr.handler_symbol_id AND hs.is_active = 1
+             WHERE sr.project_id = ?1 AND sr.is_active = 1 AND f.is_active = 1
+             ORDER BY sr.path_template, sr.http_method, sr.start_line
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![project_id, MAX_SOURCE_ROUTES as i64], |row| {
+            let parameter_names_json: String = row.get(15)?;
+            let parameter_locations_json: String = row.get(16)?;
+            Ok(SourceRouteRecord {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                file_id: row.get(2)?,
+                relative_path: row.get(3)?,
+                symbol_id: row.get(4)?,
+                symbol_name: row.get(5)?,
+                handler_file_id: row.get(6)?,
+                handler_relative_path: row.get(7)?,
+                handler_symbol_id: row.get(8)?,
+                handler_symbol_name: row.get(9)?,
+                framework: row.get(10)?,
+                router_name: row.get(11)?,
+                http_method: row.get(12)?,
+                path_template: row.get(13)?,
+                handler_name: row.get(14)?,
+                parameter_names: serde_json::from_str(&parameter_names_json).unwrap_or_default(),
+                parameter_locations: serde_json::from_str(&parameter_locations_json).unwrap_or_default(),
+                request_content_type: row.get(17)?,
+                source_content_hash: row.get(18)?,
+                start_line: row.get::<_, i64>(19)?.max(0) as usize,
+                end_line: row.get::<_, i64>(20)?.max(0) as usize,
+            })
+        })?;
+        let mut values = Vec::new();
+        for row in rows {
+            values.push(row?);
+        }
+        drop(statement);
+
+        let mounts = self.resolved_route_mounts(project_id)?;
+        let mut expanded = expand_source_route_mounts(values, &mounts);
+        expanded.truncate(requested_limit);
+        Ok(expanded)
+    }
+
+    fn resolved_route_mounts(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ResolvedRouteMount>, WebSecurityStoreError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT m.source_file_id, m.framework, m.parent_router,
+                    m.mounted_binding, m.prefix,
+                    i.resolved_target_file_id, i.bindings_json
+             FROM source_route_mounts m
+             JOIN import_references i
+               ON i.project_id=m.project_id
+              AND i.source_file_id=m.source_file_id
+             WHERE m.project_id=?1
+               AND m.is_active=1
+               AND i.resolution_state='resolved_local'
+               AND i.resolved_target_file_id IS NOT NULL
+             ORDER BY m.source_file_id, m.start_line, i.start_line",
+        )?;
+        let rows = statement.query_map([project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?;
+        let mut output = Vec::new();
+        let mut seen = BTreeSet::new();
+        for row in rows {
+            let (
+                source_file_id,
+                framework,
+                parent_router,
+                mounted_binding,
+                prefix,
+                target_file_id,
+                bindings_json,
+            ) = row?;
+            let bindings: Vec<ImportBindingEvidence> =
+                serde_json::from_str(&bindings_json).unwrap_or_default();
+            for binding in bindings {
+                if binding.local_name != mounted_binding {
+                    continue;
+                }
+                let identity = (
+                    source_file_id.clone(),
+                    target_file_id.clone(),
+                    framework.clone(),
+                    parent_router.clone(),
+                    mounted_binding.clone(),
+                    binding.imported_name.clone(),
+                    prefix.clone(),
+                );
+                if !seen.insert(identity) {
+                    continue;
+                }
+                output.push(ResolvedRouteMount {
+                    source_file_id: source_file_id.clone(),
+                    target_file_id: target_file_id.clone(),
+                    framework: framework.clone(),
+                    parent_router: parent_router.clone(),
+                    mounted_binding: mounted_binding.clone(),
+                    imported_name: binding.imported_name,
+                    prefix: prefix.clone(),
+                });
+            }
+        }
+        Ok(output)
+    }
+
+    pub fn link_endpoint_to_source_route(
+        &self,
+        project_id: Option<&str>,
+        endpoint: &WebEndpointRecord,
+    ) -> Result<Option<WebSourceEndpointLinkRecord>, WebSecurityStoreError> {
+        let Some(project_id) = project_id else {
+            return Ok(None);
+        };
+        let url = Url::parse(&endpoint.url)
+            .map_err(|error| WebSecurityStoreError::InvalidConfig(error.to_string()))?;
+        let routes = self.list_source_routes(project_id, 1_000)?;
+        let mut best: Option<(f64, bool, SourceRouteRecord, Vec<String>)> = None;
+
+        for route in routes {
+            if route.http_method != endpoint.method {
+                continue;
+            }
+            let Some(exact_path) = route_template_match(&route.path_template, url.path()) else {
+                continue;
+            };
+            let mut overlap: Vec<String> = endpoint
+                .parameter_names
+                .iter()
+                .filter(|name| {
+                    route
+                        .parameter_names
+                        .iter()
+                        .any(|candidate| candidate.eq_ignore_ascii_case(name))
+                })
+                .cloned()
+                .collect();
+            overlap.sort();
+            overlap.dedup();
+            let seeded = endpoint.source.starts_with("source_route:");
+            let mut confidence: f64 = if seeded {
+                0.995
+            } else if exact_path {
+                0.98
+            } else {
+                0.93
+            };
+            if !overlap.is_empty() {
+                confidence = (confidence + 0.005).min(0.999);
+            }
+            if best.as_ref().is_none_or(|(score, _, _, _)| confidence > *score) {
+                best = Some((confidence, exact_path, route, overlap));
+            }
+        }
+
+        let Some((confidence, exact_path, route, overlap)) = best else {
+            return Ok(None);
+        };
+        let match_kind = if endpoint.source.starts_with("source_route:") {
+            "seeded"
+        } else if exact_path {
+            "exact_static"
+        } else {
+            "template"
+        };
+        let id = stable_id(
+            "web-source-endpoint",
+            &[&endpoint.scan_id, &endpoint.id, &route.id],
+        );
+        let overlap_json = serde_json::to_string(&overlap)?;
+        self.database.connection().execute(
+            "INSERT INTO web_source_endpoint_links(
+               id, scan_id, endpoint_id, source_route_id, effective_path_template,
+               match_kind, confidence, parameter_overlap_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(scan_id, endpoint_id, source_route_id) DO UPDATE SET
+               effective_path_template = excluded.effective_path_template,
+               match_kind = excluded.match_kind,
+               confidence = excluded.confidence,
+               parameter_overlap_json = excluded.parameter_overlap_json",
+            params![
+                id,
+                endpoint.scan_id,
+                endpoint.id,
+                route.id,
+                route.path_template,
+                match_kind,
+                confidence,
+                overlap_json,
+            ],
+        )?;
+        let created_at: String = self.database.connection().query_row(
+            "SELECT created_at FROM web_source_endpoint_links WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )?;
+        Ok(Some(WebSourceEndpointLinkRecord {
+            id,
+            scan_id: endpoint.scan_id.clone(),
+            endpoint_id: endpoint.id.clone(),
+            source_route_id: route.id,
+            source_relative_path: route.relative_path,
+            handler_relative_path: route.handler_relative_path,
+            source_framework: route.framework,
+            source_method: route.http_method,
+            source_path_template: route.path_template,
+            source_handler_name: route.handler_name,
+            match_kind: match_kind.to_string(),
+            confidence,
+            parameter_overlap: overlap,
+            created_at,
+        }))
+    }
+
+    pub fn list_source_endpoint_links(
+        &self,
+        scan_id: &str,
+        limit: usize,
+    ) -> Result<Vec<WebSourceEndpointLinkRecord>, WebSecurityStoreError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT l.id, l.scan_id, l.endpoint_id, l.source_route_id,
+                    f.relative_path, hf.relative_path,
+                    sr.framework, sr.http_method, l.effective_path_template,
+                    sr.handler_name, l.match_kind, l.confidence,
+                    l.parameter_overlap_json, l.created_at
+             FROM web_source_endpoint_links l
+             JOIN source_routes sr ON sr.id=l.source_route_id
+             JOIN files f ON f.id=sr.file_id
+             LEFT JOIN files hf ON hf.id=sr.handler_file_id
+             WHERE l.scan_id=?1
+             ORDER BY l.confidence DESC, l.endpoint_id, l.source_route_id
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![scan_id, bounded(limit) as i64], |row| {
+            let overlap_json: String = row.get(12)?;
+            Ok(WebSourceEndpointLinkRecord {
+                id: row.get(0)?,
+                scan_id: row.get(1)?,
+                endpoint_id: row.get(2)?,
+                source_route_id: row.get(3)?,
+                source_relative_path: row.get(4)?,
+                handler_relative_path: row.get(5)?,
+                source_framework: row.get(6)?,
+                source_method: row.get(7)?,
+                source_path_template: row.get(8)?,
+                source_handler_name: row.get(9)?,
+                match_kind: row.get(10)?,
+                confidence: row.get(11)?,
+                parameter_overlap: serde_json::from_str(&overlap_json).unwrap_or_default(),
+                created_at: row.get(13)?,
+            })
+        })?;
+        let mut values = Vec::new();
+        for row in rows {
+            values.push(row?);
+        }
+        Ok(values)
+    }
+
     pub fn correlate_source(
         &self,
         project_id: Option<&str>,
         endpoint_url: &str,
+        parameter_name: Option<&str>,
+    ) -> Result<Option<WebSourceCorrelation>, WebSecurityStoreError> {
+        self.correlate_source_for_request(project_id, endpoint_url, None, parameter_name)
+    }
+
+    pub fn correlate_source_for_request(
+        &self,
+        project_id: Option<&str>,
+        endpoint_url: &str,
+        method: Option<&str>,
         parameter_name: Option<&str>,
     ) -> Result<Option<WebSourceCorrelation>, WebSecurityStoreError> {
         let Some(project_id) = project_id else {
@@ -602,6 +966,73 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         };
         let url = Url::parse(endpoint_url)
             .map_err(|error| WebSecurityStoreError::InvalidConfig(error.to_string()))?;
+        let request_method = method.unwrap_or("").trim().to_ascii_uppercase();
+        let parameter = parameter_name.unwrap_or("").trim();
+
+        let routes = self.list_source_routes(project_id, 1_000)?;
+        let mut best: Option<(f64, SourceRouteRecord)> = None;
+        for route in routes {
+            if !request_method.is_empty() && route.http_method != request_method {
+                continue;
+            }
+            let Some(exact_path) = route_template_match(&route.path_template, url.path()) else {
+                continue;
+            };
+            let mut confidence: f64 = if exact_path { 0.96 } else { 0.90 };
+            if !request_method.is_empty() {
+                confidence += 0.02;
+            }
+            if !parameter.is_empty()
+                && route
+                    .parameter_names
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(parameter))
+            {
+                confidence += 0.01;
+            }
+            confidence = confidence.min(0.99);
+            if best.as_ref().is_none_or(|(score, _)| confidence > *score) {
+                best = Some((confidence, route));
+            }
+        }
+
+        if let Some((confidence, route)) = best {
+            let handler_source = route
+                .handler_file_id
+                .zip(route.handler_relative_path)
+                .map(|(file_id, relative_path)| {
+                    (
+                        file_id,
+                        relative_path,
+                        route.handler_symbol_id,
+                        route.handler_symbol_name.or(route.handler_name.clone()),
+                    )
+                });
+            let (file_id, relative_path, symbol_id, symbol_name) =
+                handler_source.unwrap_or((
+                    route.file_id,
+                    route.relative_path,
+                    route.symbol_id,
+                    route.symbol_name.or(route.handler_name),
+                ));
+            return Ok(Some(WebSourceCorrelation {
+                file_id,
+                relative_path,
+                symbol_id,
+                symbol_name,
+                confidence,
+            }));
+        }
+
+        self.correlate_source_heuristic(project_id, &url, parameter)
+    }
+
+    fn correlate_source_heuristic(
+        &self,
+        project_id: &str,
+        url: &Url,
+        parameter: &str,
+    ) -> Result<Option<WebSourceCorrelation>, WebSecurityStoreError> {
         let segment = url
             .path_segments()
             .into_iter()
@@ -614,7 +1045,6 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             })
             .unwrap_or("")
             .to_string();
-        let parameter = parameter_name.unwrap_or("").trim().to_string();
         if segment.is_empty() && parameter.is_empty() {
             return Ok(None);
         }
@@ -671,6 +1101,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             .ok_or_else(|| WebSecurityStoreError::NotFound(scan_id.to_string()))?;
         let findings = self.list_findings(scan_id, &WebFindingFilter::default(), MAX_LIST)?;
         let endpoints = self.list_endpoints(scan_id, MAX_LIST)?;
+        let source_endpoint_links = self.list_source_endpoint_links(scan_id, MAX_LIST)?;
         let generated_at: String = self.database.connection().query_row(
             "SELECT CURRENT_TIMESTAMP",
             [],
@@ -695,6 +1126,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 "scan": scan,
                 "methodology": "Bounded authorized crawling, passive response analysis, and non-destructive active probes.",
                 "endpoint_inventory": endpoints,
+                "source_endpoint_links": source_endpoint_links,
                 "severity_summary": severity_summary,
                 "findings": report_findings,
                 "limitations": [
@@ -752,7 +1184,34 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                     .unwrap_or_else(|| "not requested".to_string())
             ));
         }
-        report.push_str("\n## Findings\n\n");
+        report.push_str("\n## Source to Live Endpoint Map\n\n");
+        if source_endpoint_links.is_empty() {
+            report.push_str("No durable source-route mapping was available for this scan.\n\n");
+        } else {
+            for link in &source_endpoint_links {
+                report.push_str(&format!(
+                    "- **{} {}** → `{}`{} — {} match, {:.0}% confidence",
+                    link.source_method,
+                    link.source_path_template,
+                    link.source_relative_path,
+                    link.source_handler_name
+                        .as_ref()
+                        .map(|handler| format!(" → `{}`", handler))
+                        .unwrap_or_default(),
+                    link.match_kind.replace('_', " "),
+                    link.confidence * 100.0,
+                ));
+                if !link.parameter_overlap.is_empty() {
+                    report.push_str(&format!(
+                        "; overlapping inputs: {}",
+                        link.parameter_overlap.join(", ")
+                    ));
+                }
+                report.push_str("\n");
+            }
+            report.push_str("\n");
+        }
+        report.push_str("## Findings\n\n");
         if findings.is_empty() {
             report.push_str(
                 "No findings were observed by the executed checks. This is not a guarantee that the application is vulnerability-free.\n\n",
@@ -808,7 +1267,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         }
         report.push_str("## Testing Limitations\n\n");
         report.push_str(
-            "- Automated security testing can produce false positives and false negatives.\n- Potential and Likely findings require human review.\n- Confirmed is reserved for reproducible evidence observed by a bounded implemented probe; it does not imply broader compromise.\n- Source attribution is heuristic unless confidence and source evidence are independently verified.\n",
+            "- Automated security testing can produce false positives and false negatives.\n- Potential and Likely findings require human review.\n- Confirmed is reserved for reproducible evidence observed by a bounded implemented probe; it does not imply broader compromise.\n- Source attribution may be exact/template-backed when a persisted source-route link exists; fallback filename/symbol correlation remains heuristic.\n",
         );
         Ok(report)
     }
@@ -890,6 +1349,7 @@ fn map_endpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebEndpointRecord> 
         id: row.get(0)?,
         scan_id: row.get(1)?,
         url: row.get(2)?,
+        route_template: row.get(13)?,
         method: row.get(3)?,
         depth: nonnegative(row.get(4)?),
         source: row.get(5)?,
@@ -902,7 +1362,7 @@ fn map_endpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebEndpointRecord> 
             .get::<_, Option<i64>>(11)?
             .and_then(|value| u16::try_from(value).ok()),
         redirect_to: row.get(12)?,
-        created_at: row.get(13)?,
+        created_at: row.get(14)?,
     })
 }
 
@@ -1011,6 +1471,201 @@ fn stable_id(prefix: &str, parts: &[&str]) -> String {
     format!("{prefix}_{:x}", hasher.finalize())
 }
 
+fn expand_source_route_mounts(
+    routes: Vec<SourceRouteRecord>,
+    mounts: &[ResolvedRouteMount],
+) -> Vec<SourceRouteRecord> {
+    let mut output = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for route in routes {
+        let mut prefixes = Vec::new();
+        let mut path_edges = BTreeSet::new();
+        collect_route_mount_prefixes(
+            &route.file_id,
+            &route.framework,
+            &route.router_name,
+            mounts,
+            &mut path_edges,
+            0,
+            "",
+            &mut prefixes,
+        );
+        if prefixes.is_empty() {
+            prefixes.push(String::new());
+        }
+        prefixes.sort();
+        prefixes.dedup();
+
+        for prefix in prefixes {
+            let effective_path = combine_route_paths(&prefix, &route.path_template);
+            let identity = (route.id.clone(), effective_path.clone());
+            if !seen.insert(identity) {
+                continue;
+            }
+            let mut expanded = route.clone();
+            expanded.path_template = effective_path;
+            output.push(expanded);
+        }
+    }
+
+    output.sort_by(|left, right| {
+        (
+            &left.path_template,
+            &left.http_method,
+            &left.relative_path,
+            left.start_line,
+        )
+            .cmp(&(
+                &right.path_template,
+                &right.http_method,
+                &right.relative_path,
+                right.start_line,
+            ))
+    });
+    output
+}
+
+fn collect_route_mount_prefixes(
+    current_file_id: &str,
+    framework: &str,
+    current_router: &str,
+    mounts: &[ResolvedRouteMount],
+    path_edges: &mut BTreeSet<String>,
+    depth: usize,
+    accumulated_prefix: &str,
+    output: &mut Vec<String>,
+) {
+    if depth >= 8 {
+        if !accumulated_prefix.is_empty() {
+            output.push(accumulated_prefix.to_string());
+        }
+        return;
+    }
+
+    let incoming: Vec<&ResolvedRouteMount> = mounts
+        .iter()
+        .filter(|mount| {
+            mount.target_file_id == current_file_id
+                && mount.framework == framework
+                && import_binding_matches_router(&mount.imported_name, current_router)
+        })
+        .collect();
+
+    if incoming.is_empty() {
+        if !accumulated_prefix.is_empty() {
+            output.push(accumulated_prefix.to_string());
+        }
+        return;
+    }
+
+    let mut traversed = false;
+    for mount in incoming {
+        let edge_key = format!(
+            "{}\0{}\0{}\0{}\0{}",
+            mount.source_file_id,
+            mount.target_file_id,
+            mount.parent_router,
+            mount.mounted_binding,
+            mount.prefix
+        );
+        if !path_edges.insert(edge_key.clone()) {
+            continue;
+        }
+        traversed = true;
+        let next_prefix = combine_route_paths(&mount.prefix, accumulated_prefix);
+        collect_route_mount_prefixes(
+            &mount.source_file_id,
+            framework,
+            &mount.parent_router,
+            mounts,
+            path_edges,
+            depth + 1,
+            &next_prefix,
+            output,
+        );
+        path_edges.remove(&edge_key);
+    }
+
+    if !traversed && !accumulated_prefix.is_empty() {
+        output.push(accumulated_prefix.to_string());
+    }
+}
+
+fn import_binding_matches_router(imported_name: &str, router_name: &str) -> bool {
+    matches!(imported_name, "default" | "*") || imported_name == router_name
+}
+
+fn combine_route_paths(prefix: &str, path: &str) -> String {
+    let prefix = prefix.trim();
+    let path = path.trim();
+    if prefix.is_empty() || prefix == "/" {
+        return normalize_route_path(path);
+    }
+    if path.is_empty() || path == "/" {
+        return normalize_route_path(prefix);
+    }
+    normalize_route_path(&format!(
+        "{}/{}",
+        prefix.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    ))
+}
+
+fn normalize_route_path(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return "/".to_string();
+    }
+    let mut path = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    while path.contains("//") {
+        path = path.replace("//", "/");
+    }
+    if path.len() > 1 {
+        path = path.trim_end_matches('/').to_string();
+    }
+    path
+}
+
+fn route_template_match(template: &str, observed: &str) -> Option<bool> {
+    let normalize = |value: &str| {
+        let trimmed = value.trim();
+        if trimmed.len() > 1 {
+            trimmed.trim_end_matches('/').to_string()
+        } else if trimmed.is_empty() {
+            "/".to_string()
+        } else {
+            trimmed.to_string()
+        }
+    };
+    let template = normalize(template);
+    let observed = normalize(observed);
+    if template == observed {
+        return Some(true);
+    }
+
+    let left: Vec<&str> = template.trim_matches('/').split('/').collect();
+    let right: Vec<&str> = observed.trim_matches('/').split('/').collect();
+    if left.len() != right.len() {
+        return None;
+    }
+    for (expected, actual) in left.iter().zip(right.iter()) {
+        let dynamic = (expected.starts_with(':') && expected.len() > 1)
+            || (expected.starts_with('{') && expected.ends_with('}') && expected.len() > 2);
+        if !dynamic && expected != actual {
+            return None;
+        }
+        if dynamic && actual.is_empty() {
+            return None;
+        }
+    }
+    Some(false)
+}
+
 fn bounded(value: usize) -> usize {
     value.clamp(1, MAX_LIST)
 }
@@ -1063,6 +1718,7 @@ mod tests {
                 &scan.id,
                 &WebEndpointInput {
                     url: "http://localhost:8080/search?q=a".to_string(),
+                    route_template: None,
                     method: "GET".to_string(),
                     depth: 1,
                     source: "html".to_string(),
@@ -1211,6 +1867,192 @@ mod tests {
             .expect("correlation");
         assert!(correlated.relative_path.ends_with("search.ts"));
         assert!(correlated.confidence < 1.0);
+    }
+
+    #[test]
+    fn source_routes_persist_fields_and_drive_exact_live_correlation() {
+        let project = tempdir().expect("project");
+        fs::create_dir_all(project.path().join("src")).expect("src");
+        fs::write(
+            project.path().join("src/server.ts"),
+            r#"
+const app = express();
+app.post("/api/login/:tenant", (req, res) => {
+    const email = req.body.email;
+    const password = req.body.password;
+    return res.json({ tenant: req.params.tenant, email, password });
+});
+"#,
+        )
+        .expect("source");
+
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(project.path())
+            .expect("index project");
+        let store = AuthorizedWebSecurityStore::new(&database);
+        let routes = store
+            .list_source_routes(&summary.project_id, 20)
+            .expect("source routes");
+        let route = routes
+            .iter()
+            .find(|route| route.path_template == "/api/login/:tenant")
+            .expect("login route");
+        assert_eq!(route.http_method, "POST");
+        assert!(route.parameter_locations.get("tenant").is_some_and(|value| value == "path"));
+        assert!(route.parameter_locations.get("email").is_some_and(|value| value == "json"));
+        assert!(route.parameter_locations.get("password").is_some_and(|value| value == "json"));
+
+        let correlated = store
+            .correlate_source_for_request(
+                Some(&summary.project_id),
+                "http://localhost:8080/api/login/acme",
+                Some("POST"),
+                Some("email"),
+            )
+            .expect("correlate")
+            .expect("correlation");
+        assert!(correlated.relative_path.ends_with("server.ts"));
+        assert!(correlated.confidence >= 0.98);
+
+        let mut scan_input = create();
+        scan_input.project_id = Some(summary.project_id.clone());
+        let scan = store.create_scan(&scan_input).expect("scan");
+        let endpoint = store
+            .record_endpoint(
+                &scan.id,
+                &WebEndpointInput {
+                    url: "http://localhost:8080/api/login/acme".to_string(),
+                    route_template: Some("http://localhost:8080/api/login/%7Btenant%7D".to_string()),
+                    method: "POST".to_string(),
+                    depth: 0,
+                    source: "source_route:express:src/server.ts:2".to_string(),
+                    parameter_names: vec![
+                        "tenant".to_string(),
+                        "email".to_string(),
+                        "password".to_string(),
+                    ],
+                    parameter_locations: std::collections::BTreeMap::from([
+                        ("tenant".to_string(), "path".to_string()),
+                        ("email".to_string(), "json".to_string()),
+                        ("password".to_string(), "json".to_string()),
+                    ]),
+                    response_header_names: Vec::new(),
+                    cookie_names: Vec::new(),
+                    content_type: Some("application/json".to_string()),
+                    status_code: None,
+                    redirect_to: None,
+                },
+            )
+            .expect("endpoint");
+        let link = store
+            .link_endpoint_to_source_route(Some(&summary.project_id), &endpoint)
+            .expect("link")
+            .expect("source route link");
+        assert_eq!(link.source_route_id, route.id);
+        assert_eq!(link.match_kind, "seeded");
+        assert!(link.parameter_overlap.iter().any(|name| name == "email"));
+        assert_eq!(
+            store
+                .list_source_endpoint_links(&scan.id, 20)
+                .expect("source endpoint links")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn cross_file_express_router_mount_resolves_effective_live_path() {
+        let project = tempdir().expect("project");
+        fs::create_dir_all(project.path().join("src")).expect("src");
+        fs::write(
+            project.path().join("src/server.js"),
+            r#"
+import authRouter from "./auth";
+const app = express();
+app.use("/api/auth", authRouter);
+"#,
+        )
+        .expect("server");
+        fs::write(
+            project.path().join("src/auth.js"),
+            r#"
+import { login } from "./controllers";
+const router = express.Router();
+router.post("/login/:tenant", login);
+export default router;
+"#,
+        )
+        .expect("auth");
+        fs::write(
+            project.path().join("src/controllers.js"),
+            r#"
+export function login(req, res) {
+    const { email, password } = req.body;
+    const tenant = req.params.tenant;
+    return res.json({ tenant, email, password });
+}
+"#,
+        )
+        .expect("controller");
+
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(project.path())
+            .expect("index project");
+        let store = AuthorizedWebSecurityStore::new(&database);
+        let routes = store
+            .list_source_routes(&summary.project_id, 50)
+            .expect("source routes");
+        let route = routes
+            .iter()
+            .find(|route| {
+                route.http_method == "POST"
+                    && route.path_template == "/api/auth/login/:tenant"
+            })
+            .expect("mounted login route");
+
+        assert!(route.relative_path.ends_with("auth.js"));
+        assert!(route.handler_relative_path.as_deref().is_some_and(|path| path.ends_with("controllers.js")));
+        assert_eq!(route.handler_symbol_name.as_deref(), Some("login"));
+        assert_eq!(route.parameter_locations.get("tenant").map(String::as_str), Some("path"));
+        assert_eq!(route.parameter_locations.get("email").map(String::as_str), Some("json"));
+        assert_eq!(route.parameter_locations.get("password").map(String::as_str), Some("json"));
+
+        let correlated = store
+            .correlate_source_for_request(
+                Some(&summary.project_id),
+                "http://localhost:8080/api/auth/login/acme",
+                Some("POST"),
+                Some("password"),
+            )
+            .expect("correlate")
+            .expect("source correlation");
+        assert!(correlated.relative_path.ends_with("controllers.js"));
+        assert_eq!(correlated.symbol_name.as_deref(), Some("login"));
+        assert!(correlated.confidence >= 0.98);
+
+        fs::remove_file(project.path().join("src/controllers.js")).expect("remove controller");
+        ProjectIndexService::new(&database)
+            .index_project(project.path())
+            .expect("re-index after controller removal");
+        let routes_after_removal = store
+            .list_source_routes(&summary.project_id, 50)
+            .expect("source routes after removal");
+        let route_after_removal = routes_after_removal
+            .iter()
+            .find(|route| {
+                route.http_method == "POST"
+                    && route.path_template == "/api/auth/login/:tenant"
+            })
+            .expect("mounted route remains from router source");
+        assert!(route_after_removal.handler_relative_path.is_none());
+        assert!(route_after_removal
+            .parameter_locations
+            .get("tenant")
+            .is_some_and(|location| location == "path"));
+        assert!(!route_after_removal.parameter_locations.contains_key("email"));
+        assert!(!route_after_removal.parameter_locations.contains_key("password"));
     }
 
     #[test]
