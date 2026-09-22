@@ -1,4 +1,11 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    fs,
+    io::Read,
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+use sha2::{Digest, Sha256};
 
 use codetwin_core::{
     Database, QaArtifactRecord, QaDiscoveryRunRecord, QaDiscoveryRunSummary, QaDiscoveryService,
@@ -9,6 +16,8 @@ use qa_execution::{SandboxPolicy, TestExecutionRequest, TrustedToolchain};
 use tauri::Manager;
 
 static QA_DISCOVERY_RUNNING: AtomicBool = AtomicBool::new(false);
+static QA_EXECUTION_RUNNING: AtomicBool = AtomicBool::new(false);
+static QA_EXECUTION_CANCELLED: AtomicBool = AtomicBool::new(false);
 static QA_EXECUTION_RUNNING: AtomicBool = AtomicBool::new(false);
 static QA_EXECUTION_CANCELLED: AtomicBool = AtomicBool::new(false);
 
