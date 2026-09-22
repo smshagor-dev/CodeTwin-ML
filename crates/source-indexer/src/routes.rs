@@ -3198,6 +3198,99 @@ app.use("/api/auth", authRouter);
     }
 
     #[test]
+    fn maps_flask_request_fields_to_source_routes() {
+        let source = r#"
+from flask import Flask, request
+
+app = Flask(__name__)
+
+@app.get("/users/<int:user_id>")
+def show_user(user_id):
+    q = request.args.get("q")
+    args = request.args
+    page = args.get("page")
+    tenant = request.headers.get("X-Tenant")
+    headers = request.headers
+    trace = headers["X-Trace"]
+    session = request.cookies.get("session")
+    dynamic = "secret"
+    request.args.get(dynamic)
+    return {"id": user_id, "q": q, "page": page, "tenant": tenant, "trace": trace, "session": session}
+
+@app.post("/users")
+def create_user():
+    payload = request.get_json(silent=True)
+    email = payload.get("email")
+    timezone = payload["timezone"]
+    display_name = request.json.get("displayName")
+    return {"email": email, "timezone": timezone, "displayName": display_name}
+
+@app.patch("/users/<int:user_id>")
+def update_user(user_id):
+    form = request.form
+    email = form.get("email")
+    csrf = request.form["csrf"]
+    return {"id": user_id, "email": email, "csrf": csrf}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, handler_inputs) =
+            extract_routes("Python", "app.py", source, tree.root_node());
+
+        let get = routes
+            .iter()
+            .find(|route| route.framework == "flask" && route.http_method == "GET")
+            .expect("Flask GET route");
+        for (name, location) in [
+            ("user_id", "path"),
+            ("q", "query"),
+            ("page", "query"),
+            ("X-Tenant", "header"),
+            ("X-Trace", "header"),
+            ("session", "cookie"),
+        ] {
+            assert!(get.parameters.iter().any(|parameter| {
+                parameter.name == name && parameter.location == location
+            }));
+        }
+        assert!(!get.parameters.iter().any(|parameter| parameter.name == "secret"));
+
+        let post = routes
+            .iter()
+            .find(|route| route.framework == "flask" && route.http_method == "POST")
+            .expect("Flask POST route");
+        for field in ["email", "timezone", "displayName"] {
+            assert!(post.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert_eq!(post.request_content_type.as_deref(), Some("application/json"));
+
+        let patch = routes
+            .iter()
+            .find(|route| route.framework == "flask" && route.http_method == "PATCH")
+            .expect("Flask PATCH route");
+        for field in ["email", "csrf"] {
+            assert!(patch.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "form"
+            }));
+        }
+        assert_eq!(
+            patch.request_content_type.as_deref(),
+            Some("application/x-www-form-urlencoded")
+        );
+
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "create_user"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "email" && parameter.location == "json"
+                })
+        }));
+    }
+    #[test]
     fn extracts_flask_routes_blueprints_and_converters() {
         let source = r#"
 from flask import Flask, Blueprint
