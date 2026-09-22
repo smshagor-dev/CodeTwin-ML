@@ -53,7 +53,7 @@ pub fn crawl_with_seeds(
     let mut source_seed_by_url = HashMap::<String, SourceEndpointSeed>::new();
 
     for seed in source_seeds.iter().take(1_000) {
-        let Ok(url) = policy.normalize_and_assert(&seed.url) else {
+        let Ok(template_url) = policy.normalize_and_assert(&seed.url) else {
             continue;
         };
         let method = seed.method.trim().to_ascii_uppercase();
@@ -63,11 +63,15 @@ pub fn crawl_with_seeds(
         ) {
             continue;
         }
-        let key = normalized_key(&url);
+
         if method == "GET" {
-            source_seed_by_url.insert(key, seed.clone());
-            if url != *policy.target() {
-                queue.push_back((url, 0, "source_route".to_string(), 0));
+            let discovery_raw = seed.discovery_url.as_deref().unwrap_or(&seed.url);
+            let Ok(discovery_url) = policy.normalize_and_assert(discovery_raw) else {
+                continue;
+            };
+            source_seed_by_url.insert(normalized_key(&discovery_url), seed.clone());
+            if discovery_url != *policy.target() {
+                queue.push_back((discovery_url, 0, "source_route".to_string(), 0));
             }
             continue;
         }
@@ -76,7 +80,7 @@ pub fn crawl_with_seeds(
             &mut endpoints,
             &mut endpoint_keys,
             EndpointObservation {
-                url: url.to_string(),
+                url: template_url.to_string(),
                 method,
                 depth: 0,
                 source: seed.source_label.clone(),
@@ -127,7 +131,9 @@ pub fn crawl_with_seeds(
         }
         let (response_header_names, cookie_names) = response_inventory(&response);
         let endpoint = EndpointObservation {
-            url: url.to_string(),
+            url: source_seed
+                .map(|seed| seed.url.clone())
+                .unwrap_or_else(|| url.to_string()),
             method: "GET".to_string(),
             depth,
             source: source_seed
