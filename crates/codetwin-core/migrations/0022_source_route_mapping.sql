@@ -58,6 +58,7 @@ CREATE TABLE web_source_endpoint_links (
   scan_id TEXT NOT NULL REFERENCES web_security_scans(id) ON DELETE CASCADE,
   endpoint_id TEXT NOT NULL REFERENCES web_security_endpoints(id) ON DELETE CASCADE,
   source_route_id TEXT NOT NULL REFERENCES source_routes(id) ON DELETE CASCADE,
+  effective_path_template TEXT NOT NULL,
   match_kind TEXT NOT NULL CHECK(match_kind IN ('seeded','exact_static','template')),
   confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
   parameter_overlap_json TEXT NOT NULL DEFAULT '[]',
