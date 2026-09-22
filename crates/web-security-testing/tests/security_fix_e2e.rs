@@ -72,6 +72,8 @@ impl SourceBackedLab {
                 excluded_paths: vec![],
                 max_crawl_depth: 3,
                 max_requests: 260,
+                max_requests_per_endpoint: 80,
+                min_request_interval_ms: 0,
                 concurrency: 2,
                 timeout_ms: 2_000,
                 response_limit_bytes: 128_000,
