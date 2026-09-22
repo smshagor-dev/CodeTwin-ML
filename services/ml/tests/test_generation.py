@@ -15,6 +15,7 @@ from codetwin_ml.datasets import load_catalog  # noqa: E402
 from codetwin_ml.generation import (  # noqa: E402
     InferenceInputError,
     InferenceRuntimeError,
+    MAX_GENERATION_BYTES,
     generation_runtime_status,
     run_generation,
 )
@@ -88,11 +89,11 @@ class GenerationTests(unittest.TestCase):
             if os.name != "nt":
                 cli.chmod(0o700)
             cli_hash = hashlib.sha256(cli.read_bytes()).hexdigest()
-            completed = subprocess.CompletedProcess(
-                args=[str(cli)],
-                returncode=0,
-                stdout=b"Use a parameterized query and add a regression test.\n",
-            )
+            def fake_run(command, **kwargs):
+                output = kwargs["stdout"]
+                output.write(b"Use a parameterized query and add a regression test.\n")
+                output.flush()
+                return subprocess.CompletedProcess(args=command, returncode=0)
 
             with patch.dict(
                 os.environ,
@@ -103,7 +104,7 @@ class GenerationTests(unittest.TestCase):
                 clear=False,
             ), patch(
                 "codetwin_ml.generation.subprocess.run",
-                return_value=completed,
+                side_effect=fake_run,
             ) as run:
                 result = run_generation(
                     "repair_generation",
@@ -122,7 +123,42 @@ class GenerationTests(unittest.TestCase):
             prompt_path = pathlib.Path(command[command.index("-f") + 1])
             self.assertIn("codetwin-generation-", str(prompt_path))
             self.assertEqual(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
+            self.assertIsNot(run.call_args.kwargs["stdout"], subprocess.PIPE)
             self.assertFalse(run.call_args.kwargs["check"])
+
+    def test_rejects_oversized_generation_output_without_buffering_it_in_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            model_root = self._install_gguf(root)
+            cli = root / ("llama-cli.exe" if os.name == "nt" else "llama-cli")
+            cli.write_bytes(b"trusted-cli")
+            if os.name != "nt":
+                cli.chmod(0o700)
+            cli_hash = hashlib.sha256(cli.read_bytes()).hexdigest()
+
+            def fake_run(command, **kwargs):
+                output = kwargs["stdout"]
+                output.write(b"x" * (MAX_GENERATION_BYTES + 1))
+                output.flush()
+                return subprocess.CompletedProcess(args=command, returncode=0)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODETWIN_LLAMA_CLI": str(cli),
+                    "CODETWIN_LLAMA_CLI_SHA256": cli_hash,
+                },
+                clear=False,
+            ), patch(
+                "codetwin_ml.generation.subprocess.run",
+                side_effect=fake_run,
+            ):
+                with self.assertRaisesRegex(InferenceRuntimeError, "generation output exceeds"):
+                    run_generation(
+                        "repair_generation",
+                        "review source",
+                        model_root=model_root,
+                    )
 
     def test_rejects_oversized_prompt_before_launch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
