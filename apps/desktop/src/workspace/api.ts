@@ -154,6 +154,46 @@ export const workspaceApi = {
   qaHistory(projectId: string, limit = 50) {
     return invoke<QaDiscoveryRunRecord[]>("qa_discovery_history", { projectId, limit });
   },
+  qaExecutionAvailability() {
+    return invoke<import("./types").QaExecutionAvailability>("qa_execution_availability");
+  },
+  createQaExecutionPlan(
+    projectId: string,
+    request: import("./types").QaTestExecutionRequest,
+    toolchain: import("./types").QaTrustedToolchain,
+    policy: import("./types").QaSandboxPolicy,
+  ) {
+    return invoke<import("./types").QaExecutionPlanRecord>("create_qa_execution_plan", {
+      projectId,
+      request,
+      toolchain,
+      policy,
+    });
+  },
+  approveQaExecutionPlan(planId: string) {
+    return invoke<import("./types").QaExecutionPlanRecord>("approve_qa_execution_plan", { planId });
+  },
+  qaExecutionPlans(projectId: string, limit = 50) {
+    return invoke<import("./types").QaExecutionPlanRecord[]>("list_qa_execution_plans", {
+      projectId,
+      limit,
+    });
+  },
+  qaExecutionRuns(projectId: string, limit = 50) {
+    return invoke<import("./types").QaExecutionRunRecord[]>("list_qa_execution_runs", {
+      projectId,
+      limit,
+    });
+  },
+  runQaExecutionPlan(planId: string) {
+    return invoke<import("./types").QaExecutionRunRecord>("run_qa_execution_plan", { planId });
+  },
+  qaToolchainSha256(path: string) {
+    return invoke<string>("qa_toolchain_sha256", { path });
+  },
+  cancelQaExecution() {
+    return invoke<boolean>("cancel_qa_execution");
+  },
   prepareGuidedSecurityTest(request: GuidedSecurityPrepareRequest) {
     return invoke<GuidedSecuritySessionRecord>("prepare_guided_security_test", { request });
   },

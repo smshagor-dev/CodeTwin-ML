@@ -65,7 +65,7 @@ pub use qa_discovery::{
 };
 pub use qa_execution::{
     QaExecutionAvailability, QaExecutionError, QaExecutionPlanRecord, QaExecutionProjectManifest,
-    QaExecutionService,
+    QaExecutionRunRecord, QaExecutionService,
 };
 pub use quality_analysis::{
     CodeQualityService, FindingEvidenceRecord, QualityAnalysisError, QualityFindingRecord,

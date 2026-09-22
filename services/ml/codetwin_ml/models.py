@@ -15,11 +15,12 @@ from codetwin_ml.datasets import load_catalog
 MODEL_SCHEMA_VERSION = 1
 MODEL_METADATA_FILE = "_codetwin_model.json"
 CHUNK_BYTES = 1024 * 1024
-SUPPORTED_BACKENDS = frozenset({"onnx-classification-v1", "onnx-seq2seq-v1"})
-EXECUTION_BACKENDS = frozenset({"onnx-classification-v1"})
+SUPPORTED_BACKENDS = frozenset({"onnx-classification-v1", "onnx-seq2seq-v1", "llama-cpp-gguf-v1"})
+EXECUTION_BACKENDS = frozenset({"onnx-classification-v1", "llama-cpp-gguf-v1"})
 MAX_EXECUTION_INPUT_BYTES = 65_536
 MAX_EXECUTION_LABELS = 256
 MAX_ONNX_MODEL_BYTES = 512 * 1024 * 1024
+MAX_GGUF_MODEL_BYTES = 8 * 1024 * 1024 * 1024
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
@@ -112,13 +113,42 @@ def _validate_inference_contract(value: Any, backend: str, model_size: int) -> d
         return None
     if backend not in EXECUTION_BACKENDS:
         raise ModelManifestError(f"backend does not support local execution yet: {backend}")
+    if not isinstance(value, dict):
+        raise ModelManifestError("inference must be an object")
+
+    if backend == "llama-cpp-gguf-v1":
+        if model_size > MAX_GGUF_MODEL_BYTES:
+            raise ModelManifestError(
+                f"executable GGUF model exceeds the {MAX_GGUF_MODEL_BYTES}-byte limit"
+            )
+        generation = value.get("generation")
+        if not isinstance(generation, dict):
+            raise ModelManifestError("GGUF inference requires a generation object")
+        max_new_tokens = generation.get("max_new_tokens", 256)
+        context_tokens = generation.get("context_tokens", 4096)
+        temperature = generation.get("temperature", 0.2)
+        top_p = generation.get("top_p", 0.95)
+        if isinstance(max_new_tokens, bool) or not isinstance(max_new_tokens, int) or not 1 <= max_new_tokens <= 1024:
+            raise ModelManifestError("generation.max_new_tokens must be between 1 and 1024")
+        if isinstance(context_tokens, bool) or not isinstance(context_tokens, int) or not 256 <= context_tokens <= 32768:
+            raise ModelManifestError("generation.context_tokens must be between 256 and 32768")
+        if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or not 0.0 <= float(temperature) <= 2.0:
+            raise ModelManifestError("generation.temperature must be between 0 and 2")
+        if isinstance(top_p, bool) or not isinstance(top_p, (int, float)) or not 0.0 < float(top_p) <= 1.0:
+            raise ModelManifestError("generation.top_p must be greater than 0 and at most 1")
+        return {
+            "generation": {
+                "max_new_tokens": max_new_tokens,
+                "context_tokens": context_tokens,
+                "temperature": float(temperature),
+                "top_p": float(top_p),
+            }
+        }
+
     if model_size > MAX_ONNX_MODEL_BYTES:
         raise ModelManifestError(
             f"executable ONNX model exceeds the {MAX_ONNX_MODEL_BYTES}-byte limit"
         )
-    if not isinstance(value, dict):
-        raise ModelManifestError("inference must be an object")
-
     preprocessing = value.get("preprocessing")
     output = value.get("output")
     if not isinstance(preprocessing, dict) or not isinstance(output, dict):
@@ -230,6 +260,8 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
         raise ModelManifestError("artifacts must contain exactly one role=model entry")
     if backend.startswith("onnx-") and not model_paths[0].lower().endswith(".onnx"):
         raise ModelManifestError("ONNX backends require the role=model artifact to use a .onnx path")
+    if backend == "llama-cpp-gguf-v1" and not model_paths[0].lower().endswith(".gguf"):
+        raise ModelManifestError("llama.cpp backend requires the role=model artifact to use a .gguf path")
 
     normalized_inference = _validate_inference_contract(
         manifest.get("inference"), backend, model_size
@@ -590,7 +622,11 @@ def resolve_model_for_inference(
 
     candidates = []
     for path, metadata in _ready_entries(model_root):
-        if action not in metadata["actions"] or not _execution_supported(metadata):
+        if (
+            metadata.get("backend") != "onnx-classification-v1"
+            or action not in metadata["actions"]
+            or not _execution_supported(metadata)
+        ):
             continue
         if model_id is not None and metadata["id"] != model_id:
             continue
@@ -606,24 +642,68 @@ def resolve_model_for_inference(
     return candidates[0]
 
 
+def resolve_model_for_generation(
+    action: str,
+    *,
+    model_id: str | None = None,
+    model_version: str | None = None,
+    model_root: Path | str | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    catalog = load_catalog()
+    if action not in catalog["routes"]:
+        raise ModelError(f"unknown model action: {action}")
+    if model_id is not None:
+        _safe_id(model_id, "model_id")
+    if model_version is not None:
+        _safe_id(model_version, "model_version")
+
+    candidates = []
+    for path, metadata in _ready_entries(model_root):
+        if (
+            metadata.get("backend") != "llama-cpp-gguf-v1"
+            or action not in metadata["actions"]
+            or not _execution_supported(metadata)
+        ):
+            continue
+        if model_id is not None and metadata["id"] != model_id:
+            continue
+        if model_version is not None and metadata["version"] != model_version:
+            continue
+        candidates.append((path, metadata))
+    if not candidates:
+        raise ModelError(f"no generation-ready GGUF model is installed for action: {action}")
+    if len(candidates) > 1:
+        raise ModelError(
+            "multiple generation-ready models match; specify both model_id and model_version"
+        )
+    return candidates[0]
+
+
 def inference_plan(action: str, *, model_root: Path | str | None = None) -> dict[str, Any]:
-    model_route = route_model(action, model_root=model_root)
-    dataset_catalog = load_catalog()
-    dataset_ids = list(dataset_catalog["routes"][action])
-    if model_route["execution_ready"]:
+    catalog = load_catalog()
+    if action not in catalog["routes"]:
+        raise ModelError(f"unknown model action: {action}")
+    classifier_models = [
+        _public_model(metadata) | {"ready": True}
+        for _path, metadata in _ready_entries(model_root)
+        if metadata.get("backend") == "onnx-classification-v1"
+        and action in metadata["actions"]
+    ]
+    execution_ready = any(model.get("execution_supported") for model in classifier_models)
+    if execution_ready:
         status = "ready"
-    elif model_route["ready"]:
+    elif classifier_models:
         status = "model_ready_execution_pending"
     else:
         status = "model_unavailable"
     return {
         "action": action,
         "status": status,
-        "models": model_route["models"],
-        "dataset_provenance": dataset_ids,
+        "models": classifier_models,
+        "dataset_provenance": list(catalog["routes"][action]),
         "execution_implemented": True,
         "note": (
-            "Only integrity-checked models with an explicit bounded inference contract are execution-ready. "
-            "Evaluation metrics are package provenance and are not independently reproduced at runtime."
+            "This plan describes bounded ONNX classification only. "
+            "GGUF generation readiness is reported separately through generation capabilities."
         ),
     }

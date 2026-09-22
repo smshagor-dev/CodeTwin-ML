@@ -37,6 +37,7 @@ class ProtocolTests(unittest.TestCase):
     def test_does_not_claim_uninstalled_models(self) -> None:
         response = process_line(json.dumps({"id": "r2", "method": "capabilities"}))
         self.assertEqual(response["result"]["inference"], [])
+        self.assertEqual(response["result"]["generation"], [])
         self.assertEqual(response["result"]["training"], [])
         self.assertTrue(response["result"]["models"]["registry"])
         self.assertTrue(response["result"]["models"]["execution_implemented"])
@@ -137,6 +138,32 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "invalid_request")
 
+
+    def test_generation_run_without_model_returns_structured_error(self) -> None:
+        response = process_line(
+            json.dumps(
+                {
+                    "id": "r11",
+                    "method": "generation.run",
+                    "params": {"action": "repair_generation", "text": "review source"},
+                }
+            )
+        )
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "inference_error")
+
+    def test_generation_run_requires_text_string(self) -> None:
+        response = process_line(
+            json.dumps(
+                {
+                    "id": "r12",
+                    "method": "generation.run",
+                    "params": {"action": "repair_generation", "text": 7},
+                }
+            )
+        )
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "invalid_request")
 
 if __name__ == "__main__":
     unittest.main()

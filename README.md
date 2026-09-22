@@ -82,9 +82,9 @@ CodeTwin passively reviews Dockerfile and Docker Compose configuration for selec
 
 The **Testing / QA** workflow inventories supported test frameworks, test files, and configuration evidence.
 
-Current public behavior is discovery-only. CodeTwin does **not** claim that tests passed, failed, executed, or provide coverage unless a real execution workflow has run and produced evidence.
+QA discovery remains passive and never implies execution. On Windows, CodeTwin can additionally run explicitly selected tests through the strict QA execution lifecycle: immutable plan → trusted runner hash pin → project/runtime approval manifests → zero-capability LPAC launch → Job Object resource/process containment → runner-output parsing → durable run evidence. Other platforms remain planning-only until an equally strict backend exists.
 
-The repository contains a hardened QA execution foundation, but public execution remains disabled until the documented filesystem-read, network, process, desktop, and Windows isolation requirements are fully enforced and adversarially validated.
+A completed process is not automatically a passing test run. CodeTwin records a pass/fail verdict only when the runner completed and its output matched the supported parser contract; timeout, cancellation, setup failure, or unrecognized output produces no test verdict.
 
 ### 5. Register a website
 
@@ -120,6 +120,8 @@ The source-aware flow is:
 9. The route template remains attached through guided fix and targeted retest so dynamic path parameters keep their source identity.
 
 Wildcard routes are not blindly materialized. Dynamic path values use a deterministic harmless marker, and state-changing probes remain subject to the existing explicit approval and scope policy.
+
+All active requests pass through a shared token-bucket pacing floor (4 requests/second with a burst of 2) and the global request budget. Active payloads also pass through a central bounded safety policy that rejects oversized values, line-break/header injection, destructive database statements, UNION/data-extraction shapes, delay/timing functions, metadata-service targets, shell-execution syntax, and non-HTTP outbound schemes before a request can be built. These controls are internal to the engine rather than model-controlled.
 
 ### Guided Developer Security Test
 
@@ -313,11 +315,16 @@ The ML subsystem is local-first and provenance-aware.
 2. validate package size and SHA-256;
 3. inspect model inventory and readiness;
 4. create a bounded inference plan;
-5. run the compatible local ONNX adapter;
-6. persist model/package/evaluation provenance;
-7. surface ML observations separately from deterministic analyzer findings.
+5. run the compatible bounded local ONNX classifier when classification is requested;
+6. optionally run an integrity-checked GGUF code model through a separately SHA-256-pinned local llama.cpp executable;
+7. persist classifier model/package/evaluation provenance and keep generated suggestions source-hash-bound for review;
+8. surface ML observations separately from deterministic analyzer findings.
 
 No model weights are bundled by default. Registry installation does not by itself prove that the runtime dependencies required for inference are available.
+
+### Local generative code model
+
+CodeTwin also supports integrity-checked `llama-cpp-gguf-v1` packages for bounded local code generation. The llama.cpp executable is configured separately and must match an explicit SHA-256 pin. Source-bearing prompts are passed through a temporary prompt file rather than the process command line, execution has a bounded timeout/output size, and generated text is returned for review only. It is not converted into a web-security payload or executed automatically.
 
 The model package contract does not allow package-provided shell hooks, repository commands, arbitrary Python plugins, or arbitrary native libraries.
 
@@ -333,7 +340,7 @@ flowchart LR
     ANALYZERS[Quality / AppSec / DB / Runtime / QA]
     WEB[Authorized Web Security Engine]
     REPAIR[Repair + Security Fix Services]
-    ML[Local Python / ONNX Sidecar]
+    ML[Local Python Sidecar / ONNX + GGUF llama.cpp]
     ART[App-data Artifacts + Repair Backups]
 
     UI --> TAURI
@@ -358,7 +365,7 @@ flowchart LR
 3. Passive analyzers do not execute repository commands.
 4. LSP enrichment requires explicit trust and an externally configured language server.
 5. Active web testing requires explicit authorization and a validated scope.
-6. QA execution remains disabled at the public boundary until all documented isolation requirements are enforced.
+6. QA execution is enabled only when the current OS backend exposes the complete strict capability floor. The Windows path uses a detached hash-bound project mirror, copied approved runtime/toolchain surface, zero-capability LPAC identity, Job Object limits, bounded handles/output, and no weaker fallback.
 7. ML requests use explicit local schemas; repository text is not treated as instructions.
 8. Repair application is a separate mutation boundary with approval, hash preconditions, backups, and independent verification.
 
@@ -393,10 +400,11 @@ flowchart LR
 | Deterministic database artifact analysis | Implemented baseline |
 | Deterministic runtime configuration analysis | Implemented baseline |
 | Passive QA/test discovery | Implemented |
-| Sandboxed QA/test execution | Hardening foundation present; public execution disabled |
+| Sandboxed QA/test execution | Implemented on Windows through explicit plan/approval + zero-capability LPAC; planning-only on unsupported platforms |
 | OpenMindAI Dataset catalog/installer path | Implemented foundation |
 | Local ML model package registry | Implemented foundation |
 | Local ONNX classification inference | Implemented bounded compatible adapter |
+| Local GGUF generative code inference | Implemented through integrity-checked packages + separately SHA-256-pinned llama.cpp runtime; output is review-only and never auto-executed as a web payload |
 | ML desktop workspace | Implemented baseline |
 | Live runtime telemetry/process tracing | Planned |
 | Browser-driven QA execution | Planned |
@@ -434,7 +442,7 @@ CodeTwin-ML/
 │  ├─ database-analyzer/        Passive SQL/Prisma review
 │  ├─ runtime-analyzer/         Passive Docker/runtime config review
 │  ├─ qa-analyzer/              Passive QA discovery
-│  └─ qa-execution/             Hardened execution foundation; public gate remains disabled
+│  └─ qa-execution/             Strict Windows LPAC execution backend + planning-only fallback elsewhere
 ├─ services/
 │  ├─ ml/                       Local ML sidecar and tests
 │  └─ security/                 Broader Python static web-security CLI
@@ -545,7 +553,7 @@ CodeTwin is designed for local analysis and explicit authorization.
 - LSP enrichment uses only an explicitly configured trusted external executable.
 - ML model packages are integrity checked and cannot declare arbitrary execution hooks through the package contract.
 - Repair writes require explicit approval, hash identity checks, staged replacement, backups, and later verification.
-- QA execution is not advertised as enabled while required isolation guarantees remain incomplete.
+- QA execution is exposed only when the runtime reports the complete strict isolation capability floor; unsupported platforms remain planning-only with no weaker fallback.
 
 See SECURITY.md for vulnerability reporting and subsystem-specific documentation for detailed trust boundaries.
 
@@ -560,7 +568,7 @@ CodeTwin does not currently claim:
 - live container/process tracing;
 - production incident correlation;
 - browser-driven QA automation;
-- public sandboxed test execution;
+- sandboxed QA execution on platforms without a strict supported backend;
 - unrestricted autonomous remediation;
 - automatic Git/PR/CI remediation;
 - guaranteed exploitability proof;

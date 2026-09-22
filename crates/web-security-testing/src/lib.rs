@@ -2,6 +2,7 @@ mod active;
 mod discover;
 mod evidence;
 mod passive;
+mod payload_policy;
 mod operator;
 mod request;
 mod retest;
@@ -456,7 +457,9 @@ pub fn run_authorized_scan_with_seeds(
     mut on_progress: impl FnMut(ScanProgress),
 ) -> Result<ScanOutcome, ScanError> {
     let policy = ScopePolicy::new(config.scope.clone())?;
-    let budget = RequestBudget::new(policy.config().max_requests);
+    // A global shared token bucket caps scan request rate even when detector
+    // concurrency is higher. This is intentionally conservative and not user-bypassable.
+    let budget = RequestBudget::with_rate(policy.config().max_requests, 4.0, 2);
     let requester = ScopedRequester::new(
         policy.clone(),
         primary_auth.clone(),

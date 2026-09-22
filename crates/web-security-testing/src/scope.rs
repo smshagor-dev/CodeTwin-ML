@@ -39,6 +39,9 @@ impl ScopePolicy {
         config.response_limit_bytes = config.response_limit_bytes.clamp(16_384, 2_097_152);
         config.redirect_limit = config.redirect_limit.min(8);
         config.retry_limit = config.retry_limit.min(2);
+        // Timing/delay probes are intentionally disabled by the strict active-payload policy.
+        // Keep the field for backward-compatible persisted configs, but never execute them.
+        config.enable_timing_probes = false;
 
         let target = normalize_url(&config.target_url)?;
         let target_host = target
@@ -289,6 +292,14 @@ mod tests {
         let sibling = Url::parse("http://127.0.0.1:8080/app/users").expect("sibling");
         assert!(alternate_policy.assert_url(&sibling).is_ok());
         assert!(!alternate_policy.credentials_allowed_for(&sibling));
+    }
+
+    #[test]
+    fn strict_scope_policy_disables_timing_probes_even_for_legacy_configs() {
+        let mut value = config();
+        value.enable_timing_probes = true;
+        let policy = ScopePolicy::new(value).expect("scope");
+        assert!(!policy.config().enable_timing_probes);
     }
 
     #[test]

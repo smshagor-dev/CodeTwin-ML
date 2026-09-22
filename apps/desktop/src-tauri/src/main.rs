@@ -46,11 +46,14 @@ use guided_security_commands::{
 };
 use ml_commands::{
     link_ml_finding, list_ml_finding_links, ml_inference_history, ml_inference_plan, ml_models,
-    ml_sidecar_capabilities, ml_sidecar_health, run_ml_file_inference,
+    ml_sidecar_capabilities, ml_sidecar_health, run_ml_file_generation, run_ml_file_inference,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
-    list_qa_artifacts, list_qa_frameworks, qa_discovery_history, run_qa_discovery,
+    approve_qa_execution_plan, cancel_qa_execution, create_qa_execution_plan,
+    list_qa_artifacts, list_qa_execution_plans, list_qa_execution_runs, list_qa_frameworks,
+    qa_discovery_history, qa_execution_availability, qa_toolchain_sha256, run_qa_discovery,
+    run_qa_execution_plan,
 };
 use repair_commands::{
     add_repair_file_replacement, apply_repair_plan, approve_repair_plan, create_repair_plan,
@@ -664,11 +667,20 @@ fn main() {
             list_qa_artifacts,
             list_qa_frameworks,
             qa_discovery_history,
+            qa_execution_availability,
+            qa_toolchain_sha256,
+            create_qa_execution_plan,
+            approve_qa_execution_plan,
+            list_qa_execution_plans,
+            list_qa_execution_runs,
+            run_qa_execution_plan,
+            cancel_qa_execution,
             ml_sidecar_health,
             ml_sidecar_capabilities,
             ml_models,
             ml_inference_plan,
             run_ml_file_inference,
+            run_ml_file_generation,
             ml_inference_history,
             link_ml_finding,
             list_ml_finding_links,

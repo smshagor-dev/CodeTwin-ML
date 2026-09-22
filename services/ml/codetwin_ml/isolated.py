@@ -12,7 +12,8 @@ from codetwin_ml.inference import InferenceRuntimeError
 WORKER_PROTOCOL_VERSION = 1
 MAX_WORKER_REQUEST_BYTES = 131_072
 MAX_WORKER_RESPONSE_BYTES = 1_048_576
-WORKER_TIMEOUT_SECONDS = 15
+CLASSIFICATION_WORKER_TIMEOUT_SECONDS = 15
+GENERATION_WORKER_TIMEOUT_SECONDS = 100
 
 _WORKER_ENV_ALLOWLIST = (
     "SYSTEMROOT",
@@ -27,6 +28,8 @@ _WORKER_ENV_ALLOWLIST = (
     "LANG",
     "LC_ALL",
     "CODETWIN_MODEL_CACHE",
+    "CODETWIN_LLAMA_CLI",
+    "CODETWIN_LLAMA_CLI_SHA256",
 )
 
 
@@ -52,7 +55,8 @@ def _worker_environment(root: pathlib.Path) -> dict[str, str]:
     return environment
 
 
-def run_isolated_inference(
+def _run_isolated_worker(
+    mode: str,
     action: str,
     text: str,
     *,
@@ -61,6 +65,7 @@ def run_isolated_inference(
 ) -> dict[str, Any]:
     payload = {
         "protocol": WORKER_PROTOCOL_VERSION,
+        "mode": mode,
         "action": action,
         "text": text,
         "model_id": model_id,
@@ -80,7 +85,11 @@ def run_isolated_inference(
         "stderr": subprocess.DEVNULL,
         "cwd": str(root),
         "env": environment,
-        "timeout": WORKER_TIMEOUT_SECONDS,
+        "timeout": (
+            GENERATION_WORKER_TIMEOUT_SECONDS
+            if mode == "generation"
+            else CLASSIFICATION_WORKER_TIMEOUT_SECONDS
+        ),
         "check": False,
     }
     if os.name == "nt":
@@ -93,7 +102,7 @@ def run_isolated_inference(
         )
     except subprocess.TimeoutExpired as error:
         raise InferenceRuntimeError(
-            f"isolated inference exceeded the {WORKER_TIMEOUT_SECONDS} second timeout"
+            "isolated inference worker exceeded its bounded timeout"
         ) from error
     except OSError as error:
         raise InferenceRuntimeError(f"cannot start isolated inference worker: {error}") from error
@@ -133,3 +142,35 @@ def run_isolated_inference(
             raise InferenceRuntimeError(f"{code}: {message}")
         raise InferenceRuntimeError("isolated inference worker returned an invalid error")
     raise InferenceRuntimeError("isolated inference worker response is missing ok")
+
+
+def run_isolated_inference(
+    action: str,
+    text: str,
+    *,
+    model_id: str | None = None,
+    model_version: str | None = None,
+) -> dict[str, Any]:
+    return _run_isolated_worker(
+        "classification",
+        action,
+        text,
+        model_id=model_id,
+        model_version=model_version,
+    )
+
+
+def run_isolated_generation(
+    action: str,
+    prompt: str,
+    *,
+    model_id: str | None = None,
+    model_version: str | None = None,
+) -> dict[str, Any]:
+    return _run_isolated_worker(
+        "generation",
+        action,
+        prompt,
+        model_id=model_id,
+        model_version=model_version,
+    )

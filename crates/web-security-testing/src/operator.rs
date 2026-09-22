@@ -155,7 +155,7 @@ pub fn apply_approved_execution_policy(
     let http_policy = selected.contains("http_policy");
     constrained.checks.cors &= http_policy;
     constrained.checks.method_misconfiguration &= http_policy;
-    constrained.scope.enable_timing_probes &= selected.contains("sql_timing_indicator");
+    constrained.scope.enable_timing_probes = false;
     constrained.scope.allow_non_idempotent_methods &= policy.state_changing_selected;
     constrained
 }
@@ -549,33 +549,6 @@ pub fn build_test_plan(
         }
     }
 
-    if config.scope.enable_timing_probes {
-        for endpoint in endpoints.iter().filter(|endpoint| endpoint.method == "GET") {
-            for parameter in &endpoint.parameter_names {
-                let location = endpoint
-                    .parameter_locations
-                    .get(parameter)
-                    .map(String::as_str)
-                    .unwrap_or("query");
-                if !injection_candidate(endpoint, location) {
-                    continue;
-                }
-                push_operation(
-                    &mut operations,
-                    OperationSpec {
-                        endpoint,
-                        parameter_name: Some(parameter),
-                        category: "sql_timing_indicator",
-                        risk: OperationRisk::CAUTION,
-                        selected: !matches!(environment, SecurityEnvironment::AuthorizedProduction),
-                        reason: "Optional bounded repeated timing control for an already eligible SQL input.",
-                        skip_reason: matches!(environment, SecurityEnvironment::AuthorizedProduction)
-                            .then_some("Timing probes are disabled by default for authorized production in Developer Mode."),
-                    },
-                );
-            }
-        }
-    }
 
     operations.sort_by(|left, right| {
         left.endpoint_url
@@ -900,6 +873,29 @@ mod tests {
         assert!(plan.operations.iter().any(|item| item.category == "xss" && item.endpoint_url.contains("/search")));
         assert!(plan.operations.iter().any(|item| item.category == "api_validation" && item.endpoint_url.contains("/api/items")));
         assert!(!plan.operations.iter().any(|item| item.category == "open_redirect" && item.parameter_name.as_deref() == Some("q")));
+    }
+
+    #[test]
+    fn legacy_timing_flag_never_enters_plan() {
+        let mut source = config();
+        source.scope.enable_timing_probes = true;
+        let endpoints = vec![endpoint(
+            "GET",
+            "html",
+            "http://localhost:3000/search?q=a",
+            "q",
+            "query",
+        )];
+        let plan = build_test_plan(
+            &source,
+            &endpoints,
+            false,
+            SecurityEnvironment::Staging,
+        );
+        assert!(!plan
+            .operations
+            .iter()
+            .any(|item| item.category == "sql_timing_indicator"));
     }
 
     #[test]

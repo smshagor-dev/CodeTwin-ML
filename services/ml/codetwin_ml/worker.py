@@ -7,8 +7,8 @@ from typing import Any
 
 WORKER_PROTOCOL_VERSION = 1
 MAX_WORKER_REQUEST_BYTES = 131_072
-POSIX_CPU_SECONDS = 10
-POSIX_ADDRESS_SPACE_BYTES = 4 * 1024 * 1024 * 1024
+POSIX_CPU_SECONDS = 95
+POSIX_ADDRESS_SPACE_BYTES = 8 * 1024 * 1024 * 1024
 POSIX_FILE_SIZE_BYTES = 16 * 1024 * 1024
 
 
@@ -70,10 +70,13 @@ def main() -> int:
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         return _write_response(_error("invalid_request", str(error)))
 
+    mode = request.get("mode", "classification")
     action = request.get("action")
     text = request.get("text")
     model_id = request.get("model_id")
     model_version = request.get("model_version")
+    if mode not in {"classification", "generation"}:
+        return _write_response(_error("invalid_request", "unsupported worker mode"))
     if not isinstance(action, str) or not action:
         return _write_response(_error("invalid_request", "action must be a non-empty string"))
     if not isinstance(text, str):
@@ -86,17 +89,25 @@ def main() -> int:
         )
 
     try:
-        from codetwin_ml.inference import InferenceError, run_inference
-    except Exception as error:  # pragma: no cover - import failure is environment-specific
-        return _write_response(_error("worker_internal_error", type(error).__name__))
+        if mode == "generation":
+            from codetwin_ml.generation import run_generation
+            from codetwin_ml.inference import InferenceError
 
-    try:
-        result = run_inference(
-            action,
-            text,
-            model_id=model_id,
-            model_version=model_version,
-        )
+            result = run_generation(
+                action,
+                text,
+                model_id=model_id,
+                model_version=model_version,
+            )
+        else:
+            from codetwin_ml.inference import InferenceError, run_inference
+
+            result = run_inference(
+                action,
+                text,
+                model_id=model_id,
+                model_version=model_version,
+            )
     except InferenceError as error:
         return _write_response(_error("inference_error", str(error)))
     except Exception as error:  # pragma: no cover - last-resort worker boundary

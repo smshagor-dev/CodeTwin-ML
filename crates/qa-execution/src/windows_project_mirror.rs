@@ -130,10 +130,11 @@ pub(crate) fn execute_approved_plan(
         ));
     }
 
-    let outcome = crate::windows_restricted::execute_approved_plan(
+    let outcome = crate::windows_restricted::execute_lpac_bundle_plan(
         plan,
         &mirror_root,
-        snapshots,
+        workspace,
+        lpac_bundle.runner_path(),
         cancelled,
     )?;
     guard.cleanup()?;

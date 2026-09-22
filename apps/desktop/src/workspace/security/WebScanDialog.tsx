@@ -229,14 +229,13 @@ export function WebScanDialog({
             <input type="checkbox" checked={config.scope.active_testing} onChange={(event) => patchScope({
               active_testing: event.target.checked,
               allow_non_idempotent_methods: event.target.checked ? config.scope.allow_non_idempotent_methods : false,
-              enable_timing_probes: event.target.checked ? config.scope.enable_timing_probes : false,
+              enable_timing_probes: false,
             })}/>
             <span><strong>Enable bounded active testing</strong><small>Uses conservative non-destructive probes. Passive crawling and response analysis run either way.</small></span>
           </label>
           {config.scope.active_testing && (
             <div className="ws-webscan-risk-options">
               <label className="ws-check-field"><input type="checkbox" checked={config.scope.allow_non_idempotent_methods} onChange={(event) => patchScope({ allow_non_idempotent_methods: event.target.checked })}/><span>Allow probes against discovered POST/PUT/PATCH inputs <small>Off by default because these methods may change application state.</small></span></label>
-              <label className="ws-check-field"><input type="checkbox" checked={config.scope.enable_timing_probes} onChange={(event) => patchScope({ enable_timing_probes: event.target.checked })}/><span>Enable bounded one-second SQL timing indicator probes <small>Off by default; timing anomalies remain Potential, never automatically Confirmed.</small></span></label>
             </div>
           )}
           <div className="ws-webscan-check-grid">

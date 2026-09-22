@@ -5,10 +5,11 @@ use std::{
 
 use ::qa_execution::{
     build_execution_plan, capture_external_read_surface, cleanup_detached_workspace,
-    current_backend_info, prepare_dependency_complete_workspace, snapshot_execution_inputs,
-    validate_approved_external_read_surface_shape, ApprovedExternalReadSurface, ExecutionCommand,
-    ExecutionPlanStatus, SandboxCapabilities, SandboxPolicy, TestExecutionPlan,
-    TestExecutionRequest, TestRunnerKind, TrustedToolchain, MAX_PROJECT_MIRROR_BYTES,
+    current_backend_info, execute_approved_plan, prepare_dependency_complete_workspace,
+    snapshot_execution_inputs, validate_approved_external_read_surface_shape,
+    ApprovedExternalReadSurface, ExecutionCommand, ExecutionPlanStatus, ExecutionRunStatus,
+    SandboxCapabilities, SandboxPolicy, TestExecutionPlan, TestExecutionRequest, TestRunnerKind,
+    TrustedToolchain, MAX_PROJECT_MIRROR_BYTES,
     MAX_PROJECT_MIRROR_DIRECTORIES, MAX_PROJECT_MIRROR_FILES,
 };
 use rusqlite::{params, OptionalExtension};
@@ -52,6 +53,30 @@ pub struct QaExecutionAvailability {
     pub backend_kind: String,
     pub enforced_capabilities: SandboxCapabilities,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QaExecutionRunRecord {
+    pub id: String,
+    pub plan_id: String,
+    pub project_id: String,
+    pub status: ExecutionRunStatus,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub exit_code: Option<i32>,
+    pub parser_completed: bool,
+    pub tests_passed: Option<bool>,
+    pub stdout_excerpt: String,
+    pub stderr_excerpt: String,
+    pub stdout_original_bytes: usize,
+    pub stderr_original_bytes: usize,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub result: Value,
+    pub project_manifest_sha256: String,
+    pub external_read_surface_sha256: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,13 +158,17 @@ impl<'a> QaExecutionService<'a> {
 
     pub fn availability(&self) -> QaExecutionAvailability {
         let backend = current_backend_info();
-        let reason = if cfg!(windows) {
-            "The Windows QA backend has suspended Job Object containment, a restricted low-integrity launcher, bounded detached project mirroring, and approval-bound external runtime provenance. Public repository test execution remains disabled because undeclared host reads are not denied, desktop isolation is incomplete, and network isolation is not enforced."
+        let fully_enforced = backend.execution_available
+            && backend.capabilities == SandboxCapabilities::fully_enforced();
+        let reason = if fully_enforced {
+            "Sandboxed QA execution is enabled. Approved tests run from a detached hash-bound project mirror using an explicitly approved copied runtime/toolchain surface, a zero-capability Windows LPAC identity, Job Object CPU/memory/process-tree containment, network denial, bounded output, and cancellation."
+        } else if cfg!(windows) {
+            "The Windows QA backend is not exposing the complete strict capability floor required for repository test execution. Plans remain review-only and there is no weaker fallback."
         } else {
-            "No OS-specific QA execution backend is enabled on this platform. Plans may be persisted and reviewed, but CodeTwin will not execute repository tests."
+            "No OS-specific strict QA execution backend is enabled on this platform. Plans may be persisted and reviewed, but CodeTwin will not execute repository tests."
         };
         QaExecutionAvailability {
-            execution_enabled: false,
+            execution_enabled: fully_enforced,
             backend_kind: backend.kind.as_str().to_string(),
             enforced_capabilities: backend.capabilities,
             reason: reason.to_string(),
@@ -177,6 +206,8 @@ impl<'a> QaExecutionService<'a> {
         let discovery_run_id = request.discovery_run_id.clone();
         let plan = build_execution_plan(request, toolchain, policy, capabilities)?;
         let plan_id = new_plan_id(project_id, &plan.request);
+        let public_backend_enabled = self.availability().execution_enabled
+            && capabilities == SandboxCapabilities::fully_enforced();
         let provenance = json!({
             "project_last_indexed_at": project_last_indexed_at,
             "discovery_run_id": discovery_run_id,
@@ -184,7 +215,7 @@ impl<'a> QaExecutionService<'a> {
             "package_scripts_executed": false,
             "tests_executed": false,
             "shell_used": false,
-            "execution_backend_enabled": false
+            "execution_backend_enabled": public_backend_enabled
         });
 
         self.database.connection().execute(
@@ -359,6 +390,168 @@ impl<'a> QaExecutionService<'a> {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn execute_plan(
+        &self,
+        plan_id: &str,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<QaExecutionRunRecord, QaExecutionError> {
+        let availability = self.availability();
+        if !availability.execution_enabled {
+            return Err(QaExecutionError::PlanBlocked(format!(
+                "execution backend {} is not available: {}",
+                availability.backend_kind, availability.reason
+            )));
+        }
+        let plan = self
+            .get_plan(plan_id)?
+            .ok_or_else(|| QaExecutionError::PlanNotFound(plan_id.to_string()))?;
+        if plan.status != ExecutionPlanStatus::Approved || !plan.blocking_reasons.is_empty() {
+            return Err(QaExecutionError::PlanBlocked(plan_id.to_string()));
+        }
+        let execution_plan = plan.execution_plan()?;
+        if execution_plan.capabilities != SandboxCapabilities::fully_enforced() {
+            return Err(QaExecutionError::PlanBlocked(
+                "approved plan was not created against the current strict sandbox capability floor"
+                    .to_string(),
+            ));
+        }
+        let manifest = plan.approved_project_manifest.as_ref().ok_or_else(|| {
+            QaExecutionError::ApprovalManifest("approved plan is missing project manifest".to_string())
+        })?;
+        let external = plan.approved_external_read_surface.as_ref().ok_or_else(|| {
+            QaExecutionError::ApprovalManifest(
+                "approved plan is missing external read surface".to_string(),
+            )
+        })?;
+        let project_root = self.project_root_path(&plan.project_id)?;
+        let snapshots = snapshot_execution_inputs(&project_root, &plan.request.targets)?;
+        let run_id = new_run_id(plan_id, &plan.project_id);
+
+        self.database.connection().execute(
+            "INSERT INTO qa_execution_runs(
+               id, plan_id, project_id, status, started_at,
+               project_manifest_sha256, external_read_surface_sha256, result_json
+             ) VALUES (?1, ?2, ?3, 'running', CURRENT_TIMESTAMP, ?4, ?5, ?6)",
+            params![
+                run_id,
+                plan.id,
+                plan.project_id,
+                manifest.sha256,
+                external.sha256,
+                json!({
+                    "phase": "launching",
+                    "backend": availability.backend_kind,
+                    "sandbox_capabilities": availability.enforced_capabilities,
+                    "claim": "no test verdict exists until the runner completes and its output is recognized"
+                })
+                .to_string(),
+            ],
+        )?;
+
+        match execute_approved_plan(&execution_plan, &project_root, &snapshots, cancelled) {
+            Ok(outcome) => {
+                let result_json = serde_json::to_string(&json!({
+                    "backend": outcome.backend,
+                    "status": outcome.status.as_str(),
+                    "parser_completed": outcome.parser_completed,
+                    "tests_passed": outcome.tests_passed,
+                    "exit_code": outcome.exit_code,
+                }))?;
+                self.database.connection().execute(
+                    "UPDATE qa_execution_runs
+                     SET status=?2, finished_at=CURRENT_TIMESTAMP, duration_ms=?3,
+                         exit_code=?4, parser_completed=?5, tests_passed=?6,
+                         stdout_excerpt=?7, stderr_excerpt=?8,
+                         stdout_original_bytes=?9, stderr_original_bytes=?10,
+                         stdout_truncated=?11, stderr_truncated=?12, result_json=?13
+                     WHERE id=?1 AND status='running'",
+                    params![
+                        run_id,
+                        outcome.status.as_str(),
+                        i64::try_from(outcome.duration_ms).unwrap_or(i64::MAX),
+                        outcome.exit_code,
+                        if outcome.parser_completed { 1i64 } else { 0i64 },
+                        outcome.tests_passed.map(|value| if value { 1i64 } else { 0i64 }),
+                        outcome.stdout.text,
+                        outcome.stderr.text,
+                        i64::try_from(outcome.stdout.original_bytes).unwrap_or(i64::MAX),
+                        i64::try_from(outcome.stderr.original_bytes).unwrap_or(i64::MAX),
+                        if outcome.stdout.truncated { 1i64 } else { 0i64 },
+                        if outcome.stderr.truncated { 1i64 } else { 0i64 },
+                        result_json,
+                    ],
+                )?;
+            }
+            Err(error) => {
+                self.database.connection().execute(
+                    "UPDATE qa_execution_runs
+                     SET status='infrastructure_error', finished_at=CURRENT_TIMESTAMP,
+                         parser_completed=0, tests_passed=NULL,
+                         result_json=?2
+                     WHERE id=?1 AND status='running'",
+                    params![
+                        run_id,
+                        json!({
+                            "phase": "sandbox_launch",
+                            "error": error.to_string(),
+                            "tests_executed_successfully": false,
+                            "test_verdict": null
+                        })
+                        .to_string(),
+                    ],
+                )?;
+            }
+        }
+
+        self.get_run(&run_id)?
+            .ok_or_else(|| QaExecutionError::PlanNotFound(run_id))
+    }
+
+    pub fn get_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<QaExecutionRunRecord>, QaExecutionError> {
+        self.database
+            .connection()
+            .query_row(
+                "SELECT id, plan_id, project_id, status, started_at, finished_at,
+                        duration_ms, exit_code, parser_completed, tests_passed,
+                        stdout_excerpt, stderr_excerpt, stdout_original_bytes,
+                        stderr_original_bytes, stdout_truncated, stderr_truncated,
+                        result_json, project_manifest_sha256,
+                        external_read_surface_sha256, created_at
+                 FROM qa_execution_runs WHERE id=?1",
+                [run_id],
+                run_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn list_runs(
+        &self,
+        project_id: &str,
+        limit: usize,
+    ) -> Result<Vec<QaExecutionRunRecord>, QaExecutionError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT id, plan_id, project_id, status, started_at, finished_at,
+                    duration_ms, exit_code, parser_completed, tests_passed,
+                    stdout_excerpt, stderr_excerpt, stdout_original_bytes,
+                    stderr_original_bytes, stdout_truncated, stderr_truncated,
+                    result_json, project_manifest_sha256,
+                    external_read_surface_sha256, created_at
+             FROM qa_execution_runs
+             WHERE project_id=?1
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(
+            params![project_id, bounded(limit, MAX_PLAN_QUERY)],
+            run_from_row,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     fn capture_approval_manifest(
         &self,
         plan: &QaExecutionPlanRecord,
@@ -443,6 +636,35 @@ impl<'a> QaExecutionService<'a> {
         }
         Ok(())
     }
+}
+
+fn run_from_row(row: &rusqlite::Row<'_>) -> Result<QaExecutionRunRecord, rusqlite::Error> {
+    let status_text: String = row.get(3)?;
+    let result_text: String = row.get(16)?;
+    Ok(QaExecutionRunRecord {
+        id: row.get(0)?,
+        plan_id: row.get(1)?,
+        project_id: row.get(2)?,
+        status: parse_run_status(&status_text, 3)?,
+        started_at: row.get(4)?,
+        finished_at: row.get(5)?,
+        duration_ms: row
+            .get::<_, Option<i64>>(6)?
+            .map(|value| value.max(0) as u64),
+        exit_code: row.get(7)?,
+        parser_completed: row.get::<_, i64>(8)? != 0,
+        tests_passed: row.get::<_, Option<i64>>(9)?.map(|value| value != 0),
+        stdout_excerpt: row.get(10)?,
+        stderr_excerpt: row.get(11)?,
+        stdout_original_bytes: row.get::<_, i64>(12)?.max(0) as usize,
+        stderr_original_bytes: row.get::<_, i64>(13)?.max(0) as usize,
+        stdout_truncated: row.get::<_, i64>(14)? != 0,
+        stderr_truncated: row.get::<_, i64>(15)? != 0,
+        result: parse_json(&result_text, 16)?,
+        project_manifest_sha256: row.get(17)?,
+        external_read_surface_sha256: row.get(18)?,
+        created_at: row.get(19)?,
+    })
 }
 
 fn plan_from_row(row: &rusqlite::Row<'_>) -> Result<QaExecutionPlanRecord, rusqlite::Error> {
@@ -587,6 +809,19 @@ fn parse_plan_status(text: &str, index: usize) -> Result<ExecutionPlanStatus, ru
     }
 }
 
+fn parse_run_status(text: &str, index: usize) -> Result<ExecutionRunStatus, rusqlite::Error> {
+    match text {
+        "queued" => Ok(ExecutionRunStatus::Queued),
+        "running" => Ok(ExecutionRunStatus::Running),
+        "completed" => Ok(ExecutionRunStatus::Completed),
+        "failed" => Ok(ExecutionRunStatus::Failed),
+        "timed_out" => Ok(ExecutionRunStatus::TimedOut),
+        "cancelled" => Ok(ExecutionRunStatus::Cancelled),
+        "infrastructure_error" => Ok(ExecutionRunStatus::InfrastructureError),
+        _ => invalid_enum(text, index),
+    }
+}
+
 fn invalid_enum<T>(text: &str, index: usize) -> Result<T, rusqlite::Error> {
     Err(rusqlite::Error::FromSqlConversionFailure(
         index,
@@ -602,6 +837,16 @@ fn new_plan_id(project_id: &str, request: &TestExecutionRequest) -> String {
     deterministic_id(
         "qa-execution-plan",
         &[project_id, request.runner.as_str(), &nanos.to_string()],
+    )
+}
+
+fn new_run_id(plan_id: &str, project_id: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    deterministic_id(
+        "qa-execution-run",
+        &[project_id, plan_id, &nanos.to_string()],
     )
 }
 
@@ -681,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn public_planner_uses_only_enforced_backend_capabilities_and_remains_blocked() {
+    fn public_planner_uses_only_enforced_backend_capabilities() {
         let database = Database::open_in_memory().expect("database");
         let _project = project(&database);
         let runtime = runtime_root();
@@ -691,7 +936,7 @@ mod tests {
             availability.enforced_capabilities,
             current_backend_info().capabilities
         );
-        assert!(!availability.execution_enabled);
+        assert_eq!(availability.execution_enabled, cfg!(windows));
         let plan = service
             .create_plan(
                 "project-1",
@@ -700,14 +945,19 @@ mod tests {
                 SandboxPolicy::default(),
             )
             .expect("plan");
-        assert_eq!(plan.status, ExecutionPlanStatus::Blocked);
         assert!(plan.approved_project_manifest.is_none());
         assert!(plan.approved_external_read_surface.is_none());
-        assert!(!plan.blocking_reasons.is_empty());
-        assert!(matches!(
-            service.approve_plan(&plan.id),
-            Err(QaExecutionError::PlanBlocked(_))
-        ));
+        if cfg!(windows) {
+            assert_eq!(plan.status, ExecutionPlanStatus::Planned);
+            assert!(plan.blocking_reasons.is_empty());
+        } else {
+            assert_eq!(plan.status, ExecutionPlanStatus::Blocked);
+            assert!(!plan.blocking_reasons.is_empty());
+            assert!(matches!(
+                service.approve_plan(&plan.id),
+                Err(QaExecutionError::PlanBlocked(_))
+            ));
+        }
     }
 
     #[test]
@@ -762,7 +1012,7 @@ mod tests {
             execution_plan.approved_external_read_surface.as_ref(),
             Some(external_surface)
         );
-        assert!(!service.availability().execution_enabled);
+        assert_eq!(service.availability().execution_enabled, cfg!(windows));
 
         fs::write(project.path().join("module.py"), "VALUE = 2\n").expect("mutate dependency");
         let targets = vec!["tests/test_api.py".to_string()];
