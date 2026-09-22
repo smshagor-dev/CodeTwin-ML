@@ -121,7 +121,7 @@ The source-aware flow is:
 
 Wildcard routes are not blindly materialized. Dynamic path values use a deterministic harmless marker, and state-changing probes remain subject to the existing explicit approval and scope policy.
 
-All active requests pass through a shared token-bucket pacing floor and the global request budget. Active payloads also pass through a central bounded safety policy that rejects oversized values, line-break/header injection, destructive database statements, shell-execution syntax, and non-HTTP outbound schemes before a request can be built. These controls are internal to the engine rather than model-controlled.
+All active requests pass through a shared token-bucket pacing floor (4 requests/second with a burst of 2) and the global request budget. Active payloads also pass through a central bounded safety policy that rejects oversized values, line-break/header injection, destructive database statements, UNION/data-extraction shapes, delay/timing functions, metadata-service targets, shell-execution syntax, and non-HTTP outbound schemes before a request can be built. These controls are internal to the engine rather than model-controlled.
 
 ### Guided Developer Security Test
 
@@ -315,9 +315,10 @@ The ML subsystem is local-first and provenance-aware.
 2. validate package size and SHA-256;
 3. inspect model inventory and readiness;
 4. create a bounded inference plan;
-5. run the compatible local ONNX adapter;
-6. persist model/package/evaluation provenance;
-7. surface ML observations separately from deterministic analyzer findings.
+5. run the compatible bounded local ONNX classifier when classification is requested;
+6. optionally run an integrity-checked GGUF code model through a separately SHA-256-pinned local llama.cpp executable;
+7. persist classifier model/package/evaluation provenance and keep generated suggestions source-hash-bound for review;
+8. surface ML observations separately from deterministic analyzer findings.
 
 No model weights are bundled by default. Registry installation does not by itself prove that the runtime dependencies required for inference are available.
 
@@ -339,7 +340,7 @@ flowchart LR
     ANALYZERS[Quality / AppSec / DB / Runtime / QA]
     WEB[Authorized Web Security Engine]
     REPAIR[Repair + Security Fix Services]
-    ML[Local Python / ONNX Sidecar]
+    ML[Local Python Sidecar / ONNX + GGUF llama.cpp]
     ART[App-data Artifacts + Repair Backups]
 
     UI --> TAURI
@@ -552,7 +553,7 @@ CodeTwin is designed for local analysis and explicit authorization.
 - LSP enrichment uses only an explicitly configured trusted external executable.
 - ML model packages are integrity checked and cannot declare arbitrary execution hooks through the package contract.
 - Repair writes require explicit approval, hash identity checks, staged replacement, backups, and later verification.
-- QA execution is not advertised as enabled while required isolation guarantees remain incomplete.
+- QA execution is exposed only when the runtime reports the complete strict isolation capability floor; unsupported platforms remain planning-only with no weaker fallback.
 
 See SECURITY.md for vulnerability reporting and subsystem-specific documentation for detailed trust boundaries.
 
@@ -567,7 +568,7 @@ CodeTwin does not currently claim:
 - live container/process tracing;
 - production incident correlation;
 - browser-driven QA automation;
-- public sandboxed test execution;
+- sandboxed QA execution on platforms without a strict supported backend;
 - unrestricted autonomous remediation;
 - automatic Git/PR/CI remediation;
 - guaranteed exploitability proof;
