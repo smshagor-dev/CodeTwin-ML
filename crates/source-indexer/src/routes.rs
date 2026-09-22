@@ -116,6 +116,7 @@ fn extract_nextjs_app_routes(
     let Some(path_template) = nextjs_app_route_path(relative_path) else {
         return Vec::new();
     };
+    let handlers = javascript_handlers(source, root);
     let mut routes = Vec::new();
     walk(root, &mut |node| {
         if node.kind() != "export_statement" {
@@ -124,24 +125,34 @@ fn extract_nextjs_app_routes(
         let Some(value) = text(source, node) else {
             return;
         };
-        let methods = nextjs_exported_http_methods(value);
-        if methods.is_empty() {
+        let exported = nextjs_exported_http_handlers(value);
+        if exported.is_empty() {
             return;
         }
-        let mut parameters = path_parameters(&path_template);
-        normalize_parameters(&mut parameters);
         let start = node.start_position();
         let end = node.end_position();
-        for method in methods {
+        for (method, local_handler) in exported {
+            let mut parameters = path_parameters(&path_template);
+            if let Some(handler) = handlers.get(&local_handler).copied() {
+                parameters.extend(nextjs_handler_parameters(source, handler));
+            }
+            normalize_parameters(&mut parameters);
+            let request_content_type = if parameters.iter().any(|value| value.location == "json") {
+                Some("application/json".to_string())
+            } else if parameters.iter().any(|value| value.location == "form") {
+                Some("application/x-www-form-urlencoded".to_string())
+            } else {
+                None
+            };
             routes.push(IndexedRoute {
                 framework: "nextjs".to_string(),
                 router_name: "app_router".to_string(),
                 router_prefix: String::new(),
-                http_method: method.to_string(),
+                http_method: method,
                 path_template: path_template.clone(),
-                handler_name: Some(method.to_string()),
-                parameters: parameters.clone(),
-                request_content_type: None,
+                handler_name: Some(local_handler),
+                parameters,
+                request_content_type,
                 start_line: start.row + 1,
                 end_line: end.row + 1,
             });
@@ -149,7 +160,6 @@ fn extract_nextjs_app_routes(
     });
     routes
 }
-
 fn nextjs_app_route_path(relative_path: &str) -> Option<String> {
     let normalized = relative_path.replace('\\', "/");
     let app_tail = normalized
