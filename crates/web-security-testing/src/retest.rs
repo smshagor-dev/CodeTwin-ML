@@ -15,6 +15,10 @@ pub struct TargetedRetestRequest {
     #[serde(default)]
     pub route_template: Option<String>,
     pub method: String,
+    #[serde(default)]
+    pub parameter_names: Vec<String>,
+    #[serde(default)]
+    pub parameter_locations: BTreeMap<String, String>,
     pub parameter_name: Option<String>,
     pub parameter_location: Option<String>,
     pub category: String,
@@ -75,10 +79,15 @@ pub fn run_targeted_retest(
         Arc::clone(&cancelled),
     );
 
-    let mut parameter_names = query_parameters(&url);
-    let mut parameter_locations = BTreeMap::new();
-    for name in &parameter_names {
-        parameter_locations.insert(name.clone(), "query".to_string());
+    let mut parameter_names = request.parameter_names.clone();
+    parameter_names.extend(query_parameters(&url));
+    parameter_names.sort();
+    parameter_names.dedup();
+    let mut parameter_locations = request.parameter_locations.clone();
+    for name in query_parameters(&url) {
+        parameter_locations
+            .entry(name)
+            .or_insert_with(|| "query".to_string());
     }
     if let Some(parameter) = request
         .parameter_name
