@@ -1895,6 +1895,66 @@ app.post("/api/login/:tenant", (req, res) => {
     }
 
     #[test]
+    fn cross_file_express_router_mount_resolves_effective_live_path() {
+        let project = tempdir().expect("project");
+        fs::create_dir_all(project.path().join("src")).expect("src");
+        fs::write(
+            project.path().join("src/server.js"),
+            r#"
+import authRouter from "./auth";
+const app = express();
+app.use("/api/auth", authRouter);
+"#,
+        )
+        .expect("server");
+        fs::write(
+            project.path().join("src/auth.js"),
+            r#"
+const router = express.Router();
+router.post("/login/:tenant", (req, res) => {
+    const { email, password } = req.body;
+    return res.json({ tenant: req.params.tenant, email, password });
+});
+export default router;
+"#,
+        )
+        .expect("auth");
+
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(project.path())
+            .expect("index project");
+        let store = AuthorizedWebSecurityStore::new(&database);
+        let routes = store
+            .list_source_routes(&summary.project_id, 50)
+            .expect("source routes");
+        let route = routes
+            .iter()
+            .find(|route| {
+                route.http_method == "POST"
+                    && route.path_template == "/api/auth/login/:tenant"
+            })
+            .expect("mounted login route");
+
+        assert!(route.relative_path.ends_with("auth.js"));
+        assert_eq!(route.parameter_locations.get("tenant").map(String::as_str), Some("path"));
+        assert_eq!(route.parameter_locations.get("email").map(String::as_str), Some("json"));
+        assert_eq!(route.parameter_locations.get("password").map(String::as_str), Some("json"));
+
+        let correlated = store
+            .correlate_source_for_request(
+                Some(&summary.project_id),
+                "http://localhost:8080/api/auth/login/acme",
+                Some("POST"),
+                Some("password"),
+            )
+            .expect("correlate")
+            .expect("source correlation");
+        assert!(correlated.relative_path.ends_with("auth.js"));
+        assert!(correlated.confidence >= 0.98);
+    }
+
+    #[test]
     fn authorization_is_required_by_persistence_boundary() {
         let database = Database::open_in_memory().expect("database");
         let store = AuthorizedWebSecurityStore::new(&database);
