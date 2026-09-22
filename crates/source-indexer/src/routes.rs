@@ -114,6 +114,7 @@ fn extract_nextjs_app_routes(
         routes.push(IndexedRoute {
             framework: "nextjs".to_string(),
             router_name: "app_router".to_string(),
+            router_prefix: String::new(),
             http_method: method.to_string(),
             path_template: path_template.clone(),
             handler_name: Some(method.to_string()),
@@ -228,7 +229,11 @@ fn extract_express_routes(
             .last()
             .and_then(|value| handler_reference(source, *value));
 
-        let full_path = combine_paths(prefixes.get(&router).map(String::as_str), &path);
+        let router_prefix = prefixes.get(&router).cloned().unwrap_or_default();
+        let full_path = combine_paths(
+            (!router_prefix.is_empty()).then_some(router_prefix.as_str()),
+            &path,
+        );
         let mut parameters = path_parameters(&full_path);
         for handler_arg in &handler_args {
             let handler_node = if is_function_like(*handler_arg) {
@@ -256,6 +261,7 @@ fn extract_express_routes(
         routes.push(IndexedRoute {
             framework: "express".to_string(),
             router_name: router,
+            router_prefix,
             http_method: method.to_ascii_uppercase(),
             path_template: full_path,
             handler_name,
@@ -377,6 +383,7 @@ fn express_mount_prefixes(
             parent_router,
             mounted_binding: child_router.to_string(),
             prefix: normalize_path(&prefix),
+            prefix_mode: "prepend".to_string(),
             start_line: start.row + 1,
             end_line: end.row + 1,
         });
@@ -507,6 +514,7 @@ fn extract_fastapi_routes(
                 continue;
             };
             let prefix = router_prefixes.get(&router).map(String::as_str);
+            let router_prefix = prefix.unwrap_or("").to_string();
             let full_path = combine_paths(prefix, &path);
             let mut parameters = path_parameters(&full_path);
             parameters.extend(fastapi_function_parameters(
@@ -528,6 +536,7 @@ fn extract_fastapi_routes(
             routes.push(IndexedRoute {
                 framework: "fastapi".to_string(),
                 router_name: router,
+                router_prefix,
                 http_method: method.to_ascii_uppercase(),
                 path_template: full_path,
                 handler_name: handler_name.clone(),
@@ -579,7 +588,11 @@ fn extract_flask_routes(
             else {
                 continue;
             };
-            let full_path = combine_paths(prefixes.get(&router).map(String::as_str), &path);
+            let router_prefix = prefixes.get(&router).cloned().unwrap_or_default();
+            let full_path = combine_paths(
+                (!router_prefix.is_empty()).then_some(router_prefix.as_str()),
+                &path,
+            );
             let mut parameters = path_parameters(&full_path);
             normalize_parameters(&mut parameters);
             let start = decorator.start_position();
@@ -588,6 +601,7 @@ fn extract_flask_routes(
                 routes.push(IndexedRoute {
                     framework: "flask".to_string(),
                     router_name: router.clone(),
+                    router_prefix: router_prefix.clone(),
                     http_method: method,
                     path_template: full_path.clone(),
                     handler_name: handler_name.clone(),
@@ -666,6 +680,11 @@ fn flask_router_prefixes(
                 prefixes.insert(child.to_string(), prefix.clone());
             }
         }
+        let prefix_mode = if explicit_prefix.is_some() {
+            "override_router_prefix"
+        } else {
+            "prepend"
+        };
         let prefix = explicit_prefix.unwrap_or_else(|| "/".to_string());
         let start = node.start_position();
         let end = node.end_position();
@@ -674,6 +693,7 @@ fn flask_router_prefixes(
             parent_router: parent_router.to_string(),
             mounted_binding: child.to_string(),
             prefix,
+            prefix_mode: prefix_mode.to_string(),
             start_line: start.row + 1,
             end_line: end.row + 1,
         });
@@ -754,6 +774,7 @@ fn extract_laravel_routes(
         routes.push(IndexedRoute {
             framework: "laravel".to_string(),
             router_name: "Route".to_string(),
+            router_prefix: group_prefix.clone().unwrap_or_default(),
             http_method: method.to_ascii_uppercase(),
             path_template: full_path,
             handler_name: None,
@@ -925,6 +946,7 @@ fn fastapi_router_prefixes(
                     parent_router: parent_router.to_string(),
                     mounted_binding: child.to_string(),
                     prefix: normalize_path(&prefix),
+                    prefix_mode: "prepend".to_string(),
                     start_line: start.row + 1,
                     end_line: end.row + 1,
                 });
@@ -936,6 +958,7 @@ fn fastapi_router_prefixes(
                     parent_router: parent_router.to_string(),
                     mounted_binding: child.to_string(),
                     prefix: "/".to_string(),
+                    prefix_mode: "prepend".to_string(),
                     start_line: start.row + 1,
                     end_line: end.row + 1,
                 });
