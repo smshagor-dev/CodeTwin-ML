@@ -52,7 +52,8 @@ def _worker_environment(root: pathlib.Path) -> dict[str, str]:
     return environment
 
 
-def run_isolated_inference(
+def _run_isolated_worker(
+    mode: str,
     action: str,
     text: str,
     *,
@@ -61,6 +62,7 @@ def run_isolated_inference(
 ) -> dict[str, Any]:
     payload = {
         "protocol": WORKER_PROTOCOL_VERSION,
+        "mode": mode,
         "action": action,
         "text": text,
         "model_id": model_id,
@@ -133,3 +135,35 @@ def run_isolated_inference(
             raise InferenceRuntimeError(f"{code}: {message}")
         raise InferenceRuntimeError("isolated inference worker returned an invalid error")
     raise InferenceRuntimeError("isolated inference worker response is missing ok")
+
+
+def run_isolated_inference(
+    action: str,
+    text: str,
+    *,
+    model_id: str | None = None,
+    model_version: str | None = None,
+) -> dict[str, Any]:
+    return _run_isolated_worker(
+        "classification",
+        action,
+        text,
+        model_id=model_id,
+        model_version=model_version,
+    )
+
+
+def run_isolated_generation(
+    action: str,
+    prompt: str,
+    *,
+    model_id: str | None = None,
+    model_version: str | None = None,
+) -> dict[str, Any]:
+    return _run_isolated_worker(
+        "generation",
+        action,
+        prompt,
+        model_id=model_id,
+        model_version=model_version,
+    )
