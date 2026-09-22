@@ -24,10 +24,12 @@ use windows_sys::Win32::{
         HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     Security::{
-        EqualSid, FreeSid, GetTokenInformation, IsTokenRestricted, PSID, SECURITY_ATTRIBUTES,
-        SECURITY_CAPABILITIES, TOKEN_APPCONTAINER_INFORMATION, TOKEN_GROUPS, TOKEN_QUERY,
-        TokenAppContainerSid, TokenCapabilities, TokenIsAppContainer,
-        TokenIsLessPrivilegedAppContainer,
+        CreateWellKnownSid, EqualSid, FreeSid, GetTokenInformation, IsTokenRestricted, PSID,
+        SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
+        TOKEN_APPCONTAINER_INFORMATION, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+        TokenAppContainerSid, TokenCapabilities, TokenIntegrityLevel, TokenIsAppContainer,
+        TokenIsLessPrivilegedAppContainer, TokenRestrictedSids, WinLowLabelSid,
+        WinWriteRestrictedCodeSid,
     },
     Security::Isolation::{
         CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
@@ -704,9 +706,19 @@ fn attest_production_lpac(
     let appcontainer_matches =
         token_appcontainer_sid_matches(token.raw(), expected_appcontainer_sid)?;
     let capabilities = token_capability_count(token.raw())?;
-    if !is_appcontainer || !is_lpac || !restricted || !appcontainer_matches || capabilities != 0 {
+    let write_restricted = token_restricted_sid_present(token.raw(), WinWriteRestrictedCodeSid)?;
+    let low_integrity = token_integrity_sid_matches(token.raw(), WinLowLabelSid)?;
+    if !is_appcontainer
+        || !is_lpac
+        || !restricted
+        || !write_restricted
+        || !low_integrity
+        || !appcontainer_matches
+        || capabilities != 0
+    {
         return Err(BackendExecutionError::JobSetup(
-            "actual suspended QA child did not satisfy zero-capability LPAC identity".to_string(),
+            "actual suspended QA child did not satisfy restricted low-integrity zero-capability LPAC identity"
+                .to_string(),
         ));
     }
     Ok(())
@@ -788,6 +800,58 @@ fn token_capability_count(token: HANDLE) -> Result<u32, BackendExecutionError> {
     let storage = token_information_buffer(token, TokenCapabilities)?;
     let groups = unsafe { &*(storage.as_ptr().cast::<TOKEN_GROUPS>()) };
     Ok(groups.GroupCount)
+}
+
+fn token_restricted_sid_present(
+    token: HANDLE,
+    sid_type: i32,
+) -> Result<bool, BackendExecutionError> {
+    let storage = token_information_buffer(token, TokenRestrictedSids)?;
+    let groups = unsafe { &*(storage.as_ptr().cast::<TOKEN_GROUPS>()) };
+    let expected = well_known_sid(sid_type)?;
+    let count = groups.GroupCount as usize;
+    let first = groups.Groups.as_ptr();
+    for index in 0..count {
+        let entry = unsafe { &*first.add(index) };
+        if !entry.Sid.is_null() && unsafe { EqualSid(entry.Sid, expected.as_ptr().cast_mut().cast()) } != 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn token_integrity_sid_matches(
+    token: HANDLE,
+    sid_type: i32,
+) -> Result<bool, BackendExecutionError> {
+    let storage = token_information_buffer(token, TokenIntegrityLevel)?;
+    let label = unsafe { &*(storage.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()) };
+    if label.Label.Sid.is_null() {
+        return Ok(false);
+    }
+    let expected = well_known_sid(sid_type)?;
+    Ok(unsafe { EqualSid(label.Label.Sid, expected.as_ptr().cast_mut().cast()) } != 0)
+}
+
+fn well_known_sid(sid_type: i32) -> Result<Vec<u8>, BackendExecutionError> {
+    let mut buffer = vec![0u8; SECURITY_MAX_SID_SIZE as usize];
+    let mut size = buffer.len() as u32;
+    if unsafe {
+        CreateWellKnownSid(
+            sid_type,
+            std::ptr::null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+        )
+    } == 0
+    {
+        return Err(BackendExecutionError::JobSetup(format!(
+            "CreateWellKnownSid({sid_type}): {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    buffer.truncate(size as usize);
+    Ok(buffer)
 }
 
 struct AppContainerProfileSid(PSID);
