@@ -208,7 +208,8 @@ fn extract_php(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImport>) {
                 .trim_end_matches(';')
                 .trim();
             if !raw.is_empty() {
-                push(imports, "use", raw.to_string(), node);
+                let bindings = php_use_bindings(raw);
+                push_with_bindings(imports, "use", raw.to_string(), node, bindings);
             }
         }
         "require_expression" | "require_once_expression" | "include_expression"
@@ -252,6 +253,28 @@ fn extract_c_family(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImpor
     }
 }
 
+fn php_use_bindings(raw: &str) -> Vec<IndexedImportBinding> {
+    // Grouped PHP imports require a different specifier model because one
+    // declaration can target several files. Leave them unresolved instead of
+    // manufacturing an incorrect single-file binding.
+    if raw.contains('{') || raw.contains('}') || raw.contains(',') {
+        return Vec::new();
+    }
+    let (qualified, alias) = raw
+        .rsplit_once(" as ")
+        .map(|(qualified, alias)| (qualified.trim(), Some(alias.trim())))
+        .unwrap_or((raw.trim(), None));
+    let qualified = qualified.trim_start_matches('\\');
+    let imported = qualified.rsplit('\\').next().unwrap_or(qualified).trim();
+    let local = alias.unwrap_or(imported);
+    if !is_identifier(imported) || !is_identifier(local) {
+        return Vec::new();
+    }
+    vec![IndexedImportBinding {
+        local_name: local.to_string(),
+        imported_name: imported.to_string(),
+    }]
+}
 fn javascript_import_bindings(statement: &str) -> Vec<IndexedImportBinding> {
     let trimmed = statement.trim();
     let Some(rest) = trimmed.strip_prefix("import ") else {
