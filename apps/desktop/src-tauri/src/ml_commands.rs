@@ -377,6 +377,103 @@ impl ValidatedSidecar {
     }
 }
 
+struct MlSidecarIntegrityLocks {
+    #[cfg(windows)]
+    handles: Vec<windows_sys::Win32::Foundation::HANDLE>,
+}
+
+impl MlSidecarIntegrityLocks {
+    fn acquire(sidecar: &ValidatedSidecar) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::{
+                Foundation::{CloseHandle, GENERIC_READ, INVALID_HANDLE_VALUE},
+                Storage::FileSystem::{
+                    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, OPEN_EXISTING,
+                },
+            };
+
+            let mut handles = Vec::with_capacity(sidecar.code_files.len() + 1);
+            let mut paths = Vec::with_capacity(sidecar.code_files.len() + 1);
+            paths.push(sidecar.python_executable.as_path());
+            paths.extend(sidecar.code_files.iter().map(PathBuf::as_path));
+
+            for path in paths {
+                let wide: Vec<u16> = path
+                    .as_os_str()
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let handle = unsafe {
+                    CreateFileW(
+                        wide.as_ptr(),
+                        GENERIC_READ,
+                        FILE_SHARE_READ,
+                        std::ptr::null(),
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if handle == INVALID_HANDLE_VALUE {
+                    for opened in handles.drain(..) {
+                        unsafe { CloseHandle(opened) };
+                    }
+                    return Err(format!(
+                        "cannot lock trusted ML file against write/delete replacement: {} ({})",
+                        path.display(),
+                        std::io::Error::last_os_error()
+                    ));
+                }
+                handles.push(handle);
+            }
+
+            return Ok(Self { handles });
+        }
+
+        #[cfg(not(windows))]
+        {
+            let _ = sidecar;
+            Ok(Self {})
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for MlSidecarIntegrityLocks {
+    fn drop(&mut self) {
+        for handle in self.handles.drain(..) {
+            if handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                unsafe {
+                    windows_sys::Win32::Foundation::CloseHandle(handle);
+                }
+            }
+        }
+    }
+}
+
+struct MlPycacheDirectory(PathBuf);
+
+impl MlPycacheDirectory {
+    fn create() -> Result<Self, String> {
+        let path = std::env::temp_dir().join(format!("codetwin-ml-pycache-{}", time_nonce()));
+        fs::create_dir(&path)
+            .map_err(|error| format!("cannot create isolated ML Python cache: {error}"))?;
+        Ok(Self(path))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for MlPycacheDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 #[derive(Debug)]
 struct IndexedSource {
     text: String,
@@ -826,6 +923,23 @@ fn collect_sidecar_python_files(
     Ok(())
 }
 
+fn revalidate_sidecar_identity(sidecar: &ValidatedSidecar) -> Result<(), String> {
+    let (python_hash, _) =
+        sha256_file(&sidecar.python_executable, None, "Python executable")?;
+    if !python_hash.eq_ignore_ascii_case(&sidecar.python_executable_sha256) {
+        return Err("Python executable changed during ML request".to_string());
+    }
+    let (sidecar_digest, current_files, current_bytes) =
+        sidecar_source_digest(&sidecar.sidecar_root)?;
+    if !sidecar_digest.eq_ignore_ascii_case(&sidecar.sidecar_digest)
+        || current_files != sidecar.code_files
+        || current_bytes != sidecar.code_bytes
+    {
+        return Err("ML sidecar source changed during ML request".to_string());
+    }
+    Ok(())
+}
+
 fn validate_absolute_regular_file(value: &str, label: &str) -> Result<PathBuf, String> {
     let input = Path::new(value);
     if !input.is_absolute() {
@@ -863,6 +977,10 @@ fn sidecar_request(
         return Err(format!("ML sidecar request exceeds {MAX_REQUEST_BYTES} bytes"));
     }
 
+    let _integrity_locks = MlSidecarIntegrityLocks::acquire(sidecar)?;
+    revalidate_sidecar_identity(sidecar)?;
+    let pycache = MlPycacheDirectory::create()?;
+
     let mut command = Command::new(&sidecar.python_executable);
     command
         .arg("-m")
@@ -870,6 +988,9 @@ fn sidecar_request(
         .current_dir(&sidecar.sidecar_root)
         .env_clear()
         .env("PYTHONPATH", &sidecar.sidecar_root)
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONSAFEPATH", "1")
+        .env("PYTHONPYCACHEPREFIX", pycache.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -959,6 +1080,8 @@ fn sidecar_request(
     if !status.success() {
         return Err(format!("ML sidecar exited with status {status}"));
     }
+
+    revalidate_sidecar_identity(sidecar)?;
 
     let response: Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid ML sidecar JSON response: {error}"))?;
