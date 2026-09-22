@@ -924,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn public_planner_uses_only_enforced_backend_capabilities_and_remains_blocked() {
+    fn public_planner_uses_only_enforced_backend_capabilities() {
         let database = Database::open_in_memory().expect("database");
         let _project = project(&database);
         let runtime = runtime_root();
@@ -934,7 +934,7 @@ mod tests {
             availability.enforced_capabilities,
             current_backend_info().capabilities
         );
-        assert!(!availability.execution_enabled);
+        assert_eq!(availability.execution_enabled, cfg!(windows));
         let plan = service
             .create_plan(
                 "project-1",
@@ -943,14 +943,19 @@ mod tests {
                 SandboxPolicy::default(),
             )
             .expect("plan");
-        assert_eq!(plan.status, ExecutionPlanStatus::Blocked);
         assert!(plan.approved_project_manifest.is_none());
         assert!(plan.approved_external_read_surface.is_none());
-        assert!(!plan.blocking_reasons.is_empty());
-        assert!(matches!(
-            service.approve_plan(&plan.id),
-            Err(QaExecutionError::PlanBlocked(_))
-        ));
+        if cfg!(windows) {
+            assert_eq!(plan.status, ExecutionPlanStatus::Planned);
+            assert!(plan.blocking_reasons.is_empty());
+        } else {
+            assert_eq!(plan.status, ExecutionPlanStatus::Blocked);
+            assert!(!plan.blocking_reasons.is_empty());
+            assert!(matches!(
+                service.approve_plan(&plan.id),
+                Err(QaExecutionError::PlanBlocked(_))
+            ));
+        }
     }
 
     #[test]
@@ -1005,7 +1010,7 @@ mod tests {
             execution_plan.approved_external_read_surface.as_ref(),
             Some(external_surface)
         );
-        assert!(!service.availability().execution_enabled);
+        assert_eq!(service.availability().execution_enabled, cfg!(windows));
 
         fs::write(project.path().join("module.py"), "VALUE = 2\n").expect("mutate dependency");
         let targets = vec!["tests/test_api.py".to_string()];
