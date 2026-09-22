@@ -740,20 +740,29 @@ def inference_plan(action: str, *, model_root: Path | str | None = None) -> dict
     model_route = route_model(action, model_root=model_root)
     dataset_catalog = load_catalog()
     dataset_ids = list(dataset_catalog["routes"][action])
-    if model_route["execution_ready"]:
+    models = [
+        item
+        for item in model_route["models"]
+        if item.get("backend") == "onnx-classification-v1"
+        and item.get("execution_supported")
+    ]
+    if models:
         status = "ready"
-    elif model_route["ready"]:
+    elif any(
+        item.get("backend") == "onnx-classification-v1"
+        for item in model_route["models"]
+    ):
         status = "model_ready_execution_pending"
     else:
         status = "model_unavailable"
     return {
         "action": action,
         "status": status,
-        "models": model_route["models"],
+        "models": models,
         "dataset_provenance": dataset_ids,
         "execution_implemented": True,
         "note": (
-            "Only integrity-checked models with an explicit bounded inference contract are execution-ready. "
-            "Evaluation metrics are package provenance and are not independently reproduced at runtime."
+            "Classification uses only integrity-checked ONNX models with the bounded "
+            "utf8-bytes-v1 contract. Generative GGUF models are routed separately."
         ),
     }
