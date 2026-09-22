@@ -359,10 +359,31 @@ fn sidecar_request(
         .arg("-m")
         .arg("codetwin_ml.main")
         .current_dir(&sidecar.sidecar_root)
+        .env_clear()
         .env("PYTHONPATH", &sidecar.sidecar_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    for key in [
+        "SYSTEMROOT",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "HOME",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "LANG",
+        "LC_ALL",
+        "CODETWIN_MODEL_CACHE",
+        "CODETWIN_LLAMA_CLI",
+        "CODETWIN_LLAMA_CLI_SHA256",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -382,6 +403,19 @@ fn sidecar_request(
         .map_err(|error| format!("cannot write ML sidecar request: {error}"))?;
     drop(stdin);
 
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "ML sidecar stdout was not available".to_string())?;
+    let stdout_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .take(MAX_RESPONSE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("cannot read ML sidecar response: {error}"))?;
+        Ok::<Vec<u8>, String>(bytes)
+    });
+
     let started = Instant::now();
     let status = loop {
         match child
@@ -392,6 +426,7 @@ fn sidecar_request(
             None if started.elapsed() >= request_timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = stdout_reader.join();
                 return Err(format!(
                     "ML sidecar exceeded the {} second request timeout",
                     request_timeout.as_secs()
@@ -401,15 +436,9 @@ fn sidecar_request(
         }
     };
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "ML sidecar stdout was not available".to_string())?;
-    let mut bytes = Vec::new();
-    stdout
-        .take(MAX_RESPONSE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("cannot read ML sidecar response: {error}"))?;
+    let bytes = stdout_reader
+        .join()
+        .map_err(|_| "ML sidecar stdout reader panicked".to_string())??;
     if bytes.len() as u64 > MAX_RESPONSE_BYTES {
         return Err(format!(
             "ML sidecar response exceeds {MAX_RESPONSE_BYTES} bytes"
