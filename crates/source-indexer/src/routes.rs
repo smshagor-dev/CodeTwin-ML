@@ -104,25 +104,28 @@ fn extract_nextjs_app_routes(
         let Some(value) = text(source, node) else {
             return;
         };
-        let Some(method) = nextjs_exported_http_method(value) else {
+        let methods = nextjs_exported_http_methods(value);
+        if methods.is_empty() {
             return;
-        };
+        }
         let mut parameters = path_parameters(&path_template);
         normalize_parameters(&mut parameters);
         let start = node.start_position();
         let end = node.end_position();
-        routes.push(IndexedRoute {
-            framework: "nextjs".to_string(),
-            router_name: "app_router".to_string(),
-            router_prefix: String::new(),
-            http_method: method.to_string(),
-            path_template: path_template.clone(),
-            handler_name: Some(method.to_string()),
-            parameters,
-            request_content_type: None,
-            start_line: start.row + 1,
-            end_line: end.row + 1,
-        });
+        for method in methods {
+            routes.push(IndexedRoute {
+                framework: "nextjs".to_string(),
+                router_name: "app_router".to_string(),
+                router_prefix: String::new(),
+                http_method: method.to_string(),
+                path_template: path_template.clone(),
+                handler_name: Some(method.to_string()),
+                parameters: parameters.clone(),
+                request_content_type: None,
+                start_line: start.row + 1,
+                end_line: end.row + 1,
+            });
+        }
     });
     routes
 }
@@ -150,8 +153,27 @@ fn nextjs_app_route_path(relative_path: &str) -> Option<String> {
         if segment.starts_with('@') {
             continue;
         }
-        if segment.starts_with("[...") || segment.starts_with("[[...") {
-            return None;
+        if let Some(name) = segment
+            .strip_prefix("[[...")
+            .and_then(|value| value.strip_suffix("]]"))
+        {
+            let name = name.trim();
+            if !is_identifier(name) {
+                return None;
+            }
+            segments.push(format!("{{{name}}}"));
+            continue;
+        }
+        if let Some(name) = segment
+            .strip_prefix("[...")
+            .and_then(|value| value.strip_suffix(']'))
+        {
+            let name = name.trim();
+            if !is_identifier(name) {
+                return None;
+            }
+            segments.push(format!("{{{name}}}"));
+            continue;
         }
         if segment.starts_with('[') && segment.ends_with(']') && segment.len() > 2 {
             let name = segment[1..segment.len() - 1].trim();
@@ -174,24 +196,55 @@ fn nextjs_app_route_path(relative_path: &str) -> Option<String> {
     })
 }
 
-fn nextjs_exported_http_method(value: &str) -> Option<&'static str> {
+fn nextjs_exported_http_methods(value: &str) -> Vec<&'static str> {
+    const METHODS: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    for method in ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"] {
+    let mut output = Vec::new();
+
+    for method in METHODS {
         let function = format!("export function {method}(");
+        let spaced_function = format!("export function {method} (");
         let async_function = format!("export async function {method}(");
+        let spaced_async_function = format!("export async function {method} (");
         let const_handler = format!("export const {method} =");
         let let_handler = format!("export let {method} =");
         let var_handler = format!("export var {method} =");
         if normalized.contains(&function)
+            || normalized.contains(&spaced_function)
             || normalized.contains(&async_function)
+            || normalized.contains(&spaced_async_function)
             || normalized.contains(&const_handler)
             || normalized.contains(&let_handler)
             || normalized.contains(&var_handler)
         {
-            return Some(method);
+            output.push(method);
         }
     }
-    None
+
+    if normalized.starts_with("export {") {
+        if let Some(open) = normalized.find('{') {
+            if let Some(relative_close) = normalized[open + 1..].find('}') {
+                let body = &normalized[open + 1..open + 1 + relative_close];
+                for item in body.split(',') {
+                    let item = item.trim();
+                    if item.is_empty() {
+                        continue;
+                    }
+                    let exported = item
+                        .rsplit_once(" as ")
+                        .map(|(_, exported)| exported.trim())
+                        .unwrap_or(item);
+                    for method in METHODS {
+                        if exported == method && !output.contains(&method) {
+                            output.push(method);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    output
 }
 
 fn extract_express_routes(
@@ -759,32 +812,104 @@ fn extract_laravel_routes(
             return;
         };
         let method = tail[..open].trim().to_ascii_lowercase();
-        if !HTTP_METHODS.contains(&method.as_str()) {
-            return;
-        }
         let Some(path) = first_quoted_string(&tail[open + 1..]) else {
             return;
         };
         let group_prefix = laravel_ancestor_prefix(source, node);
-        let full_path = combine_paths(group_prefix.as_deref(), &path);
-        let mut parameters = path_parameters(&full_path);
-        normalize_parameters(&mut parameters);
         let start = node.start_position();
         let end = node.end_position();
-        routes.push(IndexedRoute {
-            framework: "laravel".to_string(),
-            router_name: "Route".to_string(),
-            router_prefix: group_prefix.clone().unwrap_or_default(),
-            http_method: method.to_ascii_uppercase(),
-            path_template: full_path,
-            handler_name: None,
-            parameters,
-            request_content_type: None,
-            start_line: start.row + 1,
-            end_line: end.row + 1,
-        });
+
+        if matches!(method.as_str(), "resource" | "apiresource") {
+            let base = combine_paths(group_prefix.as_deref(), &path);
+            let Some(parameter) = laravel_resource_parameter(&base) else {
+                return;
+            };
+            let member = format!("{base}/{{{parameter}}}");
+            let mut expanded = vec![
+                ("GET", base.clone()),
+                ("POST", base.clone()),
+                ("GET", member.clone()),
+                ("PUT", member.clone()),
+                ("PATCH", member.clone()),
+                ("DELETE", member.clone()),
+            ];
+            if method == "resource" {
+                expanded.push(("GET", format!("{base}/create")));
+                expanded.push(("GET", format!("{member}/edit")));
+            }
+            for (http_method, resource_path) in expanded {
+                push_laravel_indexed_route(
+                    &mut routes,
+                    http_method,
+                    resource_path,
+                    group_prefix.as_deref(),
+                    start.row + 1,
+                    end.row + 1,
+                );
+            }
+            return;
+        }
+
+        if !HTTP_METHODS.contains(&method.as_str()) {
+            return;
+        }
+        let full_path = combine_paths(group_prefix.as_deref(), &path);
+        push_laravel_indexed_route(
+            &mut routes,
+            &method.to_ascii_uppercase(),
+            full_path,
+            group_prefix.as_deref(),
+            start.row + 1,
+            end.row + 1,
+        );
     });
     (routes, Vec::new())
+}
+
+fn push_laravel_indexed_route(
+    routes: &mut Vec<IndexedRoute>,
+    method: &str,
+    path_template: String,
+    router_prefix: Option<&str>,
+    start_line: usize,
+    end_line: usize,
+) {
+    let mut parameters = path_parameters(&path_template);
+    normalize_parameters(&mut parameters);
+    routes.push(IndexedRoute {
+        framework: "laravel".to_string(),
+        router_name: "Route".to_string(),
+        router_prefix: router_prefix.unwrap_or("").to_string(),
+        http_method: method.to_ascii_uppercase(),
+        path_template,
+        handler_name: None,
+        parameters,
+        request_content_type: None,
+        start_line,
+        end_line,
+    });
+}
+
+fn laravel_resource_parameter(path: &str) -> Option<String> {
+    let segment = path
+        .trim_matches('/')
+        .rsplit('/')
+        .next()?
+        .trim();
+    if segment.is_empty() || segment.starts_with('{') {
+        return None;
+    }
+    let mut name = segment.replace('-', "_");
+    if let Some(stem) = name.strip_suffix("ies") {
+        name = format!("{stem}y");
+    } else if name.ends_with('s') && name.len() > 1 {
+        name.pop();
+    }
+    if is_identifier(&name) {
+        Some(name)
+    } else {
+        None
+    }
 }
 
 fn laravel_ancestor_prefix(source: &str, node: Node<'_>) -> Option<String> {
@@ -1297,6 +1422,83 @@ mod tests {
     use super::extract_routes;
 
     #[test]
+    fn nextjs_function_body_does_not_create_fake_exported_methods() {
+        let source = r#"
+export function GET() {
+  const methods = { POST: true };
+  return Response.json(methods);
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "TypeScript",
+            "app/status/route.ts",
+            source,
+            tree.root_node(),
+        );
+        assert!(routes
+            .iter()
+            .any(|route| route.framework == "nextjs" && route.http_method == "GET"));
+        assert!(!routes
+            .iter()
+            .any(|route| route.framework == "nextjs" && route.http_method == "POST"));
+    }
+
+    #[test]
+    fn extracts_nextjs_reexported_methods_and_catch_all_path() {
+        let source = r#"
+export { GET, handler as POST } from "./handlers";
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "TypeScript",
+            "app/docs/[...slug]/route.ts",
+            source,
+            tree.root_node(),
+        );
+        for method in ["GET", "POST"] {
+            let route = routes
+                .iter()
+                .find(|route| route.framework == "nextjs" && route.http_method == method)
+                .expect("re-exported Next.js method");
+            assert_eq!(route.path_template, "/docs/{slug}");
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == "slug" && parameter.location == "path"));
+        }
+    }
+
+    #[test]
+    fn materializes_nextjs_optional_catch_all_with_safe_single_segment() {
+        let source = "export function GET() { return new Response('ok'); }";
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "TypeScript",
+            "src/app/blog/[[...slug]]/route.ts",
+            source,
+            tree.root_node(),
+        );
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "GET")
+            .expect("optional catch-all route");
+        assert_eq!(route.path_template, "/blog/{slug}");
+    }
+
+    #[test]
     fn extracts_nextjs_app_router_methods_and_dynamic_path() {
         let source = r#"
 export async function GET(request: Request) {
@@ -1330,23 +1532,6 @@ export const POST = async (request: Request) => {
         assert!(routes
             .iter()
             .any(|route| route.framework == "nextjs" && route.http_method == "POST"));
-    }
-
-    #[test]
-    fn skips_nextjs_catch_all_route_materialization() {
-        let source = "export function GET() { return new Response('ok'); }";
-        let mut parser = Parser::new();
-        parser
-            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
-            .expect("language");
-        let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, _handler_inputs) = extract_routes(
-            "TypeScript",
-            "app/docs/[...slug]/route.ts",
-            source,
-            tree.root_node(),
-        );
-        assert!(!routes.iter().any(|route| route.framework == "nextjs"));
     }
 
     #[test]
@@ -1448,6 +1633,59 @@ app.register_blueprint(api, url_prefix = "/api")
                 && mount.parent_router == "app"
                 && mount.mounted_binding == "api"
                 && mount.prefix == "/api"
+        }));
+    }
+
+    #[test]
+    fn expands_laravel_resource_and_api_resource_routes() {
+        let source = r#"<?php
+use Illuminate\Support\Facades\Route;
+
+Route::prefix('api')->group(function () {
+    Route::resource('/photos', PhotoController::class);
+    Route::apiResource('/categories', CategoryController::class);
+});
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "PHP",
+            "routes/api.php",
+            source,
+            tree.root_node(),
+        );
+
+        for (method, path) in [
+            ("GET", "/api/photos"),
+            ("POST", "/api/photos"),
+            ("GET", "/api/photos/create"),
+            ("GET", "/api/photos/{photo}"),
+            ("GET", "/api/photos/{photo}/edit"),
+            ("PUT", "/api/photos/{photo}"),
+            ("PATCH", "/api/photos/{photo}"),
+            ("DELETE", "/api/photos/{photo}"),
+            ("GET", "/api/categories"),
+            ("POST", "/api/categories"),
+            ("GET", "/api/categories/{category}"),
+            ("PUT", "/api/categories/{category}"),
+            ("PATCH", "/api/categories/{category}"),
+            ("DELETE", "/api/categories/{category}"),
+        ] {
+            assert!(
+                routes.iter().any(|route| {
+                    route.framework == "laravel"
+                        && route.http_method == method
+                        && route.path_template == path
+                }),
+                "missing {method} {path}: {routes:?}"
+            );
+        }
+        assert!(!routes.iter().any(|route| {
+            route.path_template == "/api/categories/create"
+                || route.path_template == "/api/categories/{category}/edit"
         }));
     }
 
