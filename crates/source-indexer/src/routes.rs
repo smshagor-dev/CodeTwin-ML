@@ -1169,7 +1169,184 @@ fn go_handler_parameters(
         }
         _ => {}
     }
+
+    if let Some(model) = go_explicit_json_binding_model(body) {
+        if let Some(fields) = json_models.get(&model) {
+            for field in fields {
+                parameters.push(route_parameter(field, "json"));
+            }
+        }
+    }
     parameters
+}
+
+fn go_json_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
+    let mut models = BTreeMap::new();
+    walk(root, &mut |node| {
+        if node.kind() != "type_spec" {
+            return;
+        }
+        let Some(name) = node
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(str::trim)
+        else {
+            return;
+        };
+        if !is_identifier(name) {
+            return;
+        }
+        let Some(raw) = text(source, node) else {
+            return;
+        };
+        if !raw.contains("struct") || !raw.contains('{') {
+            return;
+        }
+        let fields = go_struct_json_fields(raw);
+        if !fields.is_empty() {
+            models.insert(name.to_string(), fields);
+        }
+    });
+    models
+}
+
+fn go_struct_json_fields(raw: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let Some(open) = raw.find('{') else {
+        return fields;
+    };
+    let Some(close) = raw.rfind('}') else {
+        return fields;
+    };
+    if close <= open {
+        return fields;
+    }
+
+    for line in raw[open + 1..close].lines() {
+        let line = line.split("//").next().unwrap_or("").trim();
+        if line.is_empty() || line.starts_with('}') {
+            continue;
+        }
+
+        let declaration = line.split('`').next().unwrap_or(line).trim();
+        let mut tokens = declaration.split_whitespace();
+        let Some(field_name) = tokens.next() else {
+            continue;
+        };
+        if tokens.next().is_none()
+            || !is_identifier(field_name)
+            || !field_name
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_uppercase())
+        {
+            continue;
+        }
+
+        let json_name = go_json_tag_name(line).unwrap_or_else(|| field_name.to_string());
+        if json_name == "-" || json_name.is_empty() || json_name.len() > 256 {
+            continue;
+        }
+        fields.push(json_name);
+    }
+
+    fields.sort();
+    fields.dedup();
+    fields.truncate(256);
+    fields
+}
+
+fn go_json_tag_name(line: &str) -> Option<String> {
+    let marker = r#"json:""#;
+    let index = line.find(marker)?;
+    let tail = &line[index + marker.len()..];
+    let end = tail.find('"')?;
+    let tag = &tail[..end];
+    let name = tag.split(',').next().unwrap_or("").trim();
+    if name == "-" {
+        return Some("-".to_string());
+    }
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+fn go_explicit_json_binding_model(body: &str) -> Option<String> {
+    let variables = go_handler_local_types(body);
+    for marker in [".ShouldBindJSON(", ".BindJSON("] {
+        if let Some(variable) = go_bound_variable(body, marker) {
+            if let Some(model) = variables.get(&variable) {
+                return Some(model.clone());
+            }
+        }
+    }
+
+    if body.contains("json.NewDecoder") {
+        if let Some(variable) = go_bound_variable(body, ".Decode(") {
+            if let Some(model) = variables.get(&variable) {
+                return Some(model.clone());
+            }
+        }
+    }
+    None
+}
+
+fn go_handler_local_types(body: &str) -> BTreeMap<String, String> {
+    let mut variables = BTreeMap::new();
+    for line in body.lines() {
+        let trimmed = line.trim().trim_end_matches(';').trim();
+
+        if let Some(rest) = trimmed.strip_prefix("var ") {
+            let mut parts = rest.split_whitespace();
+            let Some(variable) = parts.next() else {
+                continue;
+            };
+            let Some(model) = parts.next() else {
+                continue;
+            };
+            let model = model.trim_start_matches('*').trim();
+            if is_identifier(variable) && is_identifier(model) {
+                variables.insert(variable.to_string(), model.to_string());
+            }
+            continue;
+        }
+
+        let Some((left, right)) = trimmed.split_once(":=") else {
+            continue;
+        };
+        let variable = left.trim();
+        if !is_identifier(variable) {
+            continue;
+        }
+        let right = right.trim().trim_start_matches('&');
+        let model = if let Some(tail) = right.strip_prefix("new(") {
+            tail.split(')').next().unwrap_or("").trim()
+        } else {
+            right.split(['{', '(']).next().unwrap_or("").trim()
+        };
+        if is_identifier(model) {
+            variables.insert(variable.to_string(), model.to_string());
+        }
+    }
+    variables
+}
+
+fn go_bound_variable(body: &str, marker: &str) -> Option<String> {
+    let index = body.find(marker)?;
+    let tail = &body[index + marker.len()..];
+    let argument = tail
+        .split([',', ')'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches('&')
+        .trim();
+    if is_identifier(argument) {
+        Some(argument.to_string())
+    } else {
+        None
+    }
 }
 
 fn marker_quoted_arguments(value: &str, marker: &str) -> Vec<String> {
