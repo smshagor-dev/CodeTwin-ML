@@ -841,13 +841,16 @@ auth.post("/login/:tenant", login);
             .set_language(&tree_sitter_javascript::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts) = extract_routes("JavaScript", source, tree.root_node());
+        let (routes, _mounts, handler_inputs) = extract_routes("JavaScript", source, tree.root_node());
         let route = routes.iter().find(|value| value.path_template == "/api/login/:tenant").expect("route");
         assert_eq!(route.http_method, "POST");
         assert!(route.parameters.iter().any(|value| value.name == "tenant" && value.location == "path"));
         assert!(route.parameters.iter().any(|value| value.name == "email" && value.location == "json"));
         assert!(route.parameters.iter().any(|value| value.name == "password" && value.location == "json"));
         assert!(route.parameters.iter().any(|value| value.name == "next" && value.location == "query"));
+        let handler = handler_inputs.iter().find(|value| value.handler_name == "login").expect("handler");
+        assert!(handler.parameters.iter().any(|value| value.name == "email" && value.location == "json"));
+        assert!(handler.parameters.iter().any(|value| value.name == "next" && value.location == "query"));
     }
 
     #[test]
@@ -861,7 +864,7 @@ app.use("/api/auth", authRouter);
             .set_language(&tree_sitter_javascript::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (_routes, mounts) = extract_routes("JavaScript", source, tree.root_node());
+        let (_routes, mounts, _handler_inputs) = extract_routes("JavaScript", source, tree.root_node());
         let mount = mounts.iter().find(|value| value.mounted_binding == "authRouter").expect("mount");
         assert_eq!(mount.prefix, "/api/auth");
         assert_eq!(mount.framework, "express");
@@ -891,7 +894,7 @@ app.include_router(router)
             .set_language(&tree_sitter_python::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts) = extract_routes("Python", source, tree.root_node());
+        let (routes, _mounts, _handler_inputs) = extract_routes("Python", source, tree.root_node());
         let route = routes.iter().find(|value| value.path_template == "/api/login/{tenant}").expect("route");
         assert_eq!(route.http_method, "POST");
         assert!(route.parameters.iter().any(|value| value.name == "tenant" && value.location == "path"));
