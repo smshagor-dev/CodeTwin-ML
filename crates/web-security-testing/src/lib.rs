@@ -189,6 +189,16 @@ pub struct ScanProgress {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceEndpointSeed {
+    pub url: String,
+    pub method: String,
+    pub parameter_names: Vec<String>,
+    pub parameter_locations: BTreeMap<String, String>,
+    pub content_type: Option<String>,
+    pub source_label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EndpointObservation {
     pub url: String,
     pub method: String,
@@ -279,6 +289,24 @@ pub fn run_authorized_scan(
     primary_auth: &AuthContext,
     secondary_auth: Option<&AuthContext>,
     cancelled: Arc<AtomicBool>,
+    on_progress: impl FnMut(ScanProgress),
+) -> Result<ScanOutcome, ScanError> {
+    run_authorized_scan_with_seeds(
+        config,
+        primary_auth,
+        secondary_auth,
+        &[],
+        cancelled,
+        on_progress,
+    )
+}
+
+pub fn run_authorized_scan_with_seeds(
+    config: &ScanConfig,
+    primary_auth: &AuthContext,
+    secondary_auth: Option<&AuthContext>,
+    source_seeds: &[SourceEndpointSeed],
+    cancelled: Arc<AtomicBool>,
     mut on_progress: impl FnMut(ScanProgress),
 ) -> Result<ScanOutcome, ScanError> {
     let policy = ScopePolicy::new(config.scope.clone())?;
@@ -305,10 +333,11 @@ pub fn run_authorized_scan(
             findings_observed: findings,
         });
     };
-    let discovery = discover::crawl(
+    let discovery = discover::crawl_with_seeds(
         &policy,
         &requester,
         config,
+        source_seeds,
         Arc::clone(&cancelled),
         &mut progress_callback,
     )?;
