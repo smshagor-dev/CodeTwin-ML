@@ -313,80 +313,7 @@ fn probe_sqli(
         });
     }
 
-    let union_response = match send_payload(requester, &task.endpoint, url, &task.parameter, "' UNION SELECT NULL-- ") {
-        Ok(value) => Some(value),
-        Err(RequestError::BudgetExhausted) => None,
-        Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
-        Err(_) => None,
-    };
-    if let Some(union_response) = union_response {
-        if !contains_sql_error(&baseline.body) && contains_sql_error(&union_response.body) {
-            findings.push(FindingObservation {
-                category: "sql_injection".into(),
-                severity: "medium".into(),
-                confidence: "Potential".into(),
-                target: policy.target().to_string(),
-                endpoint: task.endpoint.url.clone(),
-                method: task.endpoint.method.clone(),
-                parameter: Some(task.parameter.clone()),
-                title: "UNION-shaped SQL probe changed parser behavior".into(),
-                description: "A minimal UNION-shaped probe caused new SQL/parser error evidence. This does not prove a usable UNION injection path.".into(),
-                reproduction_summary: "Repeat only the minimal NULL UNION probe and compare parser behavior. CodeTwin does not enumerate columns or retrieve records.".into(),
-                impact: "The input may be reaching SQL structure, which warrants code review and parameterization.".into(),
-                remediation: "Parameterize data values and eliminate request-controlled SQL structure.".into(),
-                references: vec!["CWE-89".into()],
-                evidence: vec![response_evidence("UNION indicator probe", &task.endpoint.method, url, &union_response)],
-            });
-        }
-    }
 
-    if config.scope.enable_timing_probes {
-        let timing_payload = "1' OR SLEEP(1)-- ";
-        let control = match send_payload(requester, &task.endpoint, url, &task.parameter, "1") {
-            Ok(value) => value,
-            Err(RequestError::BudgetExhausted) => return Ok(findings),
-            Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
-            Err(_) => return Ok(findings),
-        };
-        let first = match send_payload(requester, &task.endpoint, url, &task.parameter, timing_payload) {
-            Ok(value) => value,
-            Err(RequestError::BudgetExhausted) => return Ok(findings),
-            Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
-            Err(_) => return Ok(findings),
-        };
-        let second = match send_payload(requester, &task.endpoint, url, &task.parameter, timing_payload) {
-            Ok(value) => value,
-            Err(RequestError::BudgetExhausted) => return Ok(findings),
-            Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
-            Err(_) => return Ok(findings),
-        };
-        let control_ceiling = baseline.elapsed_ms.max(control.elapsed_ms);
-        let first_delayed = first.elapsed_ms >= control_ceiling.saturating_add(800) && first.elapsed_ms >= 900;
-        let second_delayed = second.elapsed_ms >= control_ceiling.saturating_add(800) && second.elapsed_ms >= 900;
-        if first_delayed && second_delayed {
-            findings.push(FindingObservation {
-                category: "sql_injection".into(),
-                severity: "medium".into(),
-                confidence: "Potential".into(),
-                target: policy.target().to_string(),
-                endpoint: task.endpoint.url.clone(),
-                method: task.endpoint.method.clone(),
-                parameter: Some(task.parameter.clone()),
-                title: "Repeatable controlled SQL timing anomaly observed".into(),
-                description: "Two explicitly enabled one-second timing probes were both materially slower than the baseline and a separate non-delay control request. Timing remains Potential because server and network variance can still create false positives.".into(),
-                reproduction_summary: "Compare a baseline, a non-delay control request, and at least two bounded one-second timing requests under stable conditions. Timing evidence alone is never marked Confirmed.".into(),
-                impact: "A repeatable database-controlled delay can indicate that input reaches executable SQL syntax.".into(),
-                remediation: "Use parameterized queries and validate the affected query construction.".into(),
-                references: vec!["CWE-89".into()],
-                evidence: vec![
-                    response_evidence("baseline timing", &task.endpoint.method, url, baseline),
-                    response_evidence("non-delay timing control", &task.endpoint.method, url, &control),
-                    response_evidence(&format!("timing probe {marker} first"), &task.endpoint.method, url, &first),
-                    response_evidence(&format!("timing probe {marker} repeat"), &task.endpoint.method, url, &second),
-                ],
-            });
-        }
-    }
     Ok(findings)
 }
 
@@ -703,6 +630,8 @@ fn send_payload(
     parameter: &str,
     payload: &str,
 ) -> Result<ObservedResponse, RequestError> {
+    validate_active_payload(payload)?;
+
     validate_active_payload(payload)
         .map_err(|reason| RequestError::PayloadRejected(reason.to_string()))?;
     let location = endpoint
@@ -759,6 +688,48 @@ fn send_payload(
         }
         (None, _) => requester.send(method, &url, None, &[]),
     }
+}
+
+fn validate_active_payload(payload: &str) -> Result<(), RequestError> {
+    if payload.len() > 512 {
+        return Err(RequestError::Http(
+            "active probe payload exceeds the bounded safety limit".to_string(),
+        ));
+    }
+    if payload.contains('\0') || payload.contains('\r') || payload.contains('\n') {
+        return Err(RequestError::Http(
+            "active probe payload contains control characters".to_string(),
+        ));
+    }
+    let normalized = payload.to_ascii_lowercase();
+    const FORBIDDEN: &[&str] = &[
+        "drop table",
+        "drop database",
+        "truncate table",
+        "alter table",
+        "delete from",
+        "insert into",
+        "update ",
+        "union select",
+        "sleep(",
+        "benchmark(",
+        "pg_sleep(",
+        "waitfor delay",
+        "load_file(",
+        "into outfile",
+        "xp_cmdshell",
+        "/etc/passwd",
+        "169.254.169.254",
+        "metadata.google.internal",
+        "file://",
+        "gopher://",
+    ];
+    if FORBIDDEN.iter().any(|needle| normalized.contains(needle)) {
+        return Err(RequestError::Http(
+            "active probe payload was rejected by the strict safety policy".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn replace_query_parameter(url: &mut Url, parameter: &str, payload: &str) {
