@@ -2,7 +2,7 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -25,6 +25,215 @@ const MAX_REQUEST_BYTES: usize = 131_072;
 const MAX_RESPONSE_BYTES: u64 = 1_048_576;
 const SIDECAR_TIMEOUT: Duration = Duration::from_secs(15);
 const GENERATION_SIDECAR_TIMEOUT: Duration = Duration::from_secs(105);
+#[cfg(windows)]
+const ML_SIDECAR_JOB_MEMORY_BYTES: u64 = 12 * 1024 * 1024 * 1024;
+#[cfg(windows)]
+const ML_SIDECAR_JOB_MAX_PROCESSES: u32 = 8;
+#[cfg(windows)]
+const ML_SIDECAR_TERMINATION_WAIT_MS: u32 = 5_000;
+
+struct MlSidecarContainment {
+    #[cfg(windows)]
+    job: windows_sys::Win32::Foundation::HANDLE,
+}
+
+impl MlSidecarContainment {
+    fn attach_and_resume(child: &mut Child) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            use std::{
+                mem::size_of,
+                os::windows::io::AsRawHandle,
+            };
+            use windows_sys::Win32::{
+                Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
+                System::{
+                    Diagnostics::ToolHelp::{
+                        CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32,
+                        TH32CS_SNAPTHREAD,
+                    },
+                    JobObjects::{
+                        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                        JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_JOB_MEMORY,
+                        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                    },
+                    Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
+                },
+            };
+
+            let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if job.is_null() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "cannot create ML sidecar Job Object: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                | JOB_OBJECT_LIMIT_JOB_MEMORY
+                | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+            limits.BasicLimitInformation.ActiveProcessLimit = ML_SIDECAR_JOB_MAX_PROCESSES;
+            limits.JobMemoryLimit =
+                usize::try_from(ML_SIDECAR_JOB_MEMORY_BYTES).unwrap_or(usize::MAX / 2);
+            let configured = unsafe {
+                SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if configured == 0 {
+                unsafe { CloseHandle(job) };
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "cannot configure ML sidecar Job Object: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+
+            let assigned =
+                unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as HANDLE) };
+            if assigned == 0 {
+                unsafe { CloseHandle(job) };
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "cannot assign ML sidecar to Job Object: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+
+            let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+            if snapshot == INVALID_HANDLE_VALUE {
+                unsafe { CloseHandle(job) };
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "cannot enumerate suspended ML sidecar thread: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+
+            let mut entry = THREADENTRY32 {
+                dwSize: size_of::<THREADENTRY32>() as u32,
+                ..Default::default()
+            };
+            let mut thread_ids = Vec::new();
+            if unsafe { Thread32First(snapshot, &mut entry) } != 0 {
+                loop {
+                    if entry.th32OwnerProcessID == child.id() {
+                        thread_ids.push(entry.th32ThreadID);
+                    }
+                    if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
+                        break;
+                    }
+                }
+            }
+            unsafe { CloseHandle(snapshot) };
+
+            if thread_ids.len() != 1 {
+                unsafe { CloseHandle(job) };
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "expected one initial suspended ML sidecar thread, found {}",
+                    thread_ids.len()
+                ));
+            }
+
+            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, thread_ids[0]) };
+            if thread.is_null() {
+                unsafe { CloseHandle(job) };
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "cannot open suspended ML sidecar thread: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            let previous_suspend_count = unsafe { ResumeThread(thread) };
+            unsafe { CloseHandle(thread) };
+            if previous_suspend_count != 1 {
+                unsafe { CloseHandle(job) };
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "unexpected ML sidecar initial suspend count {previous_suspend_count}"
+                ));
+            }
+
+            return Ok(Self { job });
+        }
+
+        #[cfg(not(windows))]
+        {
+            let _ = child;
+            Ok(Self {})
+        }
+    }
+
+    fn terminate_tree(&self, child: &mut Child) {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::{
+                Foundation::{HANDLE, WAIT_OBJECT_0},
+                System::{
+                    JobObjects::TerminateJobObject,
+                    Threading::WaitForSingleObject,
+                },
+            };
+            unsafe {
+                TerminateJobObject(self.job, 1);
+            }
+            let wait = unsafe {
+                WaitForSingleObject(
+                    child.as_raw_handle() as HANDLE,
+                    ML_SIDECAR_TERMINATION_WAIT_MS,
+                )
+            };
+            if wait == WAIT_OBJECT_0 {
+                let _ = child.wait();
+            } else {
+                let _ = child.kill();
+            }
+            return;
+        }
+
+        #[cfg(not(windows))]
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    fn terminate_descendants_after_exit(&self) {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+            unsafe {
+                TerminateJobObject(self.job, 1);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for MlSidecarContainment {
+    fn drop(&mut self) {
+        if !self.job.is_null() {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.job);
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -387,20 +596,21 @@ fn sidecar_request(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
+        use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
     }
 
     let mut child = command
         .spawn()
         .map_err(|error| format!("cannot start ML sidecar: {error}"))?;
+    let containment = MlSidecarContainment::attach_and_resume(&mut child)?;
     let mut stdin = child
         .stdin
         .take()
         .ok_or_else(|| "ML sidecar stdin was not available".to_string())?;
     if let Err(error) = stdin.write_all(&request).and_then(|_| stdin.flush()) {
         drop(stdin);
-        let _ = child.kill();
-        let _ = child.wait();
+        containment.terminate_tree(&mut child);
         return Err(format!("cannot write ML sidecar request: {error}"));
     }
     drop(stdin);
@@ -426,8 +636,7 @@ fn sidecar_request(
         {
             Some(status) => break status,
             None if started.elapsed() >= request_timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
+                containment.terminate_tree(&mut child);
                 let _ = stdout_reader.join();
                 return Err(format!(
                     "ML sidecar exceeded the {} second request timeout",
@@ -438,6 +647,7 @@ fn sidecar_request(
         }
     };
 
+    containment.terminate_descendants_after_exit();
     let bytes = stdout_reader
         .join()
         .map_err(|_| "ML sidecar stdout reader panicked".to_string())??;

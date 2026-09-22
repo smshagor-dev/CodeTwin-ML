@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -116,6 +117,10 @@ class GenerationTests(unittest.TestCase):
             self.assertEqual(result["model"]["backend"], "llama-cpp-gguf-v1")
             self.assertFalse(result["runtime"]["uses_shell"])
             self.assertFalse(result["runtime"]["network_access_requested"])
+            self.assertIn(
+                result["runtime"]["launch_integrity"],
+                {"windows_share_deny_write_delete", "prelaunch_sha256_plus_file_identity"},
+            )
             command = run.call_args.args[0]
             self.assertEqual(command[0], str(cli.resolve()))
             self.assertIn("-f", command)
@@ -154,6 +159,46 @@ class GenerationTests(unittest.TestCase):
                 side_effect=fake_run,
             ):
                 with self.assertRaisesRegex(InferenceRuntimeError, "generation output exceeds"):
+                    run_generation(
+                        "repair_generation",
+                        "review source",
+                        model_root=model_root,
+                    )
+
+    def test_rejects_runtime_replacement_during_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            model_root = self._install_gguf(root)
+            cli = root / ("llama-cli.exe" if os.name == "nt" else "llama-cli")
+            cli.write_bytes(b"trusted-cli")
+            if os.name != "nt":
+                cli.chmod(0o700)
+            cli_hash = hashlib.sha256(cli.read_bytes()).hexdigest()
+
+            def fake_run(command, **kwargs):
+                cli.write_bytes(b"tampered-cli")
+                output = kwargs["stdout"]
+                output.write(b"candidate patch\n")
+                output.flush()
+                return subprocess.CompletedProcess(args=command, returncode=0)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODETWIN_LLAMA_CLI": str(cli),
+                    "CODETWIN_LLAMA_CLI_SHA256": cli_hash,
+                },
+                clear=False,
+            ), patch(
+                "codetwin_ml.generation._windows_share_deny_write_delete",
+                side_effect=lambda _path: nullcontext(),
+            ), patch(
+                "codetwin_ml.generation.subprocess.run",
+                side_effect=fake_run,
+            ):
+                with self.assertRaisesRegex(
+                    InferenceRuntimeError, "trusted llama.cpp CLI changed during generation"
+                ):
                     run_generation(
                         "repair_generation",
                         "review source",
