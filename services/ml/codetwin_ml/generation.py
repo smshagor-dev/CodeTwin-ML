@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import os
 import pathlib
 import subprocess
 import tempfile
+from contextlib import ExitStack, contextmanager
 from typing import Any
 
 from codetwin_ml.inference import InferenceInputError, InferenceRuntimeError
@@ -36,6 +38,100 @@ def _sha256(path: pathlib.Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+def _file_identity(path: pathlib.Path) -> tuple[int, int, int, int]:
+    stat = path.stat()
+    return (
+        int(getattr(stat, "st_dev", 0)),
+        int(getattr(stat, "st_ino", 0)),
+        int(stat.st_size),
+        int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))),
+    )
+
+
+def _attest_launch_file(
+    path: pathlib.Path,
+    expected_hash: str,
+    *,
+    expected_size: int | None,
+    label: str,
+) -> tuple[int, int, int, int]:
+    if path.is_symlink() or not path.is_file():
+        raise InferenceRuntimeError(f"{label} must be a regular non-symlink file")
+    before = _file_identity(path)
+    if expected_size is not None and before[2] != expected_size:
+        raise InferenceRuntimeError(f"{label} size changed before launch")
+    actual_hash = _sha256(path)
+    after = _file_identity(path)
+    if before != after:
+        raise InferenceRuntimeError(f"{label} changed while its launch hash was being verified")
+    if actual_hash.lower() != expected_hash.lower():
+        raise InferenceRuntimeError(f"{label} hash changed before launch")
+    return after
+
+
+def _assert_identity_unchanged(
+    path: pathlib.Path,
+    expected: tuple[int, int, int, int],
+    *,
+    label: str,
+) -> None:
+    try:
+        current = _file_identity(path)
+    except OSError as error:
+        raise InferenceRuntimeError(f"{label} disappeared during generation: {error}") from error
+    if current != expected:
+        raise InferenceRuntimeError(f"{label} changed during generation")
+
+
+@contextmanager
+def _windows_share_deny_write_delete(path: pathlib.Path):
+    if os.name != "nt":
+        yield
+        return
+
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    generic_read = 0x80000000
+    file_share_read = 0x00000001
+    open_existing = 3
+    file_attribute_normal = 0x00000080
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    handle = create_file(
+        str(path),
+        generic_read,
+        file_share_read,
+        None,
+        open_existing,
+        file_attribute_normal,
+        None,
+    )
+    if handle == invalid_handle:
+        error = ctypes.get_last_error()
+        raise InferenceRuntimeError(
+            f"cannot lock trusted generation file against replacement: {path} (Win32 {error})"
+        )
+    try:
+        yield
+    finally:
+        close_handle(handle)
 
 
 def generation_runtime_status() -> dict[str, Any]:
@@ -175,38 +271,62 @@ def run_generation(
             "--no-display-prompt",
             "--simple-io",
         ]
-        with tempfile.TemporaryFile(prefix="codetwin-generation-output-") as output:
-            kwargs: dict[str, Any] = {
-                "stdout": output,
-                "stderr": subprocess.DEVNULL,
-                "cwd": str(model_dir),
-                "env": environment,
-                "timeout": GENERATION_TIMEOUT_SECONDS,
-                "check": False,
-            }
-            if os.name == "nt":
-                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        with ExitStack() as launch_locks:
+            launch_locks.enter_context(_windows_share_deny_write_delete(cli))
+            launch_locks.enter_context(_windows_share_deny_write_delete(model_path))
+            cli_identity = _attest_launch_file(
+                cli,
+                cli_hash,
+                expected_size=None,
+                label="trusted llama.cpp CLI",
+            )
+            model_identity = _attest_launch_file(
+                model_path,
+                str(model_artifact["sha256"]),
+                expected_size=int(model_artifact["size_bytes"]),
+                label="selected GGUF model",
+            )
 
-            try:
-                completed = subprocess.run(command, **kwargs)
-            except subprocess.TimeoutExpired as error:
-                raise InferenceRuntimeError(
-                    f"local generation exceeded the {GENERATION_TIMEOUT_SECONDS} second timeout"
-                ) from error
-            except OSError as error:
-                raise InferenceRuntimeError(f"cannot start trusted llama.cpp CLI: {error}") from error
+            with tempfile.TemporaryFile(prefix="codetwin-generation-output-") as output:
+                kwargs: dict[str, Any] = {
+                    "stdout": output,
+                    "stderr": subprocess.DEVNULL,
+                    "cwd": str(model_dir),
+                    "env": environment,
+                    "timeout": GENERATION_TIMEOUT_SECONDS,
+                    "check": False,
+                }
+                if os.name == "nt":
+                    kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-            if completed.returncode != 0:
-                raise InferenceRuntimeError(
-                    f"trusted llama.cpp CLI exited with status {completed.returncode}"
+                try:
+                    completed = subprocess.run(command, **kwargs)
+                except subprocess.TimeoutExpired as error:
+                    raise InferenceRuntimeError(
+                        f"local generation exceeded the {GENERATION_TIMEOUT_SECONDS} second timeout"
+                    ) from error
+                except OSError as error:
+                    raise InferenceRuntimeError(
+                        f"cannot start trusted llama.cpp CLI: {error}"
+                    ) from error
+
+                if completed.returncode != 0:
+                    raise InferenceRuntimeError(
+                        f"trusted llama.cpp CLI exited with status {completed.returncode}"
+                    )
+                _assert_identity_unchanged(
+                    cli, cli_identity, label="trusted llama.cpp CLI"
                 )
-            output_size = os.fstat(output.fileno()).st_size
-            if output_size > MAX_GENERATION_BYTES:
-                raise InferenceRuntimeError(
-                    f"generation output exceeds the {MAX_GENERATION_BYTES}-byte limit"
+                _assert_identity_unchanged(
+                    model_path, model_identity, label="selected GGUF model"
                 )
-            output.seek(0)
-            stdout = output.read(MAX_GENERATION_BYTES + 1)
+                output_size = os.fstat(output.fileno()).st_size
+                if output_size > MAX_GENERATION_BYTES:
+                    raise InferenceRuntimeError(
+                        f"generation output exceeds the {MAX_GENERATION_BYTES}-byte limit"
+                    )
+                output.seek(0)
+                stdout = output.read(MAX_GENERATION_BYTES + 1)
 
     if len(stdout) > MAX_GENERATION_BYTES:
         raise InferenceRuntimeError(
@@ -245,6 +365,11 @@ def run_generation(
             "executable_sha256": cli_hash,
             "network_access_requested": False,
             "uses_shell": False,
+            "launch_integrity": (
+                "windows_share_deny_write_delete"
+                if os.name == "nt"
+                else "prelaunch_sha256_plus_file_identity"
+            ),
         },
         "evaluation_provenance": metadata["evaluation"],
     }
