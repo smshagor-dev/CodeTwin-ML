@@ -8,6 +8,7 @@ const HTTP_METHODS: &[&str] = &["get", "post", "put", "patch", "delete", "option
 
 pub fn extract_routes(
     language: &str,
+    relative_path: &str,
     source: &str,
     root: Node<'_>,
 ) -> (
@@ -17,7 +18,8 @@ pub fn extract_routes(
 ) {
     let (mut routes, mut mounts, mut handler_inputs) = match language {
         "JavaScript" | "TypeScript" | "TypeScript TSX" => {
-            let (routes, mounts) = extract_express_routes(source, root);
+            let (mut routes, mounts) = extract_express_routes(source, root);
+            routes.extend(extract_nextjs_app_routes(relative_path, source, root));
             (routes, mounts, javascript_handler_inputs(source, root))
         }
         "Python" => {
@@ -84,6 +86,111 @@ pub fn extract_routes(
             && left.end_line == right.end_line
     });
     (routes, mounts, handler_inputs)
+}
+
+fn extract_nextjs_app_routes(
+    relative_path: &str,
+    source: &str,
+    root: Node<'_>,
+) -> Vec<IndexedRoute> {
+    let Some(path_template) = nextjs_app_route_path(relative_path) else {
+        return Vec::new();
+    };
+    let mut routes = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "export_statement" {
+            return;
+        }
+        let Some(value) = text(source, node) else {
+            return;
+        };
+        let Some(method) = nextjs_exported_http_method(value) else {
+            return;
+        };
+        let mut parameters = path_parameters(&path_template);
+        normalize_parameters(&mut parameters);
+        let start = node.start_position();
+        let end = node.end_position();
+        routes.push(IndexedRoute {
+            framework: "nextjs".to_string(),
+            router_name: "app_router".to_string(),
+            http_method: method.to_string(),
+            path_template: path_template.clone(),
+            handler_name: Some(method.to_string()),
+            parameters,
+            request_content_type: None,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    });
+    routes
+}
+
+fn nextjs_app_route_path(relative_path: &str) -> Option<String> {
+    let normalized = relative_path.replace('\\', "/");
+    let app_tail = normalized
+        .strip_prefix("app/")
+        .or_else(|| normalized.strip_prefix("src/app/"))?;
+    let mut parts: Vec<&str> = app_tail.split('/').collect();
+    let filename = parts.pop()?;
+    let route_file = matches!(
+        filename,
+        "route.ts" | "route.tsx" | "route.js" | "route.jsx" | "route.mjs" | "route.cjs"
+    );
+    if !route_file {
+        return None;
+    }
+
+    let mut segments = Vec::new();
+    for segment in parts {
+        if segment.starts_with('(') && segment.ends_with(')') {
+            continue;
+        }
+        if segment.starts_with('@') {
+            continue;
+        }
+        if segment.starts_with("[...") || segment.starts_with("[[...") {
+            return None;
+        }
+        if segment.starts_with('[') && segment.ends_with(']') && segment.len() > 2 {
+            let name = segment[1..segment.len() - 1].trim();
+            if !is_identifier(name) {
+                return None;
+            }
+            segments.push(format!("{{{name}}}"));
+            continue;
+        }
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return None;
+        }
+        segments.push(segment.to_string());
+    }
+
+    Some(if segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segments.join("/"))
+    })
+}
+
+fn nextjs_exported_http_method(value: &str) -> Option<&'static str> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    for method in ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"] {
+        let function = format!("export function {method}(");
+        let async_function = format!("export async function {method}(");
+        let const_handler = format!("export const {method} =");
+        let let_handler = format!("export let {method} =");
+        let var_handler = format!("export var {method} =");
+        if normalized.contains(&function)
+            || normalized.contains(&async_function)
+            || normalized.contains(&const_handler)
+            || normalized.contains(&let_handler)
+            || normalized.contains(&var_handler)
+        {
+            return Some(method);
+        }
+    }
+    None
 }
 
 fn extract_express_routes(
@@ -1114,6 +1221,59 @@ mod tests {
     use super::extract_routes;
 
     #[test]
+    fn extracts_nextjs_app_router_methods_and_dynamic_path() {
+        let source = r#"
+export async function GET(request: Request) {
+  return Response.json({ ok: true });
+}
+
+export const POST = async (request: Request) => {
+  return Response.json({ created: true });
+};
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "TypeScript",
+            "src/app/(dashboard)/users/[id]/route.ts",
+            source,
+            tree.root_node(),
+        );
+        let get = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "GET")
+            .expect("nextjs GET");
+        assert_eq!(get.path_template, "/users/{id}");
+        assert!(get
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "id" && parameter.location == "path"));
+        assert!(routes
+            .iter()
+            .any(|route| route.framework == "nextjs" && route.http_method == "POST"));
+    }
+
+    #[test]
+    fn skips_nextjs_catch_all_route_materialization() {
+        let source = "export function GET() { return new Response('ok'); }";
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "TypeScript",
+            "app/docs/[...slug]/route.ts",
+            source,
+            tree.root_node(),
+        );
+        assert!(!routes.iter().any(|route| route.framework == "nextjs"));
+    }
+
+    #[test]
     fn extracts_express_route_inputs_and_mount_prefix() {
         let source = r#"
 const express = require("express");
@@ -1132,7 +1292,7 @@ auth.post("/login/:tenant", login);
             .set_language(&tree_sitter_javascript::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, handler_inputs) = extract_routes("JavaScript", source, tree.root_node());
+        let (routes, _mounts, handler_inputs) = extract_routes("JavaScript", "src/server.js", source, tree.root_node());
         let route = routes.iter().find(|value| value.path_template == "/api/login/:tenant").expect("route");
         assert_eq!(route.http_method, "POST");
         assert!(route.parameters.iter().any(|value| value.name == "tenant" && value.location == "path"));
@@ -1184,7 +1344,7 @@ app.register_blueprint(api, url_prefix = "/api")
             .set_language(&tree_sitter_python::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, mounts, _handler_inputs) = extract_routes("Python", source, tree.root_node());
+        let (routes, mounts, _handler_inputs) = extract_routes("Python", "app.py", source, tree.root_node());
         assert!(routes.iter().any(|route| {
             route.framework == "flask"
                 && route.http_method == "GET"
@@ -1228,7 +1388,7 @@ Route::post('/login', [AuthController::class, 'login']);
             .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, _handler_inputs) = extract_routes("PHP", source, tree.root_node());
+        let (routes, _mounts, _handler_inputs) = extract_routes("PHP", "routes/web.php", source, tree.root_node());
         let user = routes
             .iter()
             .find(|route| {
