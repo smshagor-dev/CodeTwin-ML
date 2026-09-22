@@ -26,10 +26,10 @@ pub fn extract_routes(
         }
         "Python" => {
             let (mut routes, mut mounts) = extract_fastapi_routes(source, root);
-            let (flask_routes, flask_mounts) = extract_flask_routes(source, root);
+            let (flask_routes, flask_mounts, flask_inputs) = extract_flask_routes(source, root);
             routes.extend(flask_routes);
             mounts.extend(flask_mounts);
-            (routes, mounts, Vec::new())
+            (routes, mounts, flask_inputs)
         }
         "PHP" => {
             let (routes, mounts) = extract_laravel_routes(source, root);
@@ -851,12 +851,17 @@ fn extract_fastapi_routes(
 fn extract_flask_routes(
     source: &str,
     root: Node<'_>,
-) -> (Vec<IndexedRoute>, Vec<IndexedRouteMount>) {
+) -> (
+    Vec<IndexedRoute>,
+    Vec<IndexedRouteMount>,
+    Vec<IndexedHandlerInput>,
+) {
     let (prefixes, mounts) = flask_router_prefixes(source, root);
     if prefixes.is_empty() {
-        return (Vec::new(), mounts);
+        return (Vec::new(), mounts, Vec::new());
     }
     let mut routes = Vec::new();
+    let mut handler_inputs = Vec::new();
 
     walk(root, &mut |node| {
         if node.kind() != "decorated_definition" {
@@ -872,6 +877,9 @@ fn extract_flask_routes(
             .child_by_field_name("name")
             .and_then(|value| text(source, value))
             .map(ToString::to_string);
+        let mut handler_parameters = flask_handler_parameters(source, function);
+        normalize_parameters(&mut handler_parameters);
+        let mut matched_route = false;
 
         for decorator in named_children(node)
             .into_iter()
@@ -880,18 +888,25 @@ fn extract_flask_routes(
             let Some(raw) = text(source, decorator) else {
                 continue;
             };
-            let Some((router, methods, path)) =
-                parse_flask_decorator(raw, &prefixes)
-            else {
+            let Some((router, methods, path)) = parse_flask_decorator(raw, &prefixes) else {
                 continue;
             };
+            matched_route = true;
             let router_prefix = prefixes.get(&router).cloned().unwrap_or_default();
             let full_path = combine_paths(
                 (!router_prefix.is_empty()).then_some(router_prefix.as_str()),
                 &path,
             );
             let mut parameters = path_parameters(&full_path);
+            parameters.extend(handler_parameters.iter().cloned());
             normalize_parameters(&mut parameters);
+            let request_content_type = if parameters.iter().any(|value| value.location == "json") {
+                Some("application/json".to_string())
+            } else if parameters.iter().any(|value| value.location == "form") {
+                Some("application/x-www-form-urlencoded".to_string())
+            } else {
+                None
+            };
             let start = decorator.start_position();
             let end = function.end_position();
             for method in methods {
@@ -903,7 +918,20 @@ fn extract_flask_routes(
                     path_template: full_path.clone(),
                     handler_name: handler_name.clone(),
                     parameters: parameters.clone(),
-                    request_content_type: None,
+                    request_content_type: request_content_type.clone(),
+                    start_line: start.row + 1,
+                    end_line: end.row + 1,
+                });
+            }
+        }
+
+        if matched_route && !handler_parameters.is_empty() {
+            if let Some(handler_name) = handler_name {
+                let start = function.start_position();
+                let end = function.end_position();
+                handler_inputs.push(IndexedHandlerInput {
+                    handler_name,
+                    parameters: handler_parameters,
                     start_line: start.row + 1,
                     end_line: end.row + 1,
                 });
@@ -911,9 +939,127 @@ fn extract_flask_routes(
         }
     });
 
-    (routes, mounts)
+    (routes, mounts, handler_inputs)
 }
 
+fn flask_handler_parameters(source: &str, function: Node<'_>) -> Vec<IndexedRouteParameter> {
+    let Some(function_text) = text(source, function) else {
+        return Vec::new();
+    };
+    let mut parameters = Vec::new();
+
+    for (collection, location) in [
+        ("request.args", "query"),
+        ("request.form", "form"),
+        ("request.headers", "header"),
+        ("request.cookies", "cookie"),
+        ("request.json", "json"),
+    ] {
+        for method in ["get", "getlist"] {
+            let marker = format!("{collection}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, location));
+                }
+            }
+        }
+        let marker = format!("{collection}[");
+        for name in marker_quoted_subscripts(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, location));
+            }
+        }
+    }
+
+    for method in ["get", "getlist"] {
+        let marker = format!("request.get_json().{method}(");
+        for name in marker_quoted_arguments(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, "json"));
+            }
+        }
+    }
+    for name in marker_quoted_subscripts(function_text, "request.get_json()[") {
+        if !name.is_empty() && name.len() <= 256 {
+            parameters.push(route_parameter(&name, "json"));
+        }
+    }
+
+    let mut aliases = BTreeMap::<String, String>::new();
+    walk(function, &mut |node| {
+        if node.kind() != "assignment" {
+            return;
+        }
+        let Some(left) = node.child_by_field_name("left") else {
+            return;
+        };
+        let Some(right) = node.child_by_field_name("right") else {
+            return;
+        };
+        let Some(name) = text(source, left).map(str::trim) else {
+            return;
+        };
+        if !is_identifier(name) {
+            return;
+        }
+        let Some(value) = text(source, right).map(str::trim) else {
+            return;
+        };
+        let location = match value {
+            "request.args" => Some("query"),
+            "request.form" => Some("form"),
+            "request.headers" => Some("header"),
+            "request.cookies" => Some("cookie"),
+            "request.json" => Some("json"),
+            _ if value.starts_with("request.get_json(") => Some("json"),
+            _ => None,
+        };
+        if let Some(location) = location {
+            aliases.insert(name.to_string(), location.to_string());
+        }
+    });
+
+    for (alias, location) in aliases {
+        for method in ["get", "getlist"] {
+            let marker = format!("{alias}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, &location));
+                }
+            }
+        }
+        let marker = format!("{alias}[");
+        for name in marker_quoted_subscripts(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, &location));
+            }
+        }
+    }
+
+    parameters
+}
+
+fn marker_quoted_subscripts(value: &str, marker: &str) -> Vec<String> {
+    let mut output = Vec::new();
+    let mut offset = 0usize;
+    while let Some(relative) = value[offset..].find(marker) {
+        let start = offset + relative + marker.len();
+        let tail = value[start..].trim_start();
+        let Some(quote) = tail.chars().next().filter(|value| matches!(value, '"' | '\'')) else {
+            offset = start;
+            continue;
+        };
+        let quoted = &tail[quote.len_utf8()..];
+        if let Some(end) = quoted.find(quote) {
+            let remainder = quoted[end + quote.len_utf8()..].trim_start();
+            if remainder.starts_with(']') {
+                output.push(quoted[..end].to_string());
+            }
+        }
+        offset = start;
+    }
+    output
+}
 fn flask_router_prefixes(
     source: &str,
     root: Node<'_>,
@@ -3051,6 +3197,99 @@ app.use("/api/auth", authRouter);
         assert_eq!(mount.framework, "express");
     }
 
+    #[test]
+    fn maps_flask_request_fields_to_source_routes() {
+        let source = r#"
+from flask import Flask, request
+
+app = Flask(__name__)
+
+@app.get("/users/<int:user_id>")
+def show_user(user_id):
+    q = request.args.get("q")
+    args = request.args
+    page = args.get("page")
+    tenant = request.headers.get("X-Tenant")
+    headers = request.headers
+    trace = headers["X-Trace"]
+    session = request.cookies.get("session")
+    dynamic = "secret"
+    request.args.get(dynamic)
+    return {"id": user_id, "q": q, "page": page, "tenant": tenant, "trace": trace, "session": session}
+
+@app.post("/users")
+def create_user():
+    payload = request.get_json(silent=True)
+    email = payload.get("email")
+    timezone = payload["timezone"]
+    display_name = request.json.get("displayName")
+    return {"email": email, "timezone": timezone, "displayName": display_name}
+
+@app.patch("/users/<int:user_id>")
+def update_user(user_id):
+    form = request.form
+    email = form.get("email")
+    csrf = request.form["csrf"]
+    return {"id": user_id, "email": email, "csrf": csrf}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, handler_inputs) =
+            extract_routes("Python", "app.py", source, tree.root_node());
+
+        let get = routes
+            .iter()
+            .find(|route| route.framework == "flask" && route.http_method == "GET")
+            .expect("Flask GET route");
+        for (name, location) in [
+            ("user_id", "path"),
+            ("q", "query"),
+            ("page", "query"),
+            ("X-Tenant", "header"),
+            ("X-Trace", "header"),
+            ("session", "cookie"),
+        ] {
+            assert!(get.parameters.iter().any(|parameter| {
+                parameter.name == name && parameter.location == location
+            }));
+        }
+        assert!(!get.parameters.iter().any(|parameter| parameter.name == "secret"));
+
+        let post = routes
+            .iter()
+            .find(|route| route.framework == "flask" && route.http_method == "POST")
+            .expect("Flask POST route");
+        for field in ["email", "timezone", "displayName"] {
+            assert!(post.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert_eq!(post.request_content_type.as_deref(), Some("application/json"));
+
+        let patch = routes
+            .iter()
+            .find(|route| route.framework == "flask" && route.http_method == "PATCH")
+            .expect("Flask PATCH route");
+        for field in ["email", "csrf"] {
+            assert!(patch.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "form"
+            }));
+        }
+        assert_eq!(
+            patch.request_content_type.as_deref(),
+            Some("application/x-www-form-urlencoded")
+        );
+
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "create_user"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "email" && parameter.location == "json"
+                })
+        }));
+    }
     #[test]
     fn extracts_flask_routes_blueprints_and_converters() {
         let source = r#"
