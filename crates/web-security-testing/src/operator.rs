@@ -724,6 +724,7 @@ fn xss_candidate(endpoint: &EndpointObservation, location: &str) -> bool {
         return false;
     }
     endpoint.source == "form"
+        || (location == "form" && endpoint.source.starts_with("source_route:"))
         || endpoint
             .content_type
             .as_deref()
@@ -863,6 +864,30 @@ mod tests {
         assert!(!constrained.checks.access_control);
         assert!(!constrained.scope.enable_timing_probes);
         assert!(!constrained.scope.allow_non_idempotent_methods);
+    }
+
+    #[test]
+    fn source_backed_form_input_can_enter_xss_plan_when_state_changes_are_approved() {
+        let mut source = config();
+        source.scope.allow_non_idempotent_methods = true;
+        let endpoints = vec![endpoint(
+            "POST",
+            "source_route:express:src/login.ts:10",
+            "http://localhost:3000/login",
+            "username",
+            "form",
+        )];
+        let plan = build_test_plan(
+            &source,
+            &endpoints,
+            false,
+            SecurityEnvironment::Staging,
+        );
+        assert!(plan.operations.iter().any(|item| {
+            item.category == "xss"
+                && item.parameter_name.as_deref() == Some("username")
+                && item.selected
+        }));
     }
 
     #[test]
