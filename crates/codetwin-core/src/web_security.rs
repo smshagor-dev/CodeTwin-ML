@@ -1377,6 +1377,53 @@ mod tests {
     }
 
     #[test]
+    fn source_routes_persist_fields_and_drive_exact_live_correlation() {
+        let project = tempdir().expect("project");
+        fs::create_dir_all(project.path().join("src")).expect("src");
+        fs::write(
+            project.path().join("src/server.ts"),
+            r#"
+const app = express();
+app.post("/api/login/:tenant", (req, res) => {
+    const email = req.body.email;
+    const password = req.body.password;
+    return res.json({ tenant: req.params.tenant, email, password });
+});
+"#,
+        )
+        .expect("source");
+
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(project.path())
+            .expect("index project");
+        let store = AuthorizedWebSecurityStore::new(&database);
+        let routes = store
+            .list_source_routes(&summary.project_id, 20)
+            .expect("source routes");
+        let route = routes
+            .iter()
+            .find(|route| route.path_template == "/api/login/:tenant")
+            .expect("login route");
+        assert_eq!(route.http_method, "POST");
+        assert!(route.parameter_locations.get("tenant").is_some_and(|value| value == "path"));
+        assert!(route.parameter_locations.get("email").is_some_and(|value| value == "json"));
+        assert!(route.parameter_locations.get("password").is_some_and(|value| value == "json"));
+
+        let correlated = store
+            .correlate_source_for_request(
+                Some(&summary.project_id),
+                "http://localhost:8080/api/login/acme",
+                Some("POST"),
+                Some("email"),
+            )
+            .expect("correlate")
+            .expect("correlation");
+        assert!(correlated.relative_path.ends_with("server.ts"));
+        assert!(correlated.confidence >= 0.98);
+    }
+
+    #[test]
     fn authorization_is_required_by_persistence_boundary() {
         let database = Database::open_in_memory().expect("database");
         let store = AuthorizedWebSecurityStore::new(&database);
