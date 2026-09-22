@@ -123,12 +123,12 @@ mod tests {
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites','web_security_scans','web_security_endpoints','web_security_findings','web_security_evidence','guided_security_sessions','guided_security_plan_items','guided_security_activity','guided_security_source_candidates','guided_security_finding_lifecycle','guided_security_retests','guided_security_comparisons','guided_security_fix_links','security_fix_attempts','security_fix_validation_results','security_fix_events',
                               'security_remediation_campaigns','security_remediation_campaign_findings',
                               'security_remediation_campaign_relationships','security_remediation_campaign_events',
-                              'source_routes')",
+                              'source_routes','web_source_endpoint_links')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 51);
+        assert_eq!(count, 52);
     }
 
     #[test]
@@ -159,7 +159,9 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE source_routes;
+                    "DROP TABLE web_source_endpoint_links;
+                     DROP TABLE web_source_endpoint_links;
+                     DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
                      DROP TABLE security_remediation_campaign_findings;
@@ -224,7 +226,9 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE source_routes;
+                    "DROP TABLE web_source_endpoint_links;
+                     DROP TABLE web_source_endpoint_links;
+                     DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
                      DROP TABLE security_remediation_campaign_findings;
@@ -272,7 +276,9 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE source_routes;
+                    "DROP TABLE web_source_endpoint_links;
+                     DROP TABLE web_source_endpoint_links;
+                     DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
                      DROP TABLE security_remediation_campaign_findings;
@@ -358,7 +364,9 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE source_routes;
+                    "DROP TABLE web_source_endpoint_links;
+                     DROP TABLE web_source_endpoint_links;
+                     DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
                      DROP TABLE security_remediation_campaign_findings;
@@ -489,6 +497,7 @@ mod tests {
                         'attempt-v20','finding-v20','session-v20','project-v20',1,
                         'INSUFFICIENT_EVIDENCE','sql_injection','prepared','[]','{}','{}'
                      );
+                     DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
