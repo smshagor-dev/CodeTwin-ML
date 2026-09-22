@@ -38,8 +38,8 @@ pub fn extract_routes(
             (routes, mounts, handler_inputs)
         }
         "Rust" => {
-            let routes = extract_rust_routes(source, root);
-            (routes, Vec::new(), Vec::new())
+            let (routes, handler_inputs) = extract_rust_routes(source, root);
+            (routes, Vec::new(), handler_inputs)
         }
         _ => (Vec::new(), Vec::new(), Vec::new()),
     };
