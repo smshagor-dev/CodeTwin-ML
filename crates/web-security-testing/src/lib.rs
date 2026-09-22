@@ -302,7 +302,7 @@ fn normalize_route_template(template: &str) -> Option<String> {
         }
         if segment.starts_with('{') && segment.ends_with('}') && segment.len() > 2 {
             let name = segment[1..segment.len() - 1]
-                .split(':')
+                .split([':', '?'])
                 .next()
                 .unwrap_or("")
                 .trim();
@@ -350,7 +350,7 @@ fn route_parameter_samples(template: &str) -> BTreeMap<String, String> {
         }
         if segment.starts_with('{') && segment.ends_with('}') && segment.len() > 2 {
             let inner = &segment[1..segment.len() - 1];
-            let name = inner.split(':').next().unwrap_or("").trim();
+            let name = inner.split([':', '?']).next().unwrap_or("").trim();
             if !name.is_empty() {
                 samples.insert(name.to_string(), route_sample_value(segment));
             }
@@ -793,6 +793,25 @@ mod source_seed_tests {
         assert_eq!(
             uuid.discovery_url.as_deref(),
             Some("https://example.test/api/items/00000000-0000-4000-8000-000000000001")
+        );
+    }
+
+    #[test]
+    fn materializes_optional_laravel_parameters() {
+        let locations = BTreeMap::from([("id".to_string(), "path".to_string())]);
+        let seed = source_endpoint_seed(
+            "https://example.test",
+            "GET",
+            "/users/{id?}",
+            &["id".to_string()],
+            &locations,
+            None,
+            "source_route:laravel:routes/web.php:1",
+        )
+        .expect("laravel optional seed");
+        assert_eq!(
+            seed.discovery_url.as_deref(),
+            Some("https://example.test/users/codetwin-test")
         );
     }
 
