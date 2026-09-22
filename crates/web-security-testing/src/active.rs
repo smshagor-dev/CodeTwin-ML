@@ -630,8 +630,6 @@ fn send_payload(
     parameter: &str,
     payload: &str,
 ) -> Result<ObservedResponse, RequestError> {
-    validate_active_payload(payload)?;
-
     validate_active_payload(payload)
         .map_err(|reason| RequestError::PayloadRejected(reason.to_string()))?;
     let location = endpoint
@@ -688,48 +686,6 @@ fn send_payload(
         }
         (None, _) => requester.send(method, &url, None, &[]),
     }
-}
-
-fn validate_active_payload(payload: &str) -> Result<(), RequestError> {
-    if payload.len() > 512 {
-        return Err(RequestError::Http(
-            "active probe payload exceeds the bounded safety limit".to_string(),
-        ));
-    }
-    if payload.contains('\0') || payload.contains('\r') || payload.contains('\n') {
-        return Err(RequestError::Http(
-            "active probe payload contains control characters".to_string(),
-        ));
-    }
-    let normalized = payload.to_ascii_lowercase();
-    const FORBIDDEN: &[&str] = &[
-        "drop table",
-        "drop database",
-        "truncate table",
-        "alter table",
-        "delete from",
-        "insert into",
-        "update ",
-        "union select",
-        "sleep(",
-        "benchmark(",
-        "pg_sleep(",
-        "waitfor delay",
-        "load_file(",
-        "into outfile",
-        "xp_cmdshell",
-        "/etc/passwd",
-        "169.254.169.254",
-        "metadata.google.internal",
-        "file://",
-        "gopher://",
-    ];
-    if FORBIDDEN.iter().any(|needle| normalized.contains(needle)) {
-        return Err(RequestError::Http(
-            "active probe payload was rejected by the strict safety policy".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 fn replace_query_parameter(url: &mut Url, parameter: &str, payload: &str) {
