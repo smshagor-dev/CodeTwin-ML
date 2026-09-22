@@ -59,10 +59,10 @@ use windows_sys::Win32::{
 };
 
 use crate::workspace::identity::create_windows_write_restricted_token;
-use crate::workspace::{probe_restricted_identity, DetachedExecutionWorkspace};
+use crate::workspace::DetachedExecutionWorkspace;
 use crate::{
-    bound_output, cleanup_detached_workspace, current_backend_info, prepare_detached_workspace,
-    verify_execution_inputs, BackendExecutionError, BoundedOutput, ExecutionInputSnapshot,
+    bound_output, cleanup_detached_workspace, current_backend_info, BackendExecutionError,
+    BoundedOutput, ExecutionInputSnapshot,
     ExecutionPlanStatus, ExecutionRunStatus, RawExecutionOutcome, TestExecutionPlan,
 };
 
@@ -207,145 +207,19 @@ pub(crate) fn execute_lpac_bundle_plan(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn execute_approved_plan(
     plan: &TestExecutionPlan,
     project_root: &Path,
     snapshots: &[ExecutionInputSnapshot],
     cancelled: &AtomicBool,
 ) -> Result<RawExecutionOutcome, BackendExecutionError> {
-    if plan.status != ExecutionPlanStatus::Approved {
-        return Err(BackendExecutionError::PlanNotApproved);
-    }
-    if !plan.blocking_reasons.is_empty() {
-        return Err(BackendExecutionError::PlanBlocked);
-    }
-    if plan.command.uses_shell {
-        return Err(BackendExecutionError::ShellForbidden);
-    }
-
-    let backend = current_backend_info();
-    if !backend.execution_available {
-        return Err(BackendExecutionError::BackendUnavailable);
-    }
-    if plan.capabilities != backend.capabilities {
-        return Err(BackendExecutionError::CapabilityMismatch);
-    }
-
-    let root = canonical_project_root(project_root)?;
-    verify_toolchain(plan, &root)?;
-    verify_execution_inputs(&root, &plan.request.targets, snapshots)?;
-
-    let workspace_parent = std::env::temp_dir();
-    let workspace = prepare_detached_workspace(&root, &workspace_parent, snapshots)
-        .map_err(|error| BackendExecutionError::JobSetup(format!("detached workspace: {error}")))?;
-    let mut workspace_guard = WorkspaceGuard::new(workspace);
-    let workspace = workspace_guard.workspace();
-
-    let identity = probe_restricted_identity(workspace)
-        .map_err(|error| BackendExecutionError::JobSetup(format!("restricted identity: {error}")))?;
-    if !identity.restricted_primary_token_created
-        || !identity.privileges_disabled
-        || !identity.write_restricted
-        || !identity.low_integrity
-        || !identity.workspace_acl_applied
-        || !identity.workspace_low_integrity_label
-        || !identity.source_root_write_denied
-        || !identity.staged_inputs_write_denied
-        || !identity.artifacts_write_allowed
-        || !identity.temp_write_allowed
-        || identity.filesystem_isolation_promoted
-        || identity.network_isolation_enforced
-    {
-        return Err(BackendExecutionError::JobSetup(
-            "restricted identity readiness evidence did not match the required conservative contract"
-                .to_string(),
-        ));
-    }
-
-    let token = create_windows_write_restricted_token()
-        .map_err(|error| BackendExecutionError::JobSetup(format!("restricted token: {error}")))?;
-    let job = configure_job(plan)?;
-    let mut child = spawn_restricted_suspended(plan, &root, workspace, token.raw())?;
-
-    let assigned = unsafe { AssignProcessToJobObject(job.raw(), child.process.raw()) };
-    if assigned == 0 {
-        let error = std::io::Error::last_os_error().to_string();
-        child.terminate_before_job_assignment();
-        return Err(BackendExecutionError::JobAssignment(error));
-    }
-
-    let previous_suspend_count = unsafe { ResumeThread(child.thread.raw()) };
-    if previous_suspend_count == u32::MAX {
-        let error = std::io::Error::last_os_error().to_string();
-        let _ = terminate_job_and_wait(job.raw(), child.process.raw());
-        return Err(BackendExecutionError::ProcessResume(error));
-    }
-    if previous_suspend_count != 1 {
-        let _ = terminate_job_and_wait(job.raw(), child.process.raw());
-        return Err(BackendExecutionError::ProcessResume(format!(
-            "unexpected initial thread suspend count {previous_suspend_count}"
-        )));
-    }
-    child.thread.close_now();
-
-    let stdout_budget = plan.policy.max_output_bytes / 2;
-    let stderr_budget = plan.policy.max_output_bytes.saturating_sub(stdout_budget);
-    let stdout_reader = spawn_bounded_reader(child.stdout.take_file(), stdout_budget);
-    let stderr_reader = spawn_bounded_reader(child.stderr.take_file(), stderr_budget);
-
-    let started = Instant::now();
-    let timeout = Duration::from_millis(plan.policy.timeout_ms);
-    let mut status = ExecutionRunStatus::Completed;
-    let exit_code;
-
-    loop {
-        if cancelled.load(Ordering::SeqCst) {
-            terminate_job_and_wait(job.raw(), child.process.raw())?;
-            status = ExecutionRunStatus::Cancelled;
-            exit_code = process_exit_code(child.process.raw())?;
-            break;
-        }
-        if started.elapsed() >= timeout {
-            terminate_job_and_wait(job.raw(), child.process.raw())?;
-            status = ExecutionRunStatus::TimedOut;
-            exit_code = process_exit_code(child.process.raw())?;
-            break;
-        }
-
-        match unsafe { WaitForSingleObject(child.process.raw(), 0) } {
-            WAIT_OBJECT_0 => {
-                exit_code = process_exit_code(child.process.raw())?;
-                break;
-            }
-            WAIT_TIMEOUT => thread::sleep(Duration::from_millis(20)),
-            WAIT_FAILED => return Err(BackendExecutionError::Io(std::io::Error::last_os_error())),
-            other => {
-                return Err(BackendExecutionError::Io(std::io::Error::other(format!(
-                    "unexpected WaitForSingleObject result {other}"
-                ))))
-            }
-        }
-    }
-
-    // Closing a KILL_ON_JOB_CLOSE job after the root runner exits terminates any surviving
-    // descendants before pipe draining and workspace cleanup. This prevents detached children
-    // from extending the execution lifetime or retaining writable workspace handles.
-    drop(job);
-
-    let stdout = receive_bounded_output(stdout_reader, OUTPUT_DRAIN_TIMEOUT)?;
-    let stderr = receive_bounded_output(stderr_reader, OUTPUT_DRAIN_TIMEOUT)?;
-    workspace_guard.cleanup()?;
-
-    Ok(RawExecutionOutcome {
-        status,
-        exit_code: Some(exit_code),
-        stdout,
-        stderr,
-        duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        backend,
-        parser_completed: false,
-        tests_passed: None,
-    })
+    // Legacy restricted-token execution is intentionally unreachable. Production
+    // Windows QA execution must flow through the detached dependency-complete
+    // mirror and execute_lpac_bundle_plan so filesystem and network isolation are
+    // both enforced before the runner is resumed.
+    let _ = (plan, project_root, snapshots, cancelled);
+    Err(BackendExecutionError::BackendUnavailable)
 }
 
 fn canonical_project_root(root: &Path) -> Result<PathBuf, BackendExecutionError> {
@@ -360,6 +234,7 @@ fn canonical_project_root(root: &Path) -> Result<PathBuf, BackendExecutionError>
     Ok(canonical)
 }
 
+#[allow(dead_code)]
 fn verify_toolchain(plan: &TestExecutionPlan, root: &Path) -> Result<(), BackendExecutionError> {
     if plan.command.program != plan.toolchain.executable_path {
         return Err(BackendExecutionError::InvalidToolchain(
@@ -420,10 +295,12 @@ fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
     Ok(output)
 }
 
+#[allow(dead_code)]
 struct WorkspaceGuard {
     workspace: Option<DetachedExecutionWorkspace>,
 }
 
+#[allow(dead_code)]
 impl WorkspaceGuard {
     fn new(workspace: DetachedExecutionWorkspace) -> Self {
         Self {
@@ -544,6 +421,7 @@ impl RestrictedChild {
     }
 }
 
+#[allow(dead_code)]
 fn spawn_restricted_suspended(
     plan: &TestExecutionPlan,
     root: &Path,

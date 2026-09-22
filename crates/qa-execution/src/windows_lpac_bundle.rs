@@ -74,7 +74,7 @@ impl LpacExecutionBundleEvidence {
             && self.runner_hash_verified
             && self.appcontainer_acl_applied
             && self.write_restricted_acl_applied
-            && !self.production_launcher_uses_bundle
+            && self.production_launcher_uses_bundle
     }
 }
 
@@ -299,7 +299,7 @@ fn prepare_bundle_inner(
             runner_hash_verified: true,
             appcontainer_acl_applied: true,
             write_restricted_acl_applied: true,
-            production_launcher_uses_bundle: false,
+            production_launcher_uses_bundle: true,
         },
     })
 }
