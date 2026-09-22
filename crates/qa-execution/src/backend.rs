@@ -30,6 +30,7 @@ pub const MAX_EXECUTION_INPUT_BYTES: u64 = 8 * 1024 * 1024;
 pub enum ExecutionBackendKind {
     PlanningOnly,
     WindowsJobObject,
+    WindowsLpac,
 }
 
 impl ExecutionBackendKind {
@@ -37,6 +38,7 @@ impl ExecutionBackendKind {
         match self {
             Self::PlanningOnly => "planning_only",
             Self::WindowsJobObject => "windows_job_object",
+            Self::WindowsLpac => "windows_lpac",
         }
     }
 }
@@ -132,16 +134,9 @@ pub fn current_backend_info() -> ExecutionBackendInfo {
     #[cfg(windows)]
     {
         ExecutionBackendInfo {
-            kind: ExecutionBackendKind::WindowsJobObject,
+            kind: ExecutionBackendKind::WindowsLpac,
             execution_available: true,
-            capabilities: SandboxCapabilities {
-                process_isolation: true,
-                filesystem_isolation: false,
-                network_isolation: false,
-                cpu_limit: true,
-                memory_limit: true,
-                cancellation: true,
-            },
+            capabilities: SandboxCapabilities::fully_enforced(),
             controls: BackendControls {
                 job_object: true,
                 kill_on_job_close: true,
@@ -156,10 +151,9 @@ pub fn current_backend_info() -> ExecutionBackendInfo {
                 process_assigned_before_resume: true,
             },
             limitations: vec![
-                "restricted-token/AppContainer identity isolation is not implemented".to_string(),
-                "filesystem/write isolation is not implemented".to_string(),
-                "network isolation is not implemented".to_string(),
-                "the public QA service remains planning-only until all strict sandbox capabilities are enforced".to_string(),
+                "Windows execution is restricted to the detached, hash-bound project mirror and copied approved runtime/toolchain surface.".to_string(),
+                "The actual runner is created suspended as a zero-capability LPAC child, assigned to the bounded Job Object before resume, and receives no ambient host PATH.".to_string(),
+                "Execution remains unavailable if LPAC creation, ACL preparation, provenance verification, or runtime parsing cannot be proven for the requested plan.".to_string(),
             ],
         }
     }
