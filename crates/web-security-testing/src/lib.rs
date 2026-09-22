@@ -312,6 +312,8 @@ fn materialize_route_path(template: &str) -> Option<String> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EndpointObservation {
     pub url: String,
+    #[serde(default)]
+    pub route_template: Option<String>,
     pub method: String,
     pub depth: usize,
     pub source: String,
