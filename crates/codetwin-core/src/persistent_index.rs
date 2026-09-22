@@ -236,6 +236,13 @@ fn persist_index_result(
             &indexed.symbols,
             &mut delta,
         )?;
+        persist_routes(
+            &transaction,
+            &project.id,
+            &stable_file_id,
+            run_id,
+            indexed,
+        )?;
         persist_imports(
             &transaction,
             &project.id,
@@ -556,6 +563,104 @@ fn load_active_symbols(
     Ok(symbols)
 }
 
+fn persist_routes(
+    connection: &Connection,
+    project_id: &str,
+    source_file_id: &str,
+    run_id: &str,
+    indexed: &IndexedFile,
+) -> Result<(), rusqlite::Error> {
+    connection.execute(
+        "UPDATE source_routes
+         SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
+         WHERE file_id = ?1 AND is_active = 1",
+        params![source_file_id, run_id],
+    )?;
+
+    for route in &indexed.routes {
+        let id = deterministic_id(
+            "source-route",
+            &[
+                project_id,
+                source_file_id,
+                &route.http_method,
+                &route.path_template,
+                &route.start_line.to_string(),
+            ],
+        );
+        let parameter_names: Vec<String> = route
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .collect();
+        let parameter_locations: BTreeMap<String, String> = route
+            .parameters
+            .iter()
+            .map(|parameter| (parameter.name.clone(), parameter.location.clone()))
+            .collect();
+        let parameter_names_json = serde_json::to_string(&parameter_names)
+            .unwrap_or_else(|_| "[]".to_string());
+        let parameter_locations_json = serde_json::to_string(&parameter_locations)
+            .unwrap_or_else(|_| "{}".to_string());
+        let symbol_id: Option<String> = route.handler_name.as_deref().and_then(|handler| {
+            connection
+                .query_row(
+                    "SELECT CASE WHEN COUNT(*) = 1 THEN MIN(id) ELSE NULL END
+                     FROM symbols
+                     WHERE file_id = ?1 AND is_active = 1 AND name = ?2",
+                    params![source_file_id, handler],
+                    |row| row.get(0),
+                )
+                .ok()
+                .flatten()
+        });
+
+        connection.execute(
+            "INSERT INTO source_routes(
+               id, project_id, file_id, symbol_id, framework, router_name,
+               http_method, path_template, handler_name, parameter_names_json,
+               parameter_locations_json, request_content_type, source_content_hash,
+               start_line, end_line, last_index_run_id, is_active
+             ) VALUES (
+               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1
+             )
+             ON CONFLICT(id) DO UPDATE SET
+               symbol_id = excluded.symbol_id,
+               framework = excluded.framework,
+               router_name = excluded.router_name,
+               handler_name = excluded.handler_name,
+               parameter_names_json = excluded.parameter_names_json,
+               parameter_locations_json = excluded.parameter_locations_json,
+               request_content_type = excluded.request_content_type,
+               source_content_hash = excluded.source_content_hash,
+               end_line = excluded.end_line,
+               last_index_run_id = excluded.last_index_run_id,
+               is_active = 1,
+               updated_at = CURRENT_TIMESTAMP",
+            params![
+                id,
+                project_id,
+                source_file_id,
+                symbol_id,
+                route.framework,
+                route.router_name,
+                route.http_method,
+                route.path_template,
+                route.handler_name,
+                parameter_names_json,
+                parameter_locations_json,
+                route.request_content_type,
+                indexed.content_hash,
+                to_i64(route.start_line),
+                to_i64(route.end_line),
+                run_id,
+            ],
+        )?;
+    }
+
+    Ok(())
+}
+
 fn persist_imports(
     connection: &Connection,
     project_id: &str,
@@ -617,6 +722,12 @@ fn deactivate_file(
     connection.execute(
         "DELETE FROM import_references WHERE source_file_id = ?1",
         [file_id],
+    )?;
+    connection.execute(
+        "UPDATE source_routes
+         SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
+         WHERE file_id = ?1 AND is_active = 1",
+        params![file_id, run_id],
     )?;
     connection.execute(
         "UPDATE symbols SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP\
