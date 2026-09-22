@@ -15,11 +15,18 @@ from codetwin_ml.datasets import load_catalog
 MODEL_SCHEMA_VERSION = 1
 MODEL_METADATA_FILE = "_codetwin_model.json"
 CHUNK_BYTES = 1024 * 1024
-SUPPORTED_BACKENDS = frozenset({"onnx-classification-v1", "onnx-seq2seq-v1"})
-EXECUTION_BACKENDS = frozenset({"onnx-classification-v1"})
+SUPPORTED_BACKENDS = frozenset({
+    "onnx-classification-v1",
+    "onnx-seq2seq-v1",
+    "gguf-llama-cpp-v1",
+})
+EXECUTION_BACKENDS = frozenset({"onnx-classification-v1", "gguf-llama-cpp-v1"})
 MAX_EXECUTION_INPUT_BYTES = 65_536
 MAX_EXECUTION_LABELS = 256
 MAX_ONNX_MODEL_BYTES = 512 * 1024 * 1024
+MAX_GGUF_MODEL_BYTES = 8 * 1024 * 1024 * 1024
+MAX_GENERATION_TOKENS = 512
+MAX_GENERATION_CONTEXT_TOKENS = 8_192
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
@@ -112,58 +119,115 @@ def _validate_inference_contract(value: Any, backend: str, model_size: int) -> d
         return None
     if backend not in EXECUTION_BACKENDS:
         raise ModelManifestError(f"backend does not support local execution yet: {backend}")
-    if model_size > MAX_ONNX_MODEL_BYTES:
-        raise ModelManifestError(
-            f"executable ONNX model exceeds the {MAX_ONNX_MODEL_BYTES}-byte limit"
-        )
     if not isinstance(value, dict):
         raise ModelManifestError("inference must be an object")
 
     preprocessing = value.get("preprocessing")
-    output = value.get("output")
-    if not isinstance(preprocessing, dict) or not isinstance(output, dict):
-        raise ModelManifestError("inference requires preprocessing and output objects")
-    if preprocessing.get("kind") != "utf8-bytes-v1":
-        raise ModelManifestError("only utf8-bytes-v1 preprocessing is supported")
-    input_name = preprocessing.get("input_name")
-    max_bytes = preprocessing.get("max_bytes")
-    if not isinstance(input_name, str) or not input_name or len(input_name) > 128:
-        raise ModelManifestError("inference.preprocessing.input_name must be 1-128 characters")
-    if (
-        isinstance(max_bytes, bool)
-        or not isinstance(max_bytes, int)
-        or max_bytes < 1
-        or max_bytes > MAX_EXECUTION_INPUT_BYTES
-    ):
-        raise ModelManifestError(
-            f"inference.preprocessing.max_bytes must be between 1 and {MAX_EXECUTION_INPUT_BYTES}"
-        )
+    if not isinstance(preprocessing, dict):
+        raise ModelManifestError("inference requires a preprocessing object")
 
-    output_name = output.get("name")
-    labels = output.get("labels")
-    if not isinstance(output_name, str) or not output_name or len(output_name) > 128:
-        raise ModelManifestError("inference.output.name must be 1-128 characters")
-    if (
-        not isinstance(labels, list)
-        or len(labels) < 2
-        or len(labels) > MAX_EXECUTION_LABELS
-        or any(not isinstance(label, str) or not label or len(label) > 128 for label in labels)
-        or len(set(labels)) != len(labels)
-    ):
-        raise ModelManifestError(
-            f"inference.output.labels must contain 2-{MAX_EXECUTION_LABELS} unique labels"
-        )
-    return {
-        "preprocessing": {
-            "kind": "utf8-bytes-v1",
-            "input_name": input_name,
-            "max_bytes": max_bytes,
-        },
-        "output": {
-            "name": output_name,
-            "labels": list(labels),
-        },
-    }
+    if backend == "onnx-classification-v1":
+        if model_size > MAX_ONNX_MODEL_BYTES:
+            raise ModelManifestError(
+                f"executable ONNX model exceeds the {MAX_ONNX_MODEL_BYTES}-byte limit"
+            )
+        output = value.get("output")
+        if not isinstance(output, dict):
+            raise ModelManifestError("classification inference requires an output object")
+        if preprocessing.get("kind") != "utf8-bytes-v1":
+            raise ModelManifestError("classification requires utf8-bytes-v1 preprocessing")
+        input_name = preprocessing.get("input_name")
+        max_bytes = preprocessing.get("max_bytes")
+        if not isinstance(input_name, str) or not input_name or len(input_name) > 128:
+            raise ModelManifestError("inference.preprocessing.input_name must be 1-128 characters")
+        if (
+            isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or max_bytes < 1
+            or max_bytes > MAX_EXECUTION_INPUT_BYTES
+        ):
+            raise ModelManifestError(
+                f"inference.preprocessing.max_bytes must be between 1 and {MAX_EXECUTION_INPUT_BYTES}"
+            )
+        output_name = output.get("name")
+        labels = output.get("labels")
+        if not isinstance(output_name, str) or not output_name or len(output_name) > 128:
+            raise ModelManifestError("inference.output.name must be 1-128 characters")
+        if (
+            not isinstance(labels, list)
+            or len(labels) < 2
+            or len(labels) > MAX_EXECUTION_LABELS
+            or any(not isinstance(label, str) or not label or len(label) > 128 for label in labels)
+            or len(set(labels)) != len(labels)
+        ):
+            raise ModelManifestError(
+                f"inference.output.labels must contain 2-{MAX_EXECUTION_LABELS} unique labels"
+            )
+        return {
+            "preprocessing": {
+                "kind": "utf8-bytes-v1",
+                "input_name": input_name,
+                "max_bytes": max_bytes,
+            },
+            "output": {"name": output_name, "labels": list(labels)},
+        }
+
+    if backend == "gguf-llama-cpp-v1":
+        if model_size > MAX_GGUF_MODEL_BYTES:
+            raise ModelManifestError(
+                f"executable GGUF model exceeds the {MAX_GGUF_MODEL_BYTES}-byte limit"
+            )
+        if preprocessing.get("kind") != "utf8-prompt-v1":
+            raise ModelManifestError("GGUF generation requires utf8-prompt-v1 preprocessing")
+        max_bytes = preprocessing.get("max_bytes")
+        if (
+            isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or max_bytes < 256
+            or max_bytes > MAX_EXECUTION_INPUT_BYTES
+        ):
+            raise ModelManifestError(
+                f"inference.preprocessing.max_bytes must be between 256 and {MAX_EXECUTION_INPUT_BYTES}"
+            )
+        generation = value.get("generation")
+        if not isinstance(generation, dict):
+            raise ModelManifestError("GGUF inference requires a generation object")
+        max_tokens = generation.get("max_tokens")
+        context_tokens = generation.get("context_tokens")
+        output_schema = generation.get("output_schema")
+        if (
+            isinstance(max_tokens, bool)
+            or not isinstance(max_tokens, int)
+            or max_tokens < 16
+            or max_tokens > MAX_GENERATION_TOKENS
+        ):
+            raise ModelManifestError(
+                f"inference.generation.max_tokens must be between 16 and {MAX_GENERATION_TOKENS}"
+            )
+        if (
+            isinstance(context_tokens, bool)
+            or not isinstance(context_tokens, int)
+            or context_tokens < 512
+            or context_tokens > MAX_GENERATION_CONTEXT_TOKENS
+        ):
+            raise ModelManifestError(
+                "inference.generation.context_tokens must be between "
+                f"512 and {MAX_GENERATION_CONTEXT_TOKENS}"
+            )
+        if output_schema != "codetwin-safe-advisory-v1":
+            raise ModelManifestError(
+                "GGUF generation output_schema must be codetwin-safe-advisory-v1"
+            )
+        return {
+            "preprocessing": {"kind": "utf8-prompt-v1", "max_bytes": max_bytes},
+            "generation": {
+                "max_tokens": max_tokens,
+                "context_tokens": context_tokens,
+                "output_schema": output_schema,
+            },
+        }
+
+    raise ModelManifestError(f"unsupported executable backend: {backend}")
 
 
 def validate_manifest(manifest: Any) -> dict[str, Any]:
@@ -230,6 +294,8 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
         raise ModelManifestError("artifacts must contain exactly one role=model entry")
     if backend.startswith("onnx-") and not model_paths[0].lower().endswith(".onnx"):
         raise ModelManifestError("ONNX backends require the role=model artifact to use a .onnx path")
+    if backend == "gguf-llama-cpp-v1" and not model_paths[0].lower().endswith(".gguf"):
+        raise ModelManifestError("GGUF backend requires the role=model artifact to use a .gguf path")
 
     normalized_inference = _validate_inference_contract(
         manifest.get("inference"), backend, model_size
@@ -365,6 +431,9 @@ def _public_model(metadata: dict[str, Any]) -> dict[str, Any]:
         "inference": metadata.get("inference"),
         "integrity_verified": bool(metadata.get("integrity_verified", False)),
         "execution_supported": _execution_supported(metadata),
+        "execution_kind": (
+            "generation" if metadata.get("backend") == "gguf-llama-cpp-v1" else "classification"
+        ) if _execution_supported(metadata) else None,
     }
 
 
@@ -602,6 +671,41 @@ def resolve_model_for_inference(
     if len(candidates) > 1:
         raise ModelError(
             "multiple execution-ready models match; specify both model_id and model_version"
+        )
+    return candidates[0]
+
+
+def resolve_model_for_generation(
+    action: str,
+    *,
+    model_id: str | None = None,
+    model_version: str | None = None,
+    model_root: Path | str | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    catalog = load_catalog()
+    if action not in catalog["routes"]:
+        raise ModelError(f"unknown model action: {action}")
+    if model_id is not None:
+        _safe_id(model_id, "model_id")
+    if model_version is not None:
+        _safe_id(model_version, "model_version")
+
+    candidates = []
+    for path, metadata in _ready_entries(model_root):
+        if action not in metadata["actions"] or metadata.get("backend") != "gguf-llama-cpp-v1":
+            continue
+        if not _execution_supported(metadata):
+            continue
+        if model_id is not None and metadata["id"] != model_id:
+            continue
+        if model_version is not None and metadata["version"] != model_version:
+            continue
+        candidates.append((path, metadata))
+    if not candidates:
+        raise ModelError(f"no generation-ready model is installed for action: {action}")
+    if len(candidates) > 1:
+        raise ModelError(
+            "multiple generation-ready models match; specify both model_id and model_version"
         )
     return candidates[0]
 
