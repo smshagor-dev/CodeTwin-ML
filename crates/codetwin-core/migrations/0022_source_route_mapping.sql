@@ -1,3 +1,6 @@
+ALTER TABLE import_references ADD COLUMN bindings_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE web_security_endpoints ADD COLUMN route_template TEXT;
+
 CREATE TABLE source_routes (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -27,6 +30,27 @@ CREATE INDEX idx_source_routes_file_active
   ON source_routes(file_id, is_active, start_line);
 CREATE INDEX idx_source_routes_symbol
   ON source_routes(symbol_id, is_active);
+
+CREATE TABLE source_route_mounts (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_file_id TEXT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  framework TEXT NOT NULL,
+  mounted_binding TEXT NOT NULL,
+  prefix TEXT NOT NULL,
+  start_line INTEGER NOT NULL CHECK(start_line >= 1),
+  end_line INTEGER NOT NULL CHECK(end_line >= start_line),
+  last_index_run_id TEXT REFERENCES analysis_runs(id) ON DELETE SET NULL,
+  is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(project_id, source_file_id, mounted_binding, prefix, start_line)
+);
+
+CREATE INDEX idx_source_route_mounts_project_active
+  ON source_route_mounts(project_id, is_active, source_file_id);
+CREATE INDEX idx_source_route_mounts_binding
+  ON source_route_mounts(source_file_id, mounted_binding, is_active);
 
 CREATE TABLE web_source_endpoint_links (
   id TEXT PRIMARY KEY,
