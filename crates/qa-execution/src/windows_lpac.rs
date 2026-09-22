@@ -94,12 +94,7 @@ pub(crate) fn probe_suspended_lpac_readiness(
     }
 
     let profile = LpacProfileSid::open_or_create()?;
-    if lpac_profile_has_loopback_exemption(profile.sid())? {
-        return Err(BackendExecutionError::JobSetup(
-            "LPAC profile is configured with a Windows loopback exemption; network isolation cannot be promoted"
-                .to_string(),
-        ));
-    }
+    assert_lpac_profile_network_isolation(profile.sid())?;
     let token = create_windows_write_restricted_token().map_err(|error| {
         BackendExecutionError::JobSetup(format!("LPAC readiness restricted token: {error}"))
     })?;
@@ -358,6 +353,18 @@ fn attest_child_token(
         filesystem_read_allowlist_enforced: false,
         network_isolation_promoted: false,
     })
+}
+
+pub(crate) fn assert_lpac_profile_network_isolation(
+    expected_sid: PSID,
+) -> Result<(), BackendExecutionError> {
+    if lpac_profile_has_loopback_exemption(expected_sid)? {
+        return Err(BackendExecutionError::JobSetup(
+            "LPAC profile is configured with a Windows loopback exemption; network isolation cannot be promoted"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn lpac_profile_has_loopback_exemption(
