@@ -1577,12 +1577,13 @@ fn collect_route_mount_prefixes(
     let mut traversed = false;
     for mount in incoming {
         let edge_key = format!(
-            "{}\0{}\0{}\0{}\0{}",
+            "{}\0{}\0{}\0{}\0{}\0{}",
             mount.source_file_id,
             mount.target_file_id,
             mount.parent_router,
             mount.mounted_binding,
-            mount.prefix
+            mount.prefix,
+            mount.prefix_mode
         );
         if !path_edges.insert(edge_key.clone()) {
             continue;
@@ -1993,6 +1994,73 @@ app.post("/api/login/:tenant", (req, res) => {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn cross_file_flask_registration_prefix_overrides_blueprint_constructor_prefix() {
+        let project = tempdir().expect("project");
+        fs::create_dir_all(project.path().join("app")).expect("app");
+        fs::write(
+            project.path().join("app/main.py"),
+            r#"
+from flask import Flask
+from .users import users
+
+app = Flask(__name__)
+app.register_blueprint(users, url_prefix="/api")
+"#,
+        )
+        .expect("main");
+        fs::write(
+            project.path().join("app/users.py"),
+            r#"
+from flask import Blueprint
+
+users = Blueprint("users", __name__, url_prefix="/v1")
+
+@users.get("/users/<int:user_id>")
+def show_user(user_id):
+    return {"id": user_id}
+"#,
+        )
+        .expect("users");
+
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(project.path())
+            .expect("index project");
+        let store = AuthorizedWebSecurityStore::new(&database);
+        let routes = store
+            .list_source_routes(&summary.project_id, 50)
+            .expect("source routes");
+
+        let route = routes
+            .iter()
+            .find(|route| {
+                route.framework == "flask"
+                    && route.http_method == "GET"
+                    && route.path_template == "/api/users/<int:user_id>"
+            })
+            .expect("cross-file Flask override route");
+
+        assert_eq!(route.router_prefix, "/v1");
+        assert!(route.relative_path.ends_with("app/users.py"));
+        assert!(!routes.iter().any(|route| {
+            route.framework == "flask"
+                && route.path_template == "/api/v1/users/<int:user_id>"
+        }));
+
+        let correlated = store
+            .correlate_source_for_request(
+                Some(&summary.project_id),
+                "http://localhost:8080/api/users/42",
+                Some("GET"),
+                Some("user_id"),
+            )
+            .expect("correlate")
+            .expect("source correlation");
+        assert!(correlated.relative_path.ends_with("app/users.py"));
+        assert!(correlated.confidence >= 0.98);
     }
 
     #[test]
