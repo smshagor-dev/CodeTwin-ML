@@ -26,7 +26,7 @@ const MAX_RESPONSE_BYTES: u64 = 1_048_576;
 const SIDECAR_TIMEOUT: Duration = Duration::from_secs(15);
 const GENERATION_SIDECAR_TIMEOUT: Duration = Duration::from_secs(105);
 #[cfg(windows)]
-const ML_SIDECAR_JOB_MEMORY_BYTES: usize = 12 * 1024 * 1024 * 1024;
+const ML_SIDECAR_JOB_MEMORY_BYTES: u64 = 12 * 1024 * 1024 * 1024;
 #[cfg(windows)]
 const ML_SIDECAR_JOB_MAX_PROCESSES: u32 = 8;
 #[cfg(windows)]
@@ -77,7 +77,8 @@ impl MlSidecarContainment {
                 | JOB_OBJECT_LIMIT_JOB_MEMORY
                 | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
             limits.BasicLimitInformation.ActiveProcessLimit = ML_SIDECAR_JOB_MAX_PROCESSES;
-            limits.JobMemoryLimit = ML_SIDECAR_JOB_MEMORY_BYTES;
+            limits.JobMemoryLimit =
+                usize::try_from(ML_SIDECAR_JOB_MEMORY_BYTES).unwrap_or(usize::MAX / 2);
             let configured = unsafe {
                 SetInformationJobObject(
                     job,
