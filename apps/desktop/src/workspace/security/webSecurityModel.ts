@@ -52,6 +52,8 @@ export function defaultWebScanConfig(targetUrl: string): WebScanConfig {
       excluded_paths: ["/logout", "/signout"],
       max_crawl_depth: 2,
       max_requests: 200,
+      max_requests_per_endpoint: 40,
+      min_request_interval_ms: 100,
       concurrency: 2,
       timeout_ms: 5_000,
       response_limit_bytes: 512_000,
@@ -131,6 +133,12 @@ export function validateWebScanConfig(config: WebScanConfig): string | null {
   }
   if (config.scope.max_requests < 1 || config.scope.max_requests > 2_000) {
     return "Maximum requests must be between 1 and 2000.";
+  }
+  if (config.scope.max_requests_per_endpoint < 1 || config.scope.max_requests_per_endpoint > 100) {
+    return "Per-endpoint request budget must be between 1 and 100.";
+  }
+  if (config.scope.min_request_interval_ms < 0 || config.scope.min_request_interval_ms > 5_000) {
+    return "Minimum request interval must be between 0 and 5000 ms.";
   }
   if (config.scope.concurrency < 1 || config.scope.concurrency > 8) {
     return "Concurrency must be between 1 and 8.";
