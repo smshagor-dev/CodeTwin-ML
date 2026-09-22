@@ -333,25 +333,29 @@ pub async fn retest_guided_security_finding(
             context;
         let config: ScanConfig =
             serde_json::from_str(&config_json).map_err(|error| error.to_string())?;
-        let parameter_location = if let Some(parameter) = parameter_name.as_deref() {
-            database
-                .connection()
-                .query_row(
-                    "SELECT parameter_locations_json
-                     FROM web_security_endpoints
-                     WHERE scan_id=?1 AND method=?2 AND url=?3 LIMIT 1",
-                    params![scan_id, method, endpoint_url],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(|error| error.to_string())?
-                .and_then(|raw| serde_json::from_str::<BTreeMap<String, String>>(&raw).ok())
+        let endpoint_metadata = database
+            .connection()
+            .query_row(
+                "SELECT parameter_locations_json, route_template
+                 FROM web_security_endpoints
+                 WHERE scan_id=?1 AND method=?2 AND url=?3 LIMIT 1",
+                params![scan_id, method, endpoint_url],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let parameter_location = parameter_name.as_deref().and_then(|parameter| {
+            endpoint_metadata
+                .as_ref()
+                .and_then(|(raw, _)| serde_json::from_str::<BTreeMap<String, String>>(raw).ok())
                 .and_then(|values| values.get(parameter).cloned())
-        } else {
-            None
-        };
+        });
+        let route_template = endpoint_metadata
+            .as_ref()
+            .and_then(|(_, route_template)| route_template.clone());
         let retest_request = TargetedRetestRequest {
             endpoint_url,
+            route_template,
             method,
             parameter_name,
             parameter_location,
