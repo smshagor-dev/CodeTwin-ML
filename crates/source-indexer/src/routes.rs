@@ -20,7 +20,9 @@ pub fn extract_routes(
         "JavaScript" | "TypeScript" | "TypeScript TSX" => {
             let (mut routes, mounts) = extract_express_routes(source, root);
             routes.extend(extract_nextjs_app_routes(relative_path, source, root));
-            (routes, mounts, javascript_handler_inputs(source, root))
+            let mut handler_inputs = javascript_handler_inputs(source, root);
+            handler_inputs.extend(nextjs_handler_inputs(relative_path, source, root));
+            (routes, mounts, handler_inputs)
         }
         "Python" => {
             let (mut routes, mut mounts) = extract_fastapi_routes(source, root);
@@ -88,12 +90,22 @@ pub fn extract_routes(
         (&left.handler_name, left.start_line, left.end_line)
             .cmp(&(&right.handler_name, right.start_line, right.end_line))
     });
-    handler_inputs.dedup_by(|left, right| {
-        left.handler_name == right.handler_name
-            && left.start_line == right.start_line
-            && left.end_line == right.end_line
-    });
-    (routes, mounts, handler_inputs)
+    let mut merged_handler_inputs: Vec<IndexedHandlerInput> = Vec::new();
+    for mut input in handler_inputs {
+        normalize_parameters(&mut input.parameters);
+        if let Some(last) = merged_handler_inputs.last_mut() {
+            if last.handler_name == input.handler_name
+                && last.start_line == input.start_line
+                && last.end_line == input.end_line
+            {
+                last.parameters.extend(input.parameters);
+                normalize_parameters(&mut last.parameters);
+                continue;
+            }
+        }
+        merged_handler_inputs.push(input);
+    }
+    (routes, mounts, merged_handler_inputs)
 }
 
 fn extract_nextjs_app_routes(
