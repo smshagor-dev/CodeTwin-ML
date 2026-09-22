@@ -14,10 +14,11 @@ from codetwin_ml.datasets import (
 )
 from codetwin_ml.inference import (
     InferenceError,
+    plan_generation,
     plan_inference,
     runtime_dependency_status,
 )
-from codetwin_ml.isolated import run_isolated_inference
+from codetwin_ml.isolated import run_isolated_generation, run_isolated_inference
 from codetwin_ml.models import (
     ModelError,
     install_model,
@@ -91,20 +92,35 @@ def handle_request(request: Request) -> dict[str, Any]:
         if request.method == "capabilities":
             catalog = list_datasets()
             models = list_models()
-            dependencies = runtime_dependency_status()
+            onnx_dependencies = runtime_dependency_status("onnx-classification-v1")
+            generation_dependencies = runtime_dependency_status("gguf-llama-cpp-v1")
             execution_models = [
                 item
                 for item in models["models"]
                 if item.get("ready") and item.get("execution_supported")
             ]
+            classification_models = [
+                item for item in execution_models
+                if item.get("execution_kind") == "classification"
+            ]
+            generation_models = [
+                item for item in execution_models
+                if item.get("execution_kind") == "generation"
+            ]
             inference_actions = (
-                sorted({action for item in execution_models for action in item.get("actions", [])})
-                if dependencies["available"]
+                sorted({action for item in classification_models for action in item.get("actions", [])})
+                if onnx_dependencies["available"]
+                else []
+            )
+            generation_actions = (
+                sorted({action for item in generation_models for action in item.get("actions", [])})
+                if generation_dependencies["available"]
                 else []
             )
             return _ok(request, {
                 "protocol": 1,
                 "inference": inference_actions,
+                "generation": generation_actions,
                 "training": [],
                 "models": {
                     "registry": True,
@@ -113,7 +129,10 @@ def handle_request(request: Request) -> dict[str, Any]:
                     "execution_ready": len(execution_models),
                     "execution_implemented": models["execution_implemented"],
                     "backends": models["execution_backends"],
-                    "runtime_dependencies": dependencies,
+                    "runtime_dependencies": {
+                        "classification": onnx_dependencies,
+                        "generation": generation_dependencies,
+                    },
                 },
                 "datasets": {
                     "catalog_version": catalog["schema_version"],
@@ -121,8 +140,9 @@ def handle_request(request: Request) -> dict[str, Any]:
                     "actions": catalog["actions"],
                 },
                 "note": (
-                    "Inference actions are advertised only when an integrity-checked model declares "
-                    "the bounded execution contract and the local ONNX runtime dependencies are present."
+                    "Classification and generation are advertised only when an integrity-checked "
+                    "model declares the bounded execution contract and its local runtime is present. "
+                    "Generation returns safe structured advisory/probe intents, never raw live payloads."
                 ),
             })
         if request.method == "datasets.list":
@@ -170,6 +190,20 @@ def handle_request(request: Request) -> dict[str, Any]:
             return _ok(
                 request,
                 run_isolated_inference(
+                    action,
+                    _text_param(request, "text"),
+                    model_id=_string_param(request, "model_id"),
+                    model_version=_string_param(request, "model_version"),
+                ),
+            )
+        if request.method == "generation.plan":
+            action = _string_param(request, "action", required=True)
+            return _ok(request, plan_generation(action))
+        if request.method == "generation.run":
+            action = _string_param(request, "action", required=True)
+            return _ok(
+                request,
+                run_isolated_generation(
                     action,
                     _text_param(request, "text"),
                     model_id=_string_param(request, "model_id"),
