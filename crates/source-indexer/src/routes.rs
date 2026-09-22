@@ -226,7 +226,7 @@ fn nextjs_app_route_path(relative_path: &str) -> Option<String> {
     })
 }
 
-fn nextjs_exported_http_methods(value: &str) -> Vec<&'static str> {
+fn nextjs_exported_http_handlers(value: &str) -> Vec<(String, String)> {
     const METHODS: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut output = Vec::new();
@@ -247,7 +247,7 @@ fn nextjs_exported_http_methods(value: &str) -> Vec<&'static str> {
             || normalized.contains(&let_handler)
             || normalized.contains(&var_handler)
         {
-            output.push(method);
+            output.push((method.to_string(), method.to_string()));
         }
     }
 
@@ -260,13 +260,16 @@ fn nextjs_exported_http_methods(value: &str) -> Vec<&'static str> {
                     if item.is_empty() {
                         continue;
                     }
-                    let exported = item
+                    let (local, exported) = item
                         .rsplit_once(" as ")
-                        .map(|(_, exported)| exported.trim())
-                        .unwrap_or(item);
+                        .map(|(local, exported)| (local.trim(), exported.trim()))
+                        .unwrap_or((item, item));
+                    if !is_identifier(local) {
+                        continue;
+                    }
                     for method in METHODS {
-                        if exported == method && !output.contains(&method) {
-                            output.push(method);
+                        if exported == method {
+                            output.push((method.to_string(), local.to_string()));
                         }
                     }
                 }
@@ -274,9 +277,219 @@ fn nextjs_exported_http_methods(value: &str) -> Vec<&'static str> {
         }
     }
 
+    output.sort();
+    output.dedup();
     output
 }
 
+fn nextjs_handler_inputs(
+    relative_path: &str,
+    source: &str,
+    root: Node<'_>,
+) -> Vec<IndexedHandlerInput> {
+    if nextjs_app_route_path(relative_path).is_none() {
+        return Vec::new();
+    }
+    let handlers = javascript_handlers(source, root);
+    let mut names = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "export_statement" {
+            return;
+        }
+        let Some(value) = text(source, node) else {
+            return;
+        };
+        for (_, local) in nextjs_exported_http_handlers(value) {
+            names.push(local);
+        }
+    });
+    names.sort();
+    names.dedup();
+
+    let mut output = Vec::new();
+    for name in names {
+        let Some(handler) = handlers.get(&name).copied() else {
+            continue;
+        };
+        let mut parameters = nextjs_handler_parameters(source, handler);
+        normalize_parameters(&mut parameters);
+        if parameters.is_empty() {
+            continue;
+        }
+        let start = handler.start_position();
+        let end = handler.end_position();
+        output.push(IndexedHandlerInput {
+            handler_name: name,
+            parameters,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    }
+    output
+}
+
+fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRouteParameter> {
+    let mut parameters = express_handler_parameters(source, handler);
+    let Some(request_name) = request_parameter_name(source, handler) else {
+        return parameters;
+    };
+    let Some(function_text) = text(source, handler) else {
+        return parameters;
+    };
+
+    for method in ["get", "getAll", "has"] {
+        let marker = format!("{request_name}.nextUrl.searchParams.{method}(");
+        for name in marker_quoted_arguments(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, "query"));
+            }
+        }
+    }
+    let header_marker = format!("{request_name}.headers.get(");
+    for name in marker_quoted_arguments(function_text, &header_marker) {
+        if !name.is_empty() && name.len() <= 256 {
+            parameters.push(route_parameter(&name, "header"));
+        }
+    }
+
+    let mut json_variables = Vec::new();
+    let mut form_variables = Vec::new();
+    let mut query_variables = Vec::new();
+    let mut header_variables = Vec::new();
+    walk(handler, &mut |node| {
+        if node.kind() != "variable_declarator" {
+            return;
+        }
+        let Some(name_node) = node.child_by_field_name("name") else {
+            return;
+        };
+        let Some(value_node) = node.child_by_field_name("value") else {
+            return;
+        };
+        let Some(value) = text(source, value_node).map(str::trim) else {
+            return;
+        };
+        let name_text = text(source, name_node).map(str::trim).unwrap_or("");
+
+        let json_marker = format!("{request_name}.json(");
+        if value.contains(&json_marker) {
+            if name_node.kind() == "identifier" && is_identifier(name_text) {
+                json_variables.push(name_text.to_string());
+            } else {
+                for field in javascript_object_pattern_fields(name_text) {
+                    parameters.push(route_parameter(&field, "json"));
+                }
+            }
+        }
+
+        let form_marker = format!("{request_name}.formData(");
+        if value.contains(&form_marker) && name_node.kind() == "identifier" && is_identifier(name_text) {
+            form_variables.push(name_text.to_string());
+        }
+        if value == format!("{request_name}.nextUrl.searchParams")
+            && name_node.kind() == "identifier"
+            && is_identifier(name_text)
+        {
+            query_variables.push(name_text.to_string());
+        }
+        if value == format!("{request_name}.headers")
+            && name_node.kind() == "identifier"
+            && is_identifier(name_text)
+        {
+            header_variables.push(name_text.to_string());
+        }
+    });
+
+    walk(handler, &mut |node| {
+        if node.kind() == "member_expression" {
+            let Some(value) = text(source, node).map(str::trim) else {
+                return;
+            };
+            if let Some((object, property)) = value.split_once('.') {
+                if !property.contains('.')
+                    && json_variables.iter().any(|candidate| candidate == object.trim())
+                    && is_identifier(property.trim())
+                {
+                    parameters.push(route_parameter(property.trim(), "json"));
+                }
+            }
+        }
+        if node.kind() == "subscript_expression" {
+            let Some(value) = text(source, node).map(str::trim) else {
+                return;
+            };
+            for variable in &json_variables {
+                let prefix = format!("{variable}[");
+                if value.starts_with(&prefix) {
+                    if let Some(name) = first_quoted_string(&value[prefix.len()..]) {
+                        if !name.is_empty() && name.len() <= 256 {
+                            parameters.push(route_parameter(&name, "json"));
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    for variable in form_variables {
+        for method in ["get", "getAll", "has"] {
+            let marker = format!("{variable}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, "form"));
+                }
+            }
+        }
+    }
+    for variable in query_variables {
+        for method in ["get", "getAll", "has"] {
+            let marker = format!("{variable}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, "query"));
+                }
+            }
+        }
+    }
+    for variable in header_variables {
+        let marker = format!("{variable}.get(");
+        for name in marker_quoted_arguments(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, "header"));
+            }
+        }
+    }
+    parameters
+}
+
+fn javascript_object_pattern_fields(value: &str) -> Vec<String> {
+    let value = value.trim();
+    let Some(inner) = value.strip_prefix('{').and_then(|value| value.strip_suffix('}')) else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    for item in inner.split(',') {
+        let item = item.trim();
+        if item.is_empty() || item.starts_with("...") {
+            continue;
+        }
+        let property = item
+            .split_once(':')
+            .map(|(property, _)| property)
+            .unwrap_or(item)
+            .split_once('=')
+            .map(|(property, _)| property)
+            .unwrap_or(item)
+            .trim();
+        let name = strip_quotes(property).unwrap_or_else(|| property.to_string());
+        if is_identifier(&name) && name.len() <= 256 {
+            fields.push(name);
+        }
+    }
+    fields.sort();
+    fields.dedup();
+    fields
+}
 fn extract_express_routes(
     source: &str,
     root: Node<'_>,
