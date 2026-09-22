@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -119,6 +119,23 @@ pub struct SourceRouteRecord {
     pub source_content_hash: String,
     pub start_line: usize,
     pub end_line: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ImportBindingEvidence {
+    local_name: String,
+    imported_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedRouteMount {
+    source_file_id: String,
+    target_file_id: String,
+    framework: String,
+    parent_router: String,
+    mounted_binding: String,
+    imported_name: String,
+    prefix: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -633,6 +650,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         project_id: &str,
         limit: usize,
     ) -> Result<Vec<SourceRouteRecord>, WebSecurityStoreError> {
+        let requested_limit = bounded(limit);
         let mut statement = self.database.connection().prepare(
             "SELECT sr.id, sr.project_id, sr.file_id, f.relative_path,
                     sr.symbol_id, s.name, sr.framework, sr.router_name,
@@ -647,7 +665,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
              ORDER BY sr.path_template, sr.http_method, sr.start_line
              LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![project_id, bounded(limit) as i64], |row| {
+        let rows = statement.query_map(params![project_id, MAX_LIST as i64], |row| {
             let parameter_names_json: String = row.get(11)?;
             let parameter_locations_json: String = row.get(12)?;
             Ok(SourceRouteRecord {
@@ -674,7 +692,85 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         for row in rows {
             values.push(row?);
         }
-        Ok(values)
+        drop(statement);
+
+        let mounts = self.resolved_route_mounts(project_id)?;
+        let mut expanded = expand_source_route_mounts(values, &mounts);
+        expanded.truncate(requested_limit);
+        Ok(expanded)
+    }
+
+    fn resolved_route_mounts(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ResolvedRouteMount>, WebSecurityStoreError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT m.source_file_id, m.framework, m.parent_router,
+                    m.mounted_binding, m.prefix,
+                    i.resolved_target_file_id, i.bindings_json
+             FROM source_route_mounts m
+             JOIN import_references i
+               ON i.project_id=m.project_id
+              AND i.source_file_id=m.source_file_id
+             WHERE m.project_id=?1
+               AND m.is_active=1
+               AND i.resolution_state='resolved_local'
+               AND i.resolved_target_file_id IS NOT NULL
+             ORDER BY m.source_file_id, m.start_line, i.start_line",
+        )?;
+        let rows = statement.query_map([project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?;
+        let mut output = Vec::new();
+        let mut seen = BTreeSet::new();
+        for row in rows {
+            let (
+                source_file_id,
+                framework,
+                parent_router,
+                mounted_binding,
+                prefix,
+                target_file_id,
+                bindings_json,
+            ) = row?;
+            let bindings: Vec<ImportBindingEvidence> =
+                serde_json::from_str(&bindings_json).unwrap_or_default();
+            for binding in bindings {
+                if binding.local_name != mounted_binding {
+                    continue;
+                }
+                let identity = (
+                    source_file_id.clone(),
+                    target_file_id.clone(),
+                    framework.clone(),
+                    parent_router.clone(),
+                    mounted_binding.clone(),
+                    binding.imported_name.clone(),
+                    prefix.clone(),
+                );
+                if !seen.insert(identity) {
+                    continue;
+                }
+                output.push(ResolvedRouteMount {
+                    source_file_id: source_file_id.clone(),
+                    target_file_id: target_file_id.clone(),
+                    framework: framework.clone(),
+                    parent_router: parent_router.clone(),
+                    mounted_binding: mounted_binding.clone(),
+                    imported_name: binding.imported_name,
+                    prefix: prefix.clone(),
+                });
+            }
+        }
+        Ok(output)
     }
 
     pub fn link_endpoint_to_source_route(
@@ -1287,6 +1383,166 @@ fn stable_id(prefix: &str, parts: &[&str]) -> String {
         hasher.update([0]);
     }
     format!("{prefix}_{:x}", hasher.finalize())
+}
+
+fn expand_source_route_mounts(
+    routes: Vec<SourceRouteRecord>,
+    mounts: &[ResolvedRouteMount],
+) -> Vec<SourceRouteRecord> {
+    let mut output = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for route in routes {
+        let mut prefixes = Vec::new();
+        let mut path_edges = BTreeSet::new();
+        collect_route_mount_prefixes(
+            &route.file_id,
+            &route.framework,
+            &route.router_name,
+            mounts,
+            &mut path_edges,
+            0,
+            "",
+            &mut prefixes,
+        );
+        if prefixes.is_empty() {
+            prefixes.push(String::new());
+        }
+        prefixes.sort();
+        prefixes.dedup();
+
+        for prefix in prefixes {
+            let effective_path = combine_route_paths(&prefix, &route.path_template);
+            let identity = (route.id.clone(), effective_path.clone());
+            if !seen.insert(identity) {
+                continue;
+            }
+            let mut expanded = route.clone();
+            expanded.path_template = effective_path;
+            output.push(expanded);
+        }
+    }
+
+    output.sort_by(|left, right| {
+        (
+            &left.path_template,
+            &left.http_method,
+            &left.relative_path,
+            left.start_line,
+        )
+            .cmp(&(
+                &right.path_template,
+                &right.http_method,
+                &right.relative_path,
+                right.start_line,
+            ))
+    });
+    output
+}
+
+fn collect_route_mount_prefixes(
+    current_file_id: &str,
+    framework: &str,
+    current_router: &str,
+    mounts: &[ResolvedRouteMount],
+    path_edges: &mut BTreeSet<String>,
+    depth: usize,
+    accumulated_prefix: &str,
+    output: &mut Vec<String>,
+) {
+    if depth >= 8 {
+        if !accumulated_prefix.is_empty() {
+            output.push(accumulated_prefix.to_string());
+        }
+        return;
+    }
+
+    let incoming: Vec<&ResolvedRouteMount> = mounts
+        .iter()
+        .filter(|mount| {
+            mount.target_file_id == current_file_id
+                && mount.framework == framework
+                && import_binding_matches_router(&mount.imported_name, current_router)
+        })
+        .collect();
+
+    if incoming.is_empty() {
+        if !accumulated_prefix.is_empty() {
+            output.push(accumulated_prefix.to_string());
+        }
+        return;
+    }
+
+    let mut traversed = false;
+    for mount in incoming {
+        let edge_key = format!(
+            "{}\0{}\0{}\0{}\0{}",
+            mount.source_file_id,
+            mount.target_file_id,
+            mount.parent_router,
+            mount.mounted_binding,
+            mount.prefix
+        );
+        if !path_edges.insert(edge_key.clone()) {
+            continue;
+        }
+        traversed = true;
+        let next_prefix = combine_route_paths(&mount.prefix, accumulated_prefix);
+        collect_route_mount_prefixes(
+            &mount.source_file_id,
+            framework,
+            &mount.parent_router,
+            mounts,
+            path_edges,
+            depth + 1,
+            &next_prefix,
+            output,
+        );
+        path_edges.remove(&edge_key);
+    }
+
+    if !traversed && !accumulated_prefix.is_empty() {
+        output.push(accumulated_prefix.to_string());
+    }
+}
+
+fn import_binding_matches_router(imported_name: &str, router_name: &str) -> bool {
+    matches!(imported_name, "default" | "*") || imported_name == router_name
+}
+
+fn combine_route_paths(prefix: &str, path: &str) -> String {
+    let prefix = prefix.trim();
+    let path = path.trim();
+    if prefix.is_empty() || prefix == "/" {
+        return normalize_route_path(path);
+    }
+    if path.is_empty() || path == "/" {
+        return normalize_route_path(prefix);
+    }
+    normalize_route_path(&format!(
+        "{}/{}",
+        prefix.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    ))
+}
+
+fn normalize_route_path(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return "/".to_string();
+    }
+    let mut path = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    while path.contains("//") {
+        path = path.replace("//", "/");
+    }
+    if path.len() > 1 {
+        path = path.trim_end_matches('/').to_string();
+    }
+    path
 }
 
 fn route_template_match(template: &str, observed: &str) -> Option<bool> {
