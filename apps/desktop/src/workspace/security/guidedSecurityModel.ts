@@ -57,6 +57,8 @@ export function guidedConfigFor(
   if (environment === "authorized_production") {
     config.scope.max_crawl_depth = Math.min(config.scope.max_crawl_depth, 2);
     config.scope.max_requests = Math.min(config.scope.max_requests, 350);
+    config.scope.max_requests_per_endpoint = Math.min(config.scope.max_requests_per_endpoint, 20);
+    config.scope.min_request_interval_ms = Math.max(config.scope.min_request_interval_ms, 250);
     config.scope.concurrency = Math.min(config.scope.concurrency, 2);
     config.scope.timeout_ms = Math.min(config.scope.timeout_ms, 5_000);
     config.scope.response_limit_bytes = Math.min(config.scope.response_limit_bytes, 512_000);
@@ -86,6 +88,12 @@ export function validateGuidedConfig(
   }
   if (environment === "authorized_production" && config.scope.max_requests > 350) {
     return "Authorized production Developer Mode is capped at 350 requests.";
+  }
+  if (environment === "authorized_production" && config.scope.max_requests_per_endpoint > 20) {
+    return "Authorized production Developer Mode is capped at 20 requests per endpoint.";
+  }
+  if (environment === "authorized_production" && config.scope.min_request_interval_ms < 250) {
+    return "Authorized production Developer Mode requires at least 250 ms between requests.";
   }
   if (environment === "authorized_production" && config.scope.concurrency > 2) {
     return "Authorized production Developer Mode is capped at concurrency 2.";
