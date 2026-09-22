@@ -109,6 +109,10 @@ pub struct SourceRouteRecord {
     pub relative_path: String,
     pub symbol_id: Option<String>,
     pub symbol_name: Option<String>,
+    pub handler_file_id: Option<String>,
+    pub handler_relative_path: Option<String>,
+    pub handler_symbol_id: Option<String>,
+    pub handler_symbol_name: Option<String>,
     pub framework: String,
     pub router_name: String,
     pub http_method: String,
@@ -146,6 +150,7 @@ pub struct WebSourceEndpointLinkRecord {
     pub endpoint_id: String,
     pub source_route_id: String,
     pub source_relative_path: String,
+    pub handler_relative_path: Option<String>,
     pub source_framework: String,
     pub source_method: String,
     pub source_path_template: String,
@@ -659,21 +664,25 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         let requested_limit = limit.clamp(1, MAX_SOURCE_ROUTES);
         let mut statement = self.database.connection().prepare(
             "SELECT sr.id, sr.project_id, sr.file_id, f.relative_path,
-                    sr.symbol_id, s.name, sr.framework, sr.router_name,
-                    sr.http_method, sr.path_template, sr.handler_name,
-                    sr.parameter_names_json, sr.parameter_locations_json,
+                    sr.symbol_id, s.name,
+                    sr.handler_file_id, hf.relative_path,
+                    sr.handler_symbol_id, hs.name,
+                    sr.framework, sr.router_name, sr.http_method, sr.path_template,
+                    sr.handler_name, sr.parameter_names_json, sr.parameter_locations_json,
                     sr.request_content_type, sr.source_content_hash,
                     sr.start_line, sr.end_line
              FROM source_routes sr
              JOIN files f ON f.id = sr.file_id
              LEFT JOIN symbols s ON s.id = sr.symbol_id AND s.is_active = 1
+             LEFT JOIN files hf ON hf.id = sr.handler_file_id AND hf.is_active = 1
+             LEFT JOIN symbols hs ON hs.id = sr.handler_symbol_id AND hs.is_active = 1
              WHERE sr.project_id = ?1 AND sr.is_active = 1 AND f.is_active = 1
              ORDER BY sr.path_template, sr.http_method, sr.start_line
              LIMIT ?2",
         )?;
         let rows = statement.query_map(params![project_id, MAX_SOURCE_ROUTES as i64], |row| {
-            let parameter_names_json: String = row.get(11)?;
-            let parameter_locations_json: String = row.get(12)?;
+            let parameter_names_json: String = row.get(15)?;
+            let parameter_locations_json: String = row.get(16)?;
             Ok(SourceRouteRecord {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
@@ -681,17 +690,21 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 relative_path: row.get(3)?,
                 symbol_id: row.get(4)?,
                 symbol_name: row.get(5)?,
-                framework: row.get(6)?,
-                router_name: row.get(7)?,
-                http_method: row.get(8)?,
-                path_template: row.get(9)?,
-                handler_name: row.get(10)?,
+                handler_file_id: row.get(6)?,
+                handler_relative_path: row.get(7)?,
+                handler_symbol_id: row.get(8)?,
+                handler_symbol_name: row.get(9)?,
+                framework: row.get(10)?,
+                router_name: row.get(11)?,
+                http_method: row.get(12)?,
+                path_template: row.get(13)?,
+                handler_name: row.get(14)?,
                 parameter_names: serde_json::from_str(&parameter_names_json).unwrap_or_default(),
                 parameter_locations: serde_json::from_str(&parameter_locations_json).unwrap_or_default(),
-                request_content_type: row.get(13)?,
-                source_content_hash: row.get(14)?,
-                start_line: row.get::<_, i64>(15)?.max(0) as usize,
-                end_line: row.get::<_, i64>(16)?.max(0) as usize,
+                request_content_type: row.get(17)?,
+                source_content_hash: row.get(18)?,
+                start_line: row.get::<_, i64>(19)?.max(0) as usize,
+                end_line: row.get::<_, i64>(20)?.max(0) as usize,
             })
         })?;
         let mut values = Vec::new();
@@ -875,6 +888,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             endpoint_id: endpoint.id.clone(),
             source_route_id: route.id,
             source_relative_path: route.relative_path,
+            handler_relative_path: route.handler_relative_path,
             source_framework: route.framework,
             source_method: route.http_method,
             source_path_template: route.path_template,
@@ -893,32 +907,35 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
     ) -> Result<Vec<WebSourceEndpointLinkRecord>, WebSecurityStoreError> {
         let mut statement = self.database.connection().prepare(
             "SELECT l.id, l.scan_id, l.endpoint_id, l.source_route_id,
-                    f.relative_path, sr.framework, sr.http_method, l.effective_path_template,
+                    f.relative_path, hf.relative_path,
+                    sr.framework, sr.http_method, l.effective_path_template,
                     sr.handler_name, l.match_kind, l.confidence,
                     l.parameter_overlap_json, l.created_at
              FROM web_source_endpoint_links l
              JOIN source_routes sr ON sr.id=l.source_route_id
              JOIN files f ON f.id=sr.file_id
+             LEFT JOIN files hf ON hf.id=sr.handler_file_id
              WHERE l.scan_id=?1
              ORDER BY l.confidence DESC, l.endpoint_id, l.source_route_id
              LIMIT ?2",
         )?;
         let rows = statement.query_map(params![scan_id, bounded(limit) as i64], |row| {
-            let overlap_json: String = row.get(11)?;
+            let overlap_json: String = row.get(12)?;
             Ok(WebSourceEndpointLinkRecord {
                 id: row.get(0)?,
                 scan_id: row.get(1)?,
                 endpoint_id: row.get(2)?,
                 source_route_id: row.get(3)?,
                 source_relative_path: row.get(4)?,
-                source_framework: row.get(5)?,
-                source_method: row.get(6)?,
-                source_path_template: row.get(7)?,
-                source_handler_name: row.get(8)?,
-                match_kind: row.get(9)?,
-                confidence: row.get(10)?,
+                handler_relative_path: row.get(5)?,
+                source_framework: row.get(6)?,
+                source_method: row.get(7)?,
+                source_path_template: row.get(8)?,
+                source_handler_name: row.get(9)?,
+                match_kind: row.get(10)?,
+                confidence: row.get(11)?,
                 parameter_overlap: serde_json::from_str(&overlap_json).unwrap_or_default(),
-                created_at: row.get(12)?,
+                created_at: row.get(13)?,
             })
         })?;
         let mut values = Vec::new();
@@ -980,11 +997,29 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         }
 
         if let Some((confidence, route)) = best {
+            let handler_source = route
+                .handler_file_id
+                .zip(route.handler_relative_path)
+                .map(|(file_id, relative_path)| {
+                    (
+                        file_id,
+                        relative_path,
+                        route.handler_symbol_id,
+                        route.handler_symbol_name.or(route.handler_name.clone()),
+                    )
+                });
+            let (file_id, relative_path, symbol_id, symbol_name) =
+                handler_source.unwrap_or((
+                    route.file_id,
+                    route.relative_path,
+                    route.symbol_id,
+                    route.symbol_name.or(route.handler_name),
+                ));
             return Ok(Some(WebSourceCorrelation {
-                file_id: route.file_id,
-                relative_path: route.relative_path,
-                symbol_id: route.symbol_id,
-                symbol_name: route.symbol_name.or(route.handler_name),
+                file_id,
+                relative_path,
+                symbol_id,
+                symbol_name,
                 confidence,
             }));
         }
