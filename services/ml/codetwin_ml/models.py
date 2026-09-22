@@ -688,15 +688,19 @@ def inference_plan(action: str, *, model_root: Path | str | None = None) -> dict
         for _path, metadata in _ready_entries(model_root)
         if metadata.get("backend") == "onnx-classification-v1"
         and action in metadata["actions"]
-        and _execution_supported(metadata)
     ]
-    dataset_ids = list(catalog["routes"][action])
-    status = "ready" if classifier_models else "model_unavailable"
+    execution_ready = any(model.get("execution_supported") for model in classifier_models)
+    if execution_ready:
+        status = "ready"
+    elif classifier_models:
+        status = "model_ready_execution_pending"
+    else:
+        status = "model_unavailable"
     return {
         "action": action,
         "status": status,
         "models": classifier_models,
-        "dataset_provenance": dataset_ids,
+        "dataset_provenance": list(catalog["routes"][action]),
         "execution_implemented": True,
         "note": (
             "This plan describes bounded ONNX classification only. "
