@@ -1004,7 +1004,18 @@ fn extract_go_routes(
 
         let method_lower = method_raw.trim().to_ascii_lowercase();
         let quoted = quoted_strings(&value[open + 1..]);
-        let (http_method, path) = if HTTP_METHODS.contains(&method_lower.as_str()) {
+        let (http_method, path) = if framework == "go-stdlib" {
+            if !matches!(method_lower.as_str(), "handle" | "handlefunc") {
+                return;
+            }
+            let Some(pattern) = quoted.first() else {
+                return;
+            };
+            let Some((method, path)) = parse_go_stdlib_method_pattern(pattern) else {
+                return;
+            };
+            (method, path)
+        } else if HTTP_METHODS.contains(&method_lower.as_str()) {
             let Some(path) = quoted.first() else {
                 return;
             };
@@ -1053,7 +1064,24 @@ fn detect_go_route_framework(source: &str) -> Option<&'static str> {
     if source.contains("github.com/go-chi/chi") {
         return Some("chi");
     }
+    if source.contains(""net/http"") {
+        return Some("go-stdlib");
+    }
     None
+}
+
+fn parse_go_stdlib_method_pattern(pattern: &str) -> Option<(String, String)> {
+    let trimmed = pattern.trim();
+    let split = trimmed.find(char::is_whitespace)?;
+    let method = trimmed[..split].trim().to_ascii_lowercase();
+    if !HTTP_METHODS.contains(&method.as_str()) {
+        return None;
+    }
+    let path = trimmed[split..].trim();
+    if !path.starts_with('/') || path.contains(char::is_whitespace) {
+        return None;
+    }
+    Some((method.to_ascii_uppercase(), path.to_string()))
 }
 
 fn go_group_prefixes(
@@ -2086,6 +2114,49 @@ Route::post('/login', [AuthController::class, 'login']);
                 && route.http_method == "POST"
                 && route.path_template == "/login"
         }));
+    }
+
+    #[test]
+    fn extracts_go_stdlib_method_qualified_servemux_patterns_only() {
+        let source = r#"
+package main
+
+import "net/http"
+
+func routes(mux *http.ServeMux, client *http.Client) {
+    mux.HandleFunc("GET /users/{id}", user)
+    http.HandleFunc("POST /login", login)
+    mux.HandleFunc("/health", health)
+    client.Get("/not-a-server-route")
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_go::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes("Go", "main.go", source, tree.root_node());
+        let user = routes
+            .iter()
+            .find(|route| {
+                route.framework == "go-stdlib"
+                    && route.http_method == "GET"
+                    && route.path_template == "/users/{id}"
+            })
+            .expect("stdlib GET route");
+        assert!(user
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "id" && parameter.location == "path"));
+        assert!(routes.iter().any(|route| {
+            route.framework == "go-stdlib"
+                && route.http_method == "POST"
+                && route.path_template == "/login"
+        }));
+        assert!(!routes.iter().any(|route| route.path_template == "/health"));
+        assert!(!routes
+            .iter()
+            .any(|route| route.path_template == "/not-a-server-route"));
     }
 
     #[test]
