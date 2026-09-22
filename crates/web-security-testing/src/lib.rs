@@ -19,7 +19,7 @@ use thiserror::Error;
 pub use evidence::{body_hash, fingerprint, redact_body, redact_headers, redact_url, response_evidence};
 pub use operator::{
     apply_approved_execution_policy, build_application_map, build_test_plan, preflight,
-    prepare_guided_security, ApplicationGroup, ApplicationMap, ApplicationRoute,
+    prepare_guided_security, prepare_guided_security_with_seeds, ApplicationGroup, ApplicationMap, ApplicationRoute,
     ApplicationSourceHint, ApprovedExecutionPolicy, AuthenticationMode, GuidedPreflight,
     GuidedPreparation,
     GuidedTestPlan, OperationRisk, PlannedOperation, SecurityEnvironment, TestingDepth,
