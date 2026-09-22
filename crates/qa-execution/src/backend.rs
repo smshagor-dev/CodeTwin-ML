@@ -144,9 +144,10 @@ pub fn current_backend_info() -> ExecutionBackendInfo {
                 process_assigned_before_resume: true,
             },
             limitations: vec![
-                "Windows execution is restricted to the detached, hash-bound project mirror and copied approved runtime/toolchain surface.".to_string(),
+                "Filesystem isolation is scoped to the detached project mirror and copied approved runtime/toolchain material; it is not a host-wide deny-all-read claim for Windows system objects.".to_string(),
                 "The actual runner is created suspended as a zero-capability LPAC child, assigned to the bounded Job Object before resume, and receives no ambient host PATH.".to_string(),
-                "Execution remains unavailable if LPAC creation, ACL preparation, provenance verification, or runtime parsing cannot be proven for the requested plan.".to_string(),
+                "Network promotion is fail-closed when the LPAC profile has a Windows loopback exemption, including a re-attestation immediately before the production child is created.".to_string(),
+                "Execution remains unavailable if LPAC creation, ACL preparation, provenance verification, network attestation, or runtime parsing cannot be proven for the requested plan.".to_string(),
             ],
         }
     }
