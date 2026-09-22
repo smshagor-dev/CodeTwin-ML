@@ -622,7 +622,11 @@ def resolve_model_for_inference(
 
     candidates = []
     for path, metadata in _ready_entries(model_root):
-        if action not in metadata["actions"] or not _execution_supported(metadata):
+        if (
+            metadata.get("backend") != "onnx-classification-v1"
+            or action not in metadata["actions"]
+            or not _execution_supported(metadata)
+        ):
             continue
         if model_id is not None and metadata["id"] != model_id:
             continue
