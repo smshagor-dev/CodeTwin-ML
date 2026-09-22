@@ -21,6 +21,39 @@ static QA_EXECUTION_CANCELLED: AtomicBool = AtomicBool::new(false);
 static QA_EXECUTION_RUNNING: AtomicBool = AtomicBool::new(false);
 static QA_EXECUTION_CANCELLED: AtomicBool = AtomicBool::new(false);
 
+fn hash_trusted_toolchain(value: &str) -> Result<String, String> {
+    let path = Path::new(value);
+    if !path.is_absolute() {
+        return Err("QA toolchain executable must be an absolute path".to_string());
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect QA toolchain executable: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("QA toolchain executable must be a regular non-symlink file".to_string());
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("cannot canonicalize QA toolchain executable: {error}"))?;
+    let mut file = fs::File::open(&canonical)
+        .map_err(|error| format!("cannot open QA toolchain executable: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("cannot hash QA toolchain executable: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
 fn open_database(app: &tauri::AppHandle) -> Result<Database, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
     std::fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
@@ -96,10 +129,13 @@ pub fn qa_execution_availability(
 pub fn create_qa_execution_plan(
     project_id: String,
     request: TestExecutionRequest,
-    toolchain: TrustedToolchain,
+    mut toolchain: TrustedToolchain,
     policy: SandboxPolicy,
     app: tauri::AppHandle,
 ) -> Result<QaExecutionPlanRecord, String> {
+    if toolchain.sha256.as_deref().is_none_or(str::is_empty) {
+        toolchain.sha256 = Some(hash_trusted_toolchain(&toolchain.executable_path)?);
+    }
     let database = open_database(&app)?;
     QaExecutionService::new(&database)
         .create_plan(&project_id, request, toolchain, policy)
