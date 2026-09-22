@@ -26,10 +26,10 @@ pub fn extract_routes(
         }
         "Python" => {
             let (mut routes, mut mounts) = extract_fastapi_routes(source, root);
-            let (flask_routes, flask_mounts) = extract_flask_routes(source, root);
+            let (flask_routes, flask_mounts, flask_inputs) = extract_flask_routes(source, root);
             routes.extend(flask_routes);
             mounts.extend(flask_mounts);
-            (routes, mounts, Vec::new())
+            (routes, mounts, flask_inputs)
         }
         "PHP" => {
             let (routes, mounts) = extract_laravel_routes(source, root);
