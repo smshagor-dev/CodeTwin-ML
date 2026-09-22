@@ -743,12 +743,17 @@ fn send_payload(
         (Some((body, content_type)), "header") => requester.send(
             method,
             &url,
-            Some(body),
-            &[("Content-Type", content_type), (parameter, payload)],
+            Some(body.as_str()),
+            &[("Content-Type", *content_type), (parameter, payload)],
         ),
         (None, "header") => requester.send(method, &url, None, &[(parameter, payload)]),
         (Some((body, content_type)), _) => {
-            requester.send(method, &url, Some(body), &[("Content-Type", content_type)])
+            requester.send(
+                method,
+                &url,
+                Some(body.as_str()),
+                &[("Content-Type", *content_type)],
+            )
         }
         (None, _) => requester.send(method, &url, None, &[]),
     }
