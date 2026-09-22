@@ -844,10 +844,11 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         let overlap_json = serde_json::to_string(&overlap)?;
         self.database.connection().execute(
             "INSERT INTO web_source_endpoint_links(
-               id, scan_id, endpoint_id, source_route_id, match_kind, confidence,
-               parameter_overlap_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+               id, scan_id, endpoint_id, source_route_id, effective_path_template,
+               match_kind, confidence, parameter_overlap_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(scan_id, endpoint_id, source_route_id) DO UPDATE SET
+               effective_path_template = excluded.effective_path_template,
                match_kind = excluded.match_kind,
                confidence = excluded.confidence,
                parameter_overlap_json = excluded.parameter_overlap_json",
@@ -856,6 +857,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 endpoint.scan_id,
                 endpoint.id,
                 route.id,
+                route.path_template,
                 match_kind,
                 confidence,
                 overlap_json,
@@ -890,7 +892,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
     ) -> Result<Vec<WebSourceEndpointLinkRecord>, WebSecurityStoreError> {
         let mut statement = self.database.connection().prepare(
             "SELECT l.id, l.scan_id, l.endpoint_id, l.source_route_id,
-                    f.relative_path, sr.framework, sr.http_method, sr.path_template,
+                    f.relative_path, sr.framework, sr.http_method, l.effective_path_template,
                     sr.handler_name, l.match_kind, l.confidence,
                     l.parameter_overlap_json, l.created_at
              FROM web_source_endpoint_links l
