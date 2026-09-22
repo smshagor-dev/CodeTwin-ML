@@ -2031,6 +2031,28 @@ export function login(req, res) {
         assert!(correlated.relative_path.ends_with("controllers.js"));
         assert_eq!(correlated.symbol_name.as_deref(), Some("login"));
         assert!(correlated.confidence >= 0.98);
+
+        fs::remove_file(project.path().join("src/controllers.js")).expect("remove controller");
+        ProjectIndexService::new(&database)
+            .index_project(project.path())
+            .expect("re-index after controller removal");
+        let routes_after_removal = store
+            .list_source_routes(&summary.project_id, 50)
+            .expect("source routes after removal");
+        let route_after_removal = routes_after_removal
+            .iter()
+            .find(|route| {
+                route.http_method == "POST"
+                    && route.path_template == "/api/auth/login/:tenant"
+            })
+            .expect("mounted route remains from router source");
+        assert!(route_after_removal.handler_relative_path.is_none());
+        assert!(route_after_removal
+            .parameter_locations
+            .get("tenant")
+            .is_some_and(|location| location == "path"));
+        assert!(!route_after_removal.parameter_locations.contains_key("email"));
+        assert!(!route_after_removal.parameter_locations.contains_key("password"));
     }
 
     #[test]
