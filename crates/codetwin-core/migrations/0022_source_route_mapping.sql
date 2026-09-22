@@ -27,3 +27,20 @@ CREATE INDEX idx_source_routes_file_active
   ON source_routes(file_id, is_active, start_line);
 CREATE INDEX idx_source_routes_symbol
   ON source_routes(symbol_id, is_active);
+
+CREATE TABLE web_source_endpoint_links (
+  id TEXT PRIMARY KEY,
+  scan_id TEXT NOT NULL REFERENCES web_security_scans(id) ON DELETE CASCADE,
+  endpoint_id TEXT NOT NULL REFERENCES web_security_endpoints(id) ON DELETE CASCADE,
+  source_route_id TEXT NOT NULL REFERENCES source_routes(id) ON DELETE CASCADE,
+  match_kind TEXT NOT NULL CHECK(match_kind IN ('seeded','exact_static','template')),
+  confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
+  parameter_overlap_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(scan_id, endpoint_id, source_route_id)
+);
+
+CREATE INDEX idx_web_source_endpoint_links_scan
+  ON web_source_endpoint_links(scan_id, confidence DESC);
+CREATE INDEX idx_web_source_endpoint_links_route
+  ON web_source_endpoint_links(source_route_id, scan_id);
