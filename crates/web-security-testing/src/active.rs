@@ -783,7 +783,12 @@ fn send_payload(
             "sensitive or transport-controlled header probes are intentionally disabled".to_string(),
         )),
         "path" => {
-            let url = replace_path_parameter(base, parameter, payload)
+            let template_base = endpoint
+                .route_template
+                .as_deref()
+                .and_then(|value| Url::parse(value).ok())
+                .unwrap_or_else(|| base.clone());
+            let url = replace_path_parameter(&template_base, parameter, payload)
                 .ok_or_else(|| RequestError::Http("path parameter placeholder was not found".to_string()))?;
             requester.send(method, &url, None, &[])
         }
