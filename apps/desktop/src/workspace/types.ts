@@ -197,6 +197,145 @@ export type QaDiscoveryRunRecord = {
   duration_ms: number | null;
 };
 
+export type QaTestRunnerKind =
+  | "pytest"
+  | "rust_cargo_test"
+  | "go_test"
+  | "vitest"
+  | "jest"
+  | "php_unit";
+
+export type QaExecutionPlanStatus = "blocked" | "planned" | "approved";
+export type QaExecutionRunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "timed_out"
+  | "cancelled"
+  | "infrastructure_error";
+
+export type QaSandboxCapabilities = {
+  process_isolation: boolean;
+  filesystem_isolation: boolean;
+  network_isolation: boolean;
+  cpu_limit: boolean;
+  memory_limit: boolean;
+  cancellation: boolean;
+};
+
+export type QaExecutionAvailability = {
+  execution_enabled: boolean;
+  backend_kind: string;
+  enforced_capabilities: QaSandboxCapabilities;
+  reason: string;
+};
+
+export type QaExternalReadRootKind =
+  | "runtime_root"
+  | "standard_library"
+  | "compiler_sysroot"
+  | "toolchain_support"
+  | "package_store"
+  | "extension_directory";
+
+export type QaDeclaredExternalReadRoot = {
+  kind: QaExternalReadRootKind;
+  path: string;
+};
+
+export type QaTrustedToolchain = {
+  runner: QaTestRunnerKind;
+  executable_path: string;
+  version: string;
+  sha256: string | null;
+  trusted_by_user: boolean;
+  declared_external_read_roots: QaDeclaredExternalReadRoot[];
+};
+
+export type QaSandboxPolicy = {
+  timeout_ms: number;
+  cpu_time_seconds: number;
+  memory_bytes: number;
+  max_output_bytes: number;
+  max_targets: number;
+  require_process_isolation: boolean;
+  require_filesystem_isolation: boolean;
+  require_network_isolation: boolean;
+  require_cpu_limit: boolean;
+  require_memory_limit: boolean;
+  require_cancellation: boolean;
+  inherit_host_environment: boolean;
+};
+
+export type QaTestExecutionRequest = {
+  runner: QaTestRunnerKind;
+  targets: string[];
+  discovery_run_id: string | null;
+};
+
+export type QaExecutionProjectManifest = {
+  sha256: string;
+  file_count: number;
+  directory_count: number;
+  total_bytes: number;
+};
+
+export type QaApprovedExternalReadSurface = {
+  sha256: string;
+  roots: Array<{
+    kind: QaExternalReadRootKind;
+    canonical_path: string;
+    manifest_sha256: string;
+    file_count: number;
+    directory_count: number;
+    total_bytes: number;
+  }>;
+};
+
+export type QaExecutionPlanRecord = {
+  id: string;
+  project_id: string;
+  discovery_run_id: string | null;
+  runner: QaTestRunnerKind;
+  status: QaExecutionPlanStatus;
+  request: QaTestExecutionRequest;
+  toolchain: QaTrustedToolchain;
+  policy: QaSandboxPolicy;
+  capabilities: QaSandboxCapabilities;
+  command: { program: string; args: string[]; uses_shell: boolean };
+  provenance: unknown;
+  blocking_reasons: string[];
+  approved_project_manifest: QaExecutionProjectManifest | null;
+  approved_external_read_surface: QaApprovedExternalReadSurface | null;
+  created_at: string;
+  approved_at: string | null;
+  superseded_at: string | null;
+};
+
+export type QaExecutionRunRecord = {
+  id: string;
+  plan_id: string;
+  project_id: string;
+  status: QaExecutionRunStatus;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  exit_code: number | null;
+  parser_completed: boolean;
+  tests_passed: boolean | null;
+  stdout_excerpt: string;
+  stderr_excerpt: string;
+  stdout_original_bytes: number;
+  stderr_original_bytes: number;
+  stdout_truncated: boolean;
+  stderr_truncated: boolean;
+  result: unknown;
+  project_manifest_sha256: string;
+  external_read_surface_sha256: string;
+  created_at: string;
+};
+
 export type LanguageServerKind = "typescript" | "pyright" | "rust_analyzer";
 export type LanguageServerConfig = {
   kind: LanguageServerKind;
