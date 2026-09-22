@@ -915,18 +915,35 @@ fn first_quoted_string(value: &str) -> Option<String> {
     None
 }
 
+fn keyword_value_tail<'a>(value: &'a str, keyword: &str) -> Option<&'a str> {
+    let mut offset = 0usize;
+    while let Some(relative) = value[offset..].find(keyword) {
+        let index = offset + relative;
+        let before_ok = index == 0
+            || !value[..index]
+                .chars()
+                .next_back()
+                .is_some_and(|character| character == '_' || character.is_ascii_alphanumeric());
+        let after_keyword = &value[index + keyword.len()..];
+        let trimmed = after_keyword.trim_start();
+        if before_ok {
+            if let Some(rest) = trimmed.strip_prefix('=') {
+                return Some(rest.trim_start());
+            }
+        }
+        offset = index + keyword.len();
+    }
+    None
+}
+
 fn keyword_string(value: &str, keyword: &str) -> Option<String> {
-    let marker = format!("{keyword}=");
-    let index = value.find(&marker)?;
-    first_quoted_string(&value[index + marker.len()..])
+    first_quoted_string(keyword_value_tail(value, keyword)?)
 }
 
 fn keyword_quoted_strings(value: &str, keyword: &str) -> Vec<String> {
-    let marker = format!("{keyword}=");
-    let Some(index) = value.find(&marker) else {
+    let Some(tail) = keyword_value_tail(value, keyword) else {
         return Vec::new();
     };
-    let tail = &value[index + marker.len()..];
     let end = tail
         .find(']')
         .or_else(|| tail.find(')'))
@@ -973,7 +990,7 @@ fn path_parameters(path: &str) -> Vec<IndexedRouteParameter> {
         }
         if segment.starts_with('{') && segment.ends_with('}') && segment.len() > 2 {
             let name = segment[1..segment.len() - 1]
-                .split(':')
+                .split([':', '?'])
                 .next()
                 .unwrap_or("")
                 .trim();
@@ -1150,9 +1167,9 @@ app.use("/api/auth", authRouter);
 from flask import Flask, Blueprint
 
 app = Flask(__name__)
-api = Blueprint("api", __name__, url_prefix="/v1")
+api = Blueprint("api", __name__, url_prefix = "/v1")
 
-@app.route("/health", methods=["GET", "HEAD"])
+@app.route("/health", methods = ["GET", "HEAD"])
 def health():
     return "ok"
 
@@ -1160,7 +1177,7 @@ def health():
 def create_user(user_id):
     return {"id": user_id}
 
-app.register_blueprint(api, url_prefix="/api")
+app.register_blueprint(api, url_prefix = "/api")
 "#;
         let mut parser = Parser::new();
         parser
