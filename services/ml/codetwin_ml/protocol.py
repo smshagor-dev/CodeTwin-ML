@@ -17,7 +17,8 @@ from codetwin_ml.inference import (
     plan_inference,
     runtime_dependency_status,
 )
-from codetwin_ml.isolated import run_isolated_inference
+from codetwin_ml.generation import generation_runtime_status
+from codetwin_ml.isolated import run_isolated_generation, run_isolated_inference
 from codetwin_ml.models import (
     ModelError,
     install_model,
@@ -97,14 +98,29 @@ def handle_request(request: Request) -> dict[str, Any]:
                 for item in models["models"]
                 if item.get("ready") and item.get("execution_supported")
             ]
+            classifier_models = [
+                item for item in execution_models
+                if item.get("backend") == "onnx-classification-v1"
+            ]
+            generation_models = [
+                item for item in execution_models
+                if item.get("backend") == "llama-cpp-gguf-v1"
+            ]
             inference_actions = (
-                sorted({action for item in execution_models for action in item.get("actions", [])})
+                sorted({action for item in classifier_models for action in item.get("actions", [])})
                 if dependencies["available"]
+                else []
+            )
+            generation_runtime = generation_runtime_status()
+            generation_actions = (
+                sorted({action for item in generation_models for action in item.get("actions", [])})
+                if generation_runtime.get("available")
                 else []
             )
             return _ok(request, {
                 "protocol": 1,
                 "inference": inference_actions,
+                "generation": generation_actions,
                 "training": [],
                 "models": {
                     "registry": True,
@@ -114,6 +130,7 @@ def handle_request(request: Request) -> dict[str, Any]:
                     "execution_implemented": models["execution_implemented"],
                     "backends": models["execution_backends"],
                     "runtime_dependencies": dependencies,
+                    "generation_runtime": generation_runtime,
                 },
                 "datasets": {
                     "catalog_version": catalog["schema_version"],
@@ -121,8 +138,9 @@ def handle_request(request: Request) -> dict[str, Any]:
                     "actions": catalog["actions"],
                 },
                 "note": (
-                    "Inference actions are advertised only when an integrity-checked model declares "
-                    "the bounded execution contract and the local ONNX runtime dependencies are present."
+                    "Classifier actions require the bounded ONNX runtime. Generation actions require "
+                    "an integrity-checked GGUF package plus a separately trusted llama.cpp CLI pinned "
+                    "by CODETWIN_LLAMA_CLI_SHA256. Generated text is never auto-executed as a web payload."
                 ),
             })
         if request.method == "datasets.list":
@@ -176,6 +194,18 @@ def handle_request(request: Request) -> dict[str, Any]:
                     model_version=_string_param(request, "model_version"),
                 ),
             )
+        if request.method == "generation.run":
+            action = _string_param(request, "action", required=True)
+            return _ok(
+                request,
+                run_isolated_generation(
+                    action,
+                    _text_param(request, "text"),
+                    model_id=_string_param(request, "model_id"),
+                    model_version=_string_param(request, "model_version"),
+                ),
+            )
+
         return _error(request, "method_not_found", f"unsupported method: {request.method}")
     except ProtocolError:
         raise
