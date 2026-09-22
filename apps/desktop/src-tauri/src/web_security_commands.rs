@@ -234,6 +234,7 @@ fn run_scan_background(
                         scan_id,
                         &WebEndpointInput {
                             url: endpoint.url.clone(),
+                            route_template: endpoint.route_template.clone(),
                             method: endpoint.method.clone(),
                             depth: endpoint.depth,
                             source: endpoint.source.clone(),
