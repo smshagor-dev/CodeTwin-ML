@@ -162,6 +162,8 @@ The restricted-token probe described here establishes the write boundary. The pr
 
 The launcher does not inherit the full host environment or a host `PATH`. Required Windows system-root values are retained only after canonical checks. Writable state is redirected where supported through `TEMP`, `TMP`, `GOTMPDIR`, `CARGO_TARGET_DIR`, `GOCACHE`, `NPM_CONFIG_CACHE`, and `XDG_CACHE_HOME`. Python user-site imports and bytecode writes are disabled; `NO_COLOR` and `CI=1` are supplied.
 
+The Windows Job Object also applies fail-closed UI restrictions that deny cross-job USER handles, clipboard read/write, desktop creation/switching, display/system-setting changes, global-atom access, and `ExitWindows` calls. This materially reduces interactive desktop attack surface, but it is not described as a dedicated private window-station boundary because the production child still launches with the default desktop name unresolved by CodeTwin.
+
 Only explicit standard-I/O handles are inheritable. The actual test runner is born suspended and receives Job Object membership before its primary thread can execute untrusted user-mode code.
 
 A raw process completion is not automatically a test verdict. Pass/fail requires a completed execution, a completed runner-specific parser and an exit code. Timeout, cancellation, infrastructure/setup failure, project-manifest mismatch, external-surface mismatch, toolchain-attestation failure, LPAC-readiness failure or incomplete parsing produces no pass/fail claim.
