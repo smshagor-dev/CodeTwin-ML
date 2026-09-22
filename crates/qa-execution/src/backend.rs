@@ -30,6 +30,7 @@ pub const MAX_EXECUTION_INPUT_BYTES: u64 = 8 * 1024 * 1024;
 pub enum ExecutionBackendKind {
     PlanningOnly,
     WindowsJobObject,
+    DockerHardened,
 }
 
 impl ExecutionBackendKind {
@@ -37,6 +38,7 @@ impl ExecutionBackendKind {
         match self {
             Self::PlanningOnly => "planning_only",
             Self::WindowsJobObject => "windows_job_object",
+            Self::DockerHardened => "docker_hardened",
         }
     }
 }
