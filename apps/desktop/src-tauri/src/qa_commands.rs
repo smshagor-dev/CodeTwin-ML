@@ -116,6 +116,11 @@ pub fn qa_discovery_history(
 
 
 #[tauri::command]
+pub fn qa_toolchain_sha256(path: String) -> Result<String, String> {
+    hash_trusted_toolchain(&path)
+}
+
+#[tauri::command]
 pub fn qa_execution_availability(
     app: tauri::AppHandle,
 ) -> Result<QaExecutionAvailability, String> {
