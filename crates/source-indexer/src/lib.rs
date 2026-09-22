@@ -17,7 +17,7 @@ use walkdir::{DirEntry, WalkDir};
 const MAX_SOURCE_BYTES: u64 = 5 * 1024 * 1024;
 const TYPESCRIPT_DEFINITIONS_QUERY: &str = include_str!("../queries/typescript.scm");
 pub const INDEXER_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const QUERY_VERSION: &str = "definitions-v2-imports-v1-routes-v1";
+pub const QUERY_VERSION: &str = "definitions-v2-imports-v2-routes-v2";
 
 #[derive(Debug, Error)]
 pub enum IndexError {
@@ -73,6 +73,7 @@ pub struct IndexedRouteParameter {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedRouteMount {
     pub framework: String,
+    pub parent_router: String,
     pub mounted_binding: String,
     pub prefix: String,
     pub start_line: usize,
