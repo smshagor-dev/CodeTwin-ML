@@ -28,7 +28,7 @@ The parent process applies:
 - stderr suppression so arbitrary runtime diagnostics are not interpreted as prediction evidence;
 - protocol version and result-shape checks.
 
-Timeout, startup failure, non-zero exit, malformed JSON, protocol mismatch, oversized output, and structured worker errors all become deterministic `InferenceRuntimeError` failures. No fallback in-process inference occurs.
+Timeout, startup failure, non-zero exit, malformed JSON, protocol mismatch, oversized output, and structured worker errors all become deterministic `InferenceRuntimeError` failures. Worker stdout is captured to a temporary file and size-checked before it is read back, so the 1 MiB response limit is not merely a post-hoc in-memory check. No fallback in-process inference occurs.
 
 ## Worker-enforced limits
 
@@ -42,11 +42,25 @@ The implementation never raises an existing hard limit. Unsupported resource typ
 
 The existing ONNX adapter restrictions still apply inside the worker: one verified single-file ONNX model, no ONNX external tensor data, CPU provider only, sequential execution, one intra-op thread, one inter-op thread, bounded input, bounded labels/output, and manifest-checked model I/O.
 
+## Windows desktop process-tree containment
+
+When the desktop app starts the local ML sidecar on Windows, it creates the Python sidecar **suspended**, places it in a Job Object, and only then resumes its initial thread. The Job Object uses kill-on-close, an aggregate memory ceiling, and an active-process limit. Because the inference worker and trusted llama.cpp CLI are descendants of that sidecar and no breakaway flag is requested, they remain in the same process-tree containment boundary.
+
+If Job Object creation, configuration, assignment, suspended-thread discovery, or resume fails, the sidecar request fails closed. Timeout/error cleanup terminates the Job Object tree rather than only the immediate Python process.
+
+## Native generation launch integrity
+
+GGUF generation still requires an explicitly configured, SHA-256-pinned llama.cpp executable and a manifest-hashed installed GGUF artifact.
+
+Immediately before generation, CodeTwin re-attests both files against their expected hashes and file identities. On Windows it additionally opens both the llama.cpp executable and GGUF model with read sharing only, denying write/delete sharing for the lifetime of the generation call. This closes the ordinary verify-then-replace window while the trusted native runtime and model are being launched and used. The file identities are checked again before accepting the generated result.
+
+On non-Windows platforms CodeTwin performs pre-launch SHA-256 plus file-identity attestation and rejects ordinary identity changes observed during the call, but it does not claim an equivalent kernel-enforced share-deny lock.
+
 ## Platform boundary
 
-The wall-clock timeout, environment sanitization, and process separation work on Windows as well as POSIX. The current Python implementation does not establish a Windows Job Object or another Windows kernel memory cap. POSIX `RLIMIT_AS` availability and behavior also vary by operating system.
+The wall-clock timeout, environment sanitization, and process separation work on Windows as well as POSIX. Windows desktop launches now add Job Object process-tree/memory containment around the sidecar and its descendants, while POSIX workers retain the resource-limit strategy described above. Neither path is a VM/container boundary, and the current native generation path does not claim universal filesystem or network isolation.
 
-For these reasons this layer is described as **worker isolation with bounded execution controls**, not a VM, container, seccomp sandbox, or universal hard memory sandbox. Strongly untrusted third-party models still require a future OS-specific sandbox policy.
+For these reasons this layer is described as **worker isolation with bounded execution controls**, not a universal hard sandbox. Strongly untrusted third-party native runtimes still require a future OS-specific filesystem/network sandbox policy.
 
 ## Tests
 
