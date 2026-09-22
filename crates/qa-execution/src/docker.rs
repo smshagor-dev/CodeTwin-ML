@@ -57,13 +57,24 @@ pub fn docker_backend_info(
         return Err(BackendExecutionError::BackendUnavailable);
     }
     let inspect = Command::new(&docker)
-        .args(["image", "inspect", image, "--format", "{{json .RepoDigests}}"])
+        .args(["image", "inspect", image, "--format", "{{json .RepoDigests}}|{{.Os}}"])
         .env_clear()
         .output()?;
     if !inspect.status.success() {
         return Err(BackendExecutionError::BackendUnavailable);
     }
-    let repo_digests = String::from_utf8_lossy(&inspect.stdout);
+    let inspect_text = String::from_utf8_lossy(&inspect.stdout);
+    let (repo_digests, image_os) = inspect_text
+        .trim()
+        .rsplit_once('|')
+        .ok_or_else(|| BackendExecutionError::InvalidToolchain(
+            "Docker image inspection returned an unexpected response".to_string(),
+        ))?;
+    if image_os != "linux" {
+        return Err(BackendExecutionError::InvalidToolchain(
+            "hardened QA execution currently requires a Linux container image".to_string(),
+        ));
+    }
     if !repo_digests.contains(image) {
         return Err(BackendExecutionError::InvalidToolchain(
             "local Docker image does not expose the approved repository digest".to_string(),
@@ -171,8 +182,11 @@ pub fn execute_approved_plan_in_docker(
             plan.policy.memory_bytes.to_string(),
             "--cpus".to_string(),
             "1.0".to_string(),
-            "--user".to_string(),
-            "65534:65534".to_string(),
+            "--ulimit".to_string(),
+            format!(
+                "cpu={0}:{0}",
+                plan.policy.cpu_time_seconds
+            ),
             "--tmpfs".to_string(),
             "/tmp:rw,noexec,nosuid,nodev,size=67108864".to_string(),
             "--mount".to_string(),
