@@ -44,6 +44,7 @@ import type {
   SecurityFixValidationRun,
   SecurityRunRecord,
   SourceFileRecord,
+  SourceRouteRecord,
   SymbolRecord,
   SystemStatusEntry,
   WebsiteRecord,
@@ -56,6 +57,7 @@ import type {
   WebFindingRecord,
   WebScanRecord,
   WebScanStartRequest,
+  WebSourceEndpointLinkRecord,
 } from "./types";
 
 export type ImportStage = "selecting" | "discovering" | "indexing" | "security" | "testing";
@@ -391,6 +393,12 @@ export const workspaceApi = {
   },
   listWebSecurityEndpoints(scanId: string, limit = 500) {
     return invoke<WebEndpointRecord[]>("list_web_security_endpoints", { scanId, limit });
+  },
+  listSourceRoutes(projectId: string, limit = 500) {
+    return invoke<SourceRouteRecord[]>("list_source_routes", { projectId, limit });
+  },
+  listWebSourceEndpointLinks(scanId: string, limit = 500) {
+    return invoke<WebSourceEndpointLinkRecord[]>("list_web_source_endpoint_links", { scanId, limit });
   },
   listWebSecurityFindings(scanId: string, filter: WebFindingFilter, limit = 500) {
     return invoke<WebFindingRecord[]>("list_web_security_findings", { scanId, filter, limit });
