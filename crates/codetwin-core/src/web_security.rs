@@ -717,7 +717,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             if !overlap.is_empty() {
                 confidence = (confidence + 0.005).min(0.999);
             }
-            if best.as_ref().map_or(true, |(score, _, _, _)| confidence > *score) {
+            if best.as_ref().is_none_or(|(score, _, _, _)| confidence > *score) {
                 best = Some((confidence, exact_path, route, overlap));
             }
         }
@@ -852,7 +852,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 confidence += 0.01;
             }
             confidence = confidence.min(0.99);
-            if best.as_ref().map_or(true, |(score, _)| confidence > *score) {
+            if best.as_ref().is_none_or(|(score, _)| confidence > *score) {
                 best = Some((confidence, route));
             }
         }
