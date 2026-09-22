@@ -39,10 +39,6 @@ pub struct ScopeConfig {
     pub max_crawl_depth: usize,
     pub max_requests: usize,
     pub concurrency: usize,
-    #[serde(default = "default_requests_per_second")]
-    pub requests_per_second: f64,
-    #[serde(default = "default_burst_requests")]
-    pub burst_requests: usize,
     pub timeout_ms: u64,
     pub response_limit_bytes: usize,
     pub redirect_limit: usize,
@@ -52,14 +48,6 @@ pub struct ScopeConfig {
     pub allow_private_networks: bool,
     pub enable_timing_probes: bool,
     pub authorization_confirmed: bool,
-}
-
-fn default_requests_per_second() -> f64 {
-    4.0
-}
-
-fn default_burst_requests() -> usize {
-    2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -469,11 +457,9 @@ pub fn run_authorized_scan_with_seeds(
     mut on_progress: impl FnMut(ScanProgress),
 ) -> Result<ScanOutcome, ScanError> {
     let policy = ScopePolicy::new(config.scope.clone())?;
-    let budget = RequestBudget::with_rate(
-        policy.config().max_requests,
-        policy.config().requests_per_second,
-        policy.config().burst_requests,
-    );
+    // A global shared token bucket caps scan request rate even when detector
+    // concurrency is higher. This is intentionally conservative and not user-bypassable.
+    let budget = RequestBudget::with_rate(policy.config().max_requests, 4.0, 2);
     let requester = ScopedRequester::new(
         policy.clone(),
         primary_auth.clone(),
