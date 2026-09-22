@@ -18,8 +18,6 @@ use tauri::Manager;
 static QA_DISCOVERY_RUNNING: AtomicBool = AtomicBool::new(false);
 static QA_EXECUTION_RUNNING: AtomicBool = AtomicBool::new(false);
 static QA_EXECUTION_CANCELLED: AtomicBool = AtomicBool::new(false);
-static QA_EXECUTION_RUNNING: AtomicBool = AtomicBool::new(false);
-static QA_EXECUTION_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 fn hash_trusted_toolchain(value: &str) -> Result<String, String> {
     let path = Path::new(value);
