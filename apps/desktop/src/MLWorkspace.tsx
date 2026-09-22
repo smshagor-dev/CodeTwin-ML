@@ -246,11 +246,23 @@ export function MLWorkspace() {
       const identity = await invoke<MlSidecarIdentity>("ml_sidecar_identity", {
         config: inspectionConfig,
       });
+      if (
+        config.pythonExecutableSha256
+        && config.pythonExecutableSha256.toLowerCase() !== identity.pythonExecutableSha256.toLowerCase()
+      ) {
+        throw new Error("Python executable identity changed. Forget the existing trust pin before trusting this executable again.");
+      }
+      if (
+        config.sidecarDigest
+        && config.sidecarDigest.toLowerCase() !== identity.sidecarDigest.toLowerCase()
+      ) {
+        throw new Error("ML sidecar source identity changed. Forget the existing trust pin before trusting this sidecar again.");
+      }
       const trustedConfig: MlSidecarConfig = {
         pythonExecutable: identity.pythonExecutable,
         sidecarRoot: identity.sidecarRoot,
-        pythonExecutableSha256: identity.pythonExecutableSha256,
-        sidecarDigest: identity.sidecarDigest,
+        pythonExecutableSha256: config.pythonExecutableSha256 ?? identity.pythonExecutableSha256,
+        sidecarDigest: config.sidecarDigest ?? identity.sidecarDigest,
       };
       const [health, caps, inventory] = await Promise.all([
         invoke<MlSidecarStatus>("ml_sidecar_health", { config: trustedConfig }),
@@ -259,12 +271,12 @@ export function MLWorkspace() {
       ]);
       localStorage.setItem(PYTHON_KEY, identity.pythonExecutable);
       localStorage.setItem(ROOT_KEY, identity.sidecarRoot);
-      localStorage.setItem(PYTHON_SHA_KEY, identity.pythonExecutableSha256);
-      localStorage.setItem(SIDECAR_DIGEST_KEY, identity.sidecarDigest);
+      localStorage.setItem(PYTHON_SHA_KEY, trustedConfig.pythonExecutableSha256!);
+      localStorage.setItem(SIDECAR_DIGEST_KEY, trustedConfig.sidecarDigest!);
       setPythonExecutable(identity.pythonExecutable);
       setSidecarRoot(identity.sidecarRoot);
-      setPythonExecutableSha256(identity.pythonExecutableSha256);
-      setSidecarDigest(identity.sidecarDigest);
+      setPythonExecutableSha256(trustedConfig.pythonExecutableSha256!);
+      setSidecarDigest(trustedConfig.sidecarDigest!);
       setSidecarStatus(health);
       setCapabilities(caps);
       setModels(inventory);
@@ -370,7 +382,12 @@ export function MLWorkspace() {
           </label>
         </div>
         <div className="row">
-          <button onClick={() => void connectSidecar()} disabled={busy || !config.pythonExecutable || !config.sidecarRoot}>{busy ? "Inspecting…" : "Inspect & trust sidecar"}</button>
+          <button onClick={() => void connectSidecar()} disabled={busy || !config.pythonExecutable || !config.sidecarRoot}>
+            {busy ? "Inspecting…" : (config.pythonExecutableSha256 && config.sidecarDigest ? "Verify trusted sidecar" : "Inspect & trust sidecar")}
+          </button>
+          {(config.pythonExecutableSha256 || config.sidecarDigest) && (
+            <button className="secondary" onClick={clearSidecarTrust} disabled={busy}>Forget trust</button>
+          )}
           {sidecarStatus && <span className="status-good">Sidecar ready · protocol {String(sidecarStatus.health.protocol ?? "unknown")}</span>}
         </div>
         {sidecarStatus?.identity && (
