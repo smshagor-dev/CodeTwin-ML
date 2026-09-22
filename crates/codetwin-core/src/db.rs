@@ -159,7 +159,8 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE security_remediation_campaign_events;
+                    "DROP TABLE source_routes;
+                     DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
                      DROP TABLE security_remediation_campaign_findings;
                      DROP TABLE security_remediation_campaigns;
@@ -223,7 +224,8 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE security_remediation_campaign_events;
+                    "DROP TABLE source_routes;
+                     DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
                      DROP TABLE security_remediation_campaign_findings;
                      DROP TABLE security_remediation_campaigns;
@@ -270,7 +272,8 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE security_remediation_campaign_events;
+                    "DROP TABLE source_routes;
+                     DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
                      DROP TABLE security_remediation_campaign_findings;
                      DROP TABLE security_remediation_campaigns;
@@ -355,7 +358,8 @@ mod tests {
             let db = Database::open(file.path()).expect("create current db");
             db.connection()
                 .execute_batch(
-                    "DROP TABLE security_remediation_campaign_events;
+                    "DROP TABLE source_routes;
+                     DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
                      DROP TABLE security_remediation_campaign_findings;
                      DROP TABLE security_remediation_campaigns;
@@ -485,11 +489,12 @@ mod tests {
                         'attempt-v20','finding-v20','session-v20','project-v20',1,
                         'INSUFFICIENT_EVIDENCE','sql_injection','prepared','[]','{}','{}'
                      );
+                     DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
                      DROP TABLE security_remediation_campaign_findings;
                      DROP TABLE security_remediation_campaigns;
-                     DELETE FROM schema_migrations WHERE version=21;",
+                     DELETE FROM schema_migrations WHERE version IN (21,22);",
                 )
                 .expect("rewind campaign migration while preserving schema-20 data");
         }
