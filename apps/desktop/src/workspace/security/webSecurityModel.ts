@@ -144,9 +144,6 @@ export function validateWebScanConfig(config: WebScanConfig): string | null {
   if (config.scope.allow_non_idempotent_methods && !config.scope.active_testing) {
     return "Non-idempotent request testing requires active testing to be enabled.";
   }
-  if (config.scope.enable_timing_probes && !config.scope.active_testing) {
-    return "Timing probes require active testing to be enabled.";
-  }
   return null;
 }
 
@@ -165,7 +162,10 @@ export function buildWebScanRequest(args: {
   return {
     website_id: args.websiteId,
     project_id: args.projectId,
-    config: args.config,
+    config: {
+      ...args.config,
+      scope: { ...args.config.scope, enable_timing_probes: false },
+    },
     primary_auth: {
       cookie_header: nullable(args.primaryCookie),
       bearer_token: nullable(args.primaryBearer),
