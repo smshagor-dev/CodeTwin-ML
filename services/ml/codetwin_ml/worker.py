@@ -8,7 +8,9 @@ from typing import Any
 WORKER_PROTOCOL_VERSION = 1
 MAX_WORKER_REQUEST_BYTES = 131_072
 POSIX_CPU_SECONDS = 10
+POSIX_GENERATION_CPU_SECONDS = 60
 POSIX_ADDRESS_SPACE_BYTES = 4 * 1024 * 1024 * 1024
+POSIX_GENERATION_ADDRESS_SPACE_BYTES = 8 * 1024 * 1024 * 1024
 POSIX_FILE_SIZE_BYTES = 16 * 1024 * 1024
 
 
@@ -39,15 +41,21 @@ def _cap_resource(resource_module: Any, resource_name: str, target: int) -> None
         return
 
 
-def _apply_resource_limits() -> None:
+def _apply_resource_limits(operation: str) -> None:
     if os.name != "posix":
         return
     try:
         import resource
     except ImportError:
         return
-    _cap_resource(resource, "RLIMIT_CPU", POSIX_CPU_SECONDS)
-    _cap_resource(resource, "RLIMIT_AS", POSIX_ADDRESS_SPACE_BYTES)
+    cpu_seconds = POSIX_GENERATION_CPU_SECONDS if operation == "generation" else POSIX_CPU_SECONDS
+    address_space = (
+        POSIX_GENERATION_ADDRESS_SPACE_BYTES
+        if operation == "generation"
+        else POSIX_ADDRESS_SPACE_BYTES
+    )
+    _cap_resource(resource, "RLIMIT_CPU", cpu_seconds)
+    _cap_resource(resource, "RLIMIT_AS", address_space)
     _cap_resource(resource, "RLIMIT_FSIZE", POSIX_FILE_SIZE_BYTES)
 
 
@@ -64,13 +72,13 @@ def _read_request() -> dict[str, Any]:
 
 
 def main() -> int:
-    _apply_resource_limits()
     try:
         request = _read_request()
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         return _write_response(_error("invalid_request", str(error)))
 
     operation = request.get("operation", "classification")
+    _apply_resource_limits(operation)
     action = request.get("action")
     text = request.get("text")
     model_id = request.get("model_id")
