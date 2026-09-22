@@ -144,6 +144,11 @@ pub struct WebSourceEndpointLinkRecord {
     pub scan_id: String,
     pub endpoint_id: String,
     pub source_route_id: String,
+    pub source_relative_path: String,
+    pub source_framework: String,
+    pub source_method: String,
+    pub source_path_template: String,
+    pub source_handler_name: Option<String>,
     pub match_kind: String,
     pub confidence: f64,
     pub parameter_overlap: Vec<String>,
@@ -866,6 +871,11 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             scan_id: endpoint.scan_id.clone(),
             endpoint_id: endpoint.id.clone(),
             source_route_id: route.id,
+            source_relative_path: route.relative_path,
+            source_framework: route.framework,
+            source_method: route.http_method,
+            source_path_template: route.path_template,
+            source_handler_name: route.handler_name,
             match_kind: match_kind.to_string(),
             confidence,
             parameter_overlap: overlap,
@@ -879,24 +889,33 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         limit: usize,
     ) -> Result<Vec<WebSourceEndpointLinkRecord>, WebSecurityStoreError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, scan_id, endpoint_id, source_route_id, match_kind,
-                    confidence, parameter_overlap_json, created_at
-             FROM web_source_endpoint_links
-             WHERE scan_id=?1
-             ORDER BY confidence DESC, endpoint_id, source_route_id
+            "SELECT l.id, l.scan_id, l.endpoint_id, l.source_route_id,
+                    f.relative_path, sr.framework, sr.http_method, sr.path_template,
+                    sr.handler_name, l.match_kind, l.confidence,
+                    l.parameter_overlap_json, l.created_at
+             FROM web_source_endpoint_links l
+             JOIN source_routes sr ON sr.id=l.source_route_id
+             JOIN files f ON f.id=sr.file_id
+             WHERE l.scan_id=?1
+             ORDER BY l.confidence DESC, l.endpoint_id, l.source_route_id
              LIMIT ?2",
         )?;
         let rows = statement.query_map(params![scan_id, bounded(limit) as i64], |row| {
-            let overlap_json: String = row.get(6)?;
+            let overlap_json: String = row.get(11)?;
             Ok(WebSourceEndpointLinkRecord {
                 id: row.get(0)?,
                 scan_id: row.get(1)?,
                 endpoint_id: row.get(2)?,
                 source_route_id: row.get(3)?,
-                match_kind: row.get(4)?,
-                confidence: row.get(5)?,
+                source_relative_path: row.get(4)?,
+                source_framework: row.get(5)?,
+                source_method: row.get(6)?,
+                source_path_template: row.get(7)?,
+                source_handler_name: row.get(8)?,
+                match_kind: row.get(9)?,
+                confidence: row.get(10)?,
                 parameter_overlap: serde_json::from_str(&overlap_json).unwrap_or_default(),
-                created_at: row.get(7)?,
+                created_at: row.get(12)?,
             })
         })?;
         let mut values = Vec::new();
