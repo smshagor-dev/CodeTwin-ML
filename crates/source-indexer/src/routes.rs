@@ -985,7 +985,8 @@ fn extract_go_routes(
     };
 
     let handlers = go_handlers(source, root);
-    let handler_inputs = go_handler_inputs(source, &handlers, framework);
+    let json_models = go_json_models(source, root);
+    let handler_inputs = go_handler_inputs(source, &handlers, framework, &json_models);
     let handler_parameters: BTreeMap<String, Vec<IndexedRouteParameter>> = handler_inputs
         .iter()
         .map(|input| (input.handler_name.clone(), input.parameters.clone()))
@@ -1052,7 +1053,9 @@ fn extract_go_routes(
             }
         }
         normalize_parameters(&mut parameters);
-        let request_content_type = if parameters.iter().any(|value| value.location == "form") {
+        let request_content_type = if parameters.iter().any(|value| value.location == "json") {
+            Some("application/json".to_string())
+        } else if parameters.iter().any(|value| value.location == "form") {
             Some("application/x-www-form-urlencoded".to_string())
         } else {
             None
@@ -1099,13 +1102,14 @@ fn go_handler_inputs(
     source: &str,
     handlers: &BTreeMap<String, Node<'_>>,
     framework: &str,
+    json_models: &BTreeMap<String, Vec<String>>,
 ) -> Vec<IndexedHandlerInput> {
     let mut output = Vec::new();
     for (name, node) in handlers {
         let Some(body) = text(source, *node) else {
             continue;
         };
-        let mut parameters = go_handler_parameters(body, framework);
+        let mut parameters = go_handler_parameters(body, framework, json_models);
         normalize_parameters(&mut parameters);
         if parameters.is_empty() {
             continue;
@@ -1122,7 +1126,11 @@ fn go_handler_inputs(
     output
 }
 
-fn go_handler_parameters(body: &str, framework: &str) -> Vec<IndexedRouteParameter> {
+fn go_handler_parameters(
+    body: &str,
+    framework: &str,
+    json_models: &BTreeMap<String, Vec<String>>,
+) -> Vec<IndexedRouteParameter> {
     let mut parameters = Vec::new();
     let mut collect = |markers: &[&str], location: &str| {
         for marker in markers {
