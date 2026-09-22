@@ -128,7 +128,10 @@ pub(crate) fn execute_lpac_bundle_plan(
         profile.sid(),
     )?;
 
-    attest_production_lpac(child.process.raw(), profile.sid())?;
+    if let Err(error) = attest_production_lpac(child.process.raw(), profile.sid()) {
+        child.terminate_before_job_assignment();
+        return Err(error);
+    }
 
     let assigned = unsafe { AssignProcessToJobObject(job.raw(), child.process.raw()) };
     if assigned == 0 {
