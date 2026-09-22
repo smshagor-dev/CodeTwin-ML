@@ -1064,7 +1064,7 @@ fn detect_go_route_framework(source: &str) -> Option<&'static str> {
     if source.contains("github.com/go-chi/chi") {
         return Some("chi");
     }
-    if source.contains(""net/http"") {
+    if source.contains("\"net/http\"") {
         return Some("go-stdlib");
     }
     None
