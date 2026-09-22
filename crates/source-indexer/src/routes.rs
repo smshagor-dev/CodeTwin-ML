@@ -38,8 +38,8 @@ pub fn extract_routes(
             (routes, mounts, handler_inputs)
         }
         "Rust" => {
-            let routes = extract_rust_routes(source, root);
-            (routes, Vec::new(), Vec::new())
+            let (routes, handler_inputs) = extract_rust_routes(source, root);
+            (routes, Vec::new(), handler_inputs)
         }
         _ => (Vec::new(), Vec::new(), Vec::new()),
     };
@@ -1505,7 +1505,17 @@ fn go_group_prefixes(
     (prefixes, mounts)
 }
 
-fn extract_rust_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
+fn extract_rust_routes(
+    source: &str,
+    root: Node<'_>,
+) -> (Vec<IndexedRoute>, Vec<IndexedHandlerInput>) {
+    let handlers = rust_handlers(source, root);
+    let models = rust_struct_models(source, root);
+    let handler_inputs = rust_handler_inputs(source, &handlers, &models);
+    let handler_parameters: BTreeMap<String, Vec<IndexedRouteParameter>> = handler_inputs
+        .iter()
+        .map(|input| (input.handler_name.clone(), input.parameters.clone()))
+        .collect();
     let mut routes = Vec::new();
 
     let attribute_framework = if source.contains("actix_web") {
@@ -1516,7 +1526,11 @@ fn extract_rust_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
         None
     };
     if let Some(framework) = attribute_framework {
-        routes.extend(extract_rust_attribute_routes(source, framework));
+        routes.extend(extract_rust_attribute_routes(
+            source,
+            framework,
+            &handler_parameters,
+        ));
     }
 
     if source.contains("axum") {
@@ -1538,20 +1552,27 @@ fn extract_rust_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
             if methods.is_empty() {
                 return;
             }
+            let handlers_by_method = axum_method_handlers(tail);
             let full_path = normalize_path(&path);
-            let mut parameters = path_parameters(&full_path);
-            normalize_parameters(&mut parameters);
             let start = node.start_position();
             let end = node.end_position();
             for method in methods {
+                let handler_name = handlers_by_method.get(&method).cloned();
+                let mut parameters = path_parameters(&full_path);
+                if let Some(name) = handler_name.as_ref() {
+                    if let Some(handler) = handler_parameters.get(name) {
+                        parameters.extend(handler.iter().cloned());
+                    }
+                }
+                normalize_parameters(&mut parameters);
                 routes.push(IndexedRoute {
                     framework: "axum".to_string(),
                     router_name: "Router".to_string(),
                     http_method: method,
                     path_template: full_path.clone(),
-                    handler_name: None,
-                    parameters: parameters.clone(),
-                    request_content_type: None,
+                    handler_name,
+                    request_content_type: rust_request_content_type(&parameters),
+                    parameters,
                     start_line: start.row + 1,
                     end_line: end.row + 1,
                 });
@@ -1559,12 +1580,17 @@ fn extract_rust_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
         });
     }
 
-    routes
+    (routes, handler_inputs)
 }
 
-fn extract_rust_attribute_routes(source: &str, framework: &str) -> Vec<IndexedRoute> {
+fn extract_rust_attribute_routes(
+    source: &str,
+    framework: &str,
+    handler_parameters: &BTreeMap<String, Vec<IndexedRouteParameter>>,
+) -> Vec<IndexedRoute> {
     let mut routes = Vec::new();
-    for (index, line) in source.lines().enumerate() {
+    let lines: Vec<&str> = source.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         if !trimmed.starts_with("#[") {
             continue;
@@ -1577,25 +1603,371 @@ fn extract_rust_attribute_routes(source: &str, framework: &str) -> Vec<IndexedRo
         if !HTTP_METHODS.contains(&method.as_str()) {
             continue;
         }
-        let Some(path) = first_quoted_string(&inner[open + 1..]) else {
+        let Some(raw_path) = first_quoted_string(&inner[open + 1..]) else {
             continue;
         };
-        let full_path = normalize_path(&path);
-        let mut parameters = path_parameters(&full_path);
+        let (full_path, mut parameters) = rust_attribute_path_and_query(framework, &raw_path);
+        let handler_name = rust_following_function_name(&lines, index);
+        if let Some(name) = handler_name.as_ref() {
+            if let Some(handler) = handler_parameters.get(name) {
+                parameters.extend(handler.iter().cloned());
+            }
+        }
         normalize_parameters(&mut parameters);
         routes.push(IndexedRoute {
             framework: framework.to_string(),
             router_name: "attribute".to_string(),
             http_method: method.to_ascii_uppercase(),
             path_template: full_path,
-            handler_name: None,
+            handler_name,
+            request_content_type: rust_request_content_type(&parameters),
             parameters,
-            request_content_type: None,
             start_line: index + 1,
             end_line: index + 1,
         });
     }
     routes
+}
+
+fn rust_attribute_path_and_query(
+    framework: &str,
+    raw_path: &str,
+) -> (String, Vec<IndexedRouteParameter>) {
+    let mut parameters = Vec::new();
+    let path = if framework == "rocket" {
+        if let Some((path, query)) = raw_path.split_once('?') {
+            for segment in query.split('&') {
+                let segment = segment.trim();
+                if segment.starts_with('<') && segment.ends_with('>') && segment.len() > 2 {
+                    let name = segment[1..segment.len() - 1].trim_end_matches("..").trim();
+                    if is_identifier(name) {
+                        parameters.push(route_parameter(name, "query"));
+                    }
+                }
+            }
+            path
+        } else {
+            raw_path
+        }
+    } else {
+        raw_path
+    };
+    let full_path = normalize_path(path);
+    parameters.extend(path_parameters(&full_path));
+    (full_path, parameters)
+}
+
+fn rust_following_function_name(lines: &[&str], attribute_index: usize) -> Option<String> {
+    let end = lines.len().min(attribute_index.saturating_add(12));
+    for line in &lines[attribute_index + 1..end] {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#[") {
+            continue;
+        }
+        let Some(index) = trimmed.find("fn ") else {
+            continue;
+        };
+        let tail = &trimmed[index + 3..];
+        let name = tail
+            .split(|character: char| character == '(' || character.is_whitespace())
+            .next()
+            .unwrap_or("")
+            .trim();
+        if is_identifier(name) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn rust_handlers<'a>(source: &str, root: Node<'a>) -> BTreeMap<String, Node<'a>> {
+    let mut handlers = BTreeMap::new();
+    walk(root, &mut |node| {
+        if node.kind() != "function_item" {
+            return;
+        }
+        let Some(name) = node
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(str::trim)
+        else {
+            return;
+        };
+        if is_identifier(name) {
+            handlers.insert(name.to_string(), node);
+        }
+    });
+    handlers
+}
+
+fn rust_struct_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
+    let mut models = BTreeMap::new();
+    walk(root, &mut |node| {
+        if node.kind() != "struct_item" {
+            return;
+        }
+        let Some(name) = node
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(str::trim)
+        else {
+            return;
+        };
+        let Some(raw) = text(source, node) else {
+            return;
+        };
+        if !raw.contains('{') {
+            return;
+        }
+        let fields = rust_struct_fields(raw);
+        if !fields.is_empty() {
+            models.insert(name.to_string(), fields);
+        }
+    });
+    models
+}
+
+fn rust_struct_fields(raw: &str) -> Vec<String> {
+    let Some(open) = raw.find('{') else {
+        return Vec::new();
+    };
+    let Some(close) = raw.rfind('}') else {
+        return Vec::new();
+    };
+    if close <= open {
+        return Vec::new();
+    }
+
+    let mut fields = Vec::new();
+    let mut pending_rename: Option<String> = None;
+    let mut skip_next = false;
+    for line in raw[open + 1..close].lines() {
+        let line = line.split("//").next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("#[serde(") {
+            if line.contains("skip") || line.contains("flatten") {
+                skip_next = true;
+            }
+            if let Some(rename) = rust_serde_rename(line) {
+                pending_rename = Some(rename);
+            }
+            continue;
+        }
+        if line.starts_with("#[") {
+            continue;
+        }
+
+        let mut declaration = line.trim_end_matches(',').trim();
+        if let Some(rest) = declaration.strip_prefix("pub ") {
+            declaration = rest.trim();
+        } else if declaration.starts_with("pub(") {
+            let Some(close_visibility) = declaration.find(')') else {
+                pending_rename = None;
+                skip_next = false;
+                continue;
+            };
+            declaration = declaration[close_visibility + 1..].trim();
+        }
+        let Some((field, _)) = declaration.split_once(':') else {
+            pending_rename = None;
+            skip_next = false;
+            continue;
+        };
+        let field = field.trim();
+        if !is_identifier(field) {
+            pending_rename = None;
+            skip_next = false;
+            continue;
+        }
+        if !skip_next {
+            let name = pending_rename.take().unwrap_or_else(|| field.to_string());
+            if !name.is_empty() && name.len() <= 256 {
+                fields.push(name);
+            }
+        } else {
+            pending_rename = None;
+        }
+        skip_next = false;
+    }
+    fields.sort();
+    fields.dedup();
+    fields.truncate(256);
+    fields
+}
+
+fn rust_serde_rename(attribute: &str) -> Option<String> {
+    let marker = "rename";
+    let index = attribute.find(marker)?;
+    let tail = &attribute[index + marker.len()..];
+    let equals = tail.find('=')?;
+    first_quoted_string(&tail[equals + 1..])
+}
+
+fn rust_handler_inputs(
+    source: &str,
+    handlers: &BTreeMap<String, Node<'_>>,
+    models: &BTreeMap<String, Vec<String>>,
+) -> Vec<IndexedHandlerInput> {
+    let mut output = Vec::new();
+    for (name, node) in handlers {
+        let Some(function_text) = text(source, *node) else {
+            continue;
+        };
+        let mut parameters = rust_handler_parameters(function_text, models);
+        normalize_parameters(&mut parameters);
+        if parameters.is_empty() {
+            continue;
+        }
+        let start = node.start_position();
+        let end = node.end_position();
+        output.push(IndexedHandlerInput {
+            handler_name: name.clone(),
+            parameters,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    }
+    output
+}
+
+fn rust_handler_parameters(
+    function_text: &str,
+    models: &BTreeMap<String, Vec<String>>,
+) -> Vec<IndexedRouteParameter> {
+    let mut output = Vec::new();
+    let parameter_text = rust_function_parameter_text(function_text).unwrap_or("");
+    for (marker, location) in [
+        ("Query<", "query"),
+        ("Json<", "json"),
+        ("Form<", "form"),
+        ("Path<", "path"),
+    ] {
+        for model in rust_generic_models(parameter_text, marker) {
+            if let Some(fields) = models.get(&model) {
+                for field in fields {
+                    output.push(route_parameter(field, location));
+                }
+            }
+        }
+    }
+
+    for binding in rust_header_map_bindings(parameter_text) {
+        let marker = format!("{binding}.get(");
+        for name in marker_quoted_arguments(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                output.push(route_parameter(&name, "header"));
+            }
+        }
+    }
+    output
+}
+
+fn rust_function_parameter_text(function_text: &str) -> Option<&str> {
+    let fn_index = function_text.find("fn ")?;
+    let open = function_text[fn_index..].find('(')? + fn_index;
+    let mut depth = 0usize;
+    for (offset, character) in function_text[open..].char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(&function_text[open + 1..open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn rust_generic_models(value: &str, marker: &str) -> Vec<String> {
+    let mut output = Vec::new();
+    for (index, _) in value.match_indices(marker) {
+        if index > 0 {
+            let previous = value[..index].chars().next_back();
+            if previous.is_some_and(|character| character == '_' || character.is_ascii_alphanumeric()) {
+                continue;
+            }
+        }
+        let start = index + marker.len();
+        let mut depth = 1usize;
+        let mut end = None;
+        for (offset, character) in value[start..].char_indices() {
+            match character {
+                '<' => depth += 1,
+                '>' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end = Some(start + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else {
+            continue;
+        };
+        let inner = value[start..end].trim();
+        if let Some(model) = rust_simple_type_name(inner) {
+            output.push(model);
+        }
+    }
+    output.sort();
+    output.dedup();
+    output
+}
+
+fn rust_simple_type_name(value: &str) -> Option<String> {
+    let value = value
+        .trim()
+        .trim_start_matches('&')
+        .trim_start_matches("mut ")
+        .trim();
+    if value.is_empty()
+        || value
+            .chars()
+            .any(|character| matches!(character, '<' | '>' | '(' | ')' | '[' | ']' | ',' | ';'))
+        || value.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    let name = value.rsplit("::").next().unwrap_or(value).trim();
+    if is_identifier(name) {
+        Some(name.to_string())
+    } else {
+        None
+    }
+}
+
+fn rust_header_map_bindings(parameter_text: &str) -> Vec<String> {
+    let mut output = Vec::new();
+    for parameter in parameter_text.split(',') {
+        let Some((binding, annotation)) = parameter.split_once(':') else {
+            continue;
+        };
+        if !annotation.contains("HeaderMap") {
+            continue;
+        }
+        let binding = binding.trim().trim_start_matches("mut ").trim();
+        if is_identifier(binding) {
+            output.push(binding.to_string());
+        }
+    }
+    output
+}
+
+fn rust_request_content_type(parameters: &[IndexedRouteParameter]) -> Option<String> {
+    if parameters.iter().any(|value| value.location == "json") {
+        Some("application/json".to_string())
+    } else if parameters.iter().any(|value| value.location == "form") {
+        Some("application/x-www-form-urlencoded".to_string())
+    } else {
+        None
+    }
 }
 
 fn axum_methods(value: &str) -> Vec<String> {
@@ -1611,6 +1983,33 @@ fn axum_methods(value: &str) -> Vec<String> {
     methods
 }
 
+fn axum_method_handlers(value: &str) -> BTreeMap<String, String> {
+    let lower = value.to_ascii_lowercase();
+    let mut handlers = BTreeMap::new();
+    for method in HTTP_METHODS {
+        let needle = format!("{method}(");
+        for (index, _) in lower.match_indices(&needle) {
+            if index > 0 {
+                let previous = lower[..index].chars().next_back();
+                if previous.is_some_and(|character| character == '_' || character.is_ascii_alphanumeric()) {
+                    continue;
+                }
+            }
+            let tail = value[index + needle.len()..].trim_start();
+            let candidate = tail
+                .split(|character: char| character == ')' || character == ',' || character.is_whitespace())
+                .next()
+                .unwrap_or("")
+                .trim();
+            if is_identifier(candidate) {
+                handlers.entry(method.to_ascii_uppercase()).or_insert_with(|| candidate.to_string());
+                break;
+            }
+        }
+    }
+    handlers
+}
+
 fn contains_method_call(value: &str, method: &str) -> bool {
     let needle = format!("{method}(");
     value.match_indices(&needle).any(|(index, _)| {
@@ -1623,7 +2022,6 @@ fn contains_method_call(value: &str, method: &str) -> bool {
         })
     })
 }
-
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let mut models = BTreeMap::new();
     walk(root, &mut |node| {
@@ -2836,6 +3234,160 @@ func fetch(client *Client) {
         assert!(routes.is_empty());
     }
 
+    #[test]
+    fn maps_axum_typed_extractors_and_static_header_keys_to_routes() {
+        let source = r#"
+use axum::{
+    extract::{Path, Query},
+    http::HeaderMap,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct ListQuery {
+    #[serde(rename = "pageSize")]
+    page_size: usize,
+    q: String,
+}
+
+#[derive(Deserialize)]
+struct CreateUser {
+    email: String,
+    #[serde(rename = "displayName")]
+    display_name: String,
+    #[serde(skip)]
+    ignored: String,
+}
+
+async fn list(Query(_query): Query<ListQuery>, headers: HeaderMap) {
+    let _ = headers.get("X-Tenant");
+}
+
+async fn update(Path(_id): Path<String>, Json(_body): Json<CreateUser>) {}
+
+fn app() -> Router {
+    Router::new()
+        .route("/users", get(list))
+        .route("/users/{id}", post(update))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, handler_inputs) =
+            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+
+        let list = routes
+            .iter()
+            .find(|route| route.http_method == "GET" && route.path_template == "/users")
+            .expect("axum list route");
+        assert_eq!(list.handler_name.as_deref(), Some("list"));
+        assert!(list.parameters.iter().any(|parameter| {
+            parameter.name == "pageSize" && parameter.location == "query"
+        }));
+        assert!(list.parameters.iter().any(|parameter| {
+            parameter.name == "q" && parameter.location == "query"
+        }));
+        assert!(list.parameters.iter().any(|parameter| {
+            parameter.name == "X-Tenant" && parameter.location == "header"
+        }));
+
+        let update = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/users/{id}")
+            .expect("axum update route");
+        assert_eq!(update.handler_name.as_deref(), Some("update"));
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "id" && parameter.location == "path"
+        }));
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "email" && parameter.location == "json"
+        }));
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "displayName" && parameter.location == "json"
+        }));
+        assert!(!update.parameters.iter().any(|parameter| parameter.name == "ignored"));
+        assert_eq!(update.request_content_type.as_deref(), Some("application/json"));
+
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "list"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "X-Tenant" && parameter.location == "header"
+                })
+        }));
+    }
+
+    #[test]
+    fn maps_actix_form_and_rocket_json_query_inputs() {
+        let actix = r#"
+use actix_web::{post, web};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct LoginForm {
+    email: String,
+    csrf: String,
+}
+
+#[post("/login")]
+async fn login(form: web::Form<LoginForm>) {
+    let _ = form;
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(actix, None).expect("tree");
+        let (routes, _, _) = extract_routes("Rust", "src/actix.rs", actix, tree.root_node());
+        let login = routes.iter().find(|route| route.framework == "actix-web").expect("actix route");
+        assert_eq!(login.handler_name.as_deref(), Some("login"));
+        assert!(login.parameters.iter().any(|parameter| parameter.name == "email" && parameter.location == "form"));
+        assert!(login.parameters.iter().any(|parameter| parameter.name == "csrf" && parameter.location == "form"));
+        assert_eq!(login.request_content_type.as_deref(), Some("application/x-www-form-urlencoded"));
+
+        let rocket = r#"
+use rocket::{get, post};
+use rocket::serde::json::Json;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct CreateItem {
+    name: String,
+}
+
+#[get("/search?<page>&<q>")]
+fn search(page: usize, q: &str) {
+    let _ = (page, q);
+}
+
+#[post("/items")]
+fn create(body: Json<CreateItem>) {
+    let _ = body;
+}
+"#;
+        let tree = parser.parse(rocket, None).expect("tree");
+        let (routes, _, _) = extract_routes("Rust", "src/rocket.rs", rocket, tree.root_node());
+        let search = routes
+            .iter()
+            .find(|route| route.framework == "rocket" && route.http_method == "GET")
+            .expect("rocket search route");
+        assert_eq!(search.path_template, "/search");
+        assert!(search.parameters.iter().any(|parameter| parameter.name == "page" && parameter.location == "query"));
+        assert!(search.parameters.iter().any(|parameter| parameter.name == "q" && parameter.location == "query"));
+
+        let create = routes
+            .iter()
+            .find(|route| route.framework == "rocket" && route.http_method == "POST")
+            .expect("rocket create route");
+        assert_eq!(create.handler_name.as_deref(), Some("create"));
+        assert!(create.parameters.iter().any(|parameter| parameter.name == "name" && parameter.location == "json"));
+        assert_eq!(create.request_content_type.as_deref(), Some("application/json"));
+    }
     #[test]
     fn extracts_actix_and_rocket_attribute_routes() {
         let actix = r#"
