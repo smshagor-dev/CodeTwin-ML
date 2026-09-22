@@ -2,11 +2,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use codetwin_core::{
     Database, QaArtifactRecord, QaDiscoveryRunRecord, QaDiscoveryRunSummary, QaDiscoveryService,
+    QaExecutionAvailability, QaExecutionPlanRecord, QaExecutionRunRecord, QaExecutionService,
     QaFrameworkSummary,
 };
+use qa_execution::{SandboxPolicy, TestExecutionRequest, TrustedToolchain};
 use tauri::Manager;
 
 static QA_DISCOVERY_RUNNING: AtomicBool = AtomicBool::new(false);
+static QA_EXECUTION_RUNNING: AtomicBool = AtomicBool::new(false);
+static QA_EXECUTION_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 fn open_database(app: &tauri::AppHandle) -> Result<Database, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
@@ -68,4 +72,94 @@ pub fn qa_discovery_history(
     QaDiscoveryService::new(&database)
         .history(&project_id, limit)
         .map_err(|error| error.to_string())
+}
+
+
+#[tauri::command]
+pub fn qa_execution_availability(
+    app: tauri::AppHandle,
+) -> Result<QaExecutionAvailability, String> {
+    let database = open_database(&app)?;
+    Ok(QaExecutionService::new(&database).availability())
+}
+
+#[tauri::command]
+pub fn create_qa_execution_plan(
+    project_id: String,
+    request: TestExecutionRequest,
+    toolchain: TrustedToolchain,
+    policy: SandboxPolicy,
+    app: tauri::AppHandle,
+) -> Result<QaExecutionPlanRecord, String> {
+    let database = open_database(&app)?;
+    QaExecutionService::new(&database)
+        .create_plan(&project_id, request, toolchain, policy)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn approve_qa_execution_plan(
+    plan_id: String,
+    app: tauri::AppHandle,
+) -> Result<QaExecutionPlanRecord, String> {
+    let database = open_database(&app)?;
+    QaExecutionService::new(&database)
+        .approve_plan(&plan_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn list_qa_execution_plans(
+    project_id: String,
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<QaExecutionPlanRecord>, String> {
+    let database = open_database(&app)?;
+    QaExecutionService::new(&database)
+        .list_plans(&project_id, limit)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn list_qa_execution_runs(
+    project_id: String,
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<QaExecutionRunRecord>, String> {
+    let database = open_database(&app)?;
+    QaExecutionService::new(&database)
+        .list_runs(&project_id, limit)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn run_qa_execution_plan(
+    plan_id: String,
+    app: tauri::AppHandle,
+) -> Result<QaExecutionRunRecord, String> {
+    if QA_EXECUTION_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("QA execution is already running".to_string());
+    }
+    QA_EXECUTION_CANCELLED.store(false, Ordering::SeqCst);
+
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let database = open_database(&app)?;
+        QaExecutionService::new(&database)
+            .execute_plan(&plan_id, &QA_EXECUTION_CANCELLED)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+
+    QA_EXECUTION_RUNNING.store(false, Ordering::SeqCst);
+    QA_EXECUTION_CANCELLED.store(false, Ordering::SeqCst);
+    task.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn cancel_qa_execution() -> bool {
+    if !QA_EXECUTION_RUNNING.load(Ordering::SeqCst) {
+        return false;
+    }
+    QA_EXECUTION_CANCELLED.store(true, Ordering::SeqCst);
+    true
 }
