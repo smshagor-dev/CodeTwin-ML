@@ -2828,6 +2828,147 @@ export const POST = async (request: Request) => {
     }
 
     #[test]
+    fn maps_nextjs_request_inputs_to_source_routes() {
+        let source = r#"
+import { NextRequest } from "next/server";
+
+export async function GET(request: NextRequest) {
+  const q = request.nextUrl.searchParams.get("q");
+  const params = request.nextUrl.searchParams;
+  const page = params.get("page");
+  const tenant = request.headers.get("X-Tenant");
+  const dynamic = "secret";
+  request.nextUrl.searchParams.get(dynamic);
+  return Response.json({ q, page, tenant });
+}
+
+export async function POST(request: Request) {
+  const { email, password: secret } = await request.json();
+  return Response.json({ email, secret });
+}
+
+export async function PUT(request: Request) {
+  const payload = await request.json();
+  return Response.json({
+    name: payload.displayName,
+    timezone: payload["timezone"],
+  });
+}
+
+export const PATCH = async (request: Request) => {
+  const form = await request.formData();
+  const avatar = form.get("avatar");
+  return Response.json({ avatar });
+};
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, handler_inputs) = extract_routes(
+            "TypeScript",
+            "src/app/users/[id]/route.ts",
+            source,
+            tree.root_node(),
+        );
+
+        let get = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "GET")
+            .expect("GET route");
+        assert_eq!(get.handler_name.as_deref(), Some("GET"));
+        for field in ["q", "page"] {
+            assert!(get.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "query"
+            }));
+        }
+        assert!(get.parameters.iter().any(|parameter| {
+            parameter.name == "X-Tenant" && parameter.location == "header"
+        }));
+        assert!(!get.parameters.iter().any(|parameter| parameter.name == "secret"));
+        assert!(get.parameters.iter().any(|parameter| {
+            parameter.name == "id" && parameter.location == "path"
+        }));
+
+        let post = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "POST")
+            .expect("POST route");
+        for field in ["email", "password"] {
+            assert!(post.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert_eq!(post.request_content_type.as_deref(), Some("application/json"));
+
+        let put = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PUT")
+            .expect("PUT route");
+        for field in ["displayName", "timezone"] {
+            assert!(put.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+
+        let patch = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PATCH")
+            .expect("PATCH route");
+        assert!(patch.parameters.iter().any(|parameter| {
+            parameter.name == "avatar" && parameter.location == "form"
+        }));
+        assert_eq!(
+            patch.request_content_type.as_deref(),
+            Some("application/x-www-form-urlencoded")
+        );
+
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "GET"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "X-Tenant" && parameter.location == "header"
+                })
+        }));
+    }
+
+    #[test]
+    fn preserves_local_handler_identity_for_nextjs_named_reexport() {
+        let source = r#"
+async function create(request: Request) {
+  const { email } = await request.json();
+  return Response.json({ email });
+}
+
+export { create as POST };
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, handler_inputs) = extract_routes(
+            "TypeScript",
+            "app/users/route.ts",
+            source,
+            tree.root_node(),
+        );
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "POST")
+            .expect("named re-export route");
+        assert_eq!(route.handler_name.as_deref(), Some("create"));
+        assert!(route.parameters.iter().any(|parameter| {
+            parameter.name == "email" && parameter.location == "json"
+        }));
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "create"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "email" && parameter.location == "json"
+                })
+        }));
+    }
+    #[test]
     fn extracts_express_route_inputs_and_mount_prefix() {
         let source = r#"
 const express = require("express");
