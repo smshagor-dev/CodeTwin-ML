@@ -1977,15 +1977,24 @@ app.use("/api/auth", authRouter);
         fs::write(
             project.path().join("src/auth.js"),
             r#"
+import { login } from "./controllers";
 const router = express.Router();
-router.post("/login/:tenant", (req, res) => {
-    const { email, password } = req.body;
-    return res.json({ tenant: req.params.tenant, email, password });
-});
+router.post("/login/:tenant", login);
 export default router;
 "#,
         )
         .expect("auth");
+        fs::write(
+            project.path().join("src/controllers.js"),
+            r#"
+export function login(req, res) {
+    const { email, password } = req.body;
+    const tenant = req.params.tenant;
+    return res.json({ tenant, email, password });
+}
+"#,
+        )
+        .expect("controller");
 
         let database = Database::open_in_memory().expect("database");
         let summary = ProjectIndexService::new(&database)
@@ -2004,6 +2013,8 @@ export default router;
             .expect("mounted login route");
 
         assert!(route.relative_path.ends_with("auth.js"));
+        assert!(route.handler_relative_path.as_deref().is_some_and(|path| path.ends_with("controllers.js")));
+        assert_eq!(route.handler_symbol_name.as_deref(), Some("login"));
         assert_eq!(route.parameter_locations.get("tenant").map(String::as_str), Some("path"));
         assert_eq!(route.parameter_locations.get("email").map(String::as_str), Some("json"));
         assert_eq!(route.parameter_locations.get("password").map(String::as_str), Some("json"));
@@ -2017,7 +2028,8 @@ export default router;
             )
             .expect("correlate")
             .expect("source correlation");
-        assert!(correlated.relative_path.ends_with("auth.js"));
+        assert!(correlated.relative_path.ends_with("controllers.js"));
+        assert_eq!(correlated.symbol_name.as_deref(), Some("login"));
         assert!(correlated.confidence >= 0.98);
     }
 
