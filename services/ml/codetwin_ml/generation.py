@@ -175,33 +175,39 @@ def run_generation(
             "--no-display-prompt",
             "--simple-io",
         ]
-        kwargs: dict[str, Any] = {
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.DEVNULL,
-            "cwd": str(model_dir),
-            "env": environment,
-            "timeout": GENERATION_TIMEOUT_SECONDS,
-            "check": False,
-        }
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        with tempfile.TemporaryFile(prefix="codetwin-generation-output-") as output:
+            kwargs: dict[str, Any] = {
+                "stdout": output,
+                "stderr": subprocess.DEVNULL,
+                "cwd": str(model_dir),
+                "env": environment,
+                "timeout": GENERATION_TIMEOUT_SECONDS,
+                "check": False,
+            }
+            if os.name == "nt":
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        try:
-            completed = subprocess.run(command, **kwargs)
-        except subprocess.TimeoutExpired as error:
-            raise InferenceRuntimeError(
-                f"local generation exceeded the {GENERATION_TIMEOUT_SECONDS} second timeout"
-            ) from error
-        except OSError as error:
-            raise InferenceRuntimeError(f"cannot start trusted llama.cpp CLI: {error}") from error
+            try:
+                completed = subprocess.run(command, **kwargs)
+            except subprocess.TimeoutExpired as error:
+                raise InferenceRuntimeError(
+                    f"local generation exceeded the {GENERATION_TIMEOUT_SECONDS} second timeout"
+                ) from error
+            except OSError as error:
+                raise InferenceRuntimeError(f"cannot start trusted llama.cpp CLI: {error}") from error
 
-    if completed.returncode != 0:
-        raise InferenceRuntimeError(
-            f"trusted llama.cpp CLI exited with status {completed.returncode}"
-        )
-    stdout = completed.stdout
-    if not isinstance(stdout, (bytes, bytearray)):
-        raise InferenceRuntimeError("llama.cpp returned invalid stdout")
+            if completed.returncode != 0:
+                raise InferenceRuntimeError(
+                    f"trusted llama.cpp CLI exited with status {completed.returncode}"
+                )
+            output_size = os.fstat(output.fileno()).st_size
+            if output_size > MAX_GENERATION_BYTES:
+                raise InferenceRuntimeError(
+                    f"generation output exceeds the {MAX_GENERATION_BYTES}-byte limit"
+                )
+            output.seek(0)
+            stdout = output.read(MAX_GENERATION_BYTES + 1)
+
     if len(stdout) > MAX_GENERATION_BYTES:
         raise InferenceRuntimeError(
             f"generation output exceeds the {MAX_GENERATION_BYTES}-byte limit"

@@ -60,8 +60,8 @@ impl ScopePolicy {
         if config.allowed_paths.is_empty() {
             config.allowed_paths.push("/".to_string());
         }
-        config.allowed_paths = normalize_paths(&config.allowed_paths);
-        config.excluded_paths = normalize_paths(&config.excluded_paths);
+        config.allowed_paths = normalize_paths(&config.allowed_paths)?;
+        config.excluded_paths = normalize_paths(&config.excluded_paths)?;
 
         let policy = Self {
             config,
@@ -117,7 +117,9 @@ impl ScopePolicy {
         if self.target.scheme() == "https" && url.scheme() != "https" {
             return Err(ScopeError::OutsideScope("HTTPS target cannot downgrade to HTTP".to_string()));
         }
-        if !self.path_allowed(url.path()) {
+        let canonical_path =
+            canonicalize_scope_path(url.path()).map_err(ScopeError::OutsideScope)?;
+        if !self.path_allowed(&canonical_path) {
             return Err(ScopeError::OutsideScope("URL path is outside the authorized path scope".to_string()));
         }
         Ok(())
@@ -201,17 +203,71 @@ fn normalize_hosts(values: &[String]) -> Vec<String> {
     values
 }
 
-fn normalize_paths(values: &[String]) -> Vec<String> {
-    let mut values: Vec<String> = values
-        .iter()
-        .map(|value| {
-            let value = value.trim();
-            if value.starts_with('/') { value.to_string() } else { format!("/{value}") }
-        })
-        .collect();
-    values.sort();
-    values.dedup();
-    values
+fn normalize_paths(values: &[String]) -> Result<Vec<String>, ScopeError> {
+    let mut normalized = Vec::with_capacity(values.len());
+    for value in values {
+        normalized.push(canonicalize_scope_path(value).map_err(|message| {
+            ScopeError::InvalidTarget(format!("invalid scope path: {message}"))
+        })?);
+    }
+    normalized.sort();
+    normalized.dedup();
+    Ok(normalized)
+}
+
+fn canonicalize_scope_path(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let raw = if value.starts_with('/') {
+        value.to_string()
+    } else {
+        format!("/{value}")
+    };
+    if raw.contains('\\') {
+        return Err("backslashes are not allowed in authorized URL paths".to_string());
+    }
+
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        if index + 2 >= bytes.len() {
+            return Err("incomplete percent encoding in URL path".to_string());
+        }
+        let high = hex_value(bytes[index + 1])
+            .ok_or_else(|| "invalid percent encoding in URL path".to_string())?;
+        let low = hex_value(bytes[index + 2])
+            .ok_or_else(|| "invalid percent encoding in URL path".to_string())?;
+        let byte = (high << 4) | low;
+        if matches!(byte, b'/' | b'\\' | b'%' | 0) {
+            return Err("ambiguous encoded path separator or escape is forbidden".to_string());
+        }
+        decoded.push(byte);
+        index += 3;
+    }
+
+    let decoded = String::from_utf8(decoded)
+        .map_err(|_| "URL path must decode to valid UTF-8".to_string())?;
+    if decoded
+        .split('/')
+        .any(|segment| matches!(segment, "." | ".."))
+    {
+        return Err("dot-segment traversal is forbidden in authorized URL paths".to_string());
+    }
+    Ok(decoded)
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn path_prefix(path: &str, prefix: &str) -> bool {
@@ -279,6 +335,9 @@ mod tests {
         let policy = ScopePolicy::new(config()).expect("scope");
         assert!(policy.normalize_and_assert("http://localhost:8080/app/users?id=1").is_ok());
         assert!(policy.normalize_and_assert("http://localhost:8080/app/logout").is_err());
+        assert!(policy.normalize_and_assert("http://localhost:8080/%61pp/logout").is_err());
+        assert!(policy.normalize_and_assert("http://localhost:8080/app%2Flogout").is_err());
+        assert!(policy.normalize_and_assert("http://localhost:8080/app/%2e%2e/logout").is_err());
         assert!(policy.normalize_and_assert("http://example.com:8080/app").is_err());
         assert!(normalize_url("file:///tmp/a").is_err());
         let target = policy

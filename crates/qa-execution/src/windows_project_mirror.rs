@@ -10,6 +10,8 @@ mod lpac;
 #[path = "windows_toolchain_guard.rs"]
 mod toolchain_guard;
 
+pub(crate) use lpac::assert_lpac_profile_network_isolation;
+
 use crate::{
     cleanup_detached_workspace, prepare_dependency_complete_workspace, probe_restricted_identity,
     verify_external_read_surface, BackendExecutionError, DetachedExecutionWorkspace,

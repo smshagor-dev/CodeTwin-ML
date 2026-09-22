@@ -7,8 +7,10 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_ALREADY_EXISTS, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        CloseHandle, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, HANDLE, WAIT_FAILED, WAIT_OBJECT_0,
+        WAIT_TIMEOUT,
     },
+    NetworkManagement::WindowsFirewall::NetworkIsolationGetAppContainerConfig,
     Security::{
         CreateWellKnownSid, EqualSid, FreeSid, GetTokenInformation, IsTokenRestricted, PSID,
         SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
@@ -21,6 +23,7 @@ use windows_sys::Win32::{
         CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
     },
     System::{
+        Memory::{GetProcessHeap, HeapFree},
         Threading::{
             CreateProcessAsUserW, DeleteProcThreadAttributeList,
             InitializeProcThreadAttributeList, OpenProcessToken, TerminateProcess,
@@ -51,6 +54,7 @@ pub(crate) struct LpacLaunchReadinessEvidence {
     pub child_low_integrity: bool,
     pub package_sid_matches: bool,
     pub capability_count: u32,
+    pub loopback_exemption_absent: bool,
     pub child_never_resumed: bool,
     pub production_launcher_uses_lpac: bool,
     pub filesystem_read_allowlist_enforced: bool,
@@ -66,6 +70,7 @@ impl LpacLaunchReadinessEvidence {
             && self.child_low_integrity
             && self.package_sid_matches
             && self.capability_count == 0
+            && self.loopback_exemption_absent
             && self.child_never_resumed
             && !self.production_launcher_uses_lpac
             && !self.filesystem_read_allowlist_enforced
@@ -89,6 +94,7 @@ pub(crate) fn probe_suspended_lpac_readiness(
     }
 
     let profile = LpacProfileSid::open_or_create()?;
+    assert_lpac_profile_network_isolation(profile.sid())?;
     let token = create_windows_write_restricted_token().map_err(|error| {
         BackendExecutionError::JobSetup(format!("LPAC readiness restricted token: {error}"))
     })?;
@@ -137,7 +143,8 @@ pub(crate) fn probe_suspended_lpac_readiness(
     }
 
     let mut child = SuspendedProbeChild::new(process_info.hProcess, process_info.hThread)?;
-    let evidence = attest_child_token(child.process.raw(), profile.sid())?;
+    let mut evidence = attest_child_token(child.process.raw(), profile.sid())?;
+    evidence.loopback_exemption_absent = true;
     if !evidence.satisfies_readiness_contract() {
         return Err(BackendExecutionError::JobSetup(
             "suspended LPAC child token did not satisfy the conservative readiness contract"
@@ -340,11 +347,76 @@ fn attest_child_token(
         child_low_integrity,
         package_sid_matches,
         capability_count,
+        loopback_exemption_absent: false,
         child_never_resumed: true,
         production_launcher_uses_lpac: false,
         filesystem_read_allowlist_enforced: false,
         network_isolation_promoted: false,
     })
+}
+
+pub(crate) fn assert_lpac_profile_network_isolation(
+    expected_sid: PSID,
+) -> Result<(), BackendExecutionError> {
+    if lpac_profile_has_loopback_exemption(expected_sid)? {
+        return Err(BackendExecutionError::JobSetup(
+            "LPAC profile is configured with a Windows loopback exemption; network isolation cannot be promoted"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn lpac_profile_has_loopback_exemption(
+    expected_sid: PSID,
+) -> Result<bool, BackendExecutionError> {
+    let mut count = 0u32;
+    let mut entries: *mut SID_AND_ATTRIBUTES = std::ptr::null_mut();
+    let result = unsafe { NetworkIsolationGetAppContainerConfig(&mut count, &mut entries) };
+    if result != ERROR_SUCCESS {
+        return Err(BackendExecutionError::JobSetup(format!(
+            "NetworkIsolationGetAppContainerConfig failed with Win32 error {result}"
+        )));
+    }
+
+    struct LoopbackConfig {
+        entries: *mut SID_AND_ATTRIBUTES,
+        count: u32,
+    }
+
+    impl Drop for LoopbackConfig {
+        fn drop(&mut self) {
+            if self.entries.is_null() {
+                return;
+            }
+            let heap = unsafe { GetProcessHeap() };
+            for index in 0..self.count as usize {
+                let sid = unsafe { (*self.entries.add(index)).Sid };
+                if !sid.is_null() {
+                    unsafe {
+                        HeapFree(heap, 0, sid.cast_const());
+                    }
+                }
+            }
+            unsafe {
+                HeapFree(heap, 0, self.entries.cast::<c_void>().cast_const());
+            }
+        }
+    }
+
+    if count > 0 && entries.is_null() {
+        return Err(BackendExecutionError::JobSetup(
+            "NetworkIsolationGetAppContainerConfig returned a null SID array".to_string(),
+        ));
+    }
+    let config = LoopbackConfig { entries, count };
+    for index in 0..config.count as usize {
+        let sid = unsafe { (*config.entries.add(index)).Sid };
+        if !sid.is_null() && unsafe { EqualSid(sid, expected_sid) } != 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn token_bool(
@@ -613,11 +685,32 @@ fn wide_null(value: &OsStr) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::hresult_from_win32;
+    use super::{hresult_from_win32, LpacLaunchReadinessEvidence};
     use windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS;
 
     #[test]
     fn maps_already_exists_to_win32_hresult() {
         assert_eq!(hresult_from_win32(ERROR_ALREADY_EXISTS) as u32, 0x8007_00b7);
+    }
+
+    #[test]
+    fn readiness_requires_loopback_exemption_to_be_absent() {
+        let mut evidence = LpacLaunchReadinessEvidence {
+            child_is_appcontainer: true,
+            child_is_lpac: true,
+            child_is_restricted: true,
+            write_restricted_sid_present: true,
+            child_low_integrity: true,
+            package_sid_matches: true,
+            capability_count: 0,
+            loopback_exemption_absent: false,
+            child_never_resumed: true,
+            production_launcher_uses_lpac: false,
+            filesystem_read_allowlist_enforced: false,
+            network_isolation_promoted: false,
+        };
+        assert!(!evidence.satisfies_readiness_contract());
+        evidence.loopback_exemption_absent = true;
+        assert!(evidence.satisfies_readiness_contract());
     }
 }

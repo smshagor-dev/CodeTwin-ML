@@ -116,6 +116,7 @@ pub(crate) fn execute_lpac_bundle_plan(
     }
 
     let profile = AppContainerProfileSid::open_or_create()?;
+    crate::windows_project_mirror::assert_lpac_profile_network_isolation(profile.sid())?;
     let token = create_windows_write_restricted_token()
         .map_err(|error| BackendExecutionError::JobSetup(format!("LPAC restricted token: {error}")))?;
     let job = configure_job(plan)?;

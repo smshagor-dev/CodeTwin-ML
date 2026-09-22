@@ -214,10 +214,11 @@ pub fn source_endpoint_seed(
         return None;
     }
     let normalized_template = normalize_route_template(path_template)?;
+    let parameter_samples = route_parameter_samples(path_template);
     let deployment_prefix = normalize_deployment_prefix(base.path());
     let effective_template =
         apply_deployment_prefix(&deployment_prefix, &normalized_template);
-    let materialized_path = materialize_route_path(&effective_template)?;
+    let materialized_path = materialize_route_path(&effective_template, &parameter_samples)?;
     base.set_path("/");
     base.set_query(None);
     base.set_fragment(None);
@@ -320,7 +321,61 @@ fn normalize_route_template(template: &str) -> Option<String> {
     })
 }
 
-fn materialize_route_path(template: &str) -> Option<String> {
+fn route_parameter_samples(template: &str) -> BTreeMap<String, String> {
+    let mut samples = BTreeMap::new();
+    for segment in template.trim_matches('/').split('/') {
+        if let Some(rest) = segment.strip_prefix(':') {
+            let name = rest
+                .split(['?', '(', '.'])
+                .next()
+                .unwrap_or(rest)
+                .trim();
+            if !name.is_empty() {
+                samples.insert(name.to_string(), route_sample_value(segment));
+            }
+            continue;
+        }
+        if segment.starts_with('{') && segment.ends_with('}') && segment.len() > 2 {
+            let inner = &segment[1..segment.len() - 1];
+            let name = inner.split(':').next().unwrap_or("").trim();
+            if !name.is_empty() {
+                samples.insert(name.to_string(), route_sample_value(segment));
+            }
+        }
+    }
+    samples
+}
+
+fn route_sample_value(segment: &str) -> String {
+    let lower = segment.to_ascii_lowercase();
+    if lower.contains("uuid") {
+        return "00000000-0000-4000-8000-000000000001".to_string();
+    }
+    if lower.contains(":float}") || lower.contains(":double}") {
+        return "1.0".to_string();
+    }
+    if lower.contains(":bool}") {
+        return "true".to_string();
+    }
+    if lower.contains(":int}")
+        || lower.contains(":integer}")
+        || lower.contains("\\d")
+        || lower.contains("[0-9]")
+    {
+        return "1".to_string();
+    }
+    if (lower.contains("[a-f0-9]") || lower.contains("[0-9a-f]"))
+        && lower.contains("{24}")
+    {
+        return "0".repeat(24);
+    }
+    "codetwin-test".to_string()
+}
+
+fn materialize_route_path(
+    template: &str,
+    parameter_samples: &BTreeMap<String, String>,
+) -> Option<String> {
     if template.contains('*') {
         return None;
     }
@@ -331,7 +386,11 @@ fn materialize_route_path(template: &str) -> Option<String> {
         }
         let dynamic = segment.starts_with('{') && segment.ends_with('}');
         segments.push(if dynamic {
-            "codetwin-test".to_string()
+            let name = &segment[1..segment.len() - 1];
+            parameter_samples
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| "codetwin-test".to_string())
         } else {
             segment.to_string()
         });
@@ -655,6 +714,56 @@ mod source_seed_tests {
         assert!(discovery.starts_with("https://example.test/root/api/login/codetwin-test"));
         assert!(discovery.contains("next=codetwin-test"));
         assert_eq!(seed.parameter_locations.get("email").map(String::as_str), Some("json"));
+    }
+
+    #[test]
+    fn materializes_typed_source_routes_with_constraint_compatible_values() {
+        let locations = BTreeMap::from([("id".to_string(), "path".to_string())]);
+
+        let fastapi = source_endpoint_seed(
+            "https://example.test",
+            "GET",
+            "/api/users/{id:int}",
+            &["id".to_string()],
+            &locations,
+            None,
+            "source_route:fastapi:app.py:1",
+        )
+        .expect("fastapi seed");
+        assert_eq!(
+            fastapi.discovery_url.as_deref(),
+            Some("https://example.test/api/users/1")
+        );
+
+        let express = source_endpoint_seed(
+            "https://example.test",
+            "GET",
+            r"/api/users/:id(\\d+)",
+            &["id".to_string()],
+            &locations,
+            None,
+            "source_route:express:server.ts:1",
+        )
+        .expect("express seed");
+        assert_eq!(
+            express.discovery_url.as_deref(),
+            Some("https://example.test/api/users/1")
+        );
+
+        let uuid = source_endpoint_seed(
+            "https://example.test",
+            "GET",
+            "/api/items/{id:uuid}",
+            &["id".to_string()],
+            &locations,
+            None,
+            "source_route:fastapi:app.py:2",
+        )
+        .expect("uuid seed");
+        assert_eq!(
+            uuid.discovery_url.as_deref(),
+            Some("https://example.test/api/items/00000000-0000-4000-8000-000000000001")
+        );
     }
 
     #[test]

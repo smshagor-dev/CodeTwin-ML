@@ -70,9 +70,10 @@ pub fn validate_active_payload(payload: &str) -> Result<(), &'static str> {
     }
 
     // Outbound URL-shaped test values are restricted to documentation-only
-    // destinations. The engine never uses arbitrary model-generated URLs.
+    // destinations. Validate every occurrence so a safe first URL cannot mask
+    // a later arbitrary destination in the same payload.
     for scheme in ["http://", "https://"] {
-        if let Some(index) = lower.find(scheme) {
+        for (index, _) in lower.match_indices(scheme) {
             let tail = &lower[index..];
             let allowed = tail.starts_with("http://192.0.2.1/")
                 || tail.starts_with("https://192.0.2.1/")
@@ -122,6 +123,8 @@ mod tests {
             "x\r\nX-Test: injected",
             "http://169.254.169.254/latest/meta-data/",
             "http://10.0.0.5/admin",
+            "http://192.0.2.1/codetwin-test http://10.0.0.5/admin",
+            "https://example.invalid/codetwin-test https://169.254.169.254/latest/meta-data/",
             "powershell -enc AAAA",
         ] {
             assert!(validate_active_payload(payload).is_err(), "{payload}");

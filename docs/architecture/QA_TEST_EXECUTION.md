@@ -67,7 +67,7 @@ An empty declared-root list is permitted during passive planning for backward co
 
 At execution time the Windows project-mirror path rescans the declared external surface and requires exact equality with the approved typed evidence before restricted process creation. A changed standard library, compiler/sysroot file, package-store file, root path, file size, directory layout or content hash therefore blocks launch.
 
-This is provenance attestation, not read access enforcement. CodeTwin does not yet prevent the restricted process from reading an undeclared host path that Windows ACL/MIC rules otherwise permit. It also does not hold every file in a declared directory immutable for the full process lifetime. External-tree mutation after the pre-launch attestation remains a reason `filesystem_isolation` is false.
+Provenance attestation by itself is not read access enforcement. Production execution adds a generated dependency-complete project mirror, a copied and hash-verified approved runtime/toolchain bundle, LPAC package-SID ACLs on CodeTwin-generated paths, and a write-restricted low-integrity zero-capability child. The `filesystem_isolation` capability is therefore scoped to the generated project and approved runtime/toolchain material used by the test run; it is **not** a claim that every Windows system object or otherwise host-readable path is denied. The original declared runtime trees are re-attested and copied before launch rather than used directly by the resumed child. Host-wide undeclared-read adversarial coverage remains a release-validation obligation.
 
 ## Durable approval invariants
 
@@ -156,7 +156,7 @@ The Windows identity layer creates a `WRITE_RESTRICTED`, low-integrity token usi
 
 The probe requires mutation-capable access to the original source root and mirrored project inputs to be denied while generated `artifacts/` and `temp/` remain writable. The original repository ACL is never modified.
 
-This is a write boundary, not a host-wide read sandbox. A restricted process may still read host objects permitted by Windows ACL/MIC rules if it knows their paths.
+The restricted-token probe described here establishes the write boundary. The production LPAC/bundle layer additionally confines CodeTwin-managed project and approved runtime material to generated paths, but CodeTwin still does not describe this as a host-wide deny-all-read sandbox: Windows system objects or other objects readable under the resulting Windows access checks may remain visible.
 
 ## Environment, handles, and process containment
 
@@ -168,7 +168,7 @@ A raw process completion is not automatically a test verdict. Pass/fail requires
 
 ## Current capability truth
 
-On Windows, the production path is implemented around the strict capability floor required by `SandboxPolicy::default()`: process isolation, generated-workspace filesystem isolation for the project/approved runtime material, zero-capability LPAC network denial, Job Object CPU/memory/process-tree containment, reliable cancellation, wall-clock timeout, bounded output, and a sanitized environment.
+On Windows, the production path is implemented around the strict capability floor required by `SandboxPolicy::default()`: process isolation, generated-workspace filesystem isolation for the project/approved runtime material, zero-capability LPAC network denial, Job Object CPU/memory/process-tree containment, reliable cancellation, wall-clock timeout, bounded output, and a sanitized environment. Network promotion additionally requires the stable AppContainer profile to be absent from the Windows loopback-exemption list; CodeTwin checks this during readiness and again immediately before the real production child is created.
 
 The source repository remains outside the generated execution workspace and is not modified. Approved external runtime/toolchain material is re-attested and copied into the per-run bundle rather than executed directly from mutable host paths. The actual child token is attested before resume.
 
