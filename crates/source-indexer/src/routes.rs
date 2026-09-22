@@ -1377,9 +1377,6 @@ fn laravel_handler_inputs(source: &str, root: Node<'_>) -> Vec<IndexedHandlerInp
 
 fn laravel_request_parameters(method_text: &str) -> Vec<IndexedRouteParameter> {
     let request_variables = laravel_request_variables(method_text);
-    if request_variables.is_empty() {
-        return Vec::new();
-    }
     let mut parameters = Vec::new();
     for variable in request_variables {
         for (method, location) in [
@@ -3541,6 +3538,88 @@ app.register_blueprint(api, url_prefix = "/api")
     }
 
     #[test]
+    fn extracts_laravel_controller_request_inputs() {
+        let source = r#"<?php
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class UserController
+{
+    public function store(Request $request)
+    {
+        $email = $request->json('email');
+        $timezone = $request->json()->get('timezone');
+        $source = $request->query('source');
+        $tenant = $request->header('X-Tenant');
+        $session = $request->cookie('session');
+        $csrf = $request->post('csrf');
+    }
+
+    public function show($id)
+    {
+        $expand = request()->query('expand');
+    }
+
+    public function update(UpdateUserRequest $req)
+    {
+        $email = $req->json('email');
+        $routeId = $req->route('user');
+        $ambiguous = $req->input('ignored');
+    }
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, handler_inputs) = extract_routes(
+            "PHP",
+            "app/Http/Controllers/UserController.php",
+            source,
+            tree.root_node(),
+        );
+        assert!(routes.is_empty());
+
+        let store = handler_inputs
+            .iter()
+            .find(|input| input.handler_name == "store")
+            .expect("store handler inputs");
+        for (name, location) in [
+            ("email", "json"),
+            ("timezone", "json"),
+            ("source", "query"),
+            ("X-Tenant", "header"),
+            ("session", "cookie"),
+            ("csrf", "form"),
+        ] {
+            assert!(store.parameters.iter().any(|parameter| {
+                parameter.name == name && parameter.location == location
+            }));
+        }
+
+        let show = handler_inputs
+            .iter()
+            .find(|input| input.handler_name == "show")
+            .expect("show handler inputs");
+        assert!(show.parameters.iter().any(|parameter| {
+            parameter.name == "expand" && parameter.location == "query"
+        }));
+
+        let update = handler_inputs
+            .iter()
+            .find(|input| input.handler_name == "update")
+            .expect("update handler inputs");
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "email" && parameter.location == "json"
+        }));
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "user" && parameter.location == "path"
+        }));
+        assert!(!update.parameters.iter().any(|parameter| parameter.name == "ignored"));
+    }
+    #[test]
     fn expands_laravel_resource_and_api_resource_routes() {
         let source = r#"<?php
 use Illuminate\Support\Facades\Route;
@@ -3591,6 +3670,22 @@ Route::prefix('api')->group(function () {
             route.path_template == "/api/categories/create"
                 || route.path_template == "/api/categories/{category}/edit"
         }));
+        let photo_store = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/api/photos")
+            .expect("photo store route");
+        assert_eq!(
+            photo_store.handler_name.as_deref(),
+            Some("PhotoController.store")
+        );
+        let photo_update = routes
+            .iter()
+            .find(|route| route.http_method == "PATCH" && route.path_template == "/api/photos/{photo}")
+            .expect("photo update route");
+        assert_eq!(
+            photo_update.handler_name.as_deref(),
+            Some("PhotoController.update")
+        );
     }
 
     #[test]
@@ -3680,6 +3775,7 @@ Route::post('/login', [AuthController::class, 'login']);
             .parameters
             .iter()
             .any(|parameter| parameter.name == "id" && parameter.location == "path"));
+        assert_eq!(user.handler_name.as_deref(), Some("UserController.show"));
         assert!(routes.iter().any(|route| {
             route.framework == "laravel"
                 && route.http_method == "POST"
