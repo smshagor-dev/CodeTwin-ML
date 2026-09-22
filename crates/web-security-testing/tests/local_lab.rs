@@ -83,6 +83,8 @@ impl LocalLab {
                 excluded_paths: vec!["/excluded".to_string()],
                 max_crawl_depth: 3,
                 max_requests,
+                max_requests_per_endpoint: 40,
+                min_request_interval_ms: 0,
                 concurrency: 2,
                 timeout_ms: 2_000,
                 response_limit_bytes: 128_000,
