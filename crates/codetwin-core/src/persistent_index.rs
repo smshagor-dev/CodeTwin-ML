@@ -1625,6 +1625,7 @@ mod tests {
         )
         .expect("main");
         fs::write(repository.path().join("main.py"), "import os\n").expect("python");
+        fs::write(repository.path().join("main.rs"), "use crate::local;\n").expect("rust");
         let database = Database::open_in_memory().expect("database");
         let summary = ProjectIndexService::new(&database)
             .index_project(repository.path())
