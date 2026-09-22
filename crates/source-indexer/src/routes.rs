@@ -163,7 +163,7 @@ fn express_mount_prefixes(
         if node.kind() != "call_expression" {
             return;
         }
-        let Some((_parent, method)) = member_call(source, node) else {
+        let Some((parent_router, method)) = member_call(source, node) else {
             return;
         };
         if method != "use" {
@@ -189,6 +189,7 @@ fn express_mount_prefixes(
         let end = node.end_position();
         mounts.push(IndexedRouteMount {
             framework: "express".to_string(),
+            parent_router,
             mounted_binding: child_router.to_string(),
             prefix: normalize_path(&prefix),
             start_line: start.row + 1,
@@ -440,6 +441,10 @@ fn fastapi_router_prefixes(
             let Some(open) = value.find(".include_router(") else {
                 return;
             };
+            let parent_router = value[..open].trim();
+            if !is_identifier(parent_router) {
+                return;
+            }
             let tail = &value[open + ".include_router(".len()..];
             let child = tail
                 .split([',', ')'])
@@ -456,6 +461,7 @@ fn fastapi_router_prefixes(
                 let end = node.end_position();
                 mounts.push(IndexedRouteMount {
                     framework: "fastapi".to_string(),
+                    parent_router: parent_router.to_string(),
                     mounted_binding: child.to_string(),
                     prefix: normalize_path(&prefix),
                     start_line: start.row + 1,
@@ -466,6 +472,7 @@ fn fastapi_router_prefixes(
                 let end = node.end_position();
                 mounts.push(IndexedRouteMount {
                     framework: "fastapi".to_string(),
+                    parent_router: parent_router.to_string(),
                     mounted_binding: child.to_string(),
                     prefix: "/".to_string(),
                     start_line: start.row + 1,
