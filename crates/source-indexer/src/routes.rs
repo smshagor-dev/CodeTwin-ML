@@ -1590,7 +1590,8 @@ fn marker_quoted_arguments(value: &str, marker: &str) -> Vec<String> {
     while let Some(relative) = value[offset..].find(marker) {
         let start = offset + relative + marker.len();
         let tail = &value[start..];
-        if let Some(argument) = first_quoted_string(tail) {
+        let arguments = bounded_call_arguments(tail);
+        if let Some(argument) = first_quoted_string(arguments) {
             output.push(argument);
         }
         offset = start;
@@ -1599,6 +1600,39 @@ fn marker_quoted_arguments(value: &str, marker: &str) -> Vec<String> {
         }
     }
     output
+}
+
+fn bounded_call_arguments(value: &str) -> &str {
+    let mut nested = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(character, '"' | '\'' | '`') {
+            quote = Some(character);
+            continue;
+        }
+        match character {
+            '(' => nested += 1,
+            ')' if nested == 0 => return &value[..index],
+            ')' => nested = nested.saturating_sub(1),
+            _ => {}
+        }
+    }
+    value
 }
 
 fn go_route_handler_reference(value: &str) -> Option<String> {
