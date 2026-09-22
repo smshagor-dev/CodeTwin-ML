@@ -221,8 +221,8 @@ fn nextjs_exported_http_methods(value: &str) -> Vec<&'static str> {
         }
     }
 
-    if let Some(open) = normalized.find('{') {
-        if normalized.starts_with("export ") {
+    if normalized.starts_with("export {") {
+        if let Some(open) = normalized.find('{') {
             if let Some(relative_close) = normalized[open + 1..].find('}') {
                 let body = &normalized[open + 1..open + 1 + relative_close];
                 for item in body.split(',') {
@@ -1420,6 +1420,33 @@ mod tests {
     use tree_sitter::Parser;
 
     use super::extract_routes;
+
+    #[test]
+    fn nextjs_function_body_does_not_create_fake_exported_methods() {
+        let source = r#"
+export function GET() {
+  const methods = { POST: true };
+  return Response.json(methods);
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "TypeScript",
+            "app/status/route.ts",
+            source,
+            tree.root_node(),
+        );
+        assert!(routes
+            .iter()
+            .any(|route| route.framework == "nextjs" && route.http_method == "GET"));
+        assert!(!routes
+            .iter()
+            .any(|route| route.framework == "nextjs" && route.http_method == "POST"));
+    }
 
     #[test]
     fn extracts_nextjs_reexported_methods_and_catch_all_path() {
