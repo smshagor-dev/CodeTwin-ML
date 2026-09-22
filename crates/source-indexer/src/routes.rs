@@ -8,6 +8,7 @@ const HTTP_METHODS: &[&str] = &["get", "post", "put", "patch", "delete", "option
 
 pub fn extract_routes(
     language: &str,
+    relative_path: &str,
     source: &str,
     root: Node<'_>,
 ) -> (
@@ -17,11 +18,19 @@ pub fn extract_routes(
 ) {
     let (mut routes, mut mounts, mut handler_inputs) = match language {
         "JavaScript" | "TypeScript" | "TypeScript TSX" => {
-            let (routes, mounts) = extract_express_routes(source, root);
+            let (mut routes, mounts) = extract_express_routes(source, root);
+            routes.extend(extract_nextjs_app_routes(relative_path, source, root));
             (routes, mounts, javascript_handler_inputs(source, root))
         }
         "Python" => {
-            let (routes, mounts) = extract_fastapi_routes(source, root);
+            let (mut routes, mut mounts) = extract_fastapi_routes(source, root);
+            let (flask_routes, flask_mounts) = extract_flask_routes(source, root);
+            routes.extend(flask_routes);
+            mounts.extend(flask_mounts);
+            (routes, mounts, Vec::new())
+        }
+        "PHP" => {
+            let (routes, mounts) = extract_laravel_routes(source, root);
             (routes, mounts, Vec::new())
         }
         _ => (Vec::new(), Vec::new(), Vec::new()),
@@ -77,6 +86,111 @@ pub fn extract_routes(
             && left.end_line == right.end_line
     });
     (routes, mounts, handler_inputs)
+}
+
+fn extract_nextjs_app_routes(
+    relative_path: &str,
+    source: &str,
+    root: Node<'_>,
+) -> Vec<IndexedRoute> {
+    let Some(path_template) = nextjs_app_route_path(relative_path) else {
+        return Vec::new();
+    };
+    let mut routes = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "export_statement" {
+            return;
+        }
+        let Some(value) = text(source, node) else {
+            return;
+        };
+        let Some(method) = nextjs_exported_http_method(value) else {
+            return;
+        };
+        let mut parameters = path_parameters(&path_template);
+        normalize_parameters(&mut parameters);
+        let start = node.start_position();
+        let end = node.end_position();
+        routes.push(IndexedRoute {
+            framework: "nextjs".to_string(),
+            router_name: "app_router".to_string(),
+            http_method: method.to_string(),
+            path_template: path_template.clone(),
+            handler_name: Some(method.to_string()),
+            parameters,
+            request_content_type: None,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    });
+    routes
+}
+
+fn nextjs_app_route_path(relative_path: &str) -> Option<String> {
+    let normalized = relative_path.replace('\\', "/");
+    let app_tail = normalized
+        .strip_prefix("app/")
+        .or_else(|| normalized.strip_prefix("src/app/"))?;
+    let mut parts: Vec<&str> = app_tail.split('/').collect();
+    let filename = parts.pop()?;
+    let route_file = matches!(
+        filename,
+        "route.ts" | "route.tsx" | "route.js" | "route.jsx" | "route.mjs" | "route.cjs"
+    );
+    if !route_file {
+        return None;
+    }
+
+    let mut segments = Vec::new();
+    for segment in parts {
+        if segment.starts_with('(') && segment.ends_with(')') {
+            continue;
+        }
+        if segment.starts_with('@') {
+            continue;
+        }
+        if segment.starts_with("[...") || segment.starts_with("[[...") {
+            return None;
+        }
+        if segment.starts_with('[') && segment.ends_with(']') && segment.len() > 2 {
+            let name = segment[1..segment.len() - 1].trim();
+            if !is_identifier(name) {
+                return None;
+            }
+            segments.push(format!("{{{name}}}"));
+            continue;
+        }
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return None;
+        }
+        segments.push(segment.to_string());
+    }
+
+    Some(if segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segments.join("/"))
+    })
+}
+
+fn nextjs_exported_http_method(value: &str) -> Option<&'static str> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    for method in ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"] {
+        let function = format!("export function {method}(");
+        let async_function = format!("export async function {method}(");
+        let const_handler = format!("export const {method} =");
+        let let_handler = format!("export let {method} =");
+        let var_handler = format!("export var {method} =");
+        if normalized.contains(&function)
+            || normalized.contains(&async_function)
+            || normalized.contains(&const_handler)
+            || normalized.contains(&let_handler)
+            || normalized.contains(&var_handler)
+        {
+            return Some(method);
+        }
+    }
+    None
 }
 
 fn extract_express_routes(
@@ -428,6 +542,229 @@ fn extract_fastapi_routes(
     (routes, mounts)
 }
 
+fn extract_flask_routes(
+    source: &str,
+    root: Node<'_>,
+) -> (Vec<IndexedRoute>, Vec<IndexedRouteMount>) {
+    let (prefixes, mounts) = flask_router_prefixes(source, root);
+    if prefixes.is_empty() {
+        return (Vec::new(), mounts);
+    }
+    let mut routes = Vec::new();
+
+    walk(root, &mut |node| {
+        if node.kind() != "decorated_definition" {
+            return;
+        }
+        let Some(function) = named_children(node)
+            .into_iter()
+            .find(|child| child.kind() == "function_definition")
+        else {
+            return;
+        };
+        let handler_name = function
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(ToString::to_string);
+
+        for decorator in named_children(node)
+            .into_iter()
+            .filter(|child| child.kind() == "decorator")
+        {
+            let Some(raw) = text(source, decorator) else {
+                continue;
+            };
+            let Some((router, methods, path)) =
+                parse_flask_decorator(raw, &prefixes)
+            else {
+                continue;
+            };
+            let full_path = combine_paths(prefixes.get(&router).map(String::as_str), &path);
+            let mut parameters = path_parameters(&full_path);
+            normalize_parameters(&mut parameters);
+            let start = decorator.start_position();
+            let end = function.end_position();
+            for method in methods {
+                routes.push(IndexedRoute {
+                    framework: "flask".to_string(),
+                    router_name: router.clone(),
+                    http_method: method,
+                    path_template: full_path.clone(),
+                    handler_name: handler_name.clone(),
+                    parameters: parameters.clone(),
+                    request_content_type: None,
+                    start_line: start.row + 1,
+                    end_line: end.row + 1,
+                });
+            }
+        }
+    });
+
+    (routes, mounts)
+}
+
+fn flask_router_prefixes(
+    source: &str,
+    root: Node<'_>,
+) -> (BTreeMap<String, String>, Vec<IndexedRouteMount>) {
+    let mut prefixes = BTreeMap::new();
+    let mut mounts = Vec::new();
+
+    walk(root, &mut |node| {
+        if node.kind() == "assignment" {
+            let Some(left) = node.child_by_field_name("left") else {
+                return;
+            };
+            let Some(right) = node.child_by_field_name("right") else {
+                return;
+            };
+            let Some(name) = text(source, left).map(str::trim) else {
+                return;
+            };
+            let Some(value) = text(source, right) else {
+                return;
+            };
+            if !is_identifier(name) {
+                return;
+            }
+            if value.contains("Flask(") {
+                prefixes.insert(name.to_string(), "/".to_string());
+            } else if value.contains("Blueprint(") {
+                let prefix = keyword_string(value, "url_prefix")
+                    .map(|value| normalize_path(&value))
+                    .unwrap_or_else(|| "/".to_string());
+                prefixes.insert(name.to_string(), prefix);
+            }
+        }
+
+        if !node.kind().contains("call") {
+            return;
+        }
+        let Some(value) = text(source, node) else {
+            return;
+        };
+        let Some(open) = value.find(".register_blueprint(") else {
+            return;
+        };
+        let parent_router = value[..open].trim();
+        if !is_identifier(parent_router) {
+            return;
+        }
+        let tail = &value[open + ".register_blueprint(".len()..];
+        let child = tail
+            .split([',', ')'])
+            .next()
+            .map(str::trim)
+            .filter(|candidate| is_identifier(candidate));
+        let Some(child) = child else {
+            return;
+        };
+        let explicit_prefix = keyword_string(value, "url_prefix")
+            .map(|value| normalize_path(&value));
+        if let Some(prefix) = explicit_prefix.as_ref() {
+            if prefixes.contains_key(child) {
+                prefixes.insert(child.to_string(), prefix.clone());
+            }
+        }
+        let prefix = explicit_prefix.unwrap_or_else(|| "/".to_string());
+        let start = node.start_position();
+        let end = node.end_position();
+        mounts.push(IndexedRouteMount {
+            framework: "flask".to_string(),
+            parent_router: parent_router.to_string(),
+            mounted_binding: child.to_string(),
+            prefix,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    });
+
+    (prefixes, mounts)
+}
+
+fn parse_flask_decorator(
+    value: &str,
+    routers: &BTreeMap<String, String>,
+) -> Option<(String, Vec<String>, String)> {
+    let trimmed = value.trim().trim_start_matches('@');
+    let open = trimmed.find('(')?;
+    let member = trimmed[..open].trim();
+    let (router, method) = member.rsplit_once('.')?;
+    if !is_identifier(router) || !routers.contains_key(router) {
+        return None;
+    }
+    let path = first_quoted_string(&trimmed[open + 1..])?;
+    if method == "route" {
+        let methods = keyword_quoted_strings(trimmed, "methods");
+        let methods = if methods.is_empty() {
+            vec!["GET".to_string()]
+        } else {
+            methods
+                .into_iter()
+                .map(|method| method.to_ascii_uppercase())
+                .filter(|method| HTTP_METHODS.iter().any(|known| known.eq_ignore_ascii_case(method)))
+                .collect()
+        };
+        if methods.is_empty() {
+            return None;
+        }
+        return Some((router.to_string(), methods, path));
+    }
+    if HTTP_METHODS.contains(&method.to_ascii_lowercase().as_str()) {
+        return Some((
+            router.to_string(),
+            vec![method.to_ascii_uppercase()],
+            path,
+        ));
+    }
+    None
+}
+
+fn extract_laravel_routes(
+    source: &str,
+    root: Node<'_>,
+) -> (Vec<IndexedRoute>, Vec<IndexedRouteMount>) {
+    let mut routes = Vec::new();
+    walk(root, &mut |node| {
+        if !node.kind().contains("call") {
+            return;
+        }
+        let Some(value) = text(source, node).map(str::trim) else {
+            return;
+        };
+        let Some(tail) = value.strip_prefix("Route::") else {
+            return;
+        };
+        let Some(open) = tail.find('(') else {
+            return;
+        };
+        let method = tail[..open].trim().to_ascii_lowercase();
+        if !HTTP_METHODS.contains(&method.as_str()) {
+            return;
+        }
+        let Some(path) = first_quoted_string(&tail[open + 1..]) else {
+            return;
+        };
+        let full_path = normalize_path(&path);
+        let mut parameters = path_parameters(&full_path);
+        normalize_parameters(&mut parameters);
+        let start = node.start_position();
+        let end = node.end_position();
+        routes.push(IndexedRoute {
+            framework: "laravel".to_string(),
+            router_name: "Route".to_string(),
+            http_method: method.to_ascii_uppercase(),
+            path_template: full_path,
+            handler_name: None,
+            parameters,
+            request_content_type: None,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    });
+    (routes, Vec::new())
+}
+
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let mut models = BTreeMap::new();
     walk(root, &mut |node| {
@@ -685,10 +1022,64 @@ fn first_quoted_string(value: &str) -> Option<String> {
     None
 }
 
+fn keyword_value_tail<'a>(value: &'a str, keyword: &str) -> Option<&'a str> {
+    let mut offset = 0usize;
+    while let Some(relative) = value[offset..].find(keyword) {
+        let index = offset + relative;
+        let before_ok = index == 0
+            || !value[..index]
+                .chars()
+                .next_back()
+                .is_some_and(|character| character == '_' || character.is_ascii_alphanumeric());
+        let after_keyword = &value[index + keyword.len()..];
+        let trimmed = after_keyword.trim_start();
+        if before_ok {
+            if let Some(rest) = trimmed.strip_prefix('=') {
+                return Some(rest.trim_start());
+            }
+        }
+        offset = index + keyword.len();
+    }
+    None
+}
+
 fn keyword_string(value: &str, keyword: &str) -> Option<String> {
-    let marker = format!("{keyword}=");
-    let index = value.find(&marker)?;
-    first_quoted_string(&value[index + marker.len()..])
+    first_quoted_string(keyword_value_tail(value, keyword)?)
+}
+
+fn keyword_quoted_strings(value: &str, keyword: &str) -> Vec<String> {
+    let Some(tail) = keyword_value_tail(value, keyword) else {
+        return Vec::new();
+    };
+    let end = tail
+        .find(']')
+        .or_else(|| tail.find(')'))
+        .unwrap_or(tail.len());
+    quoted_strings(&tail[..end])
+}
+
+fn quoted_strings(value: &str) -> Vec<String> {
+    let mut output = Vec::new();
+    let mut chars = value.char_indices().peekable();
+    while let Some((index, character)) = chars.next() {
+        if !matches!(character, '"' | '\'') {
+            continue;
+        }
+        let start = index + character.len_utf8();
+        let tail = &value[start..];
+        let Some(end) = tail.find(character) else {
+            break;
+        };
+        output.push(tail[..end].to_string());
+        while let Some((next_index, _)) = chars.peek().copied() {
+            if next_index < start + end + character.len_utf8() {
+                chars.next();
+            } else {
+                break;
+            }
+        }
+    }
+    output
 }
 
 fn path_parameters(path: &str) -> Vec<IndexedRouteParameter> {
@@ -706,10 +1097,17 @@ fn path_parameters(path: &str) -> Vec<IndexedRouteParameter> {
         }
         if segment.starts_with('{') && segment.ends_with('}') && segment.len() > 2 {
             let name = segment[1..segment.len() - 1]
-                .split(':')
+                .split([':', '?'])
                 .next()
                 .unwrap_or("")
                 .trim();
+            if is_identifier(name) {
+                values.push(route_parameter(name, "path"));
+            }
+        }
+        if segment.starts_with('<') && segment.ends_with('>') && segment.len() > 2 {
+            let inner = &segment[1..segment.len() - 1];
+            let name = inner.rsplit_once(':').map(|(_, name)| name).unwrap_or(inner).trim();
             if is_identifier(name) {
                 values.push(route_parameter(name, "path"));
             }
@@ -823,6 +1221,59 @@ mod tests {
     use super::extract_routes;
 
     #[test]
+    fn extracts_nextjs_app_router_methods_and_dynamic_path() {
+        let source = r#"
+export async function GET(request: Request) {
+  return Response.json({ ok: true });
+}
+
+export const POST = async (request: Request) => {
+  return Response.json({ created: true });
+};
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "TypeScript",
+            "src/app/(dashboard)/users/[id]/route.ts",
+            source,
+            tree.root_node(),
+        );
+        let get = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "GET")
+            .expect("nextjs GET");
+        assert_eq!(get.path_template, "/users/{id}");
+        assert!(get
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "id" && parameter.location == "path"));
+        assert!(routes
+            .iter()
+            .any(|route| route.framework == "nextjs" && route.http_method == "POST"));
+    }
+
+    #[test]
+    fn skips_nextjs_catch_all_route_materialization() {
+        let source = "export function GET() { return new Response('ok'); }";
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "TypeScript",
+            "app/docs/[...slug]/route.ts",
+            source,
+            tree.root_node(),
+        );
+        assert!(!routes.iter().any(|route| route.framework == "nextjs"));
+    }
+
+    #[test]
     fn extracts_express_route_inputs_and_mount_prefix() {
         let source = r#"
 const express = require("express");
@@ -841,7 +1292,7 @@ auth.post("/login/:tenant", login);
             .set_language(&tree_sitter_javascript::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, handler_inputs) = extract_routes("JavaScript", source, tree.root_node());
+        let (routes, _mounts, handler_inputs) = extract_routes("JavaScript", "src/server.js", source, tree.root_node());
         let route = routes.iter().find(|value| value.path_template == "/api/login/:tenant").expect("route");
         assert_eq!(route.http_method, "POST");
         assert!(route.parameters.iter().any(|value| value.name == "tenant" && value.location == "path"));
@@ -864,10 +1315,97 @@ app.use("/api/auth", authRouter);
             .set_language(&tree_sitter_javascript::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (_routes, mounts, _handler_inputs) = extract_routes("JavaScript", source, tree.root_node());
+        let (_routes, mounts, _handler_inputs) = extract_routes("JavaScript", "src/server.js", source, tree.root_node());
         let mount = mounts.iter().find(|value| value.mounted_binding == "authRouter").expect("mount");
         assert_eq!(mount.prefix, "/api/auth");
         assert_eq!(mount.framework, "express");
+    }
+
+    #[test]
+    fn extracts_flask_routes_blueprints_and_converters() {
+        let source = r#"
+from flask import Flask, Blueprint
+
+app = Flask(__name__)
+api = Blueprint("api", __name__, url_prefix = "/v1")
+
+@app.route("/health", methods = ["GET", "HEAD"])
+def health():
+    return "ok"
+
+@api.post("/users/<int:user_id>")
+def create_user(user_id):
+    return {"id": user_id}
+
+app.register_blueprint(api, url_prefix = "/api")
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, mounts, _handler_inputs) = extract_routes("Python", "app.py", source, tree.root_node());
+        assert!(routes.iter().any(|route| {
+            route.framework == "flask"
+                && route.http_method == "GET"
+                && route.path_template == "/health"
+        }));
+        assert!(routes.iter().any(|route| {
+            route.framework == "flask"
+                && route.http_method == "HEAD"
+                && route.path_template == "/health"
+        }));
+        let user = routes
+            .iter()
+            .find(|route| {
+                route.framework == "flask"
+                    && route.http_method == "POST"
+                    && route.path_template == "/api/users/<int:user_id>"
+            })
+            .expect("flask typed route");
+        assert!(user
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "user_id" && parameter.location == "path"));
+        assert!(mounts.iter().any(|mount| {
+            mount.framework == "flask"
+                && mount.parent_router == "app"
+                && mount.mounted_binding == "api"
+                && mount.prefix == "/api"
+        }));
+    }
+
+    #[test]
+    fn extracts_laravel_route_facade_calls() {
+        let source = r#"<?php
+use Illuminate\Support\Facades\Route;
+
+Route::get('/users/{id?}', [UserController::class, 'show']);
+Route::post('/login', [AuthController::class, 'login']);
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes("PHP", "routes/web.php", source, tree.root_node());
+        let user = routes
+            .iter()
+            .find(|route| {
+                route.framework == "laravel"
+                    && route.http_method == "GET"
+                    && route.path_template == "/users/{id?}"
+            })
+            .expect("laravel get route");
+        assert!(user
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "id" && parameter.location == "path"));
+        assert!(routes.iter().any(|route| {
+            route.framework == "laravel"
+                && route.http_method == "POST"
+                && route.path_template == "/login"
+        }));
     }
 
     #[test]
@@ -894,7 +1432,7 @@ app.include_router(router)
             .set_language(&tree_sitter_python::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, _handler_inputs) = extract_routes("Python", source, tree.root_node());
+        let (routes, _mounts, _handler_inputs) = extract_routes("Python", "app.py", source, tree.root_node());
         let route = routes.iter().find(|value| value.path_template == "/api/login/{tenant}").expect("route");
         assert_eq!(route.http_method, "POST");
         assert!(route.parameters.iter().any(|value| value.name == "tenant" && value.location == "path"));

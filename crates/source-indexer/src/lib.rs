@@ -17,7 +17,7 @@ use walkdir::{DirEntry, WalkDir};
 const MAX_SOURCE_BYTES: u64 = 5 * 1024 * 1024;
 const TYPESCRIPT_DEFINITIONS_QUERY: &str = include_str!("../queries/typescript.scm");
 pub const INDEXER_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const QUERY_VERSION: &str = "definitions-v2-imports-v2-routes-v3-handlers-v1";
+pub const QUERY_VERSION: &str = "definitions-v2-imports-v2-routes-v5-handlers-v1";
 
 #[derive(Debug, Error)]
 pub enum IndexError {
@@ -277,7 +277,7 @@ fn parse_source(
     let symbols = collect_symbols(source, &tree, &query);
     let imports = imports::extract_imports(spec.name, source, tree.root_node());
     let (routes, route_mounts, handler_inputs) =
-        routes::extract_routes(spec.name, source, tree.root_node());
+        routes::extract_routes(spec.name, &relative_path, source, tree.root_node());
 
     Ok(IndexedFile {
         relative_path,

@@ -109,7 +109,7 @@ When an authorized web target is associated with an indexed project, CodeTwin br
 
 The source-aware flow is:
 
-1. Tree-sitter extracts supported backend route declarations from Express/JavaScript/TypeScript and FastAPI/Python.
+1. Tree-sitter extracts supported backend route declarations from Express/JavaScript/TypeScript, Next.js App Router `app/**/route.*` handlers, FastAPI/Python, Flask/Blueprint Python, and direct Laravel `Route::get/post/put/patch/delete/options/head` PHP calls.
 2. Route method, path template, handler, path/query/form/JSON fields, framework, file, source hash, and line range are persisted.
 3. Router mount evidence and import bindings resolve same-file and supported cross-file prefixes, including nested mount chains.
 4. Effective source routes are converted into bounded live endpoint seeds under the existing authorized target and path scope.
@@ -119,7 +119,9 @@ The source-aware flow is:
 8. Finding correlation prefers method + exact/template route evidence before falling back to the older filename/symbol heuristic.
 9. The route template remains attached through guided fix and targeted retest so dynamic path parameters keep their source identity.
 
-Wildcard routes are not blindly materialized. Dynamic path values use a deterministic harmless marker, and state-changing probes remain subject to the existing explicit approval and scope policy.
+Wildcard routes are not blindly materialized. Dynamic path values use deterministic harmless samples, including type-compatible integer/UUID/float/bool values for supported route converters, and state-changing probes remain subject to the existing explicit approval and scope policy.
+
+Current framework limits are explicit: Laravel prefix/middleware group composition is not yet inferred; Next.js catch-all/optional-catch-all and re-exported route handlers are intentionally not materialized by this slice; and cross-file Flask registration that overrides a Blueprint constructor `url_prefix` still needs richer mount metadata to model override semantics perfectly.
 
 All active requests pass through a shared token-bucket pacing floor (4 requests/second with a burst of 2) and the global request budget. Active payloads also pass through a central bounded safety policy that rejects oversized values, line-break/header injection, destructive database statements, UNION/data-extraction shapes, delay/timing functions, metadata-service targets, shell-execution syntax, and non-HTTP outbound schemes before a request can be built. These controls are internal to the engine rather than model-controlled.
 
