@@ -214,6 +214,8 @@ export type WebScopeConfig = {
   excluded_paths: string[];
   max_crawl_depth: number;
   max_requests: number;
+  max_requests_per_endpoint: number;
+  min_request_interval_ms: number;
   concurrency: number;
   timeout_ms: number;
   response_limit_bytes: number;
