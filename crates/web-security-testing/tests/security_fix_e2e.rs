@@ -1611,6 +1611,9 @@ fn targeted_retest_transport_scope_and_auth_failures_never_verify() {
 
     let request_for = |endpoint_url: String, category: &str| TargetedRetestRequest {
         endpoint_url,
+        route_template: None,
+        parameter_names: Vec::new(),
+        parameter_locations: std::collections::BTreeMap::new(),
         method: "GET".into(),
         parameter_name: Some("q".into()),
         parameter_location: Some("query".into()),
