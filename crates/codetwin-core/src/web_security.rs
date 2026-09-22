@@ -59,6 +59,7 @@ pub struct WebScanRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WebEndpointInput {
     pub url: String,
+    pub route_template: Option<String>,
     pub method: String,
     pub depth: usize,
     pub source: String,
@@ -76,6 +77,7 @@ pub struct WebEndpointRecord {
     pub id: String,
     pub scan_id: String,
     pub url: String,
+    pub route_template: Option<String>,
     pub method: String,
     pub depth: usize,
     pub source: String,
@@ -368,8 +370,8 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             "INSERT INTO web_security_endpoints(
                 id, scan_id, url, method, depth, source, parameter_names_json,
                 parameter_locations_json, response_header_names_json, cookie_names_json,
-                content_type, status_code, redirect_to
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                content_type, status_code, redirect_to, route_template
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(scan_id, method, url) DO UPDATE SET
                 depth = MIN(web_security_endpoints.depth, excluded.depth),
                 source = excluded.source,
@@ -379,7 +381,8 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 cookie_names_json = excluded.cookie_names_json,
                 content_type = COALESCE(excluded.content_type, web_security_endpoints.content_type),
                 status_code = COALESCE(excluded.status_code, web_security_endpoints.status_code),
-                redirect_to = COALESCE(excluded.redirect_to, web_security_endpoints.redirect_to)",
+                redirect_to = COALESCE(excluded.redirect_to, web_security_endpoints.redirect_to),
+                route_template = COALESCE(excluded.route_template, web_security_endpoints.route_template)",
             params![
                 id,
                 scan_id,
@@ -394,6 +397,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 endpoint.content_type,
                 endpoint.status_code.map(i64::from),
                 endpoint.redirect_to,
+                endpoint.route_template,
             ],
         )?;
         self.database
@@ -401,7 +405,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             .query_row(
                 "SELECT id, scan_id, url, method, depth, source, parameter_names_json,
                         parameter_locations_json, response_header_names_json, cookie_names_json,
-                        content_type, status_code, redirect_to, created_at
+                        content_type, status_code, redirect_to, route_template, created_at
                  FROM web_security_endpoints WHERE scan_id=?1 AND method=?2 AND url=?3",
                 params![scan_id, endpoint.method, endpoint.url],
                 map_endpoint,
@@ -417,7 +421,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         let mut statement = self.database.connection().prepare(
             "SELECT id, scan_id, url, method, depth, source, parameter_names_json,
                     parameter_locations_json, response_header_names_json, cookie_names_json,
-                    content_type, status_code, redirect_to, created_at
+                    content_type, status_code, redirect_to, route_template, created_at
              FROM web_security_endpoints WHERE scan_id=?1
              ORDER BY depth, url, method LIMIT ?2",
         )?;
@@ -1163,6 +1167,7 @@ fn map_endpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebEndpointRecord> 
         id: row.get(0)?,
         scan_id: row.get(1)?,
         url: row.get(2)?,
+        route_template: row.get(13)?,
         method: row.get(3)?,
         depth: nonnegative(row.get(4)?),
         source: row.get(5)?,
@@ -1175,7 +1180,7 @@ fn map_endpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebEndpointRecord> 
             .get::<_, Option<i64>>(11)?
             .and_then(|value| u16::try_from(value).ok()),
         redirect_to: row.get(12)?,
-        created_at: row.get(13)?,
+        created_at: row.get(14)?,
     })
 }
 
