@@ -5,10 +5,12 @@ use std::{
 
 use ::qa_execution::{
     build_execution_plan, capture_external_read_surface, cleanup_detached_workspace,
-    current_backend_info, prepare_dependency_complete_workspace, snapshot_execution_inputs,
-    validate_approved_external_read_surface_shape, ApprovedExternalReadSurface, ExecutionCommand,
-    ExecutionPlanStatus, SandboxCapabilities, SandboxPolicy, TestExecutionPlan,
-    TestExecutionRequest, TestRunnerKind, TrustedToolchain, MAX_PROJECT_MIRROR_BYTES,
+    current_backend_info, docker_backend_info, execute_approved_plan_in_docker,
+    prepare_dependency_complete_workspace, snapshot_execution_inputs,
+    validate_approved_external_read_surface_shape, validate_pinned_container_image,
+    ApprovedExternalReadSurface, ExecutionCommand, ExecutionPlanStatus, ExecutionRunStatus,
+    SandboxCapabilities, SandboxPolicy, TestExecutionPlan, TestExecutionRequest, TestRunnerKind,
+    TrustedToolchain, MAX_PROJECT_MIRROR_BYTES,
     MAX_PROJECT_MIRROR_DIRECTORIES, MAX_PROJECT_MIRROR_FILES,
 };
 use rusqlite::{params, OptionalExtension};
@@ -81,6 +83,30 @@ pub struct QaExecutionPlanRecord {
     pub created_at: String,
     pub approved_at: Option<String>,
     pub superseded_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QaExecutionRunRecord {
+    pub id: String,
+    pub plan_id: String,
+    pub project_id: String,
+    pub status: ExecutionRunStatus,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub exit_code: Option<i32>,
+    pub parser_completed: bool,
+    pub tests_passed: Option<bool>,
+    pub stdout_excerpt: String,
+    pub stderr_excerpt: String,
+    pub stdout_original_bytes: usize,
+    pub stderr_original_bytes: usize,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub result: Value,
+    pub project_manifest_sha256: String,
+    pub external_read_surface_sha256: String,
+    pub created_at: String,
 }
 
 impl QaExecutionPlanRecord {
