@@ -638,6 +638,43 @@ def resolve_model_for_inference(
     return candidates[0]
 
 
+def resolve_model_for_generation(
+    action: str,
+    *,
+    model_id: str | None = None,
+    model_version: str | None = None,
+    model_root: Path | str | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    catalog = load_catalog()
+    if action not in catalog["routes"]:
+        raise ModelError(f"unknown model action: {action}")
+    if model_id is not None:
+        _safe_id(model_id, "model_id")
+    if model_version is not None:
+        _safe_id(model_version, "model_version")
+
+    candidates = []
+    for path, metadata in _ready_entries(model_root):
+        if (
+            metadata.get("backend") != "llama-cpp-gguf-v1"
+            or action not in metadata["actions"]
+            or not _execution_supported(metadata)
+        ):
+            continue
+        if model_id is not None and metadata["id"] != model_id:
+            continue
+        if model_version is not None and metadata["version"] != model_version:
+            continue
+        candidates.append((path, metadata))
+    if not candidates:
+        raise ModelError(f"no generation-ready GGUF model is installed for action: {action}")
+    if len(candidates) > 1:
+        raise ModelError(
+            "multiple generation-ready models match; specify both model_id and model_version"
+        )
+    return candidates[0]
+
+
 def inference_plan(action: str, *, model_root: Path | str | None = None) -> dict[str, Any]:
     model_route = route_model(action, model_root=model_root)
     dataset_catalog = load_catalog()
