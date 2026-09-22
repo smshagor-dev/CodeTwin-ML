@@ -283,8 +283,8 @@ export function MLWorkspace() {
       <header>
         <div>
           <p className="eyebrow">LOCAL MODEL EXECUTION</p>
-          <h1>ML Inference</h1>
-          <p>Run a verified local classifier against a hash-checked indexed file and persist prediction provenance separately from deterministic findings.</p>
+          <h1>Local ML</h1>
+          <p>Run verified local classification or bounded GGUF advisory generation against hash-checked indexed source. Model output remains separate from deterministic findings and live-request authority.</p>
         </div>
       </header>
 
@@ -312,7 +312,8 @@ export function MLWorkspace() {
             <Metric label="installed models" value={capabilities.models?.installed ?? 0} />
             <Metric label="registry ready" value={capabilities.models?.ready ?? 0} />
             <Metric label="execution ready" value={capabilities.models?.execution_ready ?? 0} />
-            <Metric label="advertised actions" value={capabilities.inference?.length ?? 0} />
+            <Metric label="classifier actions" value={capabilities.inference?.length ?? 0} />
+            <Metric label="generator actions" value={capabilities.generation?.length ?? 0} />
           </div>
         )}
         {capabilities?.note && <p className="muted">{capabilities.note}</p>}
