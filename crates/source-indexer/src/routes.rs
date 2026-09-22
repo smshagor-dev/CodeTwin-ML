@@ -34,8 +34,8 @@ pub fn extract_routes(
             (routes, mounts, Vec::new())
         }
         "Go" => {
-            let (routes, mounts) = extract_go_routes(source, root);
-            (routes, mounts, Vec::new())
+            let (routes, mounts, handler_inputs) = extract_go_routes(source, root);
+            (routes, mounts, handler_inputs)
         }
         "Rust" => {
             let routes = extract_rust_routes(source, root);
@@ -975,11 +975,21 @@ fn laravel_chain_prefix(value: &str) -> Option<String> {
 fn extract_go_routes(
     source: &str,
     root: Node<'_>,
-) -> (Vec<IndexedRoute>, Vec<IndexedRouteMount>) {
+) -> (
+    Vec<IndexedRoute>,
+    Vec<IndexedRouteMount>,
+    Vec<IndexedHandlerInput>,
+) {
     let Some(framework) = detect_go_route_framework(source) else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     };
 
+    let handlers = go_handlers(source, root);
+    let handler_inputs = go_handler_inputs(source, &handlers, framework);
+    let handler_parameters: BTreeMap<String, Vec<IndexedRouteParameter>> = handler_inputs
+        .iter()
+        .map(|input| (input.handler_name.clone(), input.parameters.clone()))
+        .collect();
     let (prefixes, mounts) = go_group_prefixes(source, root, framework);
     let mut routes = Vec::new();
 
@@ -1033,9 +1043,20 @@ fn extract_go_routes(
             return;
         };
 
+        let handler_name = go_route_handler_reference(value);
         let full_path = combine_paths(prefixes.get(router).map(String::as_str), &path);
         let mut parameters = path_parameters(&full_path);
+        if let Some(name) = handler_name.as_ref() {
+            if let Some(handler) = handler_parameters.get(name) {
+                parameters.extend(handler.iter().cloned());
+            }
+        }
         normalize_parameters(&mut parameters);
+        let request_content_type = if parameters.iter().any(|value| value.location == "form") {
+            Some("application/x-www-form-urlencoded".to_string())
+        } else {
+            None
+        };
         let start = node.start_position();
         let end = node.end_position();
         routes.push(IndexedRoute {
@@ -1043,15 +1064,136 @@ fn extract_go_routes(
             router_name: router.to_string(),
             http_method,
             path_template: full_path,
-            handler_name: None,
+            handler_name,
             parameters,
-            request_content_type: None,
+            request_content_type,
             start_line: start.row + 1,
             end_line: end.row + 1,
         });
     });
 
-    (routes, mounts)
+    (routes, mounts, handler_inputs)
+}
+
+fn go_handlers<'a>(source: &str, root: Node<'a>) -> BTreeMap<String, Node<'a>> {
+    let mut handlers = BTreeMap::new();
+    walk(root, &mut |node| {
+        if node.kind() != "function_declaration" {
+            return;
+        }
+        let Some(name) = node
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(str::trim)
+        else {
+            return;
+        };
+        if is_identifier(name) {
+            handlers.insert(name.to_string(), node);
+        }
+    });
+    handlers
+}
+
+fn go_handler_inputs(
+    source: &str,
+    handlers: &BTreeMap<String, Node<'_>>,
+    framework: &str,
+) -> Vec<IndexedHandlerInput> {
+    let mut output = Vec::new();
+    for (name, node) in handlers {
+        let Some(body) = text(source, *node) else {
+            continue;
+        };
+        let mut parameters = go_handler_parameters(body, framework);
+        normalize_parameters(&mut parameters);
+        if parameters.is_empty() {
+            continue;
+        }
+        let start = node.start_position();
+        let end = node.end_position();
+        output.push(IndexedHandlerInput {
+            handler_name: name.clone(),
+            parameters,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    }
+    output
+}
+
+fn go_handler_parameters(body: &str, framework: &str) -> Vec<IndexedRouteParameter> {
+    let mut parameters = Vec::new();
+    let mut collect = |markers: &[&str], location: &str| {
+        for marker in markers {
+            for name in marker_quoted_arguments(body, marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, location));
+                }
+            }
+        }
+    };
+
+    match framework {
+        "gin" => {
+            collect(&[".Query(", ".DefaultQuery("], "query");
+            collect(&[".Param("], "path");
+            collect(&[".PostForm(", ".DefaultPostForm("], "form");
+            collect(&[".GetHeader("], "header");
+        }
+        "echo" => {
+            collect(&[".QueryParam("], "query");
+            collect(&[".Param("], "path");
+            collect(&[".FormValue("], "form");
+            collect(&[".Header.Get("], "header");
+        }
+        "chi" => {
+            collect(&["chi.URLParam("], "path");
+            collect(&[".URL.Query().Get("], "query");
+            collect(&[".FormValue("], "form");
+            collect(&[".Header.Get("], "header");
+        }
+        "go-stdlib" => {
+            collect(&[".PathValue("], "path");
+            collect(&[".URL.Query().Get("], "query");
+            collect(&[".FormValue("], "form");
+            collect(&[".Header.Get("], "header");
+        }
+        _ => {}
+    }
+    parameters
+}
+
+fn marker_quoted_arguments(value: &str, marker: &str) -> Vec<String> {
+    let mut output = Vec::new();
+    let mut offset = 0usize;
+    while let Some(relative) = value[offset..].find(marker) {
+        let start = offset + relative + marker.len();
+        let tail = &value[start..];
+        if let Some(argument) = first_quoted_string(tail) {
+            output.push(argument);
+        }
+        offset = start;
+        if offset >= value.len() {
+            break;
+        }
+    }
+    output
+}
+
+fn go_route_handler_reference(value: &str) -> Option<String> {
+    let close = value.rfind(')')?;
+    let open = value.find('(')?;
+    if close <= open {
+        return None;
+    }
+    let arguments = &value[open + 1..close];
+    let candidate = arguments.rsplit(',').next()?.trim();
+    if is_identifier(candidate) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
 }
 
 fn detect_go_route_framework(source: &str) -> Option<&'static str> {
@@ -2114,6 +2256,145 @@ Route::post('/login', [AuthController::class, 'login']);
                 && route.http_method == "POST"
                 && route.path_template == "/login"
         }));
+    }
+
+    #[test]
+    fn maps_gin_handler_inputs_back_to_source_route() {
+        let source = r#"
+package main
+
+import "github.com/gin-gonic/gin"
+
+func showUser(c *gin.Context) {
+    id := c.Param("id")
+    expand := c.Query("expand")
+    locale := c.DefaultQuery("locale", "en")
+    token := c.GetHeader("X-Token")
+    _ = id
+    _ = expand
+    _ = locale
+    _ = token
+}
+
+func createUser(c *gin.Context) {
+    email := c.PostForm("email")
+    _ = email
+}
+
+func routes(r *gin.Engine) {
+    r.GET("/users/:id", showUser)
+    r.POST("/users", createUser)
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_go::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, handler_inputs) =
+            extract_routes("Go", "main.go", source, tree.root_node());
+
+        let show = routes
+            .iter()
+            .find(|route| route.http_method == "GET" && route.path_template == "/users/:id")
+            .expect("gin GET route");
+        assert_eq!(show.handler_name.as_deref(), Some("showUser"));
+        assert!(show.parameters.iter().any(|parameter| {
+            parameter.name == "id" && parameter.location == "path"
+        }));
+        assert!(show.parameters.iter().any(|parameter| {
+            parameter.name == "expand" && parameter.location == "query"
+        }));
+        assert!(show.parameters.iter().any(|parameter| {
+            parameter.name == "locale" && parameter.location == "query"
+        }));
+        assert!(show.parameters.iter().any(|parameter| {
+            parameter.name == "X-Token" && parameter.location == "header"
+        }));
+
+        let create = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/users")
+            .expect("gin POST route");
+        assert_eq!(create.handler_name.as_deref(), Some("createUser"));
+        assert!(create.parameters.iter().any(|parameter| {
+            parameter.name == "email" && parameter.location == "form"
+        }));
+        assert_eq!(
+            create.request_content_type.as_deref(),
+            Some("application/x-www-form-urlencoded")
+        );
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "showUser"
+                && input
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "expand" && parameter.location == "query")
+        }));
+    }
+
+    #[test]
+    fn maps_echo_chi_and_stdlib_handler_inputs_without_dynamic_key_guessing() {
+        let echo = r#"
+package main
+import "github.com/labstack/echo/v4"
+func login(c echo.Context) error {
+    next := c.QueryParam("next")
+    tenant := c.Param("tenant")
+    csrf := c.FormValue("csrf")
+    _ = next
+    _ = tenant
+    _ = csrf
+    return nil
+}
+func routes(e *echo.Echo) { e.POST("/login/:tenant", login) }
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_go::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(echo, None).expect("tree");
+        let (routes, _, _) = extract_routes("Go", "echo.go", echo, tree.root_node());
+        let route = routes.iter().find(|route| route.framework == "echo").expect("echo");
+        assert!(route.parameters.iter().any(|parameter| parameter.name == "next" && parameter.location == "query"));
+        assert!(route.parameters.iter().any(|parameter| parameter.name == "csrf" && parameter.location == "form"));
+
+        let chi = r#"
+package main
+import "github.com/go-chi/chi/v5"
+func show(w http.ResponseWriter, r *http.Request) {
+    id := chi.URLParam(r, "id")
+    q := r.URL.Query().Get("q")
+    _ = id
+    _ = q
+}
+func routes(r chi.Router) { r.Get("/items/{id}", show) }
+"#;
+        let tree = parser.parse(chi, None).expect("tree");
+        let (routes, _, _) = extract_routes("Go", "chi.go", chi, tree.root_node());
+        let route = routes.iter().find(|route| route.framework == "chi").expect("chi");
+        assert!(route.parameters.iter().any(|parameter| parameter.name == "id" && parameter.location == "path"));
+        assert!(route.parameters.iter().any(|parameter| parameter.name == "q" && parameter.location == "query"));
+
+        let stdlib = r#"
+package main
+import "net/http"
+func user(w http.ResponseWriter, r *http.Request) {
+    id := r.PathValue("id")
+    q := r.URL.Query().Get("q")
+    dynamic := "secret"
+    _ = r.URL.Query().Get(dynamic)
+    _ = id
+    _ = q
+}
+func routes(mux *http.ServeMux) { mux.HandleFunc("GET /users/{id}", user) }
+"#;
+        let tree = parser.parse(stdlib, None).expect("tree");
+        let (routes, _, _) = extract_routes("Go", "main.go", stdlib, tree.root_node());
+        let route = routes.iter().find(|route| route.framework == "go-stdlib").expect("stdlib");
+        assert!(route.parameters.iter().any(|parameter| parameter.name == "id" && parameter.location == "path"));
+        assert!(route.parameters.iter().any(|parameter| parameter.name == "q" && parameter.location == "query"));
+        assert!(!route.parameters.iter().any(|parameter| parameter.name == "secret"));
     }
 
     #[test]
