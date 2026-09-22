@@ -198,6 +198,72 @@ pub struct SourceEndpointSeed {
     pub source_label: String,
 }
 
+pub fn source_endpoint_seed(
+    target_url: &str,
+    method: &str,
+    path_template: &str,
+    parameter_names: &[String],
+    parameter_locations: &BTreeMap<String, String>,
+    content_type: Option<&str>,
+    source_label: &str,
+) -> Option<SourceEndpointSeed> {
+    let mut base = url::Url::parse(target_url).ok()?;
+    if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
+        return None;
+    }
+    let materialized_path = materialize_route_path(path_template)?;
+    base.set_path("/");
+    base.set_query(None);
+    base.set_fragment(None);
+    let mut url = base.join(materialized_path.trim_start_matches('/')).ok()?;
+
+    {
+        let mut query = url.query_pairs_mut();
+        for name in parameter_names {
+            if parameter_locations
+                .get(name)
+                .is_some_and(|location| location == "query")
+            {
+                query.append_pair(name, "codetwin-test");
+            }
+        }
+    }
+
+    Some(SourceEndpointSeed {
+        url: url.to_string(),
+        method: method.trim().to_ascii_uppercase(),
+        parameter_names: parameter_names.to_vec(),
+        parameter_locations: parameter_locations.clone(),
+        content_type: content_type.map(ToString::to_string),
+        source_label: source_label.to_string(),
+    })
+}
+
+fn materialize_route_path(template: &str) -> Option<String> {
+    let trimmed = template.trim();
+    if trimmed.contains('*') {
+        return None;
+    }
+    let mut segments = Vec::new();
+    for segment in trimmed.trim_matches('/').split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        let dynamic = segment.starts_with(':')
+            || (segment.starts_with('{') && segment.ends_with('}'));
+        segments.push(if dynamic {
+            "codetwin-test".to_string()
+        } else {
+            segment.to_string()
+        });
+    }
+    Some(if segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segments.join("/"))
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EndpointObservation {
     pub url: String,
