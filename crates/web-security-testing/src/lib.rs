@@ -191,6 +191,7 @@ pub struct ScanProgress {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SourceEndpointSeed {
     pub url: String,
+    pub discovery_url: Option<String>,
     pub method: String,
     pub parameter_names: Vec<String>,
     pub parameter_locations: BTreeMap<String, String>,
@@ -211,13 +212,15 @@ pub fn source_endpoint_seed(
     if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
         return None;
     }
-    let materialized_path = materialize_route_path(path_template)?;
+    let normalized_template = normalize_route_template(path_template)?;
+    let materialized_path = materialize_route_path(&normalized_template)?;
     base.set_path("/");
     base.set_query(None);
     base.set_fragment(None);
-    let mut url = base.join(materialized_path.trim_start_matches('/')).ok()?;
 
-    {
+    let mut template_url = base.join(normalized_template.trim_start_matches('/')).ok()?;
+    let mut discovery_url = base.join(materialized_path.trim_start_matches('/')).ok()?;
+    for url in [&mut template_url, &mut discovery_url] {
         let mut query = url.query_pairs_mut();
         for name in parameter_names {
             if parameter_locations
@@ -230,7 +233,8 @@ pub fn source_endpoint_seed(
     }
 
     Some(SourceEndpointSeed {
-        url: url.to_string(),
+        url: template_url.to_string(),
+        discovery_url: Some(discovery_url.to_string()),
         method: method.trim().to_ascii_uppercase(),
         parameter_names: parameter_names.to_vec(),
         parameter_locations: parameter_locations.clone(),
@@ -239,7 +243,7 @@ pub fn source_endpoint_seed(
     })
 }
 
-fn materialize_route_path(template: &str) -> Option<String> {
+fn normalize_route_template(template: &str) -> Option<String> {
     let trimmed = template.trim();
     if trimmed.contains('*') {
         return None;
@@ -249,8 +253,49 @@ fn materialize_route_path(template: &str) -> Option<String> {
         if segment.is_empty() {
             continue;
         }
-        let dynamic = segment.starts_with(':')
-            || (segment.starts_with('{') && segment.ends_with('}'));
+        if let Some(rest) = segment.strip_prefix(':') {
+            let name = rest
+                .split(['?', '(', '.'])
+                .next()
+                .unwrap_or(rest)
+                .trim();
+            if name.is_empty() {
+                return None;
+            }
+            segments.push(format!("{{{name}}}"));
+            continue;
+        }
+        if segment.starts_with('{') && segment.ends_with('}') && segment.len() > 2 {
+            let name = segment[1..segment.len() - 1]
+                .split(':')
+                .next()
+                .unwrap_or("")
+                .trim();
+            if name.is_empty() {
+                return None;
+            }
+            segments.push(format!("{{{name}}}"));
+            continue;
+        }
+        segments.push(segment.to_string());
+    }
+    Some(if segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", segments.join("/"))
+    })
+}
+
+fn materialize_route_path(template: &str) -> Option<String> {
+    if template.contains('*') {
+        return None;
+    }
+    let mut segments = Vec::new();
+    for segment in template.trim_matches('/').split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        let dynamic = segment.starts_with('{') && segment.ends_with('}');
         segments.push(if dynamic {
             "codetwin-test".to_string()
         } else {
@@ -565,9 +610,12 @@ mod source_seed_tests {
         )
         .expect("seed");
         assert_eq!(seed.method, "POST");
-        assert!(seed.url.starts_with("https://example.test/api/login/codetwin-test"));
+        assert!(seed.url.contains("/api/login/%7Btenant%7D"));
         assert!(seed.url.contains("next=codetwin-test"));
         assert!(!seed.url.contains("email="));
+        let discovery = seed.discovery_url.as_deref().expect("discovery url");
+        assert!(discovery.starts_with("https://example.test/api/login/codetwin-test"));
+        assert!(discovery.contains("next=codetwin-test"));
         assert_eq!(seed.parameter_locations.get("email").map(String::as_str), Some("json"));
     }
 
