@@ -52,7 +52,8 @@ def _worker_environment(root: pathlib.Path) -> dict[str, str]:
     return environment
 
 
-def run_isolated_inference(
+def _run_isolated(
+    operation: str,
     action: str,
     text: str,
     *,
@@ -61,6 +62,7 @@ def run_isolated_inference(
 ) -> dict[str, Any]:
     payload = {
         "protocol": WORKER_PROTOCOL_VERSION,
+        "operation": operation,
         "action": action,
         "text": text,
         "model_id": model_id,
@@ -69,7 +71,7 @@ def run_isolated_inference(
     request = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     if len(request) > MAX_WORKER_REQUEST_BYTES:
         raise InferenceRuntimeError(
-            f"isolated inference request exceeds {MAX_WORKER_REQUEST_BYTES} bytes"
+            f"isolated ML request exceeds {MAX_WORKER_REQUEST_BYTES} bytes"
         )
 
     root = _sidecar_root()
@@ -93,33 +95,33 @@ def run_isolated_inference(
         )
     except subprocess.TimeoutExpired as error:
         raise InferenceRuntimeError(
-            f"isolated inference exceeded the {WORKER_TIMEOUT_SECONDS} second timeout"
+            f"isolated ML worker exceeded the {WORKER_TIMEOUT_SECONDS} second timeout"
         ) from error
     except OSError as error:
-        raise InferenceRuntimeError(f"cannot start isolated inference worker: {error}") from error
+        raise InferenceRuntimeError(f"cannot start isolated ML worker: {error}") from error
 
     stdout = completed.stdout
     if not isinstance(stdout, (bytes, bytearray)):
-        raise InferenceRuntimeError("isolated inference worker returned invalid stdout")
+        raise InferenceRuntimeError("isolated ML worker returned invalid stdout")
     if len(stdout) > MAX_WORKER_RESPONSE_BYTES:
         raise InferenceRuntimeError(
             f"isolated inference response exceeds {MAX_WORKER_RESPONSE_BYTES} bytes"
         )
     if completed.returncode != 0:
         raise InferenceRuntimeError(
-            f"isolated inference worker exited with status {completed.returncode}"
+            f"isolated ML worker exited with status {completed.returncode}"
         )
 
     try:
         response = json.loads(bytes(stdout).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise InferenceRuntimeError("isolated inference worker returned invalid JSON") from error
+        raise InferenceRuntimeError("isolated ML worker returned invalid JSON") from error
     if not isinstance(response, dict) or response.get("protocol") != WORKER_PROTOCOL_VERSION:
-        raise InferenceRuntimeError("isolated inference worker protocol mismatch")
+        raise InferenceRuntimeError("isolated ML worker protocol mismatch")
     if response.get("ok") is True:
         result = response.get("result")
         if not isinstance(result, dict):
-            raise InferenceRuntimeError("isolated inference worker result is invalid")
+            raise InferenceRuntimeError("isolated ML worker result is invalid")
         return result
     if response.get("ok") is False:
         error = response.get("error")
@@ -131,5 +133,37 @@ def run_isolated_inference(
                 else "isolated inference failed"
             )
             raise InferenceRuntimeError(f"{code}: {message}")
-        raise InferenceRuntimeError("isolated inference worker returned an invalid error")
-    raise InferenceRuntimeError("isolated inference worker response is missing ok")
+        raise InferenceRuntimeError("isolated ML worker returned an invalid error")
+    raise InferenceRuntimeError("isolated ML worker response is missing ok")
+
+
+def run_isolated_inference(
+    action: str,
+    text: str,
+    *,
+    model_id: str | None = None,
+    model_version: str | None = None,
+) -> dict[str, Any]:
+    return _run_isolated(
+        "classification",
+        action,
+        text,
+        model_id=model_id,
+        model_version=model_version,
+    )
+
+
+def run_isolated_generation(
+    action: str,
+    text: str,
+    *,
+    model_id: str | None = None,
+    model_version: str | None = None,
+) -> dict[str, Any]:
+    return _run_isolated(
+        "generation",
+        action,
+        text,
+        model_id=model_id,
+        model_version=model_version,
+    )
