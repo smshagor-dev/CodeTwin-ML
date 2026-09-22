@@ -3235,6 +3235,160 @@ func fetch(client *Client) {
     }
 
     #[test]
+    fn maps_axum_typed_extractors_and_static_header_keys_to_routes() {
+        let source = r#"
+use axum::{
+    extract::{Path, Query},
+    http::HeaderMap,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct ListQuery {
+    #[serde(rename = "pageSize")]
+    page_size: usize,
+    q: String,
+}
+
+#[derive(Deserialize)]
+struct CreateUser {
+    email: String,
+    #[serde(rename = "displayName")]
+    display_name: String,
+    #[serde(skip)]
+    ignored: String,
+}
+
+async fn list(Query(_query): Query<ListQuery>, headers: HeaderMap) {
+    let _ = headers.get("X-Tenant");
+}
+
+async fn update(Path(_id): Path<String>, Json(_body): Json<CreateUser>) {}
+
+fn app() -> Router {
+    Router::new()
+        .route("/users", get(list))
+        .route("/users/{id}", post(update))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, handler_inputs) =
+            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+
+        let list = routes
+            .iter()
+            .find(|route| route.http_method == "GET" && route.path_template == "/users")
+            .expect("axum list route");
+        assert_eq!(list.handler_name.as_deref(), Some("list"));
+        assert!(list.parameters.iter().any(|parameter| {
+            parameter.name == "pageSize" && parameter.location == "query"
+        }));
+        assert!(list.parameters.iter().any(|parameter| {
+            parameter.name == "q" && parameter.location == "query"
+        }));
+        assert!(list.parameters.iter().any(|parameter| {
+            parameter.name == "X-Tenant" && parameter.location == "header"
+        }));
+
+        let update = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/users/{id}")
+            .expect("axum update route");
+        assert_eq!(update.handler_name.as_deref(), Some("update"));
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "id" && parameter.location == "path"
+        }));
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "email" && parameter.location == "json"
+        }));
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "displayName" && parameter.location == "json"
+        }));
+        assert!(!update.parameters.iter().any(|parameter| parameter.name == "ignored"));
+        assert_eq!(update.request_content_type.as_deref(), Some("application/json"));
+
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "list"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "X-Tenant" && parameter.location == "header"
+                })
+        }));
+    }
+
+    #[test]
+    fn maps_actix_form_and_rocket_json_query_inputs() {
+        let actix = r#"
+use actix_web::{post, web};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct LoginForm {
+    email: String,
+    csrf: String,
+}
+
+#[post("/login")]
+async fn login(form: web::Form<LoginForm>) {
+    let _ = form;
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(actix, None).expect("tree");
+        let (routes, _, _) = extract_routes("Rust", "src/actix.rs", actix, tree.root_node());
+        let login = routes.iter().find(|route| route.framework == "actix-web").expect("actix route");
+        assert_eq!(login.handler_name.as_deref(), Some("login"));
+        assert!(login.parameters.iter().any(|parameter| parameter.name == "email" && parameter.location == "form"));
+        assert!(login.parameters.iter().any(|parameter| parameter.name == "csrf" && parameter.location == "form"));
+        assert_eq!(login.request_content_type.as_deref(), Some("application/x-www-form-urlencoded"));
+
+        let rocket = r#"
+use rocket::{get, post};
+use rocket::serde::json::Json;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct CreateItem {
+    name: String,
+}
+
+#[get("/search?<page>&<q>")]
+fn search(page: usize, q: &str) {
+    let _ = (page, q);
+}
+
+#[post("/items")]
+fn create(body: Json<CreateItem>) {
+    let _ = body;
+}
+"#;
+        let tree = parser.parse(rocket, None).expect("tree");
+        let (routes, _, _) = extract_routes("Rust", "src/rocket.rs", rocket, tree.root_node());
+        let search = routes
+            .iter()
+            .find(|route| route.framework == "rocket" && route.http_method == "GET")
+            .expect("rocket search route");
+        assert_eq!(search.path_template, "/search");
+        assert!(search.parameters.iter().any(|parameter| parameter.name == "page" && parameter.location == "query"));
+        assert!(search.parameters.iter().any(|parameter| parameter.name == "q" && parameter.location == "query"));
+
+        let create = routes
+            .iter()
+            .find(|route| route.framework == "rocket" && route.http_method == "POST")
+            .expect("rocket create route");
+        assert_eq!(create.handler_name.as_deref(), Some("create"));
+        assert!(create.parameters.iter().any(|parameter| parameter.name == "name" && parameter.location == "json"));
+        assert_eq!(create.request_content_type.as_deref(), Some("application/json"));
+    }
+    #[test]
     fn extracts_actix_and_rocket_attribute_routes() {
         let actix = r#"
 use actix_web::{get, post};
