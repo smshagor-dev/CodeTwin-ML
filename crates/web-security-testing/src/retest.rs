@@ -12,6 +12,8 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TargetedRetestRequest {
     pub endpoint_url: String,
+    #[serde(default)]
+    pub route_template: Option<String>,
     pub method: String,
     pub parameter_name: Option<String>,
     pub parameter_location: Option<String>,
@@ -97,7 +99,7 @@ pub fn run_targeted_retest(
 
     let endpoint = EndpointObservation {
         url: url.to_string(),
-        route_template: None,
+        route_template: request.route_template.clone(),
         method: method.clone(),
         depth: 0,
         source: if matches!(request.category.as_str(), "api_input_validation" | "api_validation") {
