@@ -7,6 +7,7 @@ import type {
   WebEvidenceRecord,
   WebFindingRecord,
   WebScanRecord,
+  WebSourceEndpointLinkRecord,
   WebScanStartRequest,
 } from "../types";
 import { EmptyState, Modal, Panel, StatusBadge, formatDate, shortPath } from "../ui";
@@ -29,6 +30,7 @@ export function AuthorizedWebSecurityPanel() {
   const [selectedScanId, setSelectedScanId] = useState<string | null>(null);
   const [scan, setScan] = useState<WebScanRecord | null>(null);
   const [endpoints, setEndpoints] = useState<WebEndpointRecord[]>([]);
+  const [sourceLinks, setSourceLinks] = useState<WebSourceEndpointLinkRecord[]>([]);
   const [findings, setFindings] = useState<WebFindingRecord[]>([]);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<WebEvidenceRecord[]>([]);
@@ -54,9 +56,10 @@ export function AuthorizedWebSecurityPanel() {
   }, []);
 
   const refreshSelected = useCallback(async (scanId: string) => {
-    const [nextScan, nextEndpoints, nextFindings] = await Promise.all([
+    const [nextScan, nextEndpoints, nextSourceLinks, nextFindings] = await Promise.all([
       workspaceApi.getWebSecurityScan(scanId),
       workspaceApi.listWebSecurityEndpoints(scanId, 500),
+      workspaceApi.listWebSourceEndpointLinks(scanId, 500),
       workspaceApi.listWebSecurityFindings(scanId, {
         severity: null,
         category: null,
@@ -67,6 +70,7 @@ export function AuthorizedWebSecurityPanel() {
     ]);
     setScan(nextScan);
     setEndpoints(nextEndpoints);
+    setSourceLinks(nextSourceLinks);
     setFindings(nextFindings);
     setSelectedFindingId((current) =>
       current && nextFindings.some((finding) => finding.id === current)
@@ -86,6 +90,7 @@ export function AuthorizedWebSecurityPanel() {
     if (!selectedScanId) {
       setScan(null);
       setEndpoints([]);
+      setSourceLinks([]);
       setFindings([]);
       return;
     }
@@ -117,6 +122,15 @@ export function AuthorizedWebSecurityPanel() {
       .then(setEvidence)
       .catch((error) => setToast({ tone: "error", message: "Could not load finding evidence: " + String(error) }));
   }, [selectedFindingId, setToast]);
+
+  const sourceLinkByEndpoint = useMemo(() => {
+    const links = new Map<string, WebSourceEndpointLinkRecord>();
+    for (const link of sourceLinks) {
+      const existing = links.get(link.endpoint_id);
+      if (!existing || link.confidence > existing.confidence) links.set(link.endpoint_id, link);
+    }
+    return links;
+  }, [sourceLinks]);
 
   const selectedFinding = findings.find((finding) => finding.id === selectedFindingId) ?? null;
   const categories = useMemo(
@@ -317,6 +331,17 @@ export function AuthorizedWebSecurityPanel() {
                           ).join(", ")}
                         </em>
                       )}
+                      {sourceLinkByEndpoint.get(endpoint.id) && (() => {
+                        const link = sourceLinkByEndpoint.get(endpoint.id)!;
+                        return (
+                          <em>
+                            Source route: {link.source_relative_path}
+                            {link.source_handler_name ? " → " + link.source_handler_name : ""}
+                            {" · " + link.source_method + " " + link.source_path_template}
+                            {" · " + Math.round(link.confidence * 100) + "% " + link.match_kind.replaceAll("_", " ")}
+                          </em>
+                        );
+                      })()}
                       {!!endpoint.cookie_names.length && <em>Cookies observed: {endpoint.cookie_names.join(", ")}</em>}
                     </p>
                   </div>
@@ -375,7 +400,7 @@ export function AuthorizedWebSecurityPanel() {
                     <dt>First detected</dt><dd>{formatDate(selectedFinding.first_detected)}</dd>
                     <dt>Last detected</dt><dd>{formatDate(selectedFinding.last_detected)}</dd>
                     <dt>Source</dt><dd>{selectedFinding.source_relative_path ?? "Not correlated"}{selectedFinding.source_symbol_name ? " → " + selectedFinding.source_symbol_name : ""}</dd>
-                    <dt>Source confidence</dt><dd>{selectedFinding.source_confidence === null ? "n/a" : Math.round(selectedFinding.source_confidence * 100) + "% heuristic"}</dd>
+                    <dt>Source confidence</dt><dd>{selectedFinding.source_confidence === null ? "n/a" : Math.round(selectedFinding.source_confidence * 100) + "% correlation"}</dd>
                   </dl>
                   <h4>Description</h4><p>{selectedFinding.description}</p>
                   <h4>Impact</h4><p>{selectedFinding.impact}</p>
