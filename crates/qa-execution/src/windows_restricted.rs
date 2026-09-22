@@ -706,8 +706,8 @@ fn attest_production_lpac(
     let appcontainer_matches =
         token_appcontainer_sid_matches(token.raw(), expected_appcontainer_sid)?;
     let capabilities = token_capability_count(token.raw())?;
-    let write_restricted = token_restricted_sid_present(token.raw(), WinWriteRestrictedCodeSid)?;
-    let low_integrity = token_integrity_sid_matches(token.raw(), WinLowLabelSid)?;
+    let write_restricted = token_has_restricted_sid(token.raw())?;
+    let low_integrity = token_has_low_integrity(token.raw())?;
     if !is_appcontainer
         || !is_lpac
         || !restricted
@@ -802,56 +802,129 @@ fn token_capability_count(token: HANDLE) -> Result<u32, BackendExecutionError> {
     Ok(groups.GroupCount)
 }
 
-fn token_restricted_sid_present(
-    token: HANDLE,
-    sid_type: i32,
-) -> Result<bool, BackendExecutionError> {
+fn token_has_restricted_sid(token: HANDLE) -> Result<bool, BackendExecutionError> {
+    let mut expected = [0u8; SECURITY_MAX_SID_SIZE as usize];
+    let mut expected_len = expected.len() as u32;
+    if unsafe {
+        CreateWellKnownSid(
+            WinWriteRestrictedCodeSid,
+            std::ptr::null_mut(),
+            expected.as_mut_ptr().cast::<c_void>(),
+            &mut expected_len,
+        )
+    } == 0
+    {
+        return Err(BackendExecutionError::JobSetup(format!(
+            "CreateWellKnownSid(WinWriteRestrictedCodeSid): {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
     let storage = token_information_buffer(token, TokenRestrictedSids)?;
     let groups = unsafe { &*(storage.as_ptr().cast::<TOKEN_GROUPS>()) };
-    let expected = well_known_sid(sid_type)?;
     let count = groups.GroupCount as usize;
-    let first = groups.Groups.as_ptr();
+    let entries_offset = std::mem::offset_of!(TOKEN_GROUPS, Groups);
+    let entries_bytes = count
+        .checked_mul(size_of::<SID_AND_ATTRIBUTES>())
+        .ok_or_else(|| {
+            BackendExecutionError::JobSetup(
+                "TokenRestrictedSids entry-byte count overflowed".to_string(),
+            )
+        })?;
+    let required_bytes = entries_offset.checked_add(entries_bytes).ok_or_else(|| {
+        BackendExecutionError::JobSetup(
+            "TokenRestrictedSids buffer-size calculation overflowed".to_string(),
+        )
+    })?;
+    let available_bytes = storage.len().saturating_mul(size_of::<usize>());
+    if required_bytes > available_bytes {
+        return Err(BackendExecutionError::JobSetup(format!(
+            "TokenRestrictedSids reported {count} entries outside its returned buffer"
+        )));
+    }
+
+    let entries = unsafe {
+        storage
+            .as_ptr()
+            .cast::<u8>()
+            .add(entries_offset)
+            .cast::<SID_AND_ATTRIBUTES>()
+    };
     for index in 0..count {
-        let entry = unsafe { &*first.add(index) };
-        if !entry.Sid.is_null() && unsafe { EqualSid(entry.Sid, expected.as_ptr().cast_mut().cast()) } != 0 {
+        let entry = unsafe { &*entries.add(index) };
+        if !entry.Sid.is_null()
+            && unsafe { EqualSid(entry.Sid, expected.as_mut_ptr().cast::<c_void>()) } != 0
+        {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
-fn token_integrity_sid_matches(
-    token: HANDLE,
-    sid_type: i32,
-) -> Result<bool, BackendExecutionError> {
+fn token_has_low_integrity(token: HANDLE) -> Result<bool, BackendExecutionError> {
+    let mut low_sid = [0u8; SECURITY_MAX_SID_SIZE as usize];
+    let mut low_sid_len = low_sid.len() as u32;
+    if unsafe {
+        CreateWellKnownSid(
+            WinLowLabelSid,
+            std::ptr::null_mut(),
+            low_sid.as_mut_ptr().cast::<c_void>(),
+            &mut low_sid_len,
+        )
+    } == 0
+    {
+        return Err(BackendExecutionError::JobSetup(format!(
+            "CreateWellKnownSid(WinLowLabelSid): {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
     let storage = token_information_buffer(token, TokenIntegrityLevel)?;
     let label = unsafe { &*(storage.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()) };
     if label.Label.Sid.is_null() {
         return Ok(false);
     }
-    let expected = well_known_sid(sid_type)?;
-    Ok(unsafe { EqualSid(label.Label.Sid, expected.as_ptr().cast_mut().cast()) } != 0)
+    Ok(unsafe { EqualSid(label.Label.Sid, low_sid.as_mut_ptr().cast::<c_void>()) } != 0)
 }
 
-fn well_known_sid(sid_type: i32) -> Result<Vec<u8>, BackendExecutionError> {
-    let mut buffer = vec![0u8; SECURITY_MAX_SID_SIZE as usize];
-    let mut size = buffer.len() as u32;
-    if unsafe {
-        CreateWellKnownSid(
-            sid_type,
+fn token_information_buffer(
+    token: HANDLE,
+    information_class: i32,
+) -> Result<Vec<usize>, BackendExecutionError> {
+    let mut needed = 0u32;
+    unsafe {
+        GetTokenInformation(
+            token,
+            information_class,
             std::ptr::null_mut(),
-            buffer.as_mut_ptr().cast(),
-            &mut size,
+            0,
+            &mut needed,
+        );
+    }
+    if needed == 0 {
+        return Err(BackendExecutionError::JobSetup(format!(
+            "GetTokenInformation({information_class}) reported a zero-sized result: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    let words = (needed as usize).div_ceil(size_of::<usize>());
+    let mut storage = vec![0usize; words.max(1)];
+    if unsafe {
+        GetTokenInformation(
+            token,
+            information_class,
+            storage.as_mut_ptr().cast::<c_void>(),
+            needed,
+            &mut needed,
         )
     } == 0
     {
         return Err(BackendExecutionError::JobSetup(format!(
-            "CreateWellKnownSid({sid_type}): {}",
+            "GetTokenInformation({information_class}): {}",
             std::io::Error::last_os_error()
         )));
     }
-    buffer.truncate(size as usize);
-    Ok(buffer)
+    Ok(storage)
 }
 
 struct AppContainerProfileSid(PSID);
