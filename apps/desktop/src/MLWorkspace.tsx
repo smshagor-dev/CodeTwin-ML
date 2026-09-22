@@ -22,11 +22,23 @@ type MlSidecarConfig = {
   sidecarRoot: string;
 };
 
+type MlContainmentStatus = {
+  processTreeContainment: boolean;
+  memoryLimitBytes: number | null;
+  activeProcessLimit: number | null;
+  cpuTimeLimitSeconds: number | null;
+  uiRestrictions: boolean;
+  launchSuspendedBeforeAssignment: boolean;
+  filesystemIsolation: boolean;
+  networkIsolation: boolean;
+};
+
 type MlSidecarStatus = {
   configured: boolean;
   pythonExecutable: string;
   sidecarRoot: string;
   health: Record<string, unknown>;
+  containment: MlContainmentStatus;
 };
 
 type MlScore = {
@@ -91,6 +103,7 @@ type SidecarCapabilities = {
   datasets?: {
     actions?: string[];
   };
+  desktop_containment?: MlContainmentStatus;
   note?: string;
 };
 
@@ -293,6 +306,21 @@ export function MLWorkspace() {
           <button onClick={() => void connectSidecar()} disabled={busy || !config.pythonExecutable || !config.sidecarRoot}>{busy ? "Checking…" : "Check sidecar"}</button>
           {sidecarStatus && <span className="status-good">Sidecar ready · protocol {String(sidecarStatus.health.protocol ?? "unknown")}</span>}
         </div>
+        {sidecarStatus?.containment && (
+          <>
+            <div className="grid ml-metrics">
+              <Metric label="process tree contained" value={sidecarStatus.containment.processTreeContainment ? "yes" : "no"} />
+              <Metric label="UI restrictions" value={sidecarStatus.containment.uiRestrictions ? "yes" : "no"} />
+              <Metric label="CPU limit" value={sidecarStatus.containment.cpuTimeLimitSeconds ? `${sidecarStatus.containment.cpuTimeLimitSeconds}s` : "platform limit"} />
+              <Metric label="process limit" value={sidecarStatus.containment.activeProcessLimit ?? "platform limit"} />
+              <Metric label="filesystem isolation" value={sidecarStatus.containment.filesystemIsolation ? "yes" : "no"} />
+              <Metric label="network isolation" value={sidecarStatus.containment.networkIsolation ? "yes" : "no"} />
+            </div>
+            {(!sidecarStatus.containment.filesystemIsolation || !sidecarStatus.containment.networkIsolation) && (
+              <p className="warning banner">Local ML remains a trusted-runtime boundary. Process/resource/UI containment does not imply filesystem or network isolation.</p>
+            )}
+          </>
+        )}
         {capabilities && (
           <div className="grid ml-metrics">
             <Metric label="installed models" value={capabilities.models?.installed ?? 0} />
