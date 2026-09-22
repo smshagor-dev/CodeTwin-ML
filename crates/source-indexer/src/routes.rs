@@ -2,15 +2,19 @@ use std::collections::BTreeMap;
 
 use tree_sitter::Node;
 
-use crate::{IndexedRoute, IndexedRouteParameter};
+use crate::{IndexedRoute, IndexedRouteMount, IndexedRouteParameter};
 
 const HTTP_METHODS: &[&str] = &["get", "post", "put", "patch", "delete", "options", "head"];
 
-pub fn extract_routes(language: &str, source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
-    let mut routes = match language {
+pub fn extract_routes(
+    language: &str,
+    source: &str,
+    root: Node<'_>,
+) -> (Vec<IndexedRoute>, Vec<IndexedRouteMount>) {
+    let (mut routes, mut mounts) = match language {
         "JavaScript" | "TypeScript" | "TypeScript TSX" => extract_express_routes(source, root),
         "Python" => extract_fastapi_routes(source, root),
-        _ => Vec::new(),
+        _ => (Vec::new(), Vec::new()),
     };
     routes.sort_by(|left, right| {
         (
@@ -32,12 +36,25 @@ pub fn extract_routes(language: &str, source: &str, root: Node<'_>) -> Vec<Index
             && left.start_line == right.start_line
             && left.router_name == right.router_name
     });
-    routes
+    mounts.sort_by(|left, right| {
+        (&left.prefix, &left.mounted_binding, left.start_line)
+            .cmp(&(&right.prefix, &right.mounted_binding, right.start_line))
+    });
+    mounts.dedup_by(|left, right| {
+        left.framework == right.framework
+            && left.mounted_binding == right.mounted_binding
+            && left.prefix == right.prefix
+            && left.start_line == right.start_line
+    });
+    (routes, mounts)
 }
 
-fn extract_express_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
+fn extract_express_routes(
+    source: &str,
+    root: Node<'_>,
+) -> (Vec<IndexedRoute>, Vec<IndexedRouteMount>) {
     let handlers = javascript_handlers(source, root);
-    let prefixes = express_mount_prefixes(source, root);
+    let (prefixes, mounts) = express_mount_prefixes(source, root);
     let mut routes = Vec::new();
 
     walk(root, &mut |node| {
@@ -104,7 +121,7 @@ fn extract_express_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
             end_line: end.row + 1,
         });
     });
-    routes
+    (routes, mounts)
 }
 
 fn javascript_handlers<'a>(source: &str, root: Node<'a>) -> BTreeMap<String, Node<'a>> {
@@ -136,8 +153,12 @@ fn javascript_handlers<'a>(source: &str, root: Node<'a>) -> BTreeMap<String, Nod
     handlers
 }
 
-fn express_mount_prefixes(source: &str, root: Node<'_>) -> BTreeMap<String, String> {
+fn express_mount_prefixes(
+    source: &str,
+    root: Node<'_>,
+) -> (BTreeMap<String, String>, Vec<IndexedRouteMount>) {
     let mut prefixes = BTreeMap::<String, String>::new();
+    let mut mounts = Vec::new();
     walk(root, &mut |node| {
         if node.kind() != "call_expression" {
             return;
@@ -164,6 +185,15 @@ fn express_mount_prefixes(source: &str, root: Node<'_>) -> BTreeMap<String, Stri
         else {
             return;
         };
+        let start = node.start_position();
+        let end = node.end_position();
+        mounts.push(IndexedRouteMount {
+            framework: "express".to_string(),
+            mounted_binding: child_router.to_string(),
+            prefix: normalize_path(&prefix),
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
         prefixes
             .entry(child_router.to_string())
             .and_modify(|existing| {
@@ -173,7 +203,7 @@ fn express_mount_prefixes(source: &str, root: Node<'_>) -> BTreeMap<String, Stri
             })
             .or_insert_with(|| normalize_path(&prefix));
     });
-    prefixes
+    (prefixes, mounts)
 }
 
 fn express_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRouteParameter> {
@@ -257,9 +287,12 @@ fn request_parameter_name(source: &str, node: Node<'_>) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn extract_fastapi_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
+fn extract_fastapi_routes(
+    source: &str,
+    root: Node<'_>,
+) -> (Vec<IndexedRoute>, Vec<IndexedRouteMount>) {
     let model_fields = pydantic_model_fields(source, root);
-    let router_prefixes = fastapi_router_prefixes(source, root);
+    let (router_prefixes, mounts) = fastapi_router_prefixes(source, root);
     let mut routes = Vec::new();
 
     walk(root, &mut |node| {
@@ -320,7 +353,7 @@ fn extract_fastapi_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
         }
     });
 
-    routes
+    (routes, mounts)
 }
 
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
@@ -370,8 +403,12 @@ fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<S
     models
 }
 
-fn fastapi_router_prefixes(source: &str, root: Node<'_>) -> BTreeMap<String, String> {
+fn fastapi_router_prefixes(
+    source: &str,
+    root: Node<'_>,
+) -> (BTreeMap<String, String>, Vec<IndexedRouteMount>) {
     let mut prefixes = BTreeMap::<String, String>::new();
+    let mut mounts = Vec::new();
     walk(root, &mut |node| {
         if node.kind() == "assignment" {
             let Some(left) = node.child_by_field_name("left") else {
@@ -415,10 +452,29 @@ fn fastapi_router_prefixes(source: &str, root: Node<'_>) -> BTreeMap<String, Str
             if let Some(prefix) = keyword_string(value, "prefix") {
                 let existing = prefixes.get(child).cloned().unwrap_or_default();
                 prefixes.insert(child.to_string(), combine_paths(Some(&prefix), &existing));
+                let start = node.start_position();
+                let end = node.end_position();
+                mounts.push(IndexedRouteMount {
+                    framework: "fastapi".to_string(),
+                    mounted_binding: child.to_string(),
+                    prefix: normalize_path(&prefix),
+                    start_line: start.row + 1,
+                    end_line: end.row + 1,
+                });
+            } else {
+                let start = node.start_position();
+                let end = node.end_position();
+                mounts.push(IndexedRouteMount {
+                    framework: "fastapi".to_string(),
+                    mounted_binding: child.to_string(),
+                    prefix: "/".to_string(),
+                    start_line: start.row + 1,
+                    end_line: end.row + 1,
+                });
             }
         }
     });
-    prefixes
+    (prefixes, mounts)
 }
 
 fn fastapi_function_parameters(
@@ -707,13 +763,30 @@ auth.post("/login/:tenant", login);
             .set_language(&tree_sitter_javascript::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let routes = extract_routes("JavaScript", source, tree.root_node());
+        let (routes, _mounts) = extract_routes("JavaScript", source, tree.root_node());
         let route = routes.iter().find(|value| value.path_template == "/api/login/:tenant").expect("route");
         assert_eq!(route.http_method, "POST");
         assert!(route.parameters.iter().any(|value| value.name == "tenant" && value.location == "path"));
         assert!(route.parameters.iter().any(|value| value.name == "email" && value.location == "json"));
         assert!(route.parameters.iter().any(|value| value.name == "password" && value.location == "json"));
         assert!(route.parameters.iter().any(|value| value.name == "next" && value.location == "query"));
+    }
+
+    #[test]
+    fn extracts_cross_file_mount_candidates() {
+        let source = r#"
+import authRouter from "./routes/auth";
+app.use("/api/auth", authRouter);
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_javascript::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (_routes, mounts) = extract_routes("JavaScript", source, tree.root_node());
+        let mount = mounts.iter().find(|value| value.mounted_binding == "authRouter").expect("mount");
+        assert_eq!(mount.prefix, "/api/auth");
+        assert_eq!(mount.framework, "express");
     }
 
     #[test]
@@ -740,7 +813,7 @@ app.include_router(router)
             .set_language(&tree_sitter_python::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let routes = extract_routes("Python", source, tree.root_node());
+        let (routes, _mounts) = extract_routes("Python", source, tree.root_node());
         let route = routes.iter().find(|value| value.path_template == "/api/login/{tenant}").expect("route");
         assert_eq!(route.http_method, "POST");
         assert!(route.parameters.iter().any(|value| value.name == "tenant" && value.location == "path"));
