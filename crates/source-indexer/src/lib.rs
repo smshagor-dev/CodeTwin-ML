@@ -1,4 +1,5 @@
 mod imports;
+mod routes;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -16,7 +17,7 @@ use walkdir::{DirEntry, WalkDir};
 const MAX_SOURCE_BYTES: u64 = 5 * 1024 * 1024;
 const TYPESCRIPT_DEFINITIONS_QUERY: &str = include_str!("../queries/typescript.scm");
 pub const INDEXER_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const QUERY_VERSION: &str = "definitions-v2-imports-v1";
+pub const QUERY_VERSION: &str = "definitions-v2-imports-v1-routes-v1";
 
 #[derive(Debug, Error)]
 pub enum IndexError {
@@ -57,6 +58,26 @@ pub struct IndexedImport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedRouteParameter {
+    pub name: String,
+    pub location: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedRoute {
+    pub framework: String,
+    pub router_name: String,
+    pub http_method: String,
+    pub path_template: String,
+    pub handler_name: Option<String>,
+    pub parameters: Vec<IndexedRouteParameter>,
+    pub request_content_type: Option<String>,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedFile {
     pub relative_path: String,
     pub language: String,
@@ -66,6 +87,7 @@ pub struct IndexedFile {
     pub parse_state: ParseState,
     pub symbols: Vec<IndexedSymbol>,
     pub imports: Vec<IndexedImport>,
+    pub routes: Vec<IndexedRoute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +249,7 @@ fn parse_source(
         .map_err(|error| format!("definition_query_error:{error}"))?;
     let symbols = collect_symbols(source, &tree, &query);
     let imports = imports::extract_imports(spec.name, source, tree.root_node());
+    let routes = routes::extract_routes(spec.name, source, tree.root_node());
 
     Ok(IndexedFile {
         relative_path,
@@ -237,6 +260,7 @@ fn parse_source(
         parse_state,
         symbols,
         imports,
+        routes,
     })
 }
 
