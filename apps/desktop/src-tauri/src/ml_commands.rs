@@ -397,10 +397,12 @@ fn sidecar_request(
         .stdin
         .take()
         .ok_or_else(|| "ML sidecar stdin was not available".to_string())?;
-    stdin
-        .write_all(&request)
-        .and_then(|_| stdin.flush())
-        .map_err(|error| format!("cannot write ML sidecar request: {error}"))?;
+    if let Err(error) = stdin.write_all(&request).and_then(|_| stdin.flush()) {
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("cannot write ML sidecar request: {error}"));
+    }
     drop(stdin);
 
     let stdout = child
