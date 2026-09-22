@@ -689,6 +689,7 @@ fn persist_route_mounts(
                 project_id,
                 source_file_id,
                 &mount.framework,
+                &mount.parent_router,
                 &mount.mounted_binding,
                 &mount.prefix,
                 &mount.start_line.to_string(),
@@ -696,11 +697,12 @@ fn persist_route_mounts(
         );
         connection.execute(
             "INSERT INTO source_route_mounts(
-               id, project_id, source_file_id, framework, mounted_binding,
+               id, project_id, source_file_id, framework, parent_router, mounted_binding,
                prefix, start_line, end_line, last_index_run_id, is_active
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1)
              ON CONFLICT(id) DO UPDATE SET
                framework = excluded.framework,
+               parent_router = excluded.parent_router,
                mounted_binding = excluded.mounted_binding,
                prefix = excluded.prefix,
                end_line = excluded.end_line,
@@ -712,6 +714,7 @@ fn persist_route_mounts(
                 project_id,
                 source_file_id,
                 mount.framework,
+                mount.parent_router,
                 mount.mounted_binding,
                 mount.prefix,
                 to_i64(mount.start_line),
