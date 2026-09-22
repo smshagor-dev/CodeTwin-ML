@@ -4,6 +4,7 @@ mod evidence;
 mod passive;
 mod payload_policy;
 mod operator;
+mod payload_safety;
 mod request;
 mod retest;
 mod scope;
@@ -25,6 +26,7 @@ pub use operator::{
     GuidedPreparation,
     GuidedTestPlan, OperationRisk, PlannedOperation, SecurityEnvironment, TestingDepth,
 };
+pub use payload_safety::{validate_active_payload, PayloadSafetyError, MAX_ACTIVE_PAYLOAD_BYTES};
 pub use request::{RequestBudget, RequestError, ScopedRequester};
 pub use retest::{run_targeted_retest, TargetedRetestOutcome, TargetedRetestRequest};
 pub use scope::{normalize_url, ScopeError, ScopePolicy};
