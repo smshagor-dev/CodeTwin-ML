@@ -132,4 +132,5 @@ pub use web_security::{
     AuthorizedWebSecurityStore, WebEndpointInput, WebEndpointRecord, WebEvidenceInput,
     WebEvidenceRecord, WebFindingFilter, WebFindingInput, WebFindingRecord, WebScanCreate,
     SourceRouteRecord, WebScanRecord, WebSecurityStoreError, WebSourceCorrelation,
+    WebSourceEndpointLinkRecord,
 };
