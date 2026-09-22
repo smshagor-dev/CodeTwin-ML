@@ -103,6 +103,24 @@ CodeTwin includes two related web-security experiences:
 
 Active testing is only for localhost, local labs, development/staging systems, or other targets for which the user has explicit authorization.
 
+### Source-aware endpoint mapping
+
+When an authorized web target is associated with an indexed project, CodeTwin bridges static source evidence and live testing instead of treating them as unrelated data sets.
+
+The source-aware flow is:
+
+1. Tree-sitter extracts supported backend route declarations from Express/JavaScript/TypeScript and FastAPI/Python.
+2. Route method, path template, handler, path/query/form/JSON fields, framework, file, source hash, and line range are persisted.
+3. Router mount evidence and import bindings resolve same-file and supported cross-file prefixes, including nested mount chains.
+4. Effective source routes are converted into bounded live endpoint seeds under the existing authorized target and path scope.
+5. Source-backed GET routes are prioritized in discovery; non-GET routes enter the application map without an automatic discovery-side state-changing request.
+6. The active planner preserves the source-declared HTTP method and input location so bounded checks target the relevant query, form, JSON, header, or path field.
+7. Each persisted live endpoint can be linked back to the source route with match kind, confidence, parameter overlap, effective mounted path, file, framework, and handler.
+8. Finding correlation prefers method + exact/template route evidence before falling back to the older filename/symbol heuristic.
+9. The route template remains attached through guided fix and targeted retest so dynamic path parameters keep their source identity.
+
+Wildcard routes are not blindly materialized. Dynamic path values use a deterministic harmless marker, and state-changing probes remain subject to the existing explicit approval and scope policy.
+
 ### Guided Developer Security Test
 
 The guided workflow is:
@@ -350,7 +368,7 @@ flowchart LR
 | --- | --- |
 | Tauri 2 + React/TypeScript desktop workspace | Implemented |
 | Dashboard, Projects, Websites, Code Analysis, Security, Testing workspaces | Implemented |
-| SQLite WAL + numbered migrations | Implemented; migrations 0001–0021 registered |
+| SQLite WAL + numbered migrations | Implemented; migrations 0001–0022 registered |
 | Project stack discovery | Implemented |
 | Tree-sitter source indexing | Implemented baseline |
 | Persistent incremental file/symbol index | Implemented |
@@ -366,6 +384,8 @@ flowchart LR
 | Authorized scope-bounded web security | Implemented |
 | Guided Developer Security Test | Implemented |
 | Application map + risk-aware test plan + explicit approval | Implemented |
+| Source-aware route extraction and source → live endpoint mapping | Implemented baseline for Express and FastAPI |
+| Cross-file router mount resolution and field-aware live seeding | Implemented baseline |
 | Finding/source correlation, scorecard, risk graph, targeted retest, scan comparison | Implemented |
 | Guided Security Fix & Verify | Implemented baseline |
 | Guided Security Remediation Campaigns | Implemented baseline |
