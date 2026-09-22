@@ -37,6 +37,10 @@ pub fn extract_routes(
             let (routes, mounts) = extract_go_routes(source, root);
             (routes, mounts, Vec::new())
         }
+        "Rust" => {
+            let routes = extract_rust_routes(source, root);
+            (routes, Vec::new(), Vec::new())
+        }
         _ => (Vec::new(), Vec::new(), Vec::new()),
     };
     routes.sort_by(|left, right| {
@@ -1146,6 +1150,125 @@ fn go_group_prefixes(
     (prefixes, mounts)
 }
 
+fn extract_rust_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
+    let mut routes = Vec::new();
+
+    let attribute_framework = if source.contains("actix_web") {
+        Some("actix-web")
+    } else if source.contains("rocket") {
+        Some("rocket")
+    } else {
+        None
+    };
+    if let Some(framework) = attribute_framework {
+        routes.extend(extract_rust_attribute_routes(source, framework));
+    }
+
+    if source.contains("axum") {
+        walk(root, &mut |node| {
+            if node.kind() != "call_expression" {
+                return;
+            }
+            let Some(value) = text(source, node).map(str::trim) else {
+                return;
+            };
+            let Some(route_index) = value.rfind(".route(") else {
+                return;
+            };
+            let tail = &value[route_index + ".route(".len()..];
+            let Some(path) = first_quoted_string(tail) else {
+                return;
+            };
+            let methods = axum_methods(tail);
+            if methods.is_empty() {
+                return;
+            }
+            let full_path = normalize_path(&path);
+            let mut parameters = path_parameters(&full_path);
+            normalize_parameters(&mut parameters);
+            let start = node.start_position();
+            let end = node.end_position();
+            for method in methods {
+                routes.push(IndexedRoute {
+                    framework: "axum".to_string(),
+                    router_name: "Router".to_string(),
+                    http_method: method,
+                    path_template: full_path.clone(),
+                    handler_name: None,
+                    parameters: parameters.clone(),
+                    request_content_type: None,
+                    start_line: start.row + 1,
+                    end_line: end.row + 1,
+                });
+            }
+        });
+    }
+
+    routes
+}
+
+fn extract_rust_attribute_routes(source: &str, framework: &str) -> Vec<IndexedRoute> {
+    let mut routes = Vec::new();
+    for (index, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("#[") {
+            continue;
+        }
+        let inner = trimmed.trim_start_matches("#[").trim_end_matches(']').trim();
+        let Some(open) = inner.find('(') else {
+            continue;
+        };
+        let method = inner[..open].trim().to_ascii_lowercase();
+        if !HTTP_METHODS.contains(&method.as_str()) {
+            continue;
+        }
+        let Some(path) = first_quoted_string(&inner[open + 1..]) else {
+            continue;
+        };
+        let full_path = normalize_path(&path);
+        let mut parameters = path_parameters(&full_path);
+        normalize_parameters(&mut parameters);
+        routes.push(IndexedRoute {
+            framework: framework.to_string(),
+            router_name: "attribute".to_string(),
+            http_method: method.to_ascii_uppercase(),
+            path_template: full_path,
+            handler_name: None,
+            parameters,
+            request_content_type: None,
+            start_line: index + 1,
+            end_line: index + 1,
+        });
+    }
+    routes
+}
+
+fn axum_methods(value: &str) -> Vec<String> {
+    let lower = value.to_ascii_lowercase();
+    let mut methods = Vec::new();
+    for method in HTTP_METHODS {
+        if contains_method_call(&lower, method) {
+            methods.push(method.to_ascii_uppercase());
+        }
+    }
+    methods.sort();
+    methods.dedup();
+    methods
+}
+
+fn contains_method_call(value: &str, method: &str) -> bool {
+    let needle = format!("{method}(");
+    value.match_indices(&needle).any(|(index, _)| {
+        if index == 0 {
+            return true;
+        }
+        let previous = value[..index].chars().next_back();
+        previous.is_some_and(|character| {
+            !(character == '_' || character.is_ascii_alphanumeric())
+        })
+    })
+}
+
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let mut models = BTreeMap::new();
     walk(root, &mut |node| {
@@ -2063,6 +2186,123 @@ func fetch(client *Client) {
         let tree = parser.parse(generic, None).expect("tree");
         let (routes, _, _) = extract_routes("Go", "client.go", generic, tree.root_node());
         assert!(routes.is_empty());
+    }
+
+    #[test]
+    fn extracts_actix_and_rocket_attribute_routes() {
+        let actix = r#"
+use actix_web::{get, post};
+
+#[get("/users/{id}")]
+async fn user() {}
+
+#[post("/login")]
+async fn login() {}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(actix, None).expect("tree");
+        let (routes, _, _) = extract_routes("Rust", "src/main.rs", actix, tree.root_node());
+        let user = routes
+            .iter()
+            .find(|route| {
+                route.framework == "actix-web"
+                    && route.http_method == "GET"
+                    && route.path_template == "/users/{id}"
+            })
+            .expect("actix route");
+        assert!(user
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "id" && parameter.location == "path"));
+        assert!(routes.iter().any(|route| {
+            route.framework == "actix-web"
+                && route.http_method == "POST"
+                && route.path_template == "/login"
+        }));
+
+        let rocket = r#"
+use rocket::{get, post};
+
+#[get("/health")]
+fn health() {}
+
+#[post("/items/<id>")]
+fn create(id: usize) {}
+"#;
+        let tree = parser.parse(rocket, None).expect("tree");
+        let (routes, _, _) = extract_routes("Rust", "src/routes.rs", rocket, tree.root_node());
+        assert!(routes.iter().any(|route| {
+            route.framework == "rocket"
+                && route.http_method == "GET"
+                && route.path_template == "/health"
+        }));
+        assert!(routes.iter().any(|route| {
+            route.framework == "rocket"
+                && route.http_method == "POST"
+                && route.path_template == "/items/<id>"
+        }));
+    }
+
+    #[test]
+    fn axum_method_detection_does_not_match_handler_name_suffixes() {
+        let source = r#"
+use axum::{routing::post, Router};
+
+async fn budget() {}
+
+fn app() -> Router {
+    Router::new().route("/budget", post(budget))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        assert!(!routes.iter().any(|route| route.http_method == "GET"));
+        assert!(routes.iter().any(|route| {
+            route.framework == "axum"
+                && route.http_method == "POST"
+                && route.path_template == "/budget"
+        }));
+    }
+
+    #[test]
+    fn extracts_axum_static_routes_and_method_router_chain() {
+        let source = r#"
+use axum::{routing::{get, post}, Router};
+
+fn app() -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/users/{id}", get(show).post(update))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        assert!(routes.iter().any(|route| {
+            route.framework == "axum"
+                && route.http_method == "GET"
+                && route.path_template == "/health"
+        }));
+        assert!(routes.iter().any(|route| {
+            route.framework == "axum"
+                && route.http_method == "GET"
+                && route.path_template == "/users/{id}"
+        }));
+        assert!(routes.iter().any(|route| {
+            route.framework == "axum"
+                && route.http_method == "POST"
+                && route.path_template == "/users/{id}"
+        }));
     }
 
     #[test]
