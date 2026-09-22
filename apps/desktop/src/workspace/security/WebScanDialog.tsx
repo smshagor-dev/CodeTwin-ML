@@ -195,6 +195,8 @@ export function WebScanDialog({
           <div className="ws-webscan-limits">
             <label className="ws-field"><span>Crawl depth</span><input type="number" min={0} max={8} value={config.scope.max_crawl_depth} onChange={(event) => patchScope({ max_crawl_depth: Number(event.target.value) })}/></label>
             <label className="ws-field"><span>Max requests</span><input type="number" min={1} max={2000} value={config.scope.max_requests} onChange={(event) => patchScope({ max_requests: Number(event.target.value) })}/></label>
+            <label className="ws-field"><span>Per-endpoint budget</span><input type="number" min={1} max={100} value={config.scope.max_requests_per_endpoint} onChange={(event) => patchScope({ max_requests_per_endpoint: Number(event.target.value) })}/></label>
+            <label className="ws-field"><span>Min request interval ms</span><input type="number" min={0} max={5000} step={50} value={config.scope.min_request_interval_ms} onChange={(event) => patchScope({ min_request_interval_ms: Number(event.target.value) })}/></label>
             <label className="ws-field"><span>Concurrency</span><input type="number" min={1} max={8} value={config.scope.concurrency} onChange={(event) => patchScope({ concurrency: Number(event.target.value) })}/></label>
             <label className="ws-field"><span>Timeout ms</span><input type="number" min={500} max={30000} step={500} value={config.scope.timeout_ms} onChange={(event) => patchScope({ timeout_ms: Number(event.target.value) })}/></label>
           </div>
