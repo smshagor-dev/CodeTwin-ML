@@ -104,6 +104,62 @@ pub(crate) async fn ml_inference_plan(
 }
 
 #[tauri::command]
+pub(crate) async fn ml_generation_plan(
+    action: String,
+    config: MlSidecarConfig,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let validated = validate_sidecar(&config)?;
+        sidecar_request(&validated, "generation.plan", json!({ "action": action }))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub(crate) async fn run_ml_file_generation(
+    project_id: String,
+    file_id: String,
+    action: String,
+    model_id: Option<String>,
+    model_version: Option<String>,
+    config: MlSidecarConfig,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, String> {
+    if state.ml_running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("ML execution is already running".to_string());
+    }
+
+    let database_path = state.database_path.clone();
+    let running = std::sync::Arc::clone(&state.ml_running);
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let database = Database::open(database_path).map_err(|error| error.to_string())?;
+        let source = load_indexed_source(&database, &project_id, &file_id)?;
+        let validated = validate_sidecar(&config)?;
+        let result = sidecar_request(
+            &validated,
+            "generation.run",
+            json!({
+                "action": action,
+                "text": source.text,
+                "model_id": model_id,
+                "model_version": model_version,
+            }),
+        )?;
+        if result.pointer("/advisory/summary").and_then(Value::as_str).is_none()
+            || result.pointer("/advisory/probe_intents").and_then(Value::as_array).is_none()
+            || result.pointer("/advisory/repair_notes").and_then(Value::as_array).is_none()
+        {
+            return Err("ML generation returned an invalid safe-advisory schema".to_string());
+        }
+        Ok(result)
+    })
+    .await;
+    running.store(false, std::sync::atomic::Ordering::SeqCst);
+    task.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub(crate) async fn run_ml_file_inference(
     project_id: String,
     file_id: String,
