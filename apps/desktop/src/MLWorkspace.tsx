@@ -56,8 +56,32 @@ type MlInferenceRecord = {
   created_at: string;
 };
 
+type MlGenerationResult = {
+  action: string;
+  source_file_id: string;
+  source_content_hash: string;
+  source_utf8_bytes: number;
+  auto_execution: boolean;
+  model: {
+    id: string;
+    version: string;
+    backend: string;
+    package_digest: string;
+  };
+  generation: {
+    text: string;
+    max_new_tokens: number;
+    context_tokens: number;
+    temperature: number;
+    top_p: number;
+  };
+  runtime: Record<string, unknown>;
+  evaluation_provenance: Record<string, unknown>;
+};
+
 type SidecarCapabilities = {
   inference?: string[];
+  generation?: string[];
   models?: {
     installed?: number;
     ready?: number;
@@ -100,6 +124,10 @@ export function MLWorkspace() {
   const [plan, setPlan] = useState<InferencePlan | null>(null);
   const [history, setHistory] = useState<MlInferenceRecord[]>([]);
   const [selectedRecord, setSelectedRecord] = useState<MlInferenceRecord | null>(null);
+  const [generationInstruction, setGenerationInstruction] = useState(
+    "Review this source file and propose the smallest safe code change that addresses the selected action. Explain assumptions and do not output shell commands.",
+  );
+  const [generationResult, setGenerationResult] = useState<MlGenerationResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -111,6 +139,7 @@ export function MLWorkspace() {
   const availableActions = useMemo(() => {
     const actions = new Set<string>();
     for (const value of capabilities?.inference ?? []) actions.add(value);
+    for (const value of capabilities?.generation ?? []) actions.add(value);
     for (const value of capabilities?.datasets?.actions ?? []) actions.add(value);
     if (action) actions.add(action);
     return [...actions].sort();
@@ -210,6 +239,29 @@ export function MLWorkspace() {
     }
   }
 
+  async function runGeneration() {
+    if (!projectId || !selectedFileId || !action.trim() || !generationInstruction.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await invoke<MlGenerationResult>("run_ml_file_generation", {
+        projectId,
+        fileId: selectedFileId,
+        action: action.trim(),
+        instruction: generationInstruction.trim(),
+        modelId: null,
+        modelVersion: null,
+        config,
+      });
+      setGenerationResult(result);
+    } catch (value) {
+      setGenerationResult(null);
+      setError(String(value));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const selectedFile = files.find((item) => item.id === selectedFileId) ?? null;
 
   return (
@@ -217,8 +269,8 @@ export function MLWorkspace() {
       <header>
         <div>
           <p className="eyebrow">LOCAL MODEL EXECUTION</p>
-          <h1>ML Inference</h1>
-          <p>Run a verified local classifier against a hash-checked indexed file and persist prediction provenance separately from deterministic findings.</p>
+          <h1>Local ML</h1>
+          <p>Run verified local classification or bounded GGUF code generation against hash-checked indexed source. Generated text remains a review artifact and is never auto-executed.</p>
         </div>
       </header>
 
@@ -246,7 +298,8 @@ export function MLWorkspace() {
             <Metric label="installed models" value={capabilities.models?.installed ?? 0} />
             <Metric label="registry ready" value={capabilities.models?.ready ?? 0} />
             <Metric label="execution ready" value={capabilities.models?.execution_ready ?? 0} />
-            <Metric label="advertised actions" value={capabilities.inference?.length ?? 0} />
+            <Metric label="classifier actions" value={capabilities.inference?.length ?? 0} />
+            <Metric label="generation actions" value={capabilities.generation?.length ?? 0} />
           </div>
         )}
         {capabilities?.note && <p className="muted">{capabilities.note}</p>}
@@ -290,8 +343,25 @@ export function MLWorkspace() {
                 </div>
               )}
               <div className="row ml-actions-row">
-                <button onClick={() => void inspectPlan()} disabled={busy || !sidecarStatus || !action.trim()}>Check plan</button>
-                <button onClick={() => void runInference()} disabled={busy || !sidecarStatus || !selectedFileId || !action.trim()}>{busy ? "Running…" : "Run & record"}</button>
+                <button onClick={() => void inspectPlan()} disabled={busy || !sidecarStatus || !action.trim()}>Check classifier plan</button>
+                <button onClick={() => void runInference()} disabled={busy || !sidecarStatus || !selectedFileId || !action.trim()}>{busy ? "Running…" : "Run classifier & record"}</button>
+              </div>
+              <label className="field-label">
+                <span>Local generation instruction</span>
+                <textarea
+                  rows={4}
+                  value={generationInstruction}
+                  onChange={(event) => setGenerationInstruction(event.target.value)}
+                  maxLength={4096}
+                />
+              </label>
+              <div className="row ml-actions-row">
+                <button
+                  onClick={() => void runGeneration()}
+                  disabled={busy || !sidecarStatus || !selectedFileId || !action.trim() || !generationInstruction.trim()}
+                >
+                  {busy ? "Running…" : "Generate local suggestion"}
+                </button>
               </div>
               {plan && (
                 <div className="relationship-item">
@@ -300,7 +370,14 @@ export function MLWorkspace() {
                   <small>{plan.note ?? "No additional plan note."}</small>
                 </div>
               )}
-              <p className="warning banner">The selected file is read only after its current bytes match the persisted index hash. Raw source text is sent to the explicitly configured local sidecar process but is not written to the CodeTwin database.</p>
+              <p className="warning banner">The selected file is read only after its current bytes match the persisted index hash. Raw source text is sent only to the explicitly configured local sidecar. Generated text is never automatically applied to files or used as a live security payload.</p>
+              {generationResult && (
+                <div className="relationship-item">
+                  <strong>Generated suggestion · {generationResult.model.id} {generationResult.model.version}</strong>
+                  <small className="mono">Source SHA-256 {generationResult.source_content_hash} · auto execution {String(generationResult.auto_execution)}</small>
+                  <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{generationResult.generation.text}</pre>
+                </div>
+              )}
             </section>
 
             <section className="panel compact">
