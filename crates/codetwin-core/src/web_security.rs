@@ -1690,7 +1690,8 @@ fn route_template_match(template: &str, observed: &str) -> Option<bool> {
     }
     for (expected, actual) in left.iter().zip(right.iter()) {
         let dynamic = (expected.starts_with(':') && expected.len() > 1)
-            || (expected.starts_with('{') && expected.ends_with('}') && expected.len() > 2);
+            || (expected.starts_with('{') && expected.ends_with('}') && expected.len() > 2)
+            || (expected.starts_with('<') && expected.ends_with('>') && expected.len() > 2);
         if !dynamic && expected != actual {
             return None;
         }
@@ -1738,6 +1739,24 @@ mod tests {
                 r#"{"cookie_supplied":false,"bearer_supplied":false,"custom_header_names":[]}"#
                     .to_string(),
         }
+    }
+
+    #[test]
+    fn route_template_match_supports_flask_converters() {
+        assert_eq!(
+            super::route_template_match(
+                "/api/users/<int:user_id>",
+                "/api/users/42"
+            ),
+            Some(false)
+        );
+        assert_eq!(
+            super::route_template_match(
+                "/api/users/<uuid:user_id>",
+                "/api/users/00000000-0000-4000-8000-000000000001"
+            ),
+            Some(false)
+        );
     }
 
     #[test]
