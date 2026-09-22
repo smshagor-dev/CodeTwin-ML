@@ -229,7 +229,7 @@ fn run_scan_background(
             }
 
             for endpoint in &outcome.endpoints {
-                store
+                let persisted_endpoint = store
                     .record_endpoint(
                         scan_id,
                         &WebEndpointInput {
@@ -245,6 +245,12 @@ fn run_scan_background(
                             status_code: endpoint.status_code,
                             redirect_to: endpoint.redirect_to.clone(),
                         },
+                    )
+                    .map_err(|error| error.to_string())?;
+                store
+                    .link_endpoint_to_source_route(
+                        request.project_id.as_deref(),
+                        &persisted_endpoint,
                     )
                     .map_err(|error| error.to_string())?;
             }
