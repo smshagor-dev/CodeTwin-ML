@@ -10,6 +10,7 @@ use url::Url;
 use crate::Database;
 
 const MAX_LIST: usize = 500;
+const MAX_SOURCE_ROUTES: usize = 2_000;
 
 #[derive(Debug, Error)]
 pub enum WebSecurityStoreError {
@@ -655,7 +656,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         project_id: &str,
         limit: usize,
     ) -> Result<Vec<SourceRouteRecord>, WebSecurityStoreError> {
-        let requested_limit = bounded(limit);
+        let requested_limit = limit.clamp(1, MAX_SOURCE_ROUTES);
         let mut statement = self.database.connection().prepare(
             "SELECT sr.id, sr.project_id, sr.file_id, f.relative_path,
                     sr.symbol_id, s.name, sr.framework, sr.router_name,
@@ -670,7 +671,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
              ORDER BY sr.path_template, sr.http_method, sr.start_line
              LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![project_id, MAX_LIST as i64], |row| {
+        let rows = statement.query_map(params![project_id, MAX_SOURCE_ROUTES as i64], |row| {
             let parameter_names_json: String = row.get(11)?;
             let parameter_locations_json: String = row.get(12)?;
             Ok(SourceRouteRecord {
