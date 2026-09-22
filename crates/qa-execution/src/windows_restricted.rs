@@ -39,10 +39,15 @@ use windows_sys::Win32::{
     },
     System::{
         JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicUIRestrictions,
+            JobObjectExtendedLimitInformation, SetInformationJobObject, TerminateJobObject,
+            JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
             JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_JOB_TIME,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_UILIMIT_DESKTOP,
+            JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
+            JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES,
+            JOB_OBJECT_UILIMIT_READCLIPBOARD, JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
+            JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
         },
         Pipes::CreatePipe,
         Threading::{
@@ -403,11 +408,41 @@ fn configure_job(plan: &TestExecutionPlan) -> Result<JobHandle, BackendExecution
         )
     } == 0
     {
-        return Err(BackendExecutionError::JobSetup(
-            std::io::Error::last_os_error().to_string(),
-        ));
+        return Err(BackendExecutionError::JobSetup(format!(
+            "JobObjectExtendedLimitInformation: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    let ui_restrictions = JOBOBJECT_BASIC_UI_RESTRICTIONS {
+        UIRestrictionsClass: qa_job_ui_limit_flags(),
+    };
+    if unsafe {
+        SetInformationJobObject(
+            job.raw(),
+            JobObjectBasicUIRestrictions,
+            (&ui_restrictions as *const JOBOBJECT_BASIC_UI_RESTRICTIONS).cast(),
+            size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>() as u32,
+        )
+    } == 0
+    {
+        return Err(BackendExecutionError::JobSetup(format!(
+            "JobObjectBasicUIRestrictions: {}",
+            std::io::Error::last_os_error()
+        )));
     }
     Ok(job)
+}
+
+const fn qa_job_ui_limit_flags() -> u32 {
+    JOB_OBJECT_UILIMIT_DESKTOP
+        | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
+        | JOB_OBJECT_UILIMIT_EXITWINDOWS
+        | JOB_OBJECT_UILIMIT_GLOBALATOMS
+        | JOB_OBJECT_UILIMIT_HANDLES
+        | JOB_OBJECT_UILIMIT_READCLIPBOARD
+        | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS
+        | JOB_OBJECT_UILIMIT_WRITECLIPBOARD
 }
 
 struct RestrictedChild {
