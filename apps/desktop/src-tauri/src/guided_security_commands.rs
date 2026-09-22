@@ -11,11 +11,13 @@ use codetwin_core::{
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use web_security_testing::{
-    prepare_guided_security, run_targeted_retest, ApplicationSourceHint, AuthContext, ScanConfig,
-    SecurityEnvironment, TargetedRetestRequest,
+    prepare_guided_security_with_seeds, run_targeted_retest, ApplicationSourceHint, AuthContext,
+    ScanConfig, SecurityEnvironment, TargetedRetestRequest,
 };
 
-use crate::{with_database, AppState};
+use crate::{
+    web_security_commands::source_endpoint_seeds_for_project, with_database, AppState,
+};
 
 #[derive(Clone, Deserialize)]
 pub struct GuidedSecurityPrepareRequest {
@@ -71,10 +73,16 @@ pub async fn prepare_guided_security_test(
         let database = Database::open(database_path).map_err(|error| error.to_string())?;
         let store = GuidedSecurityStore::new(&database);
         let environment = parse_environment(&request.environment)?;
-        let prepared = prepare_guided_security(
+        let source_seeds = source_endpoint_seeds_for_project(
+            &database,
+            request.project_id.as_deref(),
+            &request.config.scope.target_url,
+        )?;
+        let prepared = prepare_guided_security_with_seeds(
             &request.config,
             &request.primary_auth,
             request.secondary_auth.as_ref(),
+            &source_seeds,
             environment,
             Arc::new(AtomicBool::new(false)),
         );
@@ -89,9 +97,10 @@ pub async fn prepare_guided_security_test(
                                 break 'groups;
                             }
                             correlated += 1;
-                            if let Ok(Some(source)) = source_store.correlate_source(
+                            if let Ok(Some(source)) = source_store.correlate_source_for_request(
                                 Some(project_id),
                                 &route.url,
+                                Some(&route.method),
                                 route.parameters.first().map(String::as_str),
                             ) {
                                 if source.confidence >= 0.50 {
