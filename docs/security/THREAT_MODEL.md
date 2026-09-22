@@ -46,7 +46,7 @@ Repair application is not a crash-proof filesystem transaction and does not elim
 
 QA discovery is passive. Execution planning and the Windows containment foundation include bounded project mirroring, hash-pinned approval evidence, declared external runtime/toolchain provenance, write-restricted low-integrity process identity, explicit inherited-handle control, suspended Job Object assignment, sanitized environment, resource/time/output bounds, and cancellation.
 
-QA execution is available only through the strict Windows production path; unsupported platforms remain planning-only. The resumed runner uses the detached project mirror and copied approved runtime/toolchain bundle under a write-restricted low-integrity zero-capability LPAC identity, with Job Object resource/process-tree containment and bounded I/O. `filesystem_isolation` is scoped to that generated project/runtime surface and is not a host-wide deny-all-read guarantee. Network promotion requires zero capabilities and rejects AppContainer loopback exemptions both during readiness and immediately before production launch. Restricted desktop/window-station hardening and fresh adversarial Windows validation remain incomplete. No setup scaffold or infrastructure failure is presented as a test result.
+QA execution is available only through the strict Windows production path; unsupported platforms remain planning-only. The resumed runner uses the detached project mirror and copied approved runtime/toolchain bundle under a write-restricted low-integrity zero-capability LPAC identity, with Job Object resource/process-tree containment and bounded I/O. `filesystem_isolation` is scoped to that generated project/runtime surface and is not a host-wide deny-all-read guarantee. Network promotion requires zero capabilities and rejects AppContainer loopback exemptions both during readiness and immediately before production launch. Job Object UI-surface restrictions now block clipboard access, cross-job USER handles, desktop create/switch operations, display/system-setting changes, global atoms, and ExitWindows calls. A dedicated private window-station/private-desktop boundary and fresh adversarial Windows validation remain incomplete. No setup scaffold or infrastructure failure is presented as a test result.
 
 ## Distribution and supply chain
 
@@ -56,7 +56,7 @@ Dependency lockfiles and required CI validation are release gates. A CI job that
 
 ## Residual risks
 
-- Windows QA execution is fail-closed and LPAC-backed, but filesystem isolation is scoped rather than host-wide, restricted desktop/window-station hardening is incomplete, and fresh adversarial Windows/network validation remains a release gate.
+- Windows QA execution is fail-closed and LPAC-backed, with Job Object UI-surface restrictions, but filesystem isolation is scoped rather than host-wide, a dedicated private window-station/private-desktop boundary is not yet established, and fresh adversarial Windows/network validation remains a release gate.
 - Repair mutation is recoverable/bounded but not a crash-proof filesystem transaction.
 - External language servers and local ML runtimes are trusted local executables and expand the trust boundary when explicitly enabled.
 - Dependency/model/dataset provenance reduces but does not eliminate upstream supply-chain risk.
