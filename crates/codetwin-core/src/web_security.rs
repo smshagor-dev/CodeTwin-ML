@@ -1066,6 +1066,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             .ok_or_else(|| WebSecurityStoreError::NotFound(scan_id.to_string()))?;
         let findings = self.list_findings(scan_id, &WebFindingFilter::default(), MAX_LIST)?;
         let endpoints = self.list_endpoints(scan_id, MAX_LIST)?;
+        let source_endpoint_links = self.list_source_endpoint_links(scan_id, MAX_LIST)?;
         let generated_at: String = self.database.connection().query_row(
             "SELECT CURRENT_TIMESTAMP",
             [],
@@ -1090,6 +1091,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 "scan": scan,
                 "methodology": "Bounded authorized crawling, passive response analysis, and non-destructive active probes.",
                 "endpoint_inventory": endpoints,
+                "source_endpoint_links": source_endpoint_links,
                 "severity_summary": severity_summary,
                 "findings": report_findings,
                 "limitations": [
@@ -1147,7 +1149,34 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                     .unwrap_or_else(|| "not requested".to_string())
             ));
         }
-        report.push_str("\n## Findings\n\n");
+        report.push_str("\n## Source to Live Endpoint Map\n\n");
+        if source_endpoint_links.is_empty() {
+            report.push_str("No durable source-route mapping was available for this scan.\n\n");
+        } else {
+            for link in &source_endpoint_links {
+                report.push_str(&format!(
+                    "- **{} {}** → `{}`{} — {} match, {:.0}% confidence",
+                    link.source_method,
+                    link.source_path_template,
+                    link.source_relative_path,
+                    link.source_handler_name
+                        .as_ref()
+                        .map(|handler| format!(" → `{}`", handler))
+                        .unwrap_or_default(),
+                    link.match_kind.replace('_', " "),
+                    link.confidence * 100.0,
+                ));
+                if !link.parameter_overlap.is_empty() {
+                    report.push_str(&format!(
+                        "; overlapping inputs: {}",
+                        link.parameter_overlap.join(", ")
+                    ));
+                }
+                report.push_str("\n");
+            }
+            report.push_str("\n");
+        }
+        report.push_str("## Findings\n\n");
         if findings.is_empty() {
             report.push_str(
                 "No findings were observed by the executed checks. This is not a guarantee that the application is vulnerability-free.\n\n",
@@ -1203,7 +1232,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         }
         report.push_str("## Testing Limitations\n\n");
         report.push_str(
-            "- Automated security testing can produce false positives and false negatives.\n- Potential and Likely findings require human review.\n- Confirmed is reserved for reproducible evidence observed by a bounded implemented probe; it does not imply broader compromise.\n- Source attribution is heuristic unless confidence and source evidence are independently verified.\n",
+            "- Automated security testing can produce false positives and false negatives.\n- Potential and Likely findings require human review.\n- Confirmed is reserved for reproducible evidence observed by a bounded implemented probe; it does not imply broader compromise.\n- Source attribution may be exact/template-backed when a persisted source-route link exists; fallback filename/symbol correlation remains heuristic.\n",
         );
         Ok(report)
     }
