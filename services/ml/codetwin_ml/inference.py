@@ -377,3 +377,214 @@ def run_inference(
         },
         "evaluation_provenance": metadata["evaluation"],
     }
+
+
+GeneratorFactory = Callable[[Path, int], Any]
+
+
+def _default_generator_factory(model_path: Path, context_tokens: int) -> Any:
+    try:
+        from llama_cpp import Llama  # type: ignore[import-not-found]
+    except ImportError as error:
+        raise InferenceRuntimeError(
+            "llama-cpp-python is not installed; install the generative optional dependencies"
+        ) from error
+    try:
+        return Llama(
+            model_path=str(model_path),
+            n_ctx=context_tokens,
+            n_threads=1,
+            n_batch=min(256, context_tokens),
+            verbose=False,
+        )
+    except Exception as error:
+        raise InferenceRuntimeError(f"cannot create llama.cpp session: {error}") from error
+
+
+def _safe_generation_prompt(action: str, text: str) -> str:
+    families = ", ".join(sorted(SAFE_PROBE_FAMILIES))
+    return (
+        "You are CodeTwin's local defensive code assistant. Analyze only the supplied authorized "
+        "application context. Return ONE JSON object and no markdown. Never return executable "
+        "commands, destructive SQL, credentials, persistence, exfiltration, denial-of-service, "
+        "raw exploit payload strings, or instructions to bypass authorization.\n"
+        "Schema: {\"summary\": string, \"probe_intents\": "
+        "[{\"family\": one of [" + families + "], "
+        "\"parameter\": string|null, \"rationale\": string}], "
+        "\"repair_notes\": [string]}.\n"
+        "Probe intents are symbolic names only; CodeTwin's deterministic payload policy decides "
+        "whether and how a safe probe may be materialized.\n"
+        f"Action: {action}\nAuthorized context:\n{text}"
+    )
+
+
+def _extract_json_object(raw: str) -> dict[str, Any]:
+    raw = raw.strip()
+    if len(raw.encode("utf-8")) > 32_768:
+        raise InferenceRuntimeError("generated response exceeds the bounded response limit")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start < 0 or end <= start:
+            raise InferenceRuntimeError("generative model did not return a JSON object")
+        try:
+            value = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError as error:
+            raise InferenceRuntimeError("generative model returned invalid JSON") from error
+    if not isinstance(value, dict):
+        raise InferenceRuntimeError("generative model output must be a JSON object")
+    return value
+
+
+def _validate_safe_advisory(value: dict[str, Any]) -> dict[str, Any]:
+    if set(value) - {"summary", "probe_intents", "repair_notes"}:
+        raise InferenceRuntimeError("generative model returned unsupported output fields")
+    summary = value.get("summary")
+    intents = value.get("probe_intents")
+    notes = value.get("repair_notes")
+    if not isinstance(summary, str) or not summary.strip() or len(summary) > 2_000:
+        raise InferenceRuntimeError("generated advisory summary is invalid")
+    if not isinstance(intents, list) or len(intents) > 8:
+        raise InferenceRuntimeError("generated probe_intents must contain at most eight items")
+    normalized_intents = []
+    for item in intents:
+        if not isinstance(item, dict) or set(item) - {"family", "parameter", "rationale"}:
+            raise InferenceRuntimeError("generated probe intent has unsupported fields")
+        family = item.get("family")
+        parameter = item.get("parameter")
+        rationale = item.get("rationale")
+        if family not in SAFE_PROBE_FAMILIES:
+            raise InferenceRuntimeError("generated probe intent is outside the safe allow-list")
+        if parameter is not None and (
+            not isinstance(parameter, str)
+            or not parameter.strip()
+            or len(parameter) > 128
+            or any(ch in parameter for ch in "\r\n\0")
+        ):
+            raise InferenceRuntimeError("generated probe parameter is invalid")
+        if not isinstance(rationale, str) or not rationale.strip() or len(rationale) > 500:
+            raise InferenceRuntimeError("generated probe rationale is invalid")
+        normalized_intents.append(
+            {
+                "family": family,
+                "parameter": parameter.strip() if isinstance(parameter, str) else None,
+                "rationale": rationale.strip(),
+            }
+        )
+    if not isinstance(notes, list) or len(notes) > 8:
+        raise InferenceRuntimeError("generated repair_notes must contain at most eight items")
+    normalized_notes = []
+    for note in notes:
+        if not isinstance(note, str) or not note.strip() or len(note) > 1_000:
+            raise InferenceRuntimeError("generated repair note is invalid")
+        normalized_notes.append(note.strip())
+    return {
+        "summary": summary.strip(),
+        "probe_intents": normalized_intents,
+        "repair_notes": normalized_notes,
+    }
+
+
+def run_generation(
+    action: str,
+    text: str,
+    *,
+    model_id: str | None = None,
+    model_version: str | None = None,
+    model_root: Path | str | None = None,
+    generator_factory: GeneratorFactory | None = None,
+) -> dict[str, Any]:
+    if not isinstance(action, str) or not action:
+        raise InferenceInputError("action must be a non-empty string")
+    if not isinstance(text, str):
+        raise InferenceInputError("text must be a string")
+
+    try:
+        model_dir, metadata = resolve_model_for_generation(
+            action,
+            model_id=model_id,
+            model_version=model_version,
+            model_root=model_root,
+        )
+    except ModelError as error:
+        raise InferenceInputError(str(error)) from error
+
+    contract = metadata.get("inference")
+    preprocessing = contract.get("preprocessing") if isinstance(contract, dict) else None
+    generation = contract.get("generation") if isinstance(contract, dict) else None
+    if not isinstance(preprocessing, dict) or not isinstance(generation, dict):
+        raise InferenceRuntimeError("selected GGUF model has an invalid generation contract")
+    max_bytes = preprocessing.get("max_bytes")
+    max_tokens = generation.get("max_tokens")
+    context_tokens = generation.get("context_tokens")
+    if (
+        preprocessing.get("kind") != "utf8-prompt-v1"
+        or not isinstance(max_bytes, int)
+        or not isinstance(max_tokens, int)
+        or not isinstance(context_tokens, int)
+    ):
+        raise InferenceRuntimeError("selected GGUF model has an invalid generation contract")
+
+    raw = text.encode("utf-8")
+    if len(raw) > max_bytes or len(raw) > MAX_TEXT_BYTES:
+        raise InferenceInputError(
+            f"generation input exceeds the selected model limit of {max_bytes} UTF-8 bytes"
+        )
+    artifact = next(
+        (item for item in metadata["artifacts"] if item.get("role") == "model"),
+        None,
+    )
+    if not isinstance(artifact, dict):
+        raise InferenceRuntimeError("selected GGUF model is missing its model artifact")
+    model_path = model_dir / artifact["path"]
+    if model_path.suffix.lower() != ".gguf" or not model_path.is_file() or model_path.is_symlink():
+        raise InferenceRuntimeError("selected GGUF model artifact is invalid")
+
+    prompt = _safe_generation_prompt(action, text)
+    generator = (generator_factory or _default_generator_factory)(model_path, context_tokens)
+    try:
+        raw_result = generator(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=0.0,
+            top_p=0.9,
+            stop=["END_OF_JSON"],
+            echo=False,
+        )
+    except Exception as error:
+        raise InferenceRuntimeError(f"llama.cpp generation failed: {error}") from error
+    try:
+        generated_text = raw_result["choices"][0]["text"]
+    except (KeyError, IndexError, TypeError) as error:
+        raise InferenceRuntimeError("llama.cpp returned an unexpected generation result") from error
+    if not isinstance(generated_text, str):
+        raise InferenceRuntimeError("llama.cpp returned non-text generation output")
+
+    advisory = _validate_safe_advisory(_extract_json_object(generated_text))
+    return {
+        "action": action,
+        "model": {
+            "id": metadata["id"],
+            "version": metadata["version"],
+            "backend": metadata["backend"],
+            "package_digest": metadata["package_digest"],
+        },
+        "input": {
+            "utf8_bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "preprocessing": "utf8-prompt-v1",
+            "max_bytes": max_bytes,
+            "truncated": False,
+        },
+        "advisory": advisory,
+        "runtime": {
+            "engine": "llama.cpp",
+            "provider": "local_cpu",
+            "threads": 1,
+            "max_tokens": max_tokens,
+            "context_tokens": context_tokens,
+        },
+        "evaluation_provenance": metadata["evaluation"],
+    }
