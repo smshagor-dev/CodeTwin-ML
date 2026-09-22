@@ -697,10 +697,13 @@ fn persist_routes(
             "INSERT INTO source_routes(
                id, project_id, file_id, symbol_id, handler_file_id, handler_symbol_id,
                framework, router_name, http_method, path_template, handler_name,
-               parameter_names_json, parameter_locations_json, request_content_type,
-               source_content_hash, start_line, end_line, last_index_run_id, is_active
+               declared_parameter_names_json, declared_parameter_locations_json,
+               declared_request_content_type, parameter_names_json, parameter_locations_json,
+               request_content_type, source_content_hash, start_line, end_line,
+               last_index_run_id, is_active
              ) VALUES (
-               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, 1
+               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+               ?15, ?16, ?17, ?18, ?19, ?20, ?21, 1
              )
              ON CONFLICT(id) DO UPDATE SET
                symbol_id = excluded.symbol_id,
@@ -709,6 +712,9 @@ fn persist_routes(
                framework = excluded.framework,
                router_name = excluded.router_name,
                handler_name = excluded.handler_name,
+               declared_parameter_names_json = excluded.declared_parameter_names_json,
+               declared_parameter_locations_json = excluded.declared_parameter_locations_json,
+               declared_request_content_type = excluded.declared_request_content_type,
                parameter_names_json = excluded.parameter_names_json,
                parameter_locations_json = excluded.parameter_locations_json,
                request_content_type = excluded.request_content_type,
@@ -729,6 +735,9 @@ fn persist_routes(
                 route.http_method,
                 route.path_template,
                 route.handler_name,
+                parameter_names_json,
+                parameter_locations_json,
+                route.request_content_type,
                 parameter_names_json,
                 parameter_locations_json,
                 route.request_content_type,
@@ -945,6 +954,17 @@ fn resolve_imported_route_handlers(
     connection: &Connection,
     project_id: &str,
 ) -> Result<(), IndexServiceError> {
+    connection.execute(
+        "UPDATE source_routes
+         SET handler_file_id = CASE WHEN symbol_id IS NOT NULL THEN file_id ELSE NULL END,
+             handler_symbol_id = symbol_id,
+             parameter_names_json = declared_parameter_names_json,
+             parameter_locations_json = declared_parameter_locations_json,
+             request_content_type = declared_request_content_type,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE project_id=?1 AND is_active=1",
+        [project_id],
+    )?;
     let mut import_statement = connection.prepare(
         "SELECT source_file_id, resolved_target_file_id, bindings_json
          FROM import_references
