@@ -32,8 +32,8 @@ pub fn extract_routes(
             (routes, mounts, flask_inputs)
         }
         "PHP" => {
-            let (routes, mounts) = extract_laravel_routes(source, root);
-            (routes, mounts, Vec::new())
+            let (routes, mounts, handler_inputs) = extract_laravel_routes(source, root);
+            (routes, mounts, handler_inputs)
         }
         "Go" => {
             let (routes, mounts, handler_inputs) = extract_go_routes(source, root);
