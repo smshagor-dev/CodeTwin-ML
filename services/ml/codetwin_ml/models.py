@@ -15,11 +15,12 @@ from codetwin_ml.datasets import load_catalog
 MODEL_SCHEMA_VERSION = 1
 MODEL_METADATA_FILE = "_codetwin_model.json"
 CHUNK_BYTES = 1024 * 1024
-SUPPORTED_BACKENDS = frozenset({"onnx-classification-v1", "onnx-seq2seq-v1"})
-EXECUTION_BACKENDS = frozenset({"onnx-classification-v1"})
+SUPPORTED_BACKENDS = frozenset({"onnx-classification-v1", "onnx-seq2seq-v1", "llama-cpp-gguf-v1"})
+EXECUTION_BACKENDS = frozenset({"onnx-classification-v1", "llama-cpp-gguf-v1"})
 MAX_EXECUTION_INPUT_BYTES = 65_536
 MAX_EXECUTION_LABELS = 256
 MAX_ONNX_MODEL_BYTES = 512 * 1024 * 1024
+MAX_GGUF_MODEL_BYTES = 8 * 1024 * 1024 * 1024
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
@@ -112,13 +113,42 @@ def _validate_inference_contract(value: Any, backend: str, model_size: int) -> d
         return None
     if backend not in EXECUTION_BACKENDS:
         raise ModelManifestError(f"backend does not support local execution yet: {backend}")
+    if not isinstance(value, dict):
+        raise ModelManifestError("inference must be an object")
+
+    if backend == "llama-cpp-gguf-v1":
+        if model_size > MAX_GGUF_MODEL_BYTES:
+            raise ModelManifestError(
+                f"executable GGUF model exceeds the {MAX_GGUF_MODEL_BYTES}-byte limit"
+            )
+        generation = value.get("generation")
+        if not isinstance(generation, dict):
+            raise ModelManifestError("GGUF inference requires a generation object")
+        max_new_tokens = generation.get("max_new_tokens", 256)
+        context_tokens = generation.get("context_tokens", 4096)
+        temperature = generation.get("temperature", 0.2)
+        top_p = generation.get("top_p", 0.95)
+        if isinstance(max_new_tokens, bool) or not isinstance(max_new_tokens, int) or not 1 <= max_new_tokens <= 1024:
+            raise ModelManifestError("generation.max_new_tokens must be between 1 and 1024")
+        if isinstance(context_tokens, bool) or not isinstance(context_tokens, int) or not 256 <= context_tokens <= 32768:
+            raise ModelManifestError("generation.context_tokens must be between 256 and 32768")
+        if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or not 0.0 <= float(temperature) <= 2.0:
+            raise ModelManifestError("generation.temperature must be between 0 and 2")
+        if isinstance(top_p, bool) or not isinstance(top_p, (int, float)) or not 0.0 < float(top_p) <= 1.0:
+            raise ModelManifestError("generation.top_p must be greater than 0 and at most 1")
+        return {
+            "generation": {
+                "max_new_tokens": max_new_tokens,
+                "context_tokens": context_tokens,
+                "temperature": float(temperature),
+                "top_p": float(top_p),
+            }
+        }
+
     if model_size > MAX_ONNX_MODEL_BYTES:
         raise ModelManifestError(
             f"executable ONNX model exceeds the {MAX_ONNX_MODEL_BYTES}-byte limit"
         )
-    if not isinstance(value, dict):
-        raise ModelManifestError("inference must be an object")
-
     preprocessing = value.get("preprocessing")
     output = value.get("output")
     if not isinstance(preprocessing, dict) or not isinstance(output, dict):
@@ -230,6 +260,8 @@ def validate_manifest(manifest: Any) -> dict[str, Any]:
         raise ModelManifestError("artifacts must contain exactly one role=model entry")
     if backend.startswith("onnx-") and not model_paths[0].lower().endswith(".onnx"):
         raise ModelManifestError("ONNX backends require the role=model artifact to use a .onnx path")
+    if backend == "llama-cpp-gguf-v1" and not model_paths[0].lower().endswith(".gguf"):
+        raise ModelManifestError("llama.cpp backend requires the role=model artifact to use a .gguf path")
 
     normalized_inference = _validate_inference_contract(
         manifest.get("inference"), backend, model_size
