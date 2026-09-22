@@ -30,6 +30,12 @@ const strictPolicy: QaSandboxPolicy = {
   inherit_host_environment: false,
 };
 
+function executableParent(value: string): string {
+  const trimmed = value.trim().replace(/[\\/]+$/, "");
+  const slash = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
+  return slash > 0 ? trimmed.slice(0, slash) : "";
+}
+
 function runnerForFramework(framework: string): QaTestRunnerKind {
   switch (framework.toLowerCase()) {
     case "pytest": return "pytest";
@@ -141,11 +147,20 @@ export function TestingPage() {
           version: toolchainVersion.trim(),
           sha256: toolchainHash,
           trusted_by_user: true,
-          declared_external_read_roots: externalRoots
-            .split("\n")
-            .map((value) => value.trim())
-            .filter(Boolean)
-            .map((path) => ({ kind: "runtime_root" as const, path })),
+          declared_external_read_roots: (() => {
+            const roots = [...new Set(
+              externalRoots
+                .split("\n")
+                .map((value) => value.trim())
+                .filter(Boolean),
+            )];
+            const runnerRoot = executableParent(toolchainPath);
+            if (runnerRoot && !roots.includes(runnerRoot)) roots.unshift(runnerRoot);
+            return roots.map((path, index) => ({
+              kind: index === 0 ? "runtime_root" as const : "toolchain_support" as const,
+              path,
+            }));
+          })(),
         },
         strictPolicy,
       );
@@ -252,8 +267,8 @@ export function TestingPage() {
             </label>
           </div>
           <label className="ws-field">
-            <span>Approved external runtime read roots <small>optional, one absolute path per line</small></span>
-            <textarea rows={3} value={externalRoots} onChange={(event) => setExternalRoots(event.target.value)} placeholder="Python stdlib/runtime or other required immutable runtime roots"/>
+            <span>Approved external runtime/toolchain roots <small>one absolute path per line</small></span>
+            <textarea rows={3} value={externalRoots} onChange={(event) => setExternalRoots(event.target.value)} placeholder="Additional Python stdlib, Rust sysroot, Go root, Node/PHP runtime, or package-store roots"/>
           </label>
           <div className="ws-header-tools">
             <button className="ws-button ws-button-secondary" onClick={() => void pinToolchain()} disabled={!toolchainPath.trim() || qaBusy !== null}>
