@@ -120,6 +120,18 @@ pub struct SourceRouteRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebSourceEndpointLinkRecord {
+    pub id: String,
+    pub scan_id: String,
+    pub endpoint_id: String,
+    pub source_route_id: String,
+    pub match_kind: String,
+    pub confidence: f64,
+    pub parameter_overlap: Vec<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WebFindingInput {
     pub fingerprint: String,
     pub category: String,
@@ -652,6 +664,139 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 source_content_hash: row.get(14)?,
                 start_line: row.get::<_, i64>(15)?.max(0) as usize,
                 end_line: row.get::<_, i64>(16)?.max(0) as usize,
+            })
+        })?;
+        let mut values = Vec::new();
+        for row in rows {
+            values.push(row?);
+        }
+        Ok(values)
+    }
+
+    pub fn link_endpoint_to_source_route(
+        &self,
+        project_id: Option<&str>,
+        endpoint: &WebEndpointRecord,
+    ) -> Result<Option<WebSourceEndpointLinkRecord>, WebSecurityStoreError> {
+        let Some(project_id) = project_id else {
+            return Ok(None);
+        };
+        let url = Url::parse(&endpoint.url)
+            .map_err(|error| WebSecurityStoreError::InvalidConfig(error.to_string()))?;
+        let routes = self.list_source_routes(project_id, 1_000)?;
+        let mut best: Option<(f64, bool, SourceRouteRecord, Vec<String>)> = None;
+
+        for route in routes {
+            if route.http_method != endpoint.method {
+                continue;
+            }
+            let Some(exact_path) = route_template_match(&route.path_template, url.path()) else {
+                continue;
+            };
+            let mut overlap: Vec<String> = endpoint
+                .parameter_names
+                .iter()
+                .filter(|name| {
+                    route
+                        .parameter_names
+                        .iter()
+                        .any(|candidate| candidate.eq_ignore_ascii_case(name))
+                })
+                .cloned()
+                .collect();
+            overlap.sort();
+            overlap.dedup();
+            let seeded = endpoint.source.starts_with("source_route:");
+            let mut confidence: f64 = if seeded {
+                0.995
+            } else if exact_path {
+                0.98
+            } else {
+                0.93
+            };
+            if !overlap.is_empty() {
+                confidence = (confidence + 0.005).min(0.999);
+            }
+            if best.as_ref().map_or(true, |(score, _, _, _)| confidence > *score) {
+                best = Some((confidence, exact_path, route, overlap));
+            }
+        }
+
+        let Some((confidence, exact_path, route, overlap)) = best else {
+            return Ok(None);
+        };
+        let match_kind = if endpoint.source.starts_with("source_route:") {
+            "seeded"
+        } else if exact_path {
+            "exact_static"
+        } else {
+            "template"
+        };
+        let id = stable_id(
+            "web-source-endpoint",
+            &[&endpoint.scan_id, &endpoint.id, &route.id],
+        );
+        let overlap_json = serde_json::to_string(&overlap)?;
+        self.database.connection().execute(
+            "INSERT INTO web_source_endpoint_links(
+               id, scan_id, endpoint_id, source_route_id, match_kind, confidence,
+               parameter_overlap_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(scan_id, endpoint_id, source_route_id) DO UPDATE SET
+               match_kind = excluded.match_kind,
+               confidence = excluded.confidence,
+               parameter_overlap_json = excluded.parameter_overlap_json",
+            params![
+                id,
+                endpoint.scan_id,
+                endpoint.id,
+                route.id,
+                match_kind,
+                confidence,
+                overlap_json,
+            ],
+        )?;
+        let created_at: String = self.database.connection().query_row(
+            "SELECT created_at FROM web_source_endpoint_links WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )?;
+        Ok(Some(WebSourceEndpointLinkRecord {
+            id,
+            scan_id: endpoint.scan_id.clone(),
+            endpoint_id: endpoint.id.clone(),
+            source_route_id: route.id,
+            match_kind: match_kind.to_string(),
+            confidence,
+            parameter_overlap: overlap,
+            created_at,
+        }))
+    }
+
+    pub fn list_source_endpoint_links(
+        &self,
+        scan_id: &str,
+        limit: usize,
+    ) -> Result<Vec<WebSourceEndpointLinkRecord>, WebSecurityStoreError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT id, scan_id, endpoint_id, source_route_id, match_kind,
+                    confidence, parameter_overlap_json, created_at
+             FROM web_source_endpoint_links
+             WHERE scan_id=?1
+             ORDER BY confidence DESC, endpoint_id, source_route_id
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![scan_id, bounded(limit) as i64], |row| {
+            let overlap_json: String = row.get(6)?;
+            Ok(WebSourceEndpointLinkRecord {
+                id: row.get(0)?,
+                scan_id: row.get(1)?,
+                endpoint_id: row.get(2)?,
+                source_route_id: row.get(3)?,
+                match_kind: row.get(4)?,
+                confidence: row.get(5)?,
+                parameter_overlap: serde_json::from_str(&overlap_json).unwrap_or_default(),
+                created_at: row.get(7)?,
             })
         })?;
         let mut values = Vec::new();
