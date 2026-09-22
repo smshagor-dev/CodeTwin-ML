@@ -1317,8 +1317,30 @@ fn receive_bounded_output(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_command_line, build_environment_block, quote_windows_argument};
+    use super::{
+        build_command_line, build_environment_block, qa_job_ui_limit_flags,
+        quote_windows_argument,
+    };
     use crate::DetachedExecutionWorkspace;
+    use windows_sys::Win32::System::JobObjects::{
+        JOB_OBJECT_UILIMIT_DESKTOP, JOB_OBJECT_UILIMIT_DISPLAYSETTINGS,
+        JOB_OBJECT_UILIMIT_EXITWINDOWS, JOB_OBJECT_UILIMIT_GLOBALATOMS,
+        JOB_OBJECT_UILIMIT_HANDLES, JOB_OBJECT_UILIMIT_READCLIPBOARD,
+        JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS, JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
+    };
+
+    #[test]
+    fn qa_job_restricts_interactive_ui_surfaces() {
+        let expected = JOB_OBJECT_UILIMIT_DESKTOP
+            | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
+            | JOB_OBJECT_UILIMIT_EXITWINDOWS
+            | JOB_OBJECT_UILIMIT_GLOBALATOMS
+            | JOB_OBJECT_UILIMIT_HANDLES
+            | JOB_OBJECT_UILIMIT_READCLIPBOARD
+            | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS
+            | JOB_OBJECT_UILIMIT_WRITECLIPBOARD;
+        assert_eq!(qa_job_ui_limit_flags(), expected);
+    }
 
     #[test]
     fn windows_argument_quoting_handles_spaces_quotes_and_trailing_backslashes() {
