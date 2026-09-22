@@ -712,6 +712,8 @@ mod tests {
         let info = current_backend_info();
         if cfg!(windows) {
             assert!(info.capabilities.process_isolation);
+            assert!(info.capabilities.filesystem_isolation);
+            assert!(info.capabilities.network_isolation);
             assert!(info.capabilities.cpu_limit);
             assert!(info.capabilities.memory_limit);
             assert!(info.capabilities.cancellation);
@@ -719,12 +721,12 @@ mod tests {
             assert!(info.controls.process_assigned_before_resume);
         } else {
             assert!(!info.capabilities.process_isolation);
+            assert!(!info.capabilities.filesystem_isolation);
+            assert!(!info.capabilities.network_isolation);
             assert!(!info.capabilities.cpu_limit);
             assert!(!info.capabilities.memory_limit);
             assert!(!info.capabilities.cancellation);
         }
-        assert!(!info.capabilities.filesystem_isolation);
-        assert!(!info.capabilities.network_isolation);
     }
 
     #[test]
