@@ -1928,8 +1928,10 @@ fn rust_simple_type_name(value: &str) -> Option<String> {
         .trim_start_matches("mut ")
         .trim();
     if value.is_empty()
-        || value.contains(['<', '>', '(', ')', '[', ']', ',', ';'])
-        || value.contains(char::is_whitespace)
+        || value
+            .chars()
+            .any(|character| matches!(character, '<' | '>' | '(' | ')' | '[' | ']' | ',' | ';'))
+        || value.chars().any(char::is_whitespace)
     {
         return None;
     }
