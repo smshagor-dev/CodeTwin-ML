@@ -745,7 +745,8 @@ fn extract_laravel_routes(
         let Some(path) = first_quoted_string(&tail[open + 1..]) else {
             return;
         };
-        let full_path = normalize_path(&path);
+        let group_prefix = laravel_ancestor_prefix(source, node);
+        let full_path = combine_paths(group_prefix.as_deref(), &path);
         let mut parameters = path_parameters(&full_path);
         normalize_parameters(&mut parameters);
         let start = node.start_position();
@@ -763,6 +764,54 @@ fn extract_laravel_routes(
         });
     });
     (routes, Vec::new())
+}
+
+fn laravel_ancestor_prefix(source: &str, node: Node<'_>) -> Option<String> {
+    let mut prefixes = Vec::new();
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        let Some(value) = text(source, parent) else {
+            current = parent.parent();
+            continue;
+        };
+        if value.contains("->group(") || value.contains("Route::group(") {
+            if let Some(prefix) = laravel_chain_prefix(value) {
+                prefixes.push(prefix);
+            }
+        }
+        current = parent.parent();
+    }
+    if prefixes.is_empty() {
+        return None;
+    }
+    prefixes.reverse();
+    let mut combined = String::new();
+    for prefix in prefixes {
+        combined = combine_paths(
+            (!combined.is_empty()).then_some(combined.as_str()),
+            &prefix,
+        );
+    }
+    Some(combined)
+}
+
+fn laravel_chain_prefix(value: &str) -> Option<String> {
+    if let Some(index) = value.find("->prefix(") {
+        return first_quoted_string(&value[index + "->prefix(".len()..])
+            .map(|prefix| normalize_path(&prefix));
+    }
+    if value.contains("Route::group(") {
+        let compact = value.split_whitespace().collect::<String>();
+        for quote in ['\'', '"'] {
+            let marker = format!("{quote}prefix{quote}=>{quote}");
+            if let Some(index) = compact.find(&marker) {
+                let tail = &compact[index + marker.len()..];
+                let end = tail.find(quote)?;
+                return Some(normalize_path(&tail[..end]));
+            }
+        }
+    }
+    None
 }
 
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
@@ -1372,6 +1421,67 @@ app.register_blueprint(api, url_prefix = "/api")
                 && mount.parent_router == "app"
                 && mount.mounted_binding == "api"
                 && mount.prefix == "/api"
+        }));
+    }
+
+    #[test]
+    fn composes_nested_laravel_route_group_prefixes() {
+        let source = r#"<?php
+use Illuminate\Support\Facades\Route;
+
+Route::prefix('api')->group(function () {
+    Route::middleware('auth')->prefix('v1')->group(function () {
+        Route::get('/users/{id}', [UserController::class, 'show']);
+    });
+});
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "PHP",
+            "routes/api.php",
+            source,
+            tree.root_node(),
+        );
+        let route = routes
+            .iter()
+            .find(|route| {
+                route.framework == "laravel"
+                    && route.http_method == "GET"
+                    && route.path_template == "/api/v1/users/{id}"
+            })
+            .expect("nested Laravel group route");
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "id" && parameter.location == "path"));
+    }
+
+    #[test]
+    fn composes_laravel_array_group_prefix() {
+        let source = r#"<?php
+Route::group(['prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+});
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "PHP",
+            "routes/web.php",
+            source,
+            tree.root_node(),
+        );
+        assert!(routes.iter().any(|route| {
+            route.framework == "laravel"
+                && route.http_method == "POST"
+                && route.path_template == "/admin/users"
         }));
     }
 
