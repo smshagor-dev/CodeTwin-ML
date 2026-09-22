@@ -1247,15 +1247,26 @@ fn axum_methods(value: &str) -> Vec<String> {
     let lower = value.to_ascii_lowercase();
     let mut methods = Vec::new();
     for method in HTTP_METHODS {
-        let direct = format!("{method}(");
-        let chained = format!(".{method}(");
-        if lower.contains(&direct) || lower.contains(&chained) {
+        if contains_method_call(&lower, method) {
             methods.push(method.to_ascii_uppercase());
         }
     }
     methods.sort();
     methods.dedup();
     methods
+}
+
+fn contains_method_call(value: &str, method: &str) -> bool {
+    let needle = format!("{method}(");
+    value.match_indices(&needle).any(|(index, _)| {
+        if index == 0 {
+            return true;
+        }
+        let previous = value[..index].chars().next_back();
+        previous.is_some_and(|character| {
+            !(character == '_' || character.is_ascii_alphanumeric())
+        })
+    })
 }
 
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
@@ -2232,6 +2243,31 @@ fn create(id: usize) {}
             route.framework == "rocket"
                 && route.http_method == "POST"
                 && route.path_template == "/items/<id>"
+        }));
+    }
+
+    #[test]
+    fn axum_method_detection_does_not_match_handler_name_suffixes() {
+        let source = r#"
+use axum::{routing::post, Router};
+
+async fn budget() {}
+
+fn app() -> Router {
+    Router::new().route("/budget", post(budget))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        assert!(!routes.iter().any(|route| route.http_method == "GET"));
+        assert!(routes.iter().any(|route| {
+            route.framework == "axum"
+                && route.http_method == "POST"
+                && route.path_template == "/budget"
         }));
     }
 
