@@ -1418,6 +1418,56 @@ mod tests {
     use super::extract_routes;
 
     #[test]
+    fn extracts_nextjs_reexported_methods_and_catch_all_path() {
+        let source = r#"
+export { GET, handler as POST } from "./handlers";
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "TypeScript",
+            "app/docs/[...slug]/route.ts",
+            source,
+            tree.root_node(),
+        );
+        for method in ["GET", "POST"] {
+            let route = routes
+                .iter()
+                .find(|route| route.framework == "nextjs" && route.http_method == method)
+                .expect("re-exported Next.js method");
+            assert_eq!(route.path_template, "/docs/{slug}");
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == "slug" && parameter.location == "path"));
+        }
+    }
+
+    #[test]
+    fn materializes_nextjs_optional_catch_all_with_safe_single_segment() {
+        let source = "export function GET() { return new Response('ok'); }";
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "TypeScript",
+            "src/app/blog/[[...slug]]/route.ts",
+            source,
+            tree.root_node(),
+        );
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "GET")
+            .expect("optional catch-all route");
+        assert_eq!(route.path_template, "/blog/{slug}");
+    }
+
+    #[test]
     fn extracts_nextjs_app_router_methods_and_dynamic_path() {
         let source = r#"
 export async function GET(request: Request) {
@@ -1451,23 +1501,6 @@ export const POST = async (request: Request) => {
         assert!(routes
             .iter()
             .any(|route| route.framework == "nextjs" && route.http_method == "POST"));
-    }
-
-    #[test]
-    fn skips_nextjs_catch_all_route_materialization() {
-        let source = "export function GET() { return new Response('ok'); }";
-        let mut parser = Parser::new();
-        parser
-            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
-            .expect("language");
-        let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, _handler_inputs) = extract_routes(
-            "TypeScript",
-            "app/docs/[...slug]/route.ts",
-            source,
-            tree.root_node(),
-        );
-        assert!(!routes.iter().any(|route| route.framework == "nextjs"));
     }
 
     #[test]
@@ -1569,6 +1602,59 @@ app.register_blueprint(api, url_prefix = "/api")
                 && mount.parent_router == "app"
                 && mount.mounted_binding == "api"
                 && mount.prefix == "/api"
+        }));
+    }
+
+    #[test]
+    fn expands_laravel_resource_and_api_resource_routes() {
+        let source = r#"<?php
+use Illuminate\Support\Facades\Route;
+
+Route::prefix('api')->group(function () {
+    Route::resource('/photos', PhotoController::class);
+    Route::apiResource('/categories', CategoryController::class);
+});
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "PHP",
+            "routes/api.php",
+            source,
+            tree.root_node(),
+        );
+
+        for (method, path) in [
+            ("GET", "/api/photos"),
+            ("POST", "/api/photos"),
+            ("GET", "/api/photos/create"),
+            ("GET", "/api/photos/{photo}"),
+            ("GET", "/api/photos/{photo}/edit"),
+            ("PUT", "/api/photos/{photo}"),
+            ("PATCH", "/api/photos/{photo}"),
+            ("DELETE", "/api/photos/{photo}"),
+            ("GET", "/api/categories"),
+            ("POST", "/api/categories"),
+            ("GET", "/api/categories/{category}"),
+            ("PUT", "/api/categories/{category}"),
+            ("PATCH", "/api/categories/{category}"),
+            ("DELETE", "/api/categories/{category}"),
+        ] {
+            assert!(
+                routes.iter().any(|route| {
+                    route.framework == "laravel"
+                        && route.http_method == method
+                        && route.path_template == path
+                }),
+                "missing {method} {path}: {routes:?}"
+            );
+        }
+        assert!(!routes.iter().any(|route| {
+            route.path_template == "/api/categories/create"
+                || route.path_template == "/api/categories/{category}/edit"
         }));
     }
 
