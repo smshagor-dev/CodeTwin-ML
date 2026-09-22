@@ -160,7 +160,6 @@ mod tests {
             db.connection()
                 .execute_batch(
                     "DROP TABLE web_source_endpoint_links;
-                     DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
@@ -227,7 +226,6 @@ mod tests {
             db.connection()
                 .execute_batch(
                     "DROP TABLE web_source_endpoint_links;
-                     DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
@@ -277,7 +275,6 @@ mod tests {
             db.connection()
                 .execute_batch(
                     "DROP TABLE web_source_endpoint_links;
-                     DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
@@ -365,7 +362,6 @@ mod tests {
             db.connection()
                 .execute_batch(
                     "DROP TABLE web_source_endpoint_links;
-                     DROP TABLE web_source_endpoint_links;
                      DROP TABLE source_routes;
                      DROP TABLE security_remediation_campaign_events;
                      DROP TABLE security_remediation_campaign_relationships;
