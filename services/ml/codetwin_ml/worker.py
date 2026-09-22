@@ -70,10 +70,13 @@ def main() -> int:
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         return _write_response(_error("invalid_request", str(error)))
 
+    operation = request.get("operation", "classification")
     action = request.get("action")
     text = request.get("text")
     model_id = request.get("model_id")
     model_version = request.get("model_version")
+    if operation not in {"classification", "generation"}:
+        return _write_response(_error("invalid_request", "operation is unsupported"))
     if not isinstance(action, str) or not action:
         return _write_response(_error("invalid_request", "action must be a non-empty string"))
     if not isinstance(text, str):
@@ -86,12 +89,13 @@ def main() -> int:
         )
 
     try:
-        from codetwin_ml.inference import InferenceError, run_inference
+        from codetwin_ml.inference import InferenceError, run_generation, run_inference
     except Exception as error:  # pragma: no cover - import failure is environment-specific
         return _write_response(_error("worker_internal_error", type(error).__name__))
 
     try:
-        result = run_inference(
+        executor = run_generation if operation == "generation" else run_inference
+        result = executor(
             action,
             text,
             model_id=model_id,
