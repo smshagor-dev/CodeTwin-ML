@@ -678,11 +678,32 @@ fn wide_null(value: &OsStr) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::hresult_from_win32;
+    use super::{hresult_from_win32, LpacLaunchReadinessEvidence};
     use windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS;
 
     #[test]
     fn maps_already_exists_to_win32_hresult() {
         assert_eq!(hresult_from_win32(ERROR_ALREADY_EXISTS) as u32, 0x8007_00b7);
+    }
+
+    #[test]
+    fn readiness_requires_loopback_exemption_to_be_absent() {
+        let mut evidence = LpacLaunchReadinessEvidence {
+            child_is_appcontainer: true,
+            child_is_lpac: true,
+            child_is_restricted: true,
+            write_restricted_sid_present: true,
+            child_low_integrity: true,
+            package_sid_matches: true,
+            capability_count: 0,
+            loopback_exemption_absent: false,
+            child_never_resumed: true,
+            production_launcher_uses_lpac: false,
+            filesystem_read_allowlist_enforced: false,
+            network_isolation_promoted: false,
+        };
+        assert!(!evidence.satisfies_readiness_contract());
+        evidence.loopback_exemption_absent = true;
+        assert!(evidence.satisfies_readiness_contract());
     }
 }
