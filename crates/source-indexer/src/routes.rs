@@ -1220,7 +1220,7 @@ app.register_blueprint(api, url_prefix = "/api")
         let source = r#"<?php
 use Illuminate\Support\Facades\Route;
 
-Route::get('/users/{id}', [UserController::class, 'show']);
+Route::get('/users/{id?}', [UserController::class, 'show']);
 Route::post('/login', [AuthController::class, 'login']);
 "#;
         let mut parser = Parser::new();
@@ -1234,7 +1234,7 @@ Route::post('/login', [AuthController::class, 'login']);
             .find(|route| {
                 route.framework == "laravel"
                     && route.http_method == "GET"
-                    && route.path_template == "/users/{id}"
+                    && route.path_template == "/users/{id?}"
             })
             .expect("laravel get route");
         assert!(user
