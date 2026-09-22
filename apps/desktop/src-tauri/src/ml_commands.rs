@@ -967,3 +967,28 @@ fn time_nonce() -> u128 {
         .unwrap_or_default()
         .as_nanos()
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::ml_containment_status;
+
+    #[test]
+    fn containment_status_does_not_claim_filesystem_or_network_isolation() {
+        let status = ml_containment_status();
+        assert!(!status.filesystem_isolation);
+        assert!(!status.network_isolation);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_containment_reports_enforced_job_controls() {
+        let status = ml_containment_status();
+        assert!(status.process_tree_containment);
+        assert!(status.ui_restrictions);
+        assert!(status.launch_suspended_before_assignment);
+        assert!(status.memory_limit_bytes.is_some());
+        assert!(status.active_process_limit.is_some());
+        assert!(status.cpu_time_limit_seconds.is_some());
+    }
+}
