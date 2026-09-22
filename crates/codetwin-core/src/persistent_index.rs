@@ -243,6 +243,13 @@ fn persist_index_result(
             run_id,
             indexed,
         )?;
+        persist_route_mounts(
+            &transaction,
+            &project.id,
+            &stable_file_id,
+            run_id,
+            indexed,
+        )?;
         persist_imports(
             &transaction,
             &project.id,
@@ -661,6 +668,61 @@ fn persist_routes(
     Ok(())
 }
 
+fn persist_route_mounts(
+    connection: &Connection,
+    project_id: &str,
+    source_file_id: &str,
+    run_id: &str,
+    indexed: &IndexedFile,
+) -> Result<(), rusqlite::Error> {
+    connection.execute(
+        "UPDATE source_route_mounts
+         SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
+         WHERE source_file_id = ?1 AND is_active = 1",
+        params![source_file_id, run_id],
+    )?;
+
+    for mount in &indexed.route_mounts {
+        let id = deterministic_id(
+            "source-route-mount",
+            &[
+                project_id,
+                source_file_id,
+                &mount.framework,
+                &mount.mounted_binding,
+                &mount.prefix,
+                &mount.start_line.to_string(),
+            ],
+        );
+        connection.execute(
+            "INSERT INTO source_route_mounts(
+               id, project_id, source_file_id, framework, mounted_binding,
+               prefix, start_line, end_line, last_index_run_id, is_active
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)
+             ON CONFLICT(id) DO UPDATE SET
+               framework = excluded.framework,
+               mounted_binding = excluded.mounted_binding,
+               prefix = excluded.prefix,
+               end_line = excluded.end_line,
+               last_index_run_id = excluded.last_index_run_id,
+               is_active = 1,
+               updated_at = CURRENT_TIMESTAMP",
+            params![
+                id,
+                project_id,
+                source_file_id,
+                mount.framework,
+                mount.mounted_binding,
+                mount.prefix,
+                to_i64(mount.start_line),
+                to_i64(mount.end_line),
+                run_id,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn persist_imports(
     connection: &Connection,
     project_id: &str,
@@ -686,11 +748,13 @@ fn persist_imports(
                 &reference.end_column.to_string(),
             ],
         );
+        let bindings_json = serde_json::to_string(&reference.bindings)
+            .unwrap_or_else(|_| "[]".to_string());
         connection.execute(
             "INSERT INTO import_references(\
                id, project_id, source_file_id, raw_specifier, kind, start_line, start_column, end_line, end_column,\
-               resolution_state, resolved_target_file_id, last_index_run_id\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'observed', NULL, ?10)",
+               resolution_state, resolved_target_file_id, last_index_run_id, bindings_json\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'observed', NULL, ?10, ?11)",
             params![
                 id,
                 project_id,
@@ -702,6 +766,7 @@ fn persist_imports(
                 to_i64(reference.end_line),
                 to_i64(reference.end_column),
                 run_id,
+                bindings_json,
             ],
         )?;
     }
@@ -727,6 +792,12 @@ fn deactivate_file(
         "UPDATE source_routes
          SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
          WHERE file_id = ?1 AND is_active = 1",
+        params![file_id, run_id],
+    )?;
+    connection.execute(
+        "UPDATE source_route_mounts
+         SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
+         WHERE source_file_id = ?1 AND is_active = 1",
         params![file_id, run_id],
     )?;
     connection.execute(
