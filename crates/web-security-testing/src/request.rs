@@ -3,8 +3,9 @@ use std::{
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -29,6 +30,8 @@ pub enum RequestError {
     BudgetExhausted,
     #[error("invalid request header: {0}")]
     Header(String),
+    #[error("active payload rejected by safety policy: {0}")]
+    PayloadRejected(String),
     #[error("HTTP request failed: {0}")]
     Http(String),
     #[error("response body could not be read")]
@@ -40,14 +43,64 @@ pub struct RequestBudget {
     used: Arc<AtomicUsize>,
     responses_observed: Arc<AtomicUsize>,
     max: usize,
+    rate_per_second: f64,
+    burst: usize,
+    rate_state: Arc<Mutex<RateState>>,
+}
+
+#[derive(Debug)]
+struct RateState {
+    tokens: f64,
+    last_refill: Instant,
 }
 
 impl RequestBudget {
     pub fn new(max: usize) -> Self {
+        Self::with_rate(max, 4.0, 2)
+    }
+
+    pub fn with_rate(max: usize, rate_per_second: f64, burst: usize) -> Self {
+        let rate_per_second = rate_per_second.clamp(0.25, 20.0);
+        let burst = burst.clamp(1, 16);
         Self {
             used: Arc::new(AtomicUsize::new(0)),
             responses_observed: Arc::new(AtomicUsize::new(0)),
             max,
+            rate_per_second,
+            burst,
+            rate_state: Arc::new(Mutex::new(RateState {
+                tokens: burst as f64,
+                last_refill: Instant::now(),
+            })),
+        }
+    }
+
+    pub fn wait_for_rate_slot(&self, cancelled: &AtomicBool) -> Result<(), RequestError> {
+        loop {
+            if cancelled.load(Ordering::SeqCst) {
+                return Err(RequestError::Cancelled);
+            }
+            let wait = {
+                let mut state = self
+                    .rate_state
+                    .lock()
+                    .map_err(|_| RequestError::Http("request rate limiter lock is poisoned".to_string()))?;
+                let now = Instant::now();
+                let elapsed = now.duration_since(state.last_refill).as_secs_f64();
+                if elapsed > 0.0 {
+                    state.tokens = (state.tokens + elapsed * self.rate_per_second)
+                        .min(self.burst as f64);
+                    state.last_refill = now;
+                }
+                if state.tokens >= 1.0 {
+                    state.tokens -= 1.0;
+                    return Ok(());
+                }
+                Duration::from_secs_f64(
+                    ((1.0 - state.tokens) / self.rate_per_second).clamp(0.001, 0.25),
+                )
+            };
+            thread::sleep(wait);
         }
     }
 
@@ -139,6 +192,7 @@ impl ScopedRequester {
             // Resolve again for every attempt and pin the checked address into reqwest.
             // This prevents redirects/DNS changes from bypassing the authorized network scope.
             let pinned = self.policy.resolve_and_pin(url)?;
+            self.budget.wait_for_rate_slot(&self.cancelled)?;
             self.budget.claim()?;
             if self.cancelled.load(Ordering::SeqCst) {
                 return Err(RequestError::Cancelled);
