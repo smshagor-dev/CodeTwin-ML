@@ -4,9 +4,15 @@ CodeTwin separates passive QA discovery from repository test execution. Reposito
 
 ## Current implementation status
 
-The QA execution foundation implements typed planning, policy validation, direct argument-vector command generation, durable plan persistence, bounded output helpers, selected-target snapshot hashing, a bounded full-project detached mirror, approval-bound project manifests, approval-bound declared external-runtime provenance, exact trusted-runner launch locking, Windows Job Object containment, write-restricted low-integrity primary-token launch, explicit inherited-handle control, bounded resource controls, cancellation, and a never-resumed zero-capability LPAC launch-readiness probe.
+The QA execution subsystem now implements a complete Windows execution path in addition to passive discovery and typed planning. An executable run requires an immutable typed plan, an explicitly trusted and SHA-256-pinned runner, explicit user approval, an approval-bound project manifest, an approval-bound external runtime/toolchain read surface, and the strict Windows LPAC backend. Unsupported platforms remain planning-only.
 
-The public `QaExecutionService` still reports `execution_enabled = false` and exposes no execute method. `filesystem_isolation` and `network_isolation` remain false. Normal strict plans therefore remain blocked and there is no unsandboxed fallback.
+The Windows path stages a dependency-complete project mirror and an integrity-verified copy of the approved runtime/toolchain material into a generated workspace. The **actual resumed test runner**, not only a readiness probe, is created suspended as a write-restricted low-integrity zero-capability LPAC process. Its token is attested before resume, it is assigned to a bounded Job Object before untrusted code can execute, and it receives only explicit standard-I/O handles and a sanitized environment.
+
+The public `QaExecutionService` exposes availability, plan creation, approval, execution, cancellation, and durable run history. A process exit is not automatically treated as a test result: CodeTwin records pass/fail only when a supported runner-specific output parser completed. Sandbox setup failures, timeouts, cancellation, stale approval evidence, or unrecognized output produce no test verdict.
+
+There is no weaker unsandboxed fallback. If LPAC creation, ACL preparation, project/runtime provenance verification, exact runner verification, Job Object setup, token attestation, or output handling fails, execution fails closed.
+
+**Validation status:** the implementation is wired for Windows, but the current GitHub Actions environment has repeatedly failed before allocating a runner (`steps = null`). Therefore this document distinguishes implemented enforcement from CI execution evidence; it does not claim that the current PR has completed adversarial Windows integration validation.
 
 ## Typed runner and toolchain model
 
@@ -26,7 +32,7 @@ The default policy requires process isolation, filesystem/write isolation, netwo
 
 ## Approval-bound project manifest
 
-A future-capable planned plan cannot transition to approved by changing status alone. Project approval evidence is captured without running repository code:
+A planned execution plan cannot transition to approved by changing status alone. Project approval evidence is captured without running repository code:
 
 1. read the persisted project root;
 2. re-snapshot the explicit selected test targets and verify their hashes;
@@ -57,7 +63,7 @@ The tree walker accepts only regular files and directories, requires determinist
 
 The aggregate surface digest is domain-separated from project manifests and includes each root's kind, canonical path, root manifest digest, file count, directory count and total bytes. Approval performs two independent bounded scans of the complete declared surface and requires exact equality. If the surface changes while approval provenance is being captured, approval fails closed rather than storing an unstable snapshot.
 
-An empty declared-root list is permitted during passive planning for backward compatibility, but a future-capable plan cannot be approved without at least one explicit external root. Existing approved rows that predate this provenance layer are not silently upgraded; typed reconstruction fails closed and requires a new plan/approval.
+An empty declared-root list is permitted during passive planning for backward compatibility, but an execution-capable plan cannot be approved without at least one explicit external root. Existing approved rows that predate this provenance layer are not silently upgraded; typed reconstruction fails closed and requires a new plan/approval.
 
 At execution time the Windows project-mirror path rescans the declared external surface and requires exact equality with the approved typed evidence before restricted process creation. A changed standard library, compiler/sysroot file, package-store file, root path, file size, directory layout or content hash therefore blocks launch.
 
@@ -79,8 +85,8 @@ Database triggers enforce the following rules:
 - plan execution specification is immutable from creation; changing project identity, discovery identity, runner, request, toolchain, policy, capabilities, command or blocking reasons requires a new plan;
 - approval may append approval provenance while transitioning from planned to approved, but approved provenance is immutable afterward;
 - approved status cannot be downgraded;
-- a future run row must carry a project-manifest digest matching its approved plan;
-- a future run row must also carry an external-read-surface digest matching its approved plan.
+- every execution run row must carry a project-manifest digest matching its approved plan;
+- every execution run row must also carry an external-read-surface digest matching its approved plan.
 
 The service additionally performs compare-and-update approval: the persisted request/toolchain/policy/capability/command/blocking/provenance JSON must still equal the originally loaded plan while project and external evidence are being captured. A concurrent approval is idempotent only when the resulting approved evidence is exactly the same.
 
@@ -102,49 +108,47 @@ Before entering the lower restricted launcher, Windows execution:
 
 The lower launcher retains its independent runner path/hash verification as defense in depth. This stronger handle lifetime currently applies to the exact runner executable, not every file in the declared runtime/toolchain trees.
 
-## Windows zero-capability LPAC readiness
+## Windows zero-capability LPAC production launcher
 
-CodeTwin now has a conservative preflight for composing the existing write-restricted low-integrity token with a Less Privileged AppContainer (LPAC) identity. This is readiness evidence only; the resumed production runner is not yet LPAC.
+CodeTwin uses a stable per-user AppContainer profile named `CodeTwinML.QA.RestrictedRunner.V1`. For every approved execution, the generated runner process is created with the profile package SID and **zero capability SIDs**, with `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` and `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` / `PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT`.
 
-The preflight uses a stable per-user AppContainer profile named `CodeTwinML.QA.RestrictedRunner.V1`. It builds `SECURITY_CAPABILITIES` with the profile package SID and zero capability SIDs, and supplies both `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` and `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` with `PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT`.
+The approved runtime/toolchain roots are copied into a generated per-run bundle after their approval manifests are re-attested. The copied runner is verified against the approved runner SHA-256. The AppContainer package SID receives narrowly scoped access to the generated project/runtime material and writable artifact/temp locations instead of changing ACLs on the original repository or arbitrary host runtime trees.
 
-The exact trusted executable is created through `CreateProcessAsUserW` with `CREATE_SUSPENDED`. No repository/test arguments are supplied and the primary thread is never resumed. Before accepting readiness, the parent opens the suspended child token and requires:
+The actual runner is created through `CreateProcessAsUserW` with `CREATE_SUSPENDED`. Before its primary thread is resumed, CodeTwin opens the **actual child token** and requires:
 
 - `TokenIsAppContainer = true`;
 - `TokenIsLessPrivilegedAppContainer = true`;
-- the token remains restricted;
-- the low-integrity label remains present;
-- the child AppContainer SID equals the expected profile SID;
+- the token is restricted;
+- the `WinWriteRestrictedCodeSid` restricted SID is present;
+- the low-integrity label is present;
+- the AppContainer SID equals the expected profile SID;
 - the token has zero capability SIDs.
 
-The child is then terminated and waited for while still suspended. Error paths also terminate/wait the probe child, including an incomplete process/thread-handle pair. Profile creation/derivation, process creation, token inspection, termination or wait failure all fail closed; there is no weaker readiness fallback.
+Only after these checks does CodeTwin assign the child to the configured Job Object and resume the exact primary thread returned by process creation. Any token, profile, process, ACL, handle, or Job Object mismatch fails closed before repository test code is allowed to run.
 
-This does **not** mean the declared external read surface is enforced. CodeTwin does not add persistent AppContainer ACEs to arbitrary host Python/Rust/Go/Node/PHP toolchain trees in this phase. The real lower launcher still creates the resumed test process with the existing restricted low-integrity identity, without LPAC attributes. See `WINDOWS_LPAC_READINESS.md` for the detailed boundary and next enforcement design.
+A separate never-resumed LPAC readiness probe remains as defense-in-depth composition evidence, but it is no longer the production isolation boundary.
 
-## Windows restricted suspended launcher
+## Windows LPAC execution ordering
 
-The crate-level Windows execution path currently uses the following ordering:
+The Windows execution path uses the following ordering:
 
-1. require approved project-manifest and external-read-surface evidence;
+1. require an approved plan with project-manifest and external-read-surface evidence;
 2. canonicalize the live project root and revalidate selected target snapshots;
-3. build a fresh bounded dependency-complete detached mirror;
+3. build a fresh bounded dependency-complete detached project mirror;
 4. require the fresh project digest to exactly equal the approved project digest;
-5. lock and re-attest the exact trusted runner and validate canonical Windows system-root inputs;
-6. rescan and exactly match the approved declared external read surface;
-7. create a never-resumed zero-capability LPAC preflight child, attest its restricted/low-integrity/LPAC token composition, then terminate it;
-8. probe the existing restricted-identity write matrix;
-9. derive a fresh `DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED` low-integrity primary token for the actual resumed runner;
-10. independently revalidate the runner path and SHA-256 while the outer runner lock remains held;
-11. create only the intended stdin/stdout/stderr handles and restrict inheritance through `STARTUPINFOEXW` plus `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`;
-12. pass the exact trusted executable through `lpApplicationName` and use a writable Unicode command-line buffer for the generated argv;
-13. construct a minimal Unicode environment and redirect supported writable caches/temp state into generated detached directories;
-14. call `CreateProcessAsUserW` with `CREATE_SUSPENDED`;
-15. assign the still-suspended process to the configured Job Object;
-16. resume the exact primary-thread handle returned by process creation and require the prior suspend count to be exactly one;
-17. enforce bounded timeout, cancellation, job CPU/memory controls, and bounded stdout/stderr capture;
-18. close the kill-on-close Job before final output drain/workspace cleanup so surviving descendants cannot extend execution lifetime.
+5. lock/re-attest the approved runner and rescan the complete declared external surface;
+6. prepare an integrity-verified generated LPAC runtime/toolchain bundle and narrow AppContainer ACLs;
+7. verify the restricted low-integrity identity/write boundary;
+8. create the actual test runner suspended with the zero-capability LPAC attributes and explicit inherited stdio handles only;
+9. attest the suspended child token against the restricted/low-integrity/LPAC/zero-capability contract;
+10. assign the still-suspended process to the Job Object;
+11. resume the exact primary thread and require the expected initial suspend count;
+12. enforce bounded timeout, cancellation, CPU/memory/process-tree controls, and bounded stdout/stderr;
+13. parse supported runner output and create a test verdict only when parsing completes;
+14. persist the run evidence with the exact approved project/runtime digests;
+15. terminate descendants and clean generated workspace material on completion/error.
 
-There is intentionally no normal-token, non-LPAC-readiness, or alternate-logon fallback when a required preflight/launch step fails.
+There is intentionally no normal-token, non-LPAC, shell-based, or alternate-logon fallback when a required step fails.
 
 ## Restricted identity and write boundary
 
@@ -164,25 +168,18 @@ A raw process completion is not automatically a test verdict. Pass/fail requires
 
 ## Current capability truth
 
-On Windows, `current_backend_info()` can report process-tree containment, CPU limit, memory limit, and cancellation because those controls are enforced by the Job Object path.
+On Windows, the production path is implemented around the strict capability floor required by `SandboxPolicy::default()`: process isolation, generated-workspace filesystem isolation for the project/approved runtime material, zero-capability LPAC network denial, Job Object CPU/memory/process-tree containment, reliable cancellation, wall-clock timeout, bounded output, and a sanitized environment.
 
-`filesystem_isolation` remains false despite the project mirror, restricted identity, runner lock, external provenance and LPAC readiness because:
+The source repository remains outside the generated execution workspace and is not modified. Approved external runtime/toolchain material is re-attested and copied into the per-run bundle rather than executed directly from mutable host paths. The actual child token is attested before resume.
 
-- the actual resumed test runner is not yet LPAC;
-- undeclared host reads are not denied by the production execution identity;
-- declared external trees are re-attested before launch but are not held immutable for the complete execution lifetime;
-- no AppContainer package-SID read/execute grants are yet scoped to generated per-run runtime material;
-- the runner still shares the caller desktop/window station;
-- adversarial Windows integration tests have not actually executed in CI.
+On non-Windows platforms, `current_backend_info()` remains planning-only and `QaExecutionService::availability().execution_enabled` is false. There is no portability fallback that weakens the Windows policy.
 
-`network_isolation` also remains false. The zero-capability LPAC preflight provides useful composition evidence, but the real resumed process is not yet that LPAC child and negative network tests have not run. Strict plans therefore remain blocked and the public desktop/service layer still has no execute method.
+The current PR still lacks fresh GitHub-hosted Windows execution evidence because Actions jobs have been failing before runner allocation. That infrastructure limitation does not become a passing sandbox test; Windows runtime/adversarial validation remains an explicit release gate.
 
-## Remaining hardening steps
+## Remaining validation and hardening
 
-The next Windows filesystem phase must make the **actual resumed runner** the attested LPAC child while preserving suspended creation, Job assignment-before-resume, restricted-token properties and explicit inherited-handle control. Required runtime/toolchain material should preferably be staged into generated per-run locations whose ACL lifecycle CodeTwin owns, then granted narrowly to the AppContainer package SID rather than weakening arbitrary host runtime ACLs.
+Before treating the Windows backend as release-validated across machines, run the real Windows test matrix on a host that supports the required AppContainer/LPAC APIs. The adversarial suite should cover project-manifest mismatch, external-root drift, undeclared-host-read attempts, source write denial, runtime mutation races, artifact/temp writability, runner replacement, inherited-handle escape attempts, descendant process containment, cancellation, CPU/memory limits, timeout behavior, token restrictions, LPAC identity, network-denial attempts, parser truthfulness, and cleanup.
 
-Runner-specific path translation must prevent Python, Rust, Go, Node and PHP from silently falling back to ambient host stores. Adversarial tests must prove reads outside the generated project/runtime surface are denied. A restricted desktop/window station or equivalent UI boundary is also pending. Network isolation remains independently gated until the actual resumed LPAC child has no network capability and negative network tests pass.
+Platform-specific runtime layouts also need coverage for Python, Rust, Go, Node/Vitest/Jest, and PHP/PHPUnit so a runner cannot silently fall back to an ambient package/toolchain store that was not part of the approved bundle.
 
-Adversarial Windows tests must cover project-manifest mismatch, external-root drift, undeclared-host-read attempts, runtime mutation races, original-source write denial, mirror immutability, artifact/temp writability, runner replacement attempts, handle inheritance, process-tree containment, cancellation, CPU/memory limits, timeout behavior, command-line quoting, token restrictions, LPAC token properties, network-denial attempts and descendant cleanup.
-
-Only after end-to-end enforcement and adversarial validation should `filesystem_isolation` or `network_isolation` be considered for promotion. Public repository execution must remain disabled until all required capability flags are truthfully enforced.
+These are validation/hardening obligations, not permission to fall back to unsandboxed execution. If the strict backend cannot establish its contract on a machine, CodeTwin reports execution unavailable or infrastructure failure and does not fabricate a test verdict.
