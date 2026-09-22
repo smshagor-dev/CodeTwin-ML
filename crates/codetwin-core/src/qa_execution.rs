@@ -237,6 +237,249 @@ impl<'a> QaExecutionService<'a> {
             .ok_or_else(|| QaExecutionError::PlanNotFound(plan_id))
     }
 
+    pub fn docker_availability(
+        &self,
+        docker_executable: &str,
+        image: &str,
+    ) -> QaExecutionAvailability {
+        match docker_backend_info(docker_executable, image) {
+            Ok(info) => QaExecutionAvailability {
+                execution_enabled: true,
+                backend_kind: info.kind.as_str().to_string(),
+                enforced_capabilities: info.capabilities,
+                reason: "Digest-pinned Docker sandbox is available with network disabled, read-only source mounting, dropped Linux capabilities, no-new-privileges, bounded memory/CPU/PIDs/output/time, and cancellation.".to_string(),
+            },
+            Err(error) => QaExecutionAvailability {
+                execution_enabled: false,
+                backend_kind: "docker_hardened".to_string(),
+                enforced_capabilities: SandboxCapabilities::planning_only(),
+                reason: error.to_string(),
+            },
+        }
+    }
+
+    pub fn create_docker_plan(
+        &self,
+        project_id: &str,
+        request: TestExecutionRequest,
+        toolchain: TrustedToolchain,
+        policy: SandboxPolicy,
+        image: &str,
+    ) -> Result<QaExecutionPlanRecord, QaExecutionError> {
+        validate_pinned_container_image(image)?;
+        let backend = docker_backend_info(&toolchain.executable_path, image)?;
+        if !backend.execution_available
+            || backend.capabilities != SandboxCapabilities::fully_enforced()
+        {
+            return Err(QaExecutionError::PlanBlocked(
+                "hardened Docker backend is not fully available".to_string(),
+            ));
+        }
+        let plan = self.create_plan_with_capabilities(
+            project_id,
+            request,
+            toolchain,
+            policy,
+            backend.capabilities.clone(),
+        )?;
+        if plan.status != ExecutionPlanStatus::Planned {
+            return Ok(plan);
+        }
+        let mut provenance = plan.provenance.clone();
+        let object = provenance.as_object_mut().ok_or_else(|| {
+            QaExecutionError::ApprovalManifest(
+                "QA execution provenance must be a JSON object".to_string(),
+            )
+        })?;
+        object.insert(
+            "execution_backend".to_string(),
+            Value::String("docker_hardened_v1".to_string()),
+        );
+        object.insert("docker_image".to_string(), Value::String(image.to_string()));
+        object.insert("docker_backend".to_string(), serde_json::to_value(&backend)?);
+        object.insert("execution_backend_enabled".to_string(), Value::Bool(true));
+        let changed = self.database.connection().execute(
+            "UPDATE qa_execution_plans SET provenance_json=?2 WHERE id=?1 AND status='planned'",
+            params![plan.id, provenance.to_string()],
+        )?;
+        if changed != 1 {
+            return Err(QaExecutionError::ApprovalManifest(
+                "QA Docker plan changed before backend provenance could be bound".to_string(),
+            ));
+        }
+        self.get_plan(&plan.id)?
+            .ok_or_else(|| QaExecutionError::PlanNotFound(plan.id))
+    }
+
+    pub fn execute_docker_plan(
+        &self,
+        plan_id: &str,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<QaExecutionRunRecord, QaExecutionError> {
+        let plan = self
+            .get_plan(plan_id)?
+            .ok_or_else(|| QaExecutionError::PlanNotFound(plan_id.to_string()))?;
+        if plan.status != ExecutionPlanStatus::Approved {
+            return Err(QaExecutionError::PlanBlocked(plan_id.to_string()));
+        }
+        let backend = plan
+            .provenance
+            .pointer("/execution_backend")
+            .and_then(Value::as_str);
+        let image = plan
+            .provenance
+            .pointer("/docker_image")
+            .and_then(Value::as_str)
+            .ok_or_else(|| QaExecutionError::ApprovalManifest(
+                "approved Docker plan is missing its pinned image identity".to_string(),
+            ))?;
+        if backend != Some("docker_hardened_v1") {
+            return Err(QaExecutionError::PlanBlocked(
+                "plan was not created for the hardened Docker backend".to_string(),
+            ));
+        }
+        validate_pinned_container_image(image)?;
+
+        let manifest = plan.approved_project_manifest.as_ref().ok_or_else(|| {
+            QaExecutionError::ApprovalManifest(
+                "approved Docker plan is missing project manifest evidence".to_string(),
+            )
+        })?;
+        let external_surface = plan.approved_external_read_surface.as_ref().ok_or_else(|| {
+            QaExecutionError::ApprovalManifest(
+                "approved Docker plan is missing runtime provenance evidence".to_string(),
+            )
+        })?;
+        let project_root = self.project_root_path(&plan.project_id)?;
+        let snapshots = snapshot_execution_inputs(&project_root, &plan.request.targets)?;
+        let execution_plan = plan.execution_plan()?;
+        let run_id = new_run_id(&plan.project_id, plan_id);
+
+        self.database.connection().execute(
+            "INSERT INTO qa_execution_runs(
+               id, plan_id, project_id, status, project_manifest_sha256,
+               external_read_surface_sha256, result_json
+             ) VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6)",
+            params![
+                run_id,
+                plan_id,
+                plan.project_id,
+                manifest.sha256,
+                external_surface.sha256,
+                json!({
+                    "backend": "docker_hardened_v1",
+                    "docker_image": image,
+                }).to_string(),
+            ],
+        )?;
+        self.database.connection().execute(
+            "UPDATE qa_execution_runs SET status='running', started_at=CURRENT_TIMESTAMP WHERE id=?1",
+            [&run_id],
+        )?;
+
+        let outcome = match execute_approved_plan_in_docker(
+            &execution_plan,
+            &project_root,
+            &snapshots,
+            image,
+            cancelled,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.database.connection().execute(
+                    "UPDATE qa_execution_runs
+                     SET status='infrastructure_error', finished_at=CURRENT_TIMESTAMP,
+                         result_json=?2
+                     WHERE id=?1",
+                    params![run_id, json!({
+                        "backend": "docker_hardened_v1",
+                        "docker_image": image,
+                        "error": error.to_string(),
+                    }).to_string()],
+                )?;
+                return self
+                    .get_run(&run_id)?
+                    .ok_or_else(|| QaExecutionError::PlanNotFound(run_id));
+            }
+        };
+
+        let result_json = json!({
+            "backend": outcome.backend,
+            "docker_image": image,
+            "parser_completed": outcome.parser_completed,
+            "tests_passed": outcome.tests_passed,
+        });
+        self.database.connection().execute(
+            "UPDATE qa_execution_runs
+             SET status=?2, finished_at=CURRENT_TIMESTAMP, duration_ms=?3, exit_code=?4,
+                 parser_completed=?5, tests_passed=?6,
+                 stdout_excerpt=?7, stderr_excerpt=?8,
+                 stdout_original_bytes=?9, stderr_original_bytes=?10,
+                 stdout_truncated=?11, stderr_truncated=?12, result_json=?13
+             WHERE id=?1",
+            params![
+                run_id,
+                outcome.status.as_str(),
+                i64::try_from(outcome.duration_ms).unwrap_or(i64::MAX),
+                outcome.exit_code,
+                i64::from(outcome.parser_completed),
+                outcome.tests_passed.map(i64::from),
+                outcome.stdout.text,
+                outcome.stderr.text,
+                i64::try_from(outcome.stdout.original_bytes).unwrap_or(i64::MAX),
+                i64::try_from(outcome.stderr.original_bytes).unwrap_or(i64::MAX),
+                i64::from(outcome.stdout.truncated),
+                i64::from(outcome.stderr.truncated),
+                result_json.to_string(),
+            ],
+        )?;
+        self.get_run(&run_id)?
+            .ok_or_else(|| QaExecutionError::PlanNotFound(run_id))
+    }
+
+    pub fn get_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<QaExecutionRunRecord>, QaExecutionError> {
+        self.database
+            .connection()
+            .query_row(
+                "SELECT id, plan_id, project_id, status, started_at, finished_at,
+                        duration_ms, exit_code, parser_completed, tests_passed,
+                        stdout_excerpt, stderr_excerpt, stdout_original_bytes,
+                        stderr_original_bytes, stdout_truncated, stderr_truncated,
+                        result_json, project_manifest_sha256,
+                        external_read_surface_sha256, created_at
+                 FROM qa_execution_runs WHERE id=?1",
+                [run_id],
+                run_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn list_runs(
+        &self,
+        project_id: &str,
+        limit: usize,
+    ) -> Result<Vec<QaExecutionRunRecord>, QaExecutionError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT id, plan_id, project_id, status, started_at, finished_at,
+                    duration_ms, exit_code, parser_completed, tests_passed,
+                    stdout_excerpt, stderr_excerpt, stdout_original_bytes,
+                    stderr_original_bytes, stdout_truncated, stderr_truncated,
+                    result_json, project_manifest_sha256,
+                    external_read_surface_sha256, created_at
+             FROM qa_execution_runs WHERE project_id=?1
+             ORDER BY created_at DESC, id DESC LIMIT ?2",
+        )?;
+        let rows = statement.query_map(
+            params![project_id, bounded(limit, MAX_PLAN_QUERY)],
+            run_from_row,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn approve_plan(&self, plan_id: &str) -> Result<QaExecutionPlanRecord, QaExecutionError> {
         let Some(plan) = self.get_plan(plan_id)? else {
             return Err(QaExecutionError::PlanNotFound(plan_id.to_string()));
