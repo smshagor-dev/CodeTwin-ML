@@ -22,11 +22,15 @@ import {
 type SecurityFixWorkflowProps = {
   finding: WebFindingRecord;
   onRetest: () => Promise<void>;
+  rollbackAllowed?: boolean;
+  rollbackBlockedReason?: string | null;
 };
 
 export function SecurityFixWorkflow({
   finding,
   onRetest,
+  rollbackAllowed = true,
+  rollbackBlockedReason = null,
 }: SecurityFixWorkflowProps) {
   const [preparation, setPreparation] = useState<SecurityFixPreparation | null>(null);
   const [attempt, setAttempt] = useState<SecurityFixAttemptRecord | null>(null);
@@ -259,6 +263,10 @@ export function SecurityFixWorkflow({
   }
 
   async function rollback() {
+    if (!rollbackAllowed) {
+      setError(rollbackBlockedReason ?? "Rollback is blocked by the current remediation dependency plan.");
+      return;
+    }
     if (!attempt?.application_run_id || !beginMutation("Rolling back approved fix")) return;
     const attemptId = attempt.id;
     setError(null);
@@ -686,9 +694,12 @@ export function SecurityFixWorkflow({
                   : "The applied patch can still be deliberately reverted from its hash-pinned backup."}{" "}
                 Rollback keeps the immutable Fix & Verify audit history.
               </p>
+              {!rollbackAllowed && rollbackBlockedReason && (
+                <p>{rollbackBlockedReason}</p>
+              )}
               <button
                 className="ws-button ws-button-danger-ghost"
-                disabled={Boolean(busy)}
+                disabled={Boolean(busy) || !rollbackAllowed}
                 onClick={() => void rollback()}
               >
                 Rollback Fix

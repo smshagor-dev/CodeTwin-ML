@@ -564,6 +564,209 @@ export type FixEligibility =
 
 export type PatchSafetyClass = "SAFE_TO_REVIEW" | "CAUTION" | "REJECTED";
 
+export type SecurityRemediationCampaignStatus =
+  | "DRAFT"
+  | "ANALYZING"
+  | "READY_FOR_REVIEW"
+  | "APPROVED"
+  | "IN_PROGRESS"
+  | "PAUSED"
+  | "BLOCKED"
+  | "COMPLETED"
+  | "COMPLETED_WITH_UNRESOLVED_FINDINGS"
+  | "CANCELLED";
+
+export type SecurityRemediationFindingStatus =
+  | "QUEUED"
+  | "PREPARING_FIX"
+  | "AWAITING_REVIEW"
+  | "APPLYING"
+  | "VALIDATING"
+  | "RETESTING"
+  | "VERIFIED"
+  | "STILL_VULNERABLE"
+  | "MANUAL_ACTION_REQUIRED"
+  | "UNABLE_TO_VERIFY"
+  | "REGRESSION_DETECTED"
+  | "BLOCKED"
+  | "SKIPPED";
+
+export type SecurityRemediationRelationship =
+  | "INDEPENDENT"
+  | "SHARED_ROOT_CAUSE"
+  | "SOURCE_OVERLAP"
+  | "VALIDATION_DEPENDENCY"
+  | "RETEST_DEPENDENCY"
+  | "POTENTIAL_CONFLICT";
+
+export type SecurityRemediationCampaignCreate = {
+  session_id: string;
+  finding_ids: string[];
+};
+
+export type SecurityRemediationCampaignRecord = {
+  id: string;
+  session_id: string;
+  scan_id: string;
+  project_id: string;
+  target_url: string;
+  environment: GuidedEnvironment;
+  scope_json: string;
+  status: SecurityRemediationCampaignStatus;
+  selected_count: number;
+  plan_revision: number;
+  plan_json: string;
+  plan_hash: string | null;
+  approved_plan_hash: string | null;
+  baseline_json: string;
+  completion_json: string;
+  completion_retest_floor_rowid: number;
+  completion_verification_started_at: string | null;
+  completion_verification_completed_at: string | null;
+  completion_source_hashes_json: string;
+  created_at: string;
+  analyzed_at: string | null;
+  approved_at: string | null;
+  started_at: string | null;
+  paused_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+};
+
+export type SecurityRemediationCampaignFindingRecord = {
+  campaign_id: string;
+  finding_id: string;
+  ordinal: number;
+  status: SecurityRemediationFindingStatus;
+  eligibility: FixEligibility;
+  severity: WebFindingRecord["severity"];
+  confidence: WebFindingRecord["confidence"];
+  category: string;
+  endpoint_url: string;
+  source_file_id: string | null;
+  source_symbol_id: string | null;
+  root_file_id: string | null;
+  root_symbol_id: string | null;
+  shared_root_primary_finding_id: string | null;
+  order_reason: string;
+  depends_on: string[];
+  expected_affected: string[];
+  retest_floor_rowid: number;
+  active_attempt_id: string | null;
+  skip_reason: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SecurityRemediationRelationshipRecord = {
+  id: string;
+  campaign_id: string;
+  from_finding_id: string;
+  to_finding_id: string;
+  relationship: SecurityRemediationRelationship;
+  confidence: number;
+  reason: string;
+  created_at: string;
+};
+
+export type SecurityRemediationCampaignEventRecord = {
+  id: string;
+  campaign_id: string;
+  sequence: number;
+  event_type: string;
+  message: string;
+  detail_json: string;
+  created_at: string;
+};
+
+export type SecurityRemediationPlanItem = {
+  finding_id: string;
+  ordinal: number;
+  eligibility: FixEligibility;
+  order_reason: string;
+  depends_on: string[];
+  expected_affected: string[];
+  shared_root_primary_finding_id: string | null;
+};
+
+export type SecurityRemediationCampaignPlan = {
+  version: number;
+  project_id: string;
+  scan_id: string;
+  target_url: string;
+  environment: GuidedEnvironment;
+  scope_sha256: string;
+  ordered_findings: SecurityRemediationPlanItem[];
+  relationship_count: number;
+  mutation_strategy: string;
+};
+
+export type SecurityRemediationCampaignSummary = {
+  selected_findings: number;
+  verified_fixed: number;
+  still_vulnerable: number;
+  manual_action_required: number;
+  unable_to_verify: number;
+  regression_detected: number;
+  blocked: number;
+  skipped: number;
+  queued_or_in_progress: number;
+};
+
+export type SecurityRemediationBeforeAfterItem = {
+  finding_id: string;
+  title: string;
+  endpoint_url: string;
+  severity: string;
+  confidence: string;
+  eligibility: FixEligibility | null;
+  baseline_status: string;
+  campaign_status: string;
+  comparison_status:
+    | "VERIFIED_RESOLVED"
+    | "STILL_VULNERABLE"
+    | "NEWLY_OBSERVED_DURING_VERIFICATION"
+    | "UNABLE_TO_VERIFY"
+    | "MANUAL_ACTION_REQUIRED"
+    | "REGRESSION_DETECTED"
+    | "SKIPPED"
+    | "BLOCKED"
+    | "IN_PROGRESS";
+  selected: boolean;
+  baseline_source_relative_path: string | null;
+  current_source_relative_path: string | null;
+  patch_attempt_count: number;
+  attempt_id: string | null;
+  validation_state: string | null;
+  retest_state: string | null;
+};
+
+export type SecurityRemediationRegressionTracking = {
+  finding_id: string;
+  attempt_id: string | null;
+  generation_status: string;
+  recommendation: string;
+  execution_status: "PASSED" | "FAILED" | "NOT_EXECUTED";
+};
+
+export type SecurityRemediationRollbackAssessment = {
+  finding_id: string;
+  attempt_id: string | null;
+  allowed: boolean;
+  blocking_findings: string[];
+  reason: string;
+};
+
+export type SecurityRemediationDebtView = {
+  unresolved_total: number;
+  by_severity: Record<string, number>;
+  by_eligibility: Record<string, number>;
+  by_module: Record<string, number>;
+  by_endpoint: Record<string, number>;
+  by_reason: Record<string, number>;
+};
+
+
 export type FixEligibilityAssessment = {
   finding_id: string;
   result: FixEligibility;

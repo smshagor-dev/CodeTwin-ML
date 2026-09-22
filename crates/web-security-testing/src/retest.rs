@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    active, query_parameters, AuthContext, CheckConfig, EndpointObservation, FindingObservation,
+    active, passive, query_parameters, AuthContext, CheckConfig, EndpointObservation, FindingObservation,
     RequestBudget, ScanConfig, ScanError, ScopePolicy, ScopedRequester,
 };
 
@@ -115,16 +115,24 @@ pub fn run_targeted_retest(
 
     let mut baselines = HashMap::new();
     let mut baseline_status = None;
+    let mut passive_findings = Vec::new();
     if method == "GET" {
         if let Ok(response) = requester.get(&url) {
             baseline_status = Some(response.status);
+            if is_passive_retest_category(&request.category) {
+                passive_findings.extend(
+                    passive::analyze_response(&url, &endpoint, &response, &targeted.checks)
+                        .into_iter()
+                        .filter(|finding| finding.category == request.category),
+                );
+            }
             baselines.insert(normalized_key(&url), response);
         }
     }
 
     let mut ignored_progress = |_| {};
     let endpoints = [endpoint];
-    let findings = active::run_active_checks(
+    let mut findings = active::run_active_checks(
         active::ActiveCheckContext {
             policy: &policy,
             requester: &requester,
@@ -136,6 +144,7 @@ pub fn run_targeted_retest(
         },
         &mut ignored_progress,
     )?;
+    findings.extend(passive_findings);
 
     let responses_observed = budget.responses_observed();
     let minimum_responses = minimum_responses_for(&request.category);
@@ -182,6 +191,7 @@ pub fn run_targeted_retest(
 fn minimum_responses_for(category: &str) -> usize {
     match category {
         "sql_injection" => 4,
+        "csp" | "hsts" | "security_headers" | "session_cookie" | "sensitive_cache_control" => 1,
         "xss"
         | "open_redirect"
         | "path_traversal"
@@ -194,6 +204,13 @@ fn minimum_responses_for(category: &str) -> usize {
         | "api_validation" => 2,
         _ => 2,
     }
+}
+
+fn is_passive_retest_category(category: &str) -> bool {
+    matches!(
+        category,
+        "csp" | "hsts" | "security_headers" | "session_cookie" | "sensitive_cache_control"
+    )
 }
 
 fn checks_for(category: &str) -> CheckConfig {
@@ -219,6 +236,7 @@ fn checks_for(category: &str) -> CheckConfig {
         "ssrf" => checks.ssrf_indicators = true,
         "template_injection" => checks.template_command_indicators = true,
         "cors" => checks.cors = true,
+        "session_cookie" | "sensitive_cache_control" => checks.session = true,
         "http_method" => checks.method_misconfiguration = true,
         "access_control" => checks.access_control = true,
         "api_input_validation" | "api_validation" => checks.api_validation = true,
@@ -242,6 +260,16 @@ mod tests {
         assert_eq!(super::minimum_responses_for("sql_injection"), 4);
         assert_eq!(super::minimum_responses_for("xss"), 2);
         assert_eq!(super::minimum_responses_for("access_control"), 2);
+        assert_eq!(super::minimum_responses_for("security_headers"), 1);
+        assert_eq!(super::minimum_responses_for("csp"), 1);
+    }
+
+    #[test]
+    fn passive_header_families_use_bounded_baseline_retest() {
+        assert!(super::is_passive_retest_category("security_headers"));
+        assert!(super::is_passive_retest_category("csp"));
+        assert!(super::is_passive_retest_category("hsts"));
+        assert!(!super::is_passive_retest_category("sql_injection"));
     }
 
     #[test]

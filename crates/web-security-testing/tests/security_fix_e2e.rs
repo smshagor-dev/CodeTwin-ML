@@ -13,8 +13,9 @@ use std::{
 
 use codetwin_core::{
     AuthorizedWebSecurityStore, Database, FixEligibility, GuidedRetestInput, GuidedSecurityStore,
-    PatchSafetyClass, ProjectIndexService, RepairApplicationService, SecurityFixService,
-    ValidationResultInput,
+    PatchSafetyClass, ProjectIndexService, RepairApplicationService,
+    SecurityFixService, SecurityRemediationCampaignCreate,
+    SecurityRemediationCampaignService, ValidationResultInput,
     WebEndpointInput, WebEvidenceInput, WebFindingInput, WebFindingRecord, WebScanCreate,
 };
 use tempfile::tempdir;
@@ -172,6 +173,9 @@ fn handle_source_backed(mut stream: TcpStream, project_root: &Path) {
             &query,
             authorization.as_deref(),
         ),
+        "/headers/a" | "/headers/b" | "/headers/c" | "/headers/d" | "/headers/e" => {
+            handle_security_headers(&mut stream, project_root)
+        }
         _ => respond(
             &mut stream,
             "404 Not Found",
@@ -325,6 +329,34 @@ fn handle_object(
     );
 }
 
+fn handle_security_headers(stream: &mut TcpStream, project_root: &Path) {
+    let source = fs::read_to_string(
+        project_root.join("src/middleware/security_headers.config.ts"),
+    )
+    .unwrap_or_default();
+    if source.contains("browserSecurityHeaders = true") {
+        respond(
+            stream,
+            "200 OK",
+            &[
+                ("Content-Type", "text/html"),
+                ("Content-Security-Policy", "default-src 'self'"),
+                ("X-Content-Type-Options", "nosniff"),
+                ("Referrer-Policy", "strict-origin-when-cross-origin"),
+                ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
+            ],
+            "<html><body>header fixture</body></html>",
+        );
+    } else {
+        respond(
+            stream,
+            "200 OK",
+            &[("Content-Type", "text/html")],
+            "<html><body>header fixture</body></html>",
+        );
+    }
+}
+
 fn request_header(request: &str, name: &str) -> Option<String> {
     request.lines().skip(1).find_map(|line| {
         let (header_name, value) = line.split_once(':')?;
@@ -405,6 +437,13 @@ fn write_project(root: &Path) {
         "export async function getObject(id: string, user: User) {\n  return repository.find(id);\n}\n",
     )
     .expect("write idor source");
+    let middleware = root.join("src/middleware");
+    fs::create_dir_all(&middleware).expect("create middleware directory");
+    fs::write(
+        middleware.join("security_headers.config.ts"),
+        "export const browserSecurityHeaders = false;\n",
+    )
+    .expect("write shared security header configuration");
 }
 
 fn persist_outcome(
@@ -1402,6 +1441,35 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
         })
         .expect("XSS finding");
 
+    database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (?1,?2,?3,'local','standard','none','completed',1,?4,?5)",
+            rusqlite::params![
+                "campaign-regression-session",
+                index.project_id,
+                config.scope.target_url,
+                serde_json::to_string(&config).expect("config json"),
+                finding.scan_id,
+            ],
+        )
+        .expect("campaign regression session");
+    let campaigns = SecurityRemediationCampaignService::new(&database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-regression-session".into(),
+            finding_ids: vec![finding.id.clone()],
+        })
+        .expect("regression campaign");
+    let analyzed = campaigns.analyze(&campaign.id).expect("analyze regression campaign");
+    campaigns
+        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("campaign hash"))
+        .expect("approve regression campaign");
+    campaigns.start(&campaign.id).expect("start regression campaign");
+
     let service = SecurityFixService::new(&database);
     let prepared = service
         .prepare_fix(&finding.id, false)
@@ -1501,6 +1569,17 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
     assert_eq!(final_attempt.retest_state, "REGRESSION_DETECTED");
     assert_eq!(final_attempt.status, "validation_failed");
     assert_ne!(final_attempt.status, "fix_verified");
+
+    let campaign_state = campaigns.sync(&campaign.id).expect("sync regression campaign");
+    assert_eq!(campaign_state.status, "BLOCKED");
+    let member = campaigns
+        .findings(&campaign.id)
+        .expect("regression campaign findings")
+        .into_iter()
+        .next()
+        .expect("regression campaign member");
+    assert_eq!(member.status, "REGRESSION_DETECTED");
+    assert_eq!(campaigns.summary(&campaign.id).expect("summary").verified_fixed, 0);
 }
 
 
@@ -1614,4 +1693,587 @@ fn targeted_retest_transport_scope_and_auth_failures_never_verify() {
         Arc::new(AtomicBool::new(false)),
     );
     assert!(matches!(scope_rejected, Err(web_security_testing::ScanError::Scope(_))));
+}
+
+
+fn apply_campaign_guided_idor_fix(
+    database: &Database,
+    project_root: &Path,
+    lab: &SourceBackedLab,
+    config: &ScanConfig,
+    finding: &WebFindingRecord,
+    primary: &AuthContext,
+    secondary: &AuthContext,
+) -> String {
+    let service = SecurityFixService::new(database);
+    let prepared = service
+        .prepare_fix(&finding.id, false)
+        .expect("prepare campaign authorization fix");
+    assert_eq!(
+        prepared.eligibility.result,
+        FixEligibility::GuidedFixCandidate
+    );
+    assert!(
+        service.generate_patch(&prepared.attempt.id).is_err(),
+        "campaign membership must not turn authorization into an automatic rewrite"
+    );
+
+    let file_id = prepared.root_causes[0].file_id.clone();
+    let safe_patch =
+        "export async function getObject(id: string, user: User) {\n  return repository.findOwned(id, user.id);\n}\n";
+    let review = service
+        .propose_replacement(&prepared.attempt.id, &file_id, safe_patch)
+        .expect("review campaign guided authorization patch");
+    assert_ne!(review.safety.classification, PatchSafetyClass::Rejected);
+    service
+        .approve_attempt(
+            &prepared.attempt.id,
+            &review.safety.patch_hash,
+            review.safety.classification == PatchSafetyClass::Caution,
+        )
+        .expect("approve exact guided campaign patch");
+    let repair_id = service
+        .assert_application_allowed(&prepared.attempt.id)
+        .expect("revalidate approved campaign authorization patch");
+    let backups = tempdir().expect("campaign idor backup");
+    let application = RepairApplicationService::new(database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply campaign authorization patch");
+    service
+        .record_application(&prepared.attempt.id, &application.id)
+        .expect("record campaign authorization application");
+    GuidedSecurityStore::new(database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync campaign authorization guided lifecycle");
+    ProjectIndexService::new(database)
+        .index_project(project_root)
+        .expect("reindex campaign authorization source");
+
+    let (a_own, _) = blocking_get(
+        &format!("{}/api/object?id=a", lab.base_url),
+        Some("Bearer user-a-token"),
+    );
+    let (b_own, _) = blocking_get(
+        &format!("{}/api/object?id=b", lab.base_url),
+        Some("Bearer user-b-token"),
+    );
+    let (a_cross, _) = blocking_get(
+        &format!("{}/api/object?id=b", lab.base_url),
+        Some("Bearer user-a-token"),
+    );
+    let (b_cross, _) = blocking_get(
+        &format!("{}/api/object?id=a", lab.base_url),
+        Some("Bearer user-b-token"),
+    );
+    assert_eq!(a_own, 200);
+    assert_eq!(b_own, 200);
+    assert_eq!(a_cross, 403);
+    assert_eq!(b_cross, 403);
+
+    record_runtime_validation(
+        database,
+        &prepared.attempt.id,
+        "Campaign owner/cross-owner authorization regression",
+    );
+    targeted_retest_and_sync(
+        database,
+        config,
+        finding,
+        primary,
+        Some(secondary),
+    );
+    prepared.attempt.id
+}
+
+#[test]
+fn remediation_campaign_collapses_shared_security_header_root_but_retests_every_finding() {
+    let project = tempdir().expect("shared-header project");
+    write_project(project.path());
+    let lab = SourceBackedLab::start(project.path().to_path_buf());
+    let config = lab.config();
+    let primary = primary_auth();
+
+    let database = Database::open_in_memory().expect("shared-header database");
+    let index = ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("index shared-header project");
+    let web = AuthorizedWebSecurityStore::new(&database);
+    let scan = web
+        .create_scan(&WebScanCreate {
+            website_id: None,
+            project_id: Some(index.project_id.clone()),
+            target_url: config.scope.target_url.clone(),
+            authorization_confirmed: true,
+            scope_json: serde_json::to_string(&config.scope).expect("scope json"),
+            config_json: serde_json::to_string(&config).expect("config json"),
+            auth_metadata_json: serde_json::json!({"primary": primary.metadata()}).to_string(),
+        })
+        .expect("create shared-header scan");
+
+    let mut findings = Vec::new();
+    for suffix in ["a", "b", "c", "d", "e"] {
+        let endpoint_url = format!("{}/headers/{suffix}", lab.base_url);
+        let retest = run_targeted_retest(
+            &config,
+            &primary,
+            None,
+            &TargetedRetestRequest {
+                endpoint_url: endpoint_url.clone(),
+                method: "GET".into(),
+                parameter_name: None,
+                parameter_location: None,
+                category: "security_headers".into(),
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("initial passive header observation");
+        assert!(retest.verification_completed);
+        let observed = retest
+            .findings
+            .iter()
+            .find(|item| item.title == "X-Content-Type-Options header is missing")
+            .expect("missing nosniff finding");
+        let record = web
+            .record_finding(
+                &scan.id,
+                &WebFindingInput {
+                    fingerprint: observed.stable_fingerprint(),
+                    category: observed.category.clone(),
+                    severity: observed.severity.clone(),
+                    confidence: observed.confidence.clone(),
+                    target: observed.target.clone(),
+                    endpoint_url: observed.endpoint.clone(),
+                    method: observed.method.clone(),
+                    parameter_name: observed.parameter.clone(),
+                    title: observed.title.clone(),
+                    description: observed.description.clone(),
+                    reproduction_summary: observed.reproduction_summary.clone(),
+                    impact: observed.impact.clone(),
+                    remediation: observed.remediation.clone(),
+                    references: observed.references.clone(),
+                    source: None,
+                },
+            )
+            .expect("persist shared-header finding");
+        for evidence in &observed.evidence {
+            web.record_evidence(
+                &record.id,
+                &WebEvidenceInput {
+                    summary: evidence.summary.clone(),
+                    request_metadata_json: evidence.request_metadata.to_string(),
+                    response_metadata_json: evidence.response_metadata.to_string(),
+                },
+            )
+            .expect("persist shared-header evidence");
+        }
+        findings.push(record);
+    }
+    web.update_progress(&scan.id, "completed", "completed", 5, 5, findings.len())
+        .expect("complete shared-header scan");
+
+    database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (
+                'campaign-shared-header-session',?1,?2,'local','standard','none',
+                'completed',1,?3,?4
+             )",
+            rusqlite::params![
+                index.project_id,
+                config.scope.target_url,
+                serde_json::to_string(&config).expect("guided config"),
+                scan.id,
+            ],
+        )
+        .expect("persist shared-header guided session");
+
+    let campaigns = SecurityRemediationCampaignService::new(&database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-shared-header-session".into(),
+            finding_ids: findings.iter().map(|item| item.id.clone()).collect(),
+        })
+        .expect("create shared-header campaign");
+    let analyzed = campaigns
+        .analyze(&campaign.id)
+        .expect("analyze shared-header campaign");
+    let relationships = campaigns
+        .relationships(&campaign.id)
+        .expect("shared-header relationships");
+    assert_eq!(
+        relationships
+            .iter()
+            .filter(|item| item.relationship == "SHARED_ROOT_CAUSE")
+            .count(),
+        4,
+        "five identical header observations should collapse to one probable shared root"
+    );
+    campaigns
+        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("plan hash"))
+        .expect("approve shared-header campaign");
+    campaigns.start(&campaign.id).expect("start shared-header campaign");
+
+    let members = campaigns.findings(&campaign.id).expect("campaign members");
+    let primary_member = members
+        .iter()
+        .find(|item| item.shared_root_primary_finding_id.is_none())
+        .expect("shared-root primary");
+    let primary_finding = findings
+        .iter()
+        .find(|item| item.id == primary_member.finding_id)
+        .expect("primary finding");
+
+    let fixes = SecurityFixService::new(&database);
+    let prepared = fixes
+        .prepare_fix(&primary_finding.id, false)
+        .expect("prepare shared header fix");
+    assert_eq!(
+        prepared.eligibility.result,
+        FixEligibility::GuidedFixCandidate,
+        "configuration remediation must remain guided"
+    );
+    assert!(prepared.root_causes[0]
+        .relative_path
+        .ends_with("src/middleware/security_headers.config.ts"));
+    assert!(
+        fixes.generate_patch(&prepared.attempt.id).is_err(),
+        "configuration remediation must not invent an automatic patch"
+    );
+    let review = fixes
+        .propose_replacement(
+            &prepared.attempt.id,
+            &prepared.root_causes[0].file_id,
+            "export const browserSecurityHeaders = true;\n",
+        )
+        .expect("review exact shared-header config patch");
+    assert_ne!(review.safety.classification, PatchSafetyClass::Rejected);
+    fixes
+        .approve_attempt(
+            &prepared.attempt.id,
+            &review.safety.patch_hash,
+            review.safety.classification == PatchSafetyClass::Caution,
+        )
+        .expect("approve exact shared-header patch");
+    let repair_id = fixes
+        .assert_application_allowed(&prepared.attempt.id)
+        .expect("revalidate shared-header patch identity");
+    let backups = tempdir().expect("shared-header backups");
+    let application = RepairApplicationService::new(&database)
+        .apply_plan(&repair_id, backups.path())
+        .expect("apply shared-header config patch");
+    fixes
+        .record_application(&prepared.attempt.id, &application.id)
+        .expect("record shared-header application");
+    GuidedSecurityStore::new(&database)
+        .sync_repair_application_state(&repair_id)
+        .expect("sync shared-header repair lifecycle");
+    ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("reindex shared-header source");
+    record_runtime_validation(
+        &database,
+        &prepared.attempt.id,
+        "shared security header configuration behavior",
+    );
+
+    for finding in &findings {
+        let retest = run_targeted_retest(
+            &config,
+            &primary,
+            None,
+            &TargetedRetestRequest {
+                endpoint_url: finding.endpoint_url.clone(),
+                method: finding.method.clone(),
+                parameter_name: None,
+                parameter_location: None,
+                category: "security_headers".into(),
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("retest affected shared-header finding");
+        assert!(retest.verification_completed);
+        assert!(
+            !retest
+                .findings
+                .iter()
+                .any(|observed| observed.category == "security_headers"),
+            "each affected endpoint must independently confirm the header family is no longer missing"
+        );
+        GuidedSecurityStore::new(&database)
+            .record_retest(GuidedRetestInput {
+                finding_id: &finding.id,
+                session_id: Some("campaign-shared-header-session"),
+                status: "retest_passed",
+                original_confidence: &finding.confidence,
+                observed_confidence: None,
+                requests_performed: retest.requests_performed,
+                detail_json: r#"{"fixture":"shared-header-independent-retest"}"#,
+            })
+            .expect("persist independent shared-header retest");
+    }
+    let primary_attempt = fixes
+        .sync_retest_result(&primary_finding.id, "retest_passed")
+        .expect("sync primary shared-header retest")
+        .expect("primary attempt");
+    assert_eq!(primary_attempt.status, "fix_verified");
+
+    campaigns
+        .sync(&campaign.id)
+        .expect("sync shared-root campaign outcomes");
+    let members = campaigns.findings(&campaign.id).expect("updated members");
+    assert!(members.iter().all(|item| item.status == "VERIFIED"));
+    let attempt_count: i64 = database
+        .connection()
+        .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| row.get(0))
+        .expect("fix attempt count");
+    assert_eq!(
+        attempt_count, 1,
+        "shared root handling must not blindly generate five independent patches"
+    );
+
+    campaigns
+        .begin_completion_verification(&campaign.id)
+        .expect("begin final shared-header verification");
+    for finding in &findings {
+        let retest = run_targeted_retest(
+            &config,
+            &primary,
+            None,
+            &TargetedRetestRequest {
+                endpoint_url: finding.endpoint_url.clone(),
+                method: finding.method.clone(),
+                parameter_name: None,
+                parameter_location: None,
+                category: "security_headers".into(),
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("final shared-header retest");
+        assert!(retest.verification_completed);
+        assert!(!retest
+            .findings
+            .iter()
+            .any(|observed| observed.category == "security_headers"));
+        GuidedSecurityStore::new(&database)
+            .record_retest(GuidedRetestInput {
+                finding_id: &finding.id,
+                session_id: Some("campaign-shared-header-session"),
+                status: "retest_passed",
+                original_confidence: &finding.confidence,
+                observed_confidence: None,
+                requests_performed: retest.requests_performed,
+                detail_json: r#"{"fixture":"shared-header-final-verification"}"#,
+            })
+            .expect("persist final shared-header retest");
+    }
+    campaigns
+        .finalize_completion_verification(&campaign.id)
+        .expect("finalize shared-header verification");
+    let completed = campaigns.complete(&campaign.id).expect("complete shared-header campaign");
+    assert_eq!(completed.status, "COMPLETED");
+    assert_eq!(
+        campaigns
+            .summary(&campaign.id)
+            .expect("shared-header summary")
+            .verified_fixed,
+        5
+    );
+}
+
+#[test]
+fn remediation_campaign_orchestrates_source_backed_fixes_without_bypassing_fix_verify() {
+    let project = tempdir().expect("campaign project");
+    write_project(project.path());
+    let lab = SourceBackedLab::start(project.path().to_path_buf());
+    let config = lab.config();
+    let primary = primary_auth();
+    let secondary = secondary_auth();
+
+    let database = Database::open_in_memory().expect("campaign database");
+    let index = ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("index campaign project");
+    let outcome = run_authorized_scan(
+        &config,
+        &primary,
+        Some(&secondary),
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .expect("campaign baseline scan");
+    let findings = persist_outcome(
+        &database,
+        &index.project_id,
+        &config,
+        &primary,
+        Some(&secondary),
+        outcome,
+    );
+
+    let sql = findings
+        .iter()
+        .find(|item| {
+            item.category == "sql_injection" && item.endpoint_url.contains("/api/search")
+        })
+        .expect("campaign SQLi finding");
+    let xss = findings
+        .iter()
+        .find(|item| {
+            item.category == "xss"
+                && item.endpoint_url.contains("/api/render?q=")
+                && !item.endpoint_url.contains("ambiguous")
+        })
+        .expect("campaign XSS finding");
+    let idor = findings
+        .iter()
+        .find(|item| {
+            item.category == "access_control" && item.endpoint_url.contains("/api/object")
+        })
+        .expect("campaign IDOR finding");
+
+    database
+        .connection()
+        .execute(
+            "INSERT INTO guided_security_sessions(
+                id,project_id,target_url,environment,testing_depth,auth_mode,status,
+                authorization_confirmed,config_json,scan_id
+             ) VALUES (?1,?2,?3,'local','standard','test_accounts_a_b','completed',1,?4,?5)",
+            rusqlite::params![
+                "campaign-e2e-session",
+                index.project_id,
+                config.scope.target_url,
+                serde_json::to_string(&config).expect("campaign config json"),
+                sql.scan_id,
+            ],
+        )
+        .expect("persist campaign guided session");
+
+    let campaigns = SecurityRemediationCampaignService::new(&database);
+    let campaign = campaigns
+        .create(&SecurityRemediationCampaignCreate {
+            session_id: "campaign-e2e-session".into(),
+            finding_ids: vec![sql.id.clone(), xss.id.clone(), idor.id.clone()],
+        })
+        .expect("create campaign");
+    assert_eq!(campaign.status, "DRAFT");
+
+    let analyzed = campaigns.analyze(&campaign.id).expect("analyze campaign");
+    assert_eq!(analyzed.status, "READY_FOR_REVIEW");
+    let plan_hash = analyzed.plan_hash.clone().expect("campaign plan hash");
+
+    // Campaign-plan approval is intentionally weaker than patch approval.
+    let attempt_count_before_approval: i64 = database
+        .connection()
+        .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| row.get(0))
+        .expect("attempt count before campaign approval");
+    assert_eq!(attempt_count_before_approval, 0);
+    campaigns
+        .approve_plan(&campaign.id, &plan_hash)
+        .expect("approve campaign plan");
+    let attempt_count_after_approval: i64 = database
+        .connection()
+        .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| row.get(0))
+        .expect("attempt count after campaign approval");
+    assert_eq!(
+        attempt_count_after_approval, 0,
+        "campaign approval must not pre-authorize any code patch"
+    );
+
+    campaigns.start(&campaign.id).expect("start campaign");
+    campaigns.pause(&campaign.id).expect("pause campaign");
+    let resumed = campaigns.resume(&campaign.id).expect("resume campaign");
+    assert_eq!(resumed.status, "IN_PROGRESS");
+
+    let (sql_attempt, _) = apply_generated_fix(&database, project.path(), sql);
+    record_runtime_validation(&database, &sql_attempt, "Campaign SQL regression");
+    targeted_retest_and_sync(&database, &config, sql, &primary, None);
+    campaigns.sync(&campaign.id).expect("sync SQL campaign result");
+    assert_eq!(
+        campaigns
+            .findings(&campaign.id)
+            .expect("campaign findings")
+            .into_iter()
+            .find(|item| item.finding_id == sql.id)
+            .expect("SQL campaign member")
+            .status,
+        "VERIFIED"
+    );
+
+    let (xss_attempt, _) = apply_generated_fix(&database, project.path(), xss);
+    record_runtime_validation(&database, &xss_attempt, "Campaign XSS regression");
+    targeted_retest_and_sync(&database, &config, xss, &primary, None);
+    campaigns.sync(&campaign.id).expect("sync XSS campaign result");
+    assert_eq!(
+        campaigns
+            .findings(&campaign.id)
+            .expect("campaign findings")
+            .into_iter()
+            .find(|item| item.finding_id == xss.id)
+            .expect("XSS campaign member")
+            .status,
+        "VERIFIED"
+    );
+
+    let idor_attempt = apply_campaign_guided_idor_fix(
+        &database,
+        project.path(),
+        &lab,
+        &config,
+        idor,
+        &primary,
+        &secondary,
+    );
+    campaigns.sync(&campaign.id).expect("sync IDOR campaign result");
+    assert_eq!(
+        SecurityFixService::new(&database)
+            .get_attempt(&idor_attempt)
+            .expect("IDOR attempt")
+            .expect("IDOR attempt exists")
+            .status,
+        "fix_verified"
+    );
+
+    // Completion verification stays bounded to the selected findings and uses the same
+    // targeted runtime retest primitive. The backend takes a fresh retest floor first and
+    // refuses completion unless every selected finding has persisted post-floor evidence.
+    campaigns
+        .begin_completion_verification(&campaign.id)
+        .expect("begin bounded completion verification");
+    targeted_retest_and_sync(&database, &config, sql, &primary, None);
+    targeted_retest_and_sync(&database, &config, xss, &primary, None);
+    targeted_retest_and_sync(&database, &config, idor, &primary, Some(&secondary));
+    campaigns
+        .finalize_completion_verification(&campaign.id)
+        .expect("finalize bounded completion verification");
+    campaigns
+        .sync(&campaign.id)
+        .expect("sync bounded completion verification");
+
+    let summary = campaigns.summary(&campaign.id).expect("campaign summary");
+    assert_eq!(summary.selected_findings, 3);
+    assert_eq!(summary.verified_fixed, 3);
+    assert_eq!(summary.still_vulnerable, 0);
+    assert_eq!(summary.unable_to_verify, 0);
+    assert_eq!(summary.regression_detected, 0);
+    assert_eq!(summary.queued_or_in_progress, 0);
+
+    let completed = campaigns.complete(&campaign.id).expect("complete campaign");
+    assert_eq!(completed.status, "COMPLETED");
+    let comparison = campaigns
+        .before_after(&campaign.id)
+        .expect("campaign before/after");
+    assert_eq!(comparison.len(), 3);
+    assert!(comparison
+        .iter()
+        .all(|item| item.campaign_status == "VERIFIED"));
+    assert_eq!(
+        campaigns
+            .security_debt(&campaign.id)
+            .expect("campaign debt")
+            .unresolved_total,
+        0
+    );
 }

@@ -26,6 +26,7 @@ import type {
 import { Panel, StatusBadge, formatDate, shortPath } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
 import { SecurityFixWorkflow } from "./SecurityFixWorkflow";
+import { SecurityRemediationCampaigns } from "./SecurityRemediationCampaigns";
 import {
   GUIDED_AUTHORIZATION_STATEMENT,
   buildGuidedRequests,
@@ -778,6 +779,14 @@ export function GuidedSecurityOperator() {
           <Panel title="Finding details"><p className="ws-inline-empty">Select a finding to see developer guidance and correlated source candidates.</p></Panel>
         )}
       </div>
+
+      {session.status === "completed" && session.scan_id && findings.length > 0 && (
+        <SecurityRemediationCampaigns
+          session={session}
+          findings={findings}
+          onRetest={retestFinding}
+        />
+      )}
 
       <div className="ws-guided-two-column">
         <Panel title="Defensive risk graph">
