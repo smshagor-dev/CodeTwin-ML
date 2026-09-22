@@ -186,7 +186,7 @@ mod tests {
                      DROP TABLE web_security_endpoints;
                      DROP TABLE web_security_scans;
                      DROP TABLE websites;
-                     DELETE FROM schema_migrations WHERE version IN (17,18,19,20,21,22,23,23,23,23,23);",
+                     DELETE FROM schema_migrations WHERE version IN (17,18,19,20,21,22,23);",
                 )
                 .expect("rewind dashboard and later migrations");
         }
@@ -254,7 +254,7 @@ mod tests {
                      DROP TABLE web_security_findings;
                      DROP TABLE web_security_endpoints;
                      DROP TABLE web_security_scans;
-                     DELETE FROM schema_migrations WHERE version IN (18,19,20,21,22,23,23,23,23);",
+                     DELETE FROM schema_migrations WHERE version IN (18,19,20,21,22,23);",
                 )
                 .expect("rewind web security and guided migrations");
         }
@@ -303,7 +303,7 @@ mod tests {
                      DROP TABLE guided_security_activity;
                      DROP TABLE guided_security_plan_items;
                      DROP TABLE guided_security_sessions;
-                     DELETE FROM schema_migrations WHERE version IN (19,20,21,22,23,23,23);",
+                     DELETE FROM schema_migrations WHERE version IN (19,20,21,22,23);",
                 )
                 .expect("rewind guided security migration");
         }
@@ -386,7 +386,7 @@ mod tests {
                      DROP TABLE security_fix_events;
                      DROP TABLE security_fix_validation_results;
                      DROP TABLE security_fix_attempts;
-                     DELETE FROM schema_migrations WHERE version IN (20,21,22,23,23);",
+                     DELETE FROM schema_migrations WHERE version IN (20,21,22,23);",
                 )
                 .expect("rewind security fix migration");
             db.connection()
@@ -611,6 +611,30 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("migration 22");
+        let migration_23: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=23",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration 23");
+        let route_prefix_column: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('source_routes') WHERE name='router_prefix'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("route prefix column");
+        let mount_mode_column: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('source_route_mounts') WHERE name='prefix_mode'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("mount prefix mode column");
         let import_bindings_column: i64 = upgraded
             .connection()
             .query_row(
@@ -629,6 +653,9 @@ mod tests {
             .expect("route template column");
         assert_eq!(tables, 3);
         assert_eq!(migration, 1);
+        assert_eq!(migration_23, 1);
+        assert_eq!(route_prefix_column, 1);
+        assert_eq!(mount_mode_column, 1);
         assert_eq!(import_bindings_column, 1);
         assert_eq!(endpoint_template_column, 1);
         drop(upgraded);
@@ -642,7 +669,16 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("migration 22 after reopen");
+        let migration_23_after_reopen: i64 = reopened
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=23",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration 23 after reopen");
         assert_eq!(migration_after_reopen, 1);
+        assert_eq!(migration_23_after_reopen, 1);
     }
 
     #[test]
