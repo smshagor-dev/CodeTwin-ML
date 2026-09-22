@@ -48,8 +48,15 @@ pub struct IndexedSymbol {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedImportBinding {
+    pub local_name: String,
+    pub imported_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedImport {
     pub raw_specifier: String,
+    pub bindings: Vec<IndexedImportBinding>,
     pub kind: String,
     pub start_line: usize,
     pub start_column: usize,
@@ -61,6 +68,15 @@ pub struct IndexedImport {
 pub struct IndexedRouteParameter {
     pub name: String,
     pub location: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedRouteMount {
+    pub framework: String,
+    pub mounted_binding: String,
+    pub prefix: String,
+    pub start_line: usize,
+    pub end_line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +104,7 @@ pub struct IndexedFile {
     pub symbols: Vec<IndexedSymbol>,
     pub imports: Vec<IndexedImport>,
     pub routes: Vec<IndexedRoute>,
+    pub route_mounts: Vec<IndexedRouteMount>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,7 +266,7 @@ fn parse_source(
         .map_err(|error| format!("definition_query_error:{error}"))?;
     let symbols = collect_symbols(source, &tree, &query);
     let imports = imports::extract_imports(spec.name, source, tree.root_node());
-    let routes = routes::extract_routes(spec.name, source, tree.root_node());
+    let (routes, route_mounts) = routes::extract_routes(spec.name, source, tree.root_node());
 
     Ok(IndexedFile {
         relative_path,
@@ -261,6 +278,7 @@ fn parse_source(
         symbols,
         imports,
         routes,
+        route_mounts,
     })
 }
 
