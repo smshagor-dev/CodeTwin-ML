@@ -312,6 +312,19 @@ fn normalize_route_template(template: &str) -> Option<String> {
             segments.push(format!("{{{name}}}"));
             continue;
         }
+        if segment.starts_with('<') && segment.ends_with('>') && segment.len() > 2 {
+            let inner = &segment[1..segment.len() - 1];
+            let name = inner
+                .rsplit_once(':')
+                .map(|(_, name)| name)
+                .unwrap_or(inner)
+                .trim();
+            if name.is_empty() {
+                return None;
+            }
+            segments.push(format!("{{{name}}}"));
+            continue;
+        }
         segments.push(segment.to_string());
     }
     Some(if segments.is_empty() {
@@ -341,6 +354,18 @@ fn route_parameter_samples(template: &str) -> BTreeMap<String, String> {
             if !name.is_empty() {
                 samples.insert(name.to_string(), route_sample_value(segment));
             }
+            continue;
+        }
+        if segment.starts_with('<') && segment.ends_with('>') && segment.len() > 2 {
+            let inner = &segment[1..segment.len() - 1];
+            let name = inner
+                .rsplit_once(':')
+                .map(|(_, name)| name)
+                .unwrap_or(inner)
+                .trim();
+            if !name.is_empty() {
+                samples.insert(name.to_string(), route_sample_value(segment));
+            }
         }
     }
     samples
@@ -351,14 +376,19 @@ fn route_sample_value(segment: &str) -> String {
     if lower.contains("uuid") {
         return "00000000-0000-4000-8000-000000000001".to_string();
     }
-    if lower.contains(":float}") || lower.contains(":double}") {
+    if lower.contains(":float}")
+        || lower.contains(":double}")
+        || lower.starts_with("<float:")
+    {
         return "1.0".to_string();
     }
-    if lower.contains(":bool}") {
+    if lower.contains(":bool}") || lower.starts_with("<bool:") {
         return "true".to_string();
     }
     if lower.contains(":int}")
         || lower.contains(":integer}")
+        || lower.starts_with("<int:")
+        || lower.starts_with("<integer:")
         || lower.contains("\\d")
         || lower.contains("[0-9]")
     {
@@ -763,6 +793,41 @@ mod source_seed_tests {
         assert_eq!(
             uuid.discovery_url.as_deref(),
             Some("https://example.test/api/items/00000000-0000-4000-8000-000000000001")
+        );
+    }
+
+    #[test]
+    fn materializes_flask_converter_routes_with_compatible_values() {
+        let locations = BTreeMap::from([("user_id".to_string(), "path".to_string())]);
+
+        let integer = source_endpoint_seed(
+            "https://example.test",
+            "GET",
+            "/api/users/<int:user_id>",
+            &["user_id".to_string()],
+            &locations,
+            None,
+            "source_route:flask:app.py:1",
+        )
+        .expect("flask integer seed");
+        assert_eq!(
+            integer.discovery_url.as_deref(),
+            Some("https://example.test/api/users/1")
+        );
+
+        let uuid = source_endpoint_seed(
+            "https://example.test",
+            "GET",
+            "/api/users/<uuid:user_id>",
+            &["user_id".to_string()],
+            &locations,
+            None,
+            "source_route:flask:app.py:2",
+        )
+        .expect("flask uuid seed");
+        assert_eq!(
+            uuid.discovery_url.as_deref(),
+            Some("https://example.test/api/users/00000000-0000-4000-8000-000000000001")
         );
     }
 
