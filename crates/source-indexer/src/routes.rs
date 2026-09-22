@@ -1315,7 +1315,7 @@ app.use("/api/auth", authRouter);
             .set_language(&tree_sitter_javascript::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (_routes, mounts, _handler_inputs) = extract_routes("JavaScript", source, tree.root_node());
+        let (_routes, mounts, _handler_inputs) = extract_routes("JavaScript", "src/server.js", source, tree.root_node());
         let mount = mounts.iter().find(|value| value.mounted_binding == "authRouter").expect("mount");
         assert_eq!(mount.prefix, "/api/auth");
         assert_eq!(mount.framework, "express");
@@ -1432,7 +1432,7 @@ app.include_router(router)
             .set_language(&tree_sitter_python::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, _handler_inputs) = extract_routes("Python", source, tree.root_node());
+        let (routes, _mounts, _handler_inputs) = extract_routes("Python", "app.py", source, tree.root_node());
         let route = routes.iter().find(|value| value.path_template == "/api/login/{tenant}").expect("route");
         assert_eq!(route.http_method, "POST");
         assert!(route.parameters.iter().any(|value| value.name == "tenant" && value.location == "path"));
