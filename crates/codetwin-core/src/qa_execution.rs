@@ -714,6 +714,51 @@ impl<'a> QaExecutionService<'a> {
     }
 }
 
+fn run_from_row(row: &rusqlite::Row<'_>) -> Result<QaExecutionRunRecord, rusqlite::Error> {
+    let status_text: String = row.get(3)?;
+    let result_text: String = row.get(16)?;
+    let project_manifest_sha256: Option<String> = row.get(17)?;
+    let external_read_surface_sha256: Option<String> = row.get(18)?;
+    let project_manifest_sha256 = project_manifest_sha256
+        .filter(|value| valid_sha256(value))
+        .ok_or_else(|| rusqlite::Error::FromSqlConversionFailure(
+            17,
+            rusqlite::types::Type::Text,
+            "QA execution run is missing a valid project manifest SHA-256".into(),
+        ))?;
+    let external_read_surface_sha256 = external_read_surface_sha256
+        .filter(|value| valid_sha256(value))
+        .ok_or_else(|| rusqlite::Error::FromSqlConversionFailure(
+            18,
+            rusqlite::types::Type::Text,
+            "QA execution run is missing a valid external read-surface SHA-256".into(),
+        ))?;
+    Ok(QaExecutionRunRecord {
+        id: row.get(0)?,
+        plan_id: row.get(1)?,
+        project_id: row.get(2)?,
+        status: parse_run_status(&status_text, 3)?,
+        started_at: row.get(4)?,
+        finished_at: row.get(5)?,
+        duration_ms: row
+            .get::<_, Option<i64>>(6)?
+            .and_then(|value| u64::try_from(value).ok()),
+        exit_code: row.get(7)?,
+        parser_completed: row.get::<_, i64>(8)? != 0,
+        tests_passed: row.get::<_, Option<i64>>(9)?.map(|value| value != 0),
+        stdout_excerpt: row.get(10)?,
+        stderr_excerpt: row.get(11)?,
+        stdout_original_bytes: usize::try_from(row.get::<_, i64>(12)?).unwrap_or(usize::MAX),
+        stderr_original_bytes: usize::try_from(row.get::<_, i64>(13)?).unwrap_or(usize::MAX),
+        stdout_truncated: row.get::<_, i64>(14)? != 0,
+        stderr_truncated: row.get::<_, i64>(15)? != 0,
+        result: parse_json(&result_text, 16)?,
+        project_manifest_sha256,
+        external_read_surface_sha256,
+        created_at: row.get(19)?,
+    })
+}
+
 fn plan_from_row(row: &rusqlite::Row<'_>) -> Result<QaExecutionPlanRecord, rusqlite::Error> {
     let runner_text: String = row.get(3)?;
     let status_text: String = row.get(4)?;
@@ -856,6 +901,19 @@ fn parse_plan_status(text: &str, index: usize) -> Result<ExecutionPlanStatus, ru
     }
 }
 
+fn parse_run_status(text: &str, index: usize) -> Result<ExecutionRunStatus, rusqlite::Error> {
+    match text {
+        "queued" => Ok(ExecutionRunStatus::Queued),
+        "running" => Ok(ExecutionRunStatus::Running),
+        "completed" => Ok(ExecutionRunStatus::Completed),
+        "failed" => Ok(ExecutionRunStatus::Failed),
+        "timed_out" => Ok(ExecutionRunStatus::TimedOut),
+        "cancelled" => Ok(ExecutionRunStatus::Cancelled),
+        "infrastructure_error" => Ok(ExecutionRunStatus::InfrastructureError),
+        _ => invalid_enum(text, index),
+    }
+}
+
 fn invalid_enum<T>(text: &str, index: usize) -> Result<T, rusqlite::Error> {
     Err(rusqlite::Error::FromSqlConversionFailure(
         index,
@@ -871,6 +929,16 @@ fn new_plan_id(project_id: &str, request: &TestExecutionRequest) -> String {
     deterministic_id(
         "qa-execution-plan",
         &[project_id, request.runner.as_str(), &nanos.to_string()],
+    )
+}
+
+fn new_run_id(project_id: &str, plan_id: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    deterministic_id(
+        "qa-execution-run",
+        &[project_id, plan_id, &nanos.to_string()],
     )
 }
 
