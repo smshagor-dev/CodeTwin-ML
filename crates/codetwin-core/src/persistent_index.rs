@@ -1478,7 +1478,7 @@ fn to_usize(value: i64) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::BTreeMap, fs};
 
     use tempfile::tempdir;
 
