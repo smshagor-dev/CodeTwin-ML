@@ -126,12 +126,15 @@ impl RequestBudget {
     }
 }
 
+const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(75);
+
 #[derive(Clone)]
 pub struct ScopedRequester {
     policy: ScopePolicy,
     auth: AuthContext,
     budget: RequestBudget,
     cancelled: Arc<AtomicBool>,
+    next_request_at: Arc<Mutex<Instant>>,
 }
 
 impl ScopedRequester {
@@ -146,6 +149,7 @@ impl ScopedRequester {
             auth,
             budget,
             cancelled,
+            next_request_at: Arc::new(Mutex::new(Instant::now())),
         }
     }
 
@@ -188,6 +192,7 @@ impl ScopedRequester {
             if self.cancelled.load(Ordering::SeqCst) {
                 return Err(RequestError::Cancelled);
             }
+            self.wait_for_rate_limit()?;
 
             // Resolve again for every attempt and pin the checked address into reqwest.
             // This prevents redirects/DNS changes from bypassing the authorized network scope.
@@ -237,6 +242,31 @@ impl ScopedRequester {
             "transport failure for {}",
             redact_url(url)
         )))
+    }
+
+    fn wait_for_rate_limit(&self) -> Result<(), RequestError> {
+        loop {
+            if self.cancelled.load(Ordering::SeqCst) {
+                return Err(RequestError::Cancelled);
+            }
+            let wait = {
+                let mut next = self
+                    .next_request_at
+                    .lock()
+                    .map_err(|_| RequestError::Http("request rate limiter state is poisoned".to_string()))?;
+                let now = Instant::now();
+                if now >= *next {
+                    *next = now + MIN_REQUEST_INTERVAL;
+                    None
+                } else {
+                    Some(*next - now)
+                }
+            };
+            match wait {
+                None => return Ok(()),
+                Some(duration) => thread::sleep(duration.min(Duration::from_millis(25))),
+            }
+        }
     }
 }
 
