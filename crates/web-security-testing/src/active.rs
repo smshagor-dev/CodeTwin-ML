@@ -188,7 +188,7 @@ fn probe_parameter(
     let mut findings = Vec::new();
 
     if config.checks.sql_injection && check_applicable(&task.endpoint, &task.parameter, "sql_injection") {
-        findings.extend(probe_sqli(requester, policy, task, &endpoint_url, &baseline, config, &marker)?);
+        findings.extend(probe_sqli(requester, policy, task, &endpoint_url, &baseline)?);
     }
     if config.checks.xss && check_applicable(&task.endpoint, &task.parameter, "xss") {
         if let Some(finding) = probe_xss(requester, policy, task, &endpoint_url, &baseline, &marker)? {
@@ -229,8 +229,6 @@ fn probe_sqli(
     task: &ProbeTask,
     url: &Url,
     baseline: &ObservedResponse,
-    config: &ScanConfig,
-    marker: &str,
 ) -> Result<Vec<FindingObservation>, ScanError> {
     let mut findings = Vec::new();
     let quote = match send_payload(requester, &task.endpoint, url, &task.parameter, "'") {
