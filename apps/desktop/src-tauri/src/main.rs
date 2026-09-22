@@ -52,7 +52,8 @@ use project_discovery::ProjectProfile;
 use qa_commands::{
     approve_qa_execution_plan, cancel_qa_execution, create_qa_execution_plan,
     list_qa_artifacts, list_qa_execution_plans, list_qa_execution_runs, list_qa_frameworks,
-    qa_discovery_history, qa_execution_availability, run_qa_discovery, run_qa_execution_plan,
+    qa_discovery_history, qa_execution_availability, qa_toolchain_sha256, run_qa_discovery,
+    run_qa_execution_plan,
 };
 use repair_commands::{
     add_repair_file_replacement, apply_repair_plan, approve_repair_plan, create_repair_plan,
@@ -667,6 +668,7 @@ fn main() {
             list_qa_frameworks,
             qa_discovery_history,
             qa_execution_availability,
+            qa_toolchain_sha256,
             create_qa_execution_plan,
             approve_qa_execution_plan,
             list_qa_execution_plans,
