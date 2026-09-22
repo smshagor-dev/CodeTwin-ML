@@ -206,6 +206,8 @@ impl<'a> QaExecutionService<'a> {
         let discovery_run_id = request.discovery_run_id.clone();
         let plan = build_execution_plan(request, toolchain, policy, capabilities)?;
         let plan_id = new_plan_id(project_id, &plan.request);
+        let public_backend_enabled = self.availability().execution_enabled
+            && capabilities == SandboxCapabilities::fully_enforced();
         let provenance = json!({
             "project_last_indexed_at": project_last_indexed_at,
             "discovery_run_id": discovery_run_id,
@@ -213,7 +215,7 @@ impl<'a> QaExecutionService<'a> {
             "package_scripts_executed": false,
             "tests_executed": false,
             "shell_used": false,
-            "execution_backend_enabled": false
+            "execution_backend_enabled": public_backend_enabled
         });
 
         self.database.connection().execute(
