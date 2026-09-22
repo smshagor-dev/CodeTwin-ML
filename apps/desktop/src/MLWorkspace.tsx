@@ -20,6 +20,17 @@ type SourceFileRecord = {
 type MlSidecarConfig = {
   pythonExecutable: string;
   sidecarRoot: string;
+  pythonExecutableSha256: string | null;
+  sidecarDigest: string | null;
+};
+
+type MlSidecarIdentity = {
+  pythonExecutable: string;
+  sidecarRoot: string;
+  pythonExecutableSha256: string;
+  sidecarDigest: string;
+  codeFileCount: number;
+  codeBytes: number;
 };
 
 type MlContainmentStatus = {
@@ -39,6 +50,7 @@ type MlSidecarStatus = {
   sidecarRoot: string;
   health: Record<string, unknown>;
   containment: MlContainmentStatus;
+  identity: MlSidecarIdentity;
 };
 
 type MlScore = {
@@ -122,6 +134,8 @@ type InferencePlan = {
 
 const PYTHON_KEY = "codetwin.ml.pythonExecutable";
 const ROOT_KEY = "codetwin.ml.sidecarRoot";
+const PYTHON_SHA_KEY = "codetwin.ml.pythonExecutableSha256";
+const SIDECAR_DIGEST_KEY = "codetwin.ml.sidecarDigest";
 
 export function MLWorkspace() {
   const [path, setPath] = useState("");
@@ -130,6 +144,12 @@ export function MLWorkspace() {
   const [selectedFileId, setSelectedFileId] = useState("");
   const [pythonExecutable, setPythonExecutable] = useState(() => localStorage.getItem(PYTHON_KEY) ?? "");
   const [sidecarRoot, setSidecarRoot] = useState(() => localStorage.getItem(ROOT_KEY) ?? "");
+  const [pythonExecutableSha256, setPythonExecutableSha256] = useState(
+    () => localStorage.getItem(PYTHON_SHA_KEY) ?? "",
+  );
+  const [sidecarDigest, setSidecarDigest] = useState(
+    () => localStorage.getItem(SIDECAR_DIGEST_KEY) ?? "",
+  );
   const [sidecarStatus, setSidecarStatus] = useState<MlSidecarStatus | null>(null);
   const [capabilities, setCapabilities] = useState<SidecarCapabilities | null>(null);
   const [models, setModels] = useState<ModelInventory | null>(null);
@@ -145,8 +165,13 @@ export function MLWorkspace() {
   const [error, setError] = useState<string | null>(null);
 
   const config = useMemo<MlSidecarConfig>(
-    () => ({ pythonExecutable: pythonExecutable.trim(), sidecarRoot: sidecarRoot.trim() }),
-    [pythonExecutable, sidecarRoot],
+    () => ({
+      pythonExecutable: pythonExecutable.trim(),
+      sidecarRoot: sidecarRoot.trim(),
+      pythonExecutableSha256: pythonExecutableSha256.trim() || null,
+      sidecarDigest: sidecarDigest.trim() || null,
+    }),
+    [pythonExecutable, sidecarRoot, pythonExecutableSha256, sidecarDigest],
   );
 
   const availableActions = useMemo(() => {
@@ -186,18 +211,60 @@ export function MLWorkspace() {
     }
   }
 
+  function clearSidecarTrust() {
+    setPythonExecutableSha256("");
+    setSidecarDigest("");
+    localStorage.removeItem(PYTHON_SHA_KEY);
+    localStorage.removeItem(SIDECAR_DIGEST_KEY);
+    setSidecarStatus(null);
+    setCapabilities(null);
+    setModels(null);
+    setPlan(null);
+  }
+
+  function updatePythonExecutable(value: string) {
+    setPythonExecutable(value);
+    clearSidecarTrust();
+  }
+
+  function updateSidecarRoot(value: string) {
+    setSidecarRoot(value);
+    clearSidecarTrust();
+  }
+
   async function connectSidecar() {
     if (!config.pythonExecutable || !config.sidecarRoot) return;
     setBusy(true);
     setError(null);
     try {
+      const inspectionConfig: MlSidecarConfig = {
+        pythonExecutable: config.pythonExecutable,
+        sidecarRoot: config.sidecarRoot,
+        pythonExecutableSha256: null,
+        sidecarDigest: null,
+      };
+      const identity = await invoke<MlSidecarIdentity>("ml_sidecar_identity", {
+        config: inspectionConfig,
+      });
+      const trustedConfig: MlSidecarConfig = {
+        pythonExecutable: identity.pythonExecutable,
+        sidecarRoot: identity.sidecarRoot,
+        pythonExecutableSha256: identity.pythonExecutableSha256,
+        sidecarDigest: identity.sidecarDigest,
+      };
       const [health, caps, inventory] = await Promise.all([
-        invoke<MlSidecarStatus>("ml_sidecar_health", { config }),
-        invoke<SidecarCapabilities>("ml_sidecar_capabilities", { config }),
-        invoke<ModelInventory>("ml_models", { config }),
+        invoke<MlSidecarStatus>("ml_sidecar_health", { config: trustedConfig }),
+        invoke<SidecarCapabilities>("ml_sidecar_capabilities", { config: trustedConfig }),
+        invoke<ModelInventory>("ml_models", { config: trustedConfig }),
       ]);
-      localStorage.setItem(PYTHON_KEY, config.pythonExecutable);
-      localStorage.setItem(ROOT_KEY, config.sidecarRoot);
+      localStorage.setItem(PYTHON_KEY, identity.pythonExecutable);
+      localStorage.setItem(ROOT_KEY, identity.sidecarRoot);
+      localStorage.setItem(PYTHON_SHA_KEY, identity.pythonExecutableSha256);
+      localStorage.setItem(SIDECAR_DIGEST_KEY, identity.sidecarDigest);
+      setPythonExecutable(identity.pythonExecutable);
+      setSidecarRoot(identity.sidecarRoot);
+      setPythonExecutableSha256(identity.pythonExecutableSha256);
+      setSidecarDigest(identity.sidecarDigest);
       setSidecarStatus(health);
       setCapabilities(caps);
       setModels(inventory);
@@ -295,17 +362,25 @@ export function MLWorkspace() {
         <div className="ml-config-grid">
           <label>
             <span>Python executable</span>
-            <input value={pythonExecutable} onChange={(event) => setPythonExecutable(event.target.value)} placeholder="C:\\Python312\\python.exe or /usr/bin/python3" />
+            <input value={pythonExecutable} onChange={(event) => updatePythonExecutable(event.target.value)} placeholder="C:\\Python312\\python.exe or /usr/bin/python3" />
           </label>
           <label>
             <span>Sidecar root</span>
-            <input value={sidecarRoot} onChange={(event) => setSidecarRoot(event.target.value)} placeholder=".../CodeTwin-ML/services/ml" />
+            <input value={sidecarRoot} onChange={(event) => updateSidecarRoot(event.target.value)} placeholder=".../CodeTwin-ML/services/ml" />
           </label>
         </div>
         <div className="row">
-          <button onClick={() => void connectSidecar()} disabled={busy || !config.pythonExecutable || !config.sidecarRoot}>{busy ? "Checking…" : "Check sidecar"}</button>
+          <button onClick={() => void connectSidecar()} disabled={busy || !config.pythonExecutable || !config.sidecarRoot}>{busy ? "Inspecting…" : "Inspect & trust sidecar"}</button>
           {sidecarStatus && <span className="status-good">Sidecar ready · protocol {String(sidecarStatus.health.protocol ?? "unknown")}</span>}
         </div>
+        {sidecarStatus?.identity && (
+          <div className="relationship-item">
+            <strong>Trusted sidecar identity</strong>
+            <span>{sidecarStatus.identity.codeFileCount} Python files · {sidecarStatus.identity.codeBytes} bytes</span>
+            <small className="mono">Python SHA-256 {sidecarStatus.identity.pythonExecutableSha256}</small>
+            <small className="mono">Sidecar digest {sidecarStatus.identity.sidecarDigest}</small>
+          </div>
+        )}
         {sidecarStatus?.containment && (
           <>
             <div className="grid ml-metrics">
