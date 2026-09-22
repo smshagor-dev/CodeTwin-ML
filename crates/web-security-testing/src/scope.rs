@@ -34,6 +34,8 @@ impl ScopePolicy {
         }
         config.max_crawl_depth = config.max_crawl_depth.min(8);
         config.max_requests = config.max_requests.clamp(1, 2_000);
+        config.max_requests_per_endpoint = config.max_requests_per_endpoint.clamp(1, 100);
+        config.min_request_interval_ms = config.min_request_interval_ms.min(5_000);
         config.concurrency = config.concurrency.clamp(1, 8);
         config.timeout_ms = config.timeout_ms.clamp(500, 30_000);
         config.response_limit_bytes = config.response_limit_bytes.clamp(16_384, 2_097_152);
