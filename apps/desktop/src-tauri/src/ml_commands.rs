@@ -1300,13 +1300,123 @@ fn time_nonce() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::ml_containment_status;
+    use std::{fs, path::PathBuf};
+
+    use super::{
+        inspect_sidecar_identity, ml_containment_status, time_nonce, validate_sidecar,
+        MlSidecarConfig,
+    };
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "codetwin-ml-identity-test-{}",
+                time_nonce()
+            ));
+            fs::create_dir(&path).expect("create test directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_sidecar() -> (TestDirectory, MlSidecarConfig) {
+        let directory = TestDirectory::new();
+        let package = directory.path().join("codetwin_ml");
+        fs::create_dir(&package).expect("create package");
+        fs::write(package.join("main.py"), "from codetwin_ml import protocol\n")
+            .expect("main.py");
+        fs::write(package.join("protocol.py"), "PROTOCOL = 1\n")
+            .expect("protocol.py");
+        fs::write(package.join("worker.py"), "VALUE = 1\n").expect("worker.py");
+
+        let config = MlSidecarConfig {
+            python_executable: std::env::current_exe()
+                .expect("current executable")
+                .display()
+                .to_string(),
+            sidecar_root: directory.path().display().to_string(),
+            python_executable_sha256: None,
+            sidecar_digest: None,
+        };
+        (directory, config)
+    }
 
     #[test]
     fn containment_status_does_not_claim_filesystem_or_network_isolation() {
         let status = ml_containment_status();
         assert!(!status.filesystem_isolation);
         assert!(!status.network_isolation);
+    }
+
+    #[test]
+    fn sidecar_identity_is_deterministic_and_execution_requires_pins() {
+        let (_directory, config) = test_sidecar();
+        let first = inspect_sidecar_identity(&config).expect("first identity");
+        let second = inspect_sidecar_identity(&config).expect("second identity");
+        assert_eq!(first.python_executable_sha256, second.python_executable_sha256);
+        assert_eq!(first.sidecar_digest, second.sidecar_digest);
+        assert_eq!(first.code_files, second.code_files);
+        assert_eq!(first.code_files.len(), 3);
+        assert!(validate_sidecar(&config)
+            .expect_err("missing pins must fail")
+            .contains("SHA-256 pin is required"));
+
+        let pinned = MlSidecarConfig {
+            python_executable: config.python_executable,
+            sidecar_root: config.sidecar_root,
+            python_executable_sha256: Some(first.python_executable_sha256),
+            sidecar_digest: Some(first.sidecar_digest),
+        };
+        validate_sidecar(&pinned).expect("matching pins");
+    }
+
+    #[test]
+    fn sidecar_source_change_invalidates_trusted_digest() {
+        let (directory, config) = test_sidecar();
+        let identity = inspect_sidecar_identity(&config).expect("identity");
+        let pinned = MlSidecarConfig {
+            python_executable: config.python_executable,
+            sidecar_root: config.sidecar_root,
+            python_executable_sha256: Some(identity.python_executable_sha256),
+            sidecar_digest: Some(identity.sidecar_digest),
+        };
+        fs::write(
+            directory.path().join("codetwin_ml/protocol.py"),
+            "PROTOCOL = 2\n",
+        )
+        .expect("mutate protocol");
+        assert!(validate_sidecar(&pinned)
+            .expect_err("changed sidecar must fail")
+            .contains("source digest no longer matches"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sidecar_source_tree_rejects_symlinked_python_files() {
+        use std::os::unix::fs::symlink;
+
+        let (directory, config) = test_sidecar();
+        let outside = directory.path().join("outside.py");
+        fs::write(&outside, "VALUE = 2\n").expect("outside source");
+        symlink(
+            &outside,
+            directory.path().join("codetwin_ml/linked.py"),
+        )
+        .expect("create source symlink");
+        assert!(inspect_sidecar_identity(&config)
+            .expect_err("source symlink must fail")
+            .contains("contains a symlink"));
     }
 
     #[cfg(windows)]
