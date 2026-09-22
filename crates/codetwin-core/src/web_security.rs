@@ -1566,6 +1566,50 @@ app.post("/api/login/:tenant", (req, res) => {
             .expect("correlation");
         assert!(correlated.relative_path.ends_with("server.ts"));
         assert!(correlated.confidence >= 0.98);
+
+        let mut scan_input = create();
+        scan_input.project_id = Some(summary.project_id.clone());
+        let scan = store.create_scan(&scan_input).expect("scan");
+        let endpoint = store
+            .record_endpoint(
+                &scan.id,
+                &WebEndpointInput {
+                    url: "http://localhost:8080/api/login/acme".to_string(),
+                    method: "POST".to_string(),
+                    depth: 0,
+                    source: "source_route:express:src/server.ts:2".to_string(),
+                    parameter_names: vec![
+                        "tenant".to_string(),
+                        "email".to_string(),
+                        "password".to_string(),
+                    ],
+                    parameter_locations: std::collections::BTreeMap::from([
+                        ("tenant".to_string(), "path".to_string()),
+                        ("email".to_string(), "json".to_string()),
+                        ("password".to_string(), "json".to_string()),
+                    ]),
+                    response_header_names: Vec::new(),
+                    cookie_names: Vec::new(),
+                    content_type: Some("application/json".to_string()),
+                    status_code: None,
+                    redirect_to: None,
+                },
+            )
+            .expect("endpoint");
+        let link = store
+            .link_endpoint_to_source_route(Some(&summary.project_id), &endpoint)
+            .expect("link")
+            .expect("source route link");
+        assert_eq!(link.source_route_id, route.id);
+        assert_eq!(link.match_kind, "seeded");
+        assert!(link.parameter_overlap.iter().any(|name| name == "email"));
+        assert_eq!(
+            store
+                .list_source_endpoint_links(&scan.id, 20)
+                .expect("source endpoint links")
+                .len(),
+            1
+        );
     }
 
     #[test]
