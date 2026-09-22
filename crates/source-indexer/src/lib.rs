@@ -17,7 +17,7 @@ use walkdir::{DirEntry, WalkDir};
 const MAX_SOURCE_BYTES: u64 = 5 * 1024 * 1024;
 const TYPESCRIPT_DEFINITIONS_QUERY: &str = include_str!("../queries/typescript.scm");
 pub const INDEXER_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const QUERY_VERSION: &str = "definitions-v2-imports-v2-routes-v2";
+pub const QUERY_VERSION: &str = "definitions-v2-imports-v2-routes-v3-handlers-v1";
 
 #[derive(Debug, Error)]
 pub enum IndexError {
@@ -71,6 +71,14 @@ pub struct IndexedRouteParameter {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedHandlerInput {
+    pub handler_name: String,
+    pub parameters: Vec<IndexedRouteParameter>,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedRouteMount {
     pub framework: String,
     pub parent_router: String,
@@ -106,6 +114,7 @@ pub struct IndexedFile {
     pub imports: Vec<IndexedImport>,
     pub routes: Vec<IndexedRoute>,
     pub route_mounts: Vec<IndexedRouteMount>,
+    pub handler_inputs: Vec<IndexedHandlerInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,7 +276,8 @@ fn parse_source(
         .map_err(|error| format!("definition_query_error:{error}"))?;
     let symbols = collect_symbols(source, &tree, &query);
     let imports = imports::extract_imports(spec.name, source, tree.root_node());
-    let (routes, route_mounts) = routes::extract_routes(spec.name, source, tree.root_node());
+    let (routes, route_mounts, handler_inputs) =
+        routes::extract_routes(spec.name, source, tree.root_node());
 
     Ok(IndexedFile {
         relative_path,
@@ -280,6 +290,7 @@ fn parse_source(
         imports,
         routes,
         route_mounts,
+        handler_inputs,
     })
 }
 
