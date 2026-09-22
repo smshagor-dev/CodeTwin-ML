@@ -336,6 +336,9 @@ export function AuthorizedWebSecurityPanel() {
                         return (
                           <em>
                             Source route: {link.source_relative_path}
+                            {link.handler_relative_path && link.handler_relative_path !== link.source_relative_path
+                              ? " → handler " + link.handler_relative_path
+                              : ""}
                             {link.source_handler_name ? " → " + link.source_handler_name : ""}
                             {" · " + link.source_method + " " + link.source_path_template}
                             {" · " + Math.round(link.confidence * 100) + "% " + link.match_kind.replaceAll("_", " ")}
