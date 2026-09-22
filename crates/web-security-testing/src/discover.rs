@@ -10,7 +10,7 @@ use url::Url;
 
 use crate::{
     passive, query_parameters, CheckConfig, EndpointObservation, FindingObservation,
-    ObservedResponse, ScanConfig, ScanError, ScopePolicy, ScopedRequester,
+    ObservedResponse, ScanConfig, ScanError, ScopePolicy, ScopedRequester, SourceEndpointSeed,
 };
 
 pub struct DiscoveryResult {
@@ -26,12 +26,70 @@ pub fn crawl(
     cancelled: Arc<AtomicBool>,
     on_progress: &mut impl FnMut(usize, usize),
 ) -> Result<DiscoveryResult, ScanError> {
+    crawl_with_seeds(
+        policy,
+        requester,
+        config,
+        &[],
+        cancelled,
+        on_progress,
+    )
+}
+
+pub fn crawl_with_seeds(
+    policy: &ScopePolicy,
+    requester: &ScopedRequester,
+    config: &ScanConfig,
+    source_seeds: &[SourceEndpointSeed],
+    cancelled: Arc<AtomicBool>,
+    on_progress: &mut impl FnMut(usize, usize),
+) -> Result<DiscoveryResult, ScanError> {
     let mut queue = VecDeque::from([(policy.target().clone(), 0usize, "seed".to_string(), 0usize)]);
     let mut seen = HashSet::new();
     let mut endpoint_keys = HashSet::new();
     let mut endpoints = Vec::new();
     let mut findings = Vec::new();
     let mut responses = HashMap::new();
+    let mut source_seed_by_url = HashMap::<String, SourceEndpointSeed>::new();
+
+    for seed in source_seeds.iter().take(1_000) {
+        let Ok(url) = policy.normalize_and_assert(&seed.url) else {
+            continue;
+        };
+        let method = seed.method.trim().to_ascii_uppercase();
+        if !matches!(
+            method.as_str(),
+            "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "HEAD"
+        ) {
+            continue;
+        }
+        let key = normalized_key(&url);
+        if method == "GET" {
+            source_seed_by_url.insert(key, seed.clone());
+            if url != *policy.target() {
+                queue.push_back((url, 0, "source_route".to_string(), 0));
+            }
+            continue;
+        }
+
+        add_endpoint(
+            &mut endpoints,
+            &mut endpoint_keys,
+            EndpointObservation {
+                url: url.to_string(),
+                method,
+                depth: 0,
+                source: seed.source_label.clone(),
+                parameter_names: seed.parameter_names.clone(),
+                parameter_locations: seed.parameter_locations.clone(),
+                response_header_names: Vec::new(),
+                cookie_names: Vec::new(),
+                content_type: seed.content_type.clone(),
+                status_code: None,
+                redirect_to: None,
+            },
+        );
+    }
 
     while let Some((url, depth, source, redirects)) = queue.pop_front() {
         if cancelled.load(Ordering::SeqCst) {
@@ -51,22 +109,37 @@ pub fn crawl(
             Err(crate::RequestError::Cancelled) => return Err(ScanError::Cancelled),
             Err(_) => continue,
         };
-        let parameter_names = query_parameters(&url);
-        let parameter_locations = parameter_names
+        let source_seed = source_seed_by_url.get(&normalized);
+        let mut parameter_names = query_parameters(&url);
+        if let Some(seed) = source_seed {
+            parameter_names.extend(seed.parameter_names.clone());
+        }
+        parameter_names.sort();
+        parameter_names.dedup();
+        let mut parameter_locations: BTreeMap<String, String> = parameter_names
             .iter()
             .map(|name| (name.clone(), "query".to_string()))
             .collect();
+        if let Some(seed) = source_seed {
+            for (name, location) in &seed.parameter_locations {
+                parameter_locations.insert(name.clone(), location.clone());
+            }
+        }
         let (response_header_names, cookie_names) = response_inventory(&response);
         let endpoint = EndpointObservation {
             url: url.to_string(),
             method: "GET".to_string(),
             depth,
-            source,
+            source: source_seed
+                .map(|seed| seed.source_label.clone())
+                .unwrap_or(source),
             parameter_names,
             parameter_locations,
             response_header_names,
             cookie_names,
-            content_type: response.content_type.clone(),
+            content_type: source_seed
+                .and_then(|seed| seed.content_type.clone())
+                .or_else(|| response.content_type.clone()),
             status_code: Some(response.status),
             redirect_to: response.location.clone(),
         };
