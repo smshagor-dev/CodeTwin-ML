@@ -44,9 +44,9 @@ The existing ONNX adapter restrictions still apply inside the worker: one verifi
 
 ## Windows desktop process-tree containment
 
-When the desktop app starts the local ML sidecar on Windows, it creates the Python sidecar **suspended**, places it in a Job Object, and only then resumes its initial thread. The Job Object uses kill-on-close, an aggregate memory ceiling, and an active-process limit. Because the inference worker and trusted llama.cpp CLI are descendants of that sidecar and no breakaway flag is requested, they remain in the same process-tree containment boundary.
+When the desktop app starts the local ML sidecar on Windows, it creates the Python sidecar **suspended**, places it in a Job Object, and only then resumes its initial thread. The Job Object uses kill-on-close, an aggregate memory ceiling, an active-process limit, a bounded aggregate user-mode CPU-time budget, and terminate-on-unhandled-exception behavior. Because the inference worker and trusted llama.cpp CLI are descendants of that sidecar and no breakaway flag is requested, they remain in the same process-tree containment boundary.
 
-If Job Object creation, configuration, assignment, suspended-thread discovery, or resume fails, the sidecar request fails closed. Timeout/error cleanup terminates the Job Object tree rather than only the immediate Python process.
+Before assignment, CodeTwin also installs Windows Job Object basic UI restrictions that deny cross-job USER handles, clipboard read/write, desktop creation/switching, display/system-setting changes, global-atom access, and ExitWindows calls. If resource-limit setup, UI-restriction setup, Job Object assignment, suspended-thread discovery, or resume fails, the sidecar request fails closed. Timeout/error cleanup terminates the Job Object tree rather than only the immediate Python process.
 
 ## Native generation launch integrity
 
@@ -58,7 +58,7 @@ On non-Windows platforms CodeTwin performs pre-launch SHA-256 plus file-identity
 
 ## Platform boundary
 
-The wall-clock timeout, environment sanitization, and process separation work on Windows as well as POSIX. Windows desktop launches now add Job Object process-tree/memory containment around the sidecar and its descendants, while POSIX workers retain the resource-limit strategy described above. Neither path is a VM/container boundary, and the current native generation path does not claim universal filesystem or network isolation.
+The wall-clock timeout, environment sanitization, and process separation work on Windows as well as POSIX. Windows desktop launches add Job Object process-tree, memory, CPU-time and UI-surface containment around the sidecar and its descendants, while POSIX workers retain the resource-limit strategy described above. Neither path is a VM/container boundary, and the current native generation path explicitly reports `filesystem_isolation=false` and `network_isolation=false`.
 
 For these reasons this layer is described as **worker isolation with bounded execution controls**, not a universal hard sandbox. Strongly untrusted third-party native runtimes still require a future OS-specific filesystem/network sandbox policy.
 
