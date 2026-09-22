@@ -10,26 +10,32 @@ sys.path.insert(0, str(ROOT))
 
 from codetwin_ml.inference import InferenceRuntimeError  # noqa: E402
 from codetwin_ml.isolated import (  # noqa: E402
+    CLASSIFICATION_WORKER_TIMEOUT_SECONDS,
+    GENERATION_WORKER_TIMEOUT_SECONDS,
     MAX_WORKER_RESPONSE_BYTES,
-    WORKER_TIMEOUT_SECONDS,
+    run_isolated_generation,
     run_isolated_inference,
 )
 
 
 class IsolatedInferenceTests(unittest.TestCase):
-    def test_runs_trusted_worker_module_and_parses_result(self) -> None:
-        result = {
-            "action": "security_analysis",
-            "prediction": {"label": "review", "confidence": 0.8},
-        }
+    def _completed(self, result: dict) -> subprocess.CompletedProcess:
         response = json.dumps({"protocol": 1, "ok": True, "result": result}).encode("utf-8")
-        completed = subprocess.CompletedProcess(
+        return subprocess.CompletedProcess(
             args=[sys.executable, "-m", "codetwin_ml.worker"],
             returncode=0,
             stdout=response,
         )
 
-        with patch("codetwin_ml.isolated.subprocess.run", return_value=completed) as run:
+    def test_runs_trusted_classifier_worker_and_parses_result(self) -> None:
+        result = {
+            "action": "security_analysis",
+            "prediction": {"label": "review", "confidence": 0.8},
+        }
+        with patch(
+            "codetwin_ml.isolated.subprocess.run",
+            return_value=self._completed(result),
+        ) as run:
             actual = run_isolated_inference(
                 "security_analysis",
                 "eval(x)",
@@ -41,29 +47,47 @@ class IsolatedInferenceTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command, [sys.executable, "-m", "codetwin_ml.worker"])
         kwargs = run.call_args.kwargs
-        self.assertEqual(kwargs["timeout"], WORKER_TIMEOUT_SECONDS)
+        self.assertEqual(kwargs["timeout"], CLASSIFICATION_WORKER_TIMEOUT_SECONDS)
         self.assertEqual(kwargs["stderr"], subprocess.DEVNULL)
         self.assertEqual(kwargs["stdout"], subprocess.PIPE)
         request = json.loads(kwargs["input"].decode("utf-8"))
         self.assertEqual(request["protocol"], 1)
+        self.assertEqual(request["mode"], "classification")
         self.assertEqual(request["action"], "security_analysis")
         self.assertEqual(request["text"], "eval(x)")
         self.assertEqual(request["model_id"], "model-a")
         self.assertEqual(request["model_version"], "1.0.0")
+
+    def test_runs_generation_worker_with_separate_timeout(self) -> None:
+        result = {
+            "action": "repair_generation",
+            "generation": {"text": "candidate patch"},
+        }
+        with patch(
+            "codetwin_ml.isolated.subprocess.run",
+            return_value=self._completed(result),
+        ) as run:
+            actual = run_isolated_generation(
+                "repair_generation",
+                "review this file",
+                model_id="coder-a",
+                model_version="1.0.0",
+            )
+
+        self.assertEqual(actual, result)
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs["timeout"], GENERATION_WORKER_TIMEOUT_SECONDS)
+        request = json.loads(kwargs["input"].decode("utf-8"))
+        self.assertEqual(request["mode"], "generation")
+        self.assertEqual(request["action"], "repair_generation")
+        self.assertEqual(request["text"], "review this file")
 
     def test_worker_environment_excludes_unrelated_secrets(self) -> None:
         result = {
             "action": "security_analysis",
             "prediction": {"label": "review", "confidence": 0.8},
         }
-        response = json.dumps({"protocol": 1, "ok": True, "result": result}).encode("utf-8")
-        completed = subprocess.CompletedProcess(
-            args=[sys.executable, "-m", "codetwin_ml.worker"],
-            returncode=0,
-            stdout=response,
-        )
         model_cache = str(ROOT / "model-cache")
-
         with patch.dict(
             "codetwin_ml.isolated.os.environ",
             {
@@ -74,7 +98,10 @@ class IsolatedInferenceTests(unittest.TestCase):
                 "TEMP": str(ROOT / "tmp"),
             },
             clear=True,
-        ), patch("codetwin_ml.isolated.subprocess.run", return_value=completed) as run:
+        ), patch(
+            "codetwin_ml.isolated.subprocess.run",
+            return_value=self._completed(result),
+        ) as run:
             run_isolated_inference("security_analysis", "x")
 
         environment = run.call_args.kwargs["env"]
@@ -88,30 +115,36 @@ class IsolatedInferenceTests(unittest.TestCase):
         self.assertEqual(environment["MKL_NUM_THREADS"], "1")
         self.assertEqual(environment["NUMEXPR_NUM_THREADS"], "1")
 
-    def test_timeout_is_reported_as_runtime_error(self) -> None:
+    def test_classifier_timeout_is_reported_as_runtime_error(self) -> None:
         with patch(
             "codetwin_ml.isolated.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="worker", timeout=WORKER_TIMEOUT_SECONDS),
+            side_effect=subprocess.TimeoutExpired(
+                cmd="worker",
+                timeout=CLASSIFICATION_WORKER_TIMEOUT_SECONDS,
+            ),
         ):
             with self.assertRaisesRegex(InferenceRuntimeError, "exceeded"):
                 run_isolated_inference("security_analysis", "x")
 
+    def test_generation_timeout_is_reported_as_runtime_error(self) -> None:
+        with patch(
+            "codetwin_ml.isolated.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(
+                cmd="worker",
+                timeout=GENERATION_WORKER_TIMEOUT_SECONDS,
+            ),
+        ):
+            with self.assertRaisesRegex(InferenceRuntimeError, "exceeded"):
+                run_isolated_generation("repair_generation", "x")
+
     def test_nonzero_worker_exit_is_rejected(self) -> None:
-        completed = subprocess.CompletedProcess(
-            args=[sys.executable],
-            returncode=7,
-            stdout=b"",
-        )
+        completed = subprocess.CompletedProcess(args=[sys.executable], returncode=7, stdout=b"")
         with patch("codetwin_ml.isolated.subprocess.run", return_value=completed):
             with self.assertRaisesRegex(InferenceRuntimeError, "status 7"):
                 run_isolated_inference("security_analysis", "x")
 
     def test_malformed_worker_json_is_rejected(self) -> None:
-        completed = subprocess.CompletedProcess(
-            args=[sys.executable],
-            returncode=0,
-            stdout=b"not-json",
-        )
+        completed = subprocess.CompletedProcess(args=[sys.executable], returncode=0, stdout=b"not-json")
         with patch("codetwin_ml.isolated.subprocess.run", return_value=completed):
             with self.assertRaisesRegex(InferenceRuntimeError, "invalid JSON"):
                 run_isolated_inference("security_analysis", "x")
@@ -134,11 +167,7 @@ class IsolatedInferenceTests(unittest.TestCase):
                 "error": {"code": "inference_error", "message": "model unavailable"},
             }
         ).encode("utf-8")
-        completed = subprocess.CompletedProcess(
-            args=[sys.executable],
-            returncode=0,
-            stdout=response,
-        )
+        completed = subprocess.CompletedProcess(args=[sys.executable], returncode=0, stdout=response)
         with patch("codetwin_ml.isolated.subprocess.run", return_value=completed):
             with self.assertRaisesRegex(InferenceRuntimeError, "model unavailable"):
                 run_isolated_inference("security_analysis", "x")
