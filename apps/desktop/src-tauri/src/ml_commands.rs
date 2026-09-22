@@ -24,6 +24,7 @@ const MAX_GENERATION_INSTRUCTION_BYTES: usize = 4_096;
 const MAX_REQUEST_BYTES: usize = 131_072;
 const MAX_RESPONSE_BYTES: u64 = 1_048_576;
 const SIDECAR_TIMEOUT: Duration = Duration::from_secs(15);
+const GENERATION_SIDECAR_TIMEOUT: Duration = Duration::from_secs(105);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -337,6 +338,11 @@ fn sidecar_request(
     params: Value,
 ) -> Result<Value, String> {
     let request_id = format!("desktop-{}", time_nonce());
+    let request_timeout = if method == "generation.run" {
+        GENERATION_SIDECAR_TIMEOUT
+    } else {
+        SIDECAR_TIMEOUT
+    };
     let mut request = serde_json::to_vec(&json!({
         "id": request_id,
         "method": method,
@@ -383,12 +389,12 @@ fn sidecar_request(
             .map_err(|error| format!("cannot wait for ML sidecar: {error}"))?
         {
             Some(status) => break status,
-            None if started.elapsed() >= SIDECAR_TIMEOUT => {
+            None if started.elapsed() >= request_timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!(
                     "ML sidecar exceeded the {} second request timeout",
-                    SIDECAR_TIMEOUT.as_secs()
+                    request_timeout.as_secs()
                 ));
             }
             None => thread::sleep(Duration::from_millis(20)),
