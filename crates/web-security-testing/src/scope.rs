@@ -295,6 +295,14 @@ mod tests {
     }
 
     #[test]
+    fn strict_scope_policy_disables_timing_probes_even_for_legacy_configs() {
+        let mut value = config();
+        value.enable_timing_probes = true;
+        let policy = ScopePolicy::new(value).expect("scope");
+        assert!(!policy.config().enable_timing_probes);
+    }
+
+    #[test]
     fn authorization_is_mandatory() {
         let mut value = config();
         value.authorization_confirmed = false;
