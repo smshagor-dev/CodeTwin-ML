@@ -203,12 +203,16 @@ fn nextjs_exported_http_methods(value: &str) -> Vec<&'static str> {
 
     for method in METHODS {
         let function = format!("export function {method}(");
+        let spaced_function = format!("export function {method} (");
         let async_function = format!("export async function {method}(");
+        let spaced_async_function = format!("export async function {method} (");
         let const_handler = format!("export const {method} =");
         let let_handler = format!("export let {method} =");
         let var_handler = format!("export var {method} =");
         if normalized.contains(&function)
+            || normalized.contains(&spaced_function)
             || normalized.contains(&async_function)
+            || normalized.contains(&spaced_async_function)
             || normalized.contains(&const_handler)
             || normalized.contains(&let_handler)
             || normalized.contains(&var_handler)
