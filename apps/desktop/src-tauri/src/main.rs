@@ -51,7 +51,9 @@ use ml_commands::{
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
-    list_qa_artifacts, list_qa_frameworks, qa_discovery_history, run_qa_discovery,
+    approve_qa_execution_plan, cancel_qa_execution, create_qa_docker_plan,
+    list_qa_artifacts, list_qa_execution_plans, list_qa_frameworks, qa_discovery_history,
+    qa_docker_availability, qa_execution_history, run_qa_discovery, run_qa_docker_plan,
 };
 use repair_commands::{
     add_repair_file_replacement, apply_repair_plan, approve_repair_plan, create_repair_plan,
@@ -665,6 +667,13 @@ fn main() {
             list_qa_artifacts,
             list_qa_frameworks,
             qa_discovery_history,
+            qa_docker_availability,
+            create_qa_docker_plan,
+            approve_qa_execution_plan,
+            list_qa_execution_plans,
+            run_qa_docker_plan,
+            cancel_qa_execution,
+            qa_execution_history,
             ml_sidecar_health,
             ml_sidecar_capabilities,
             ml_models,
