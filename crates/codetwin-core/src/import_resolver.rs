@@ -194,7 +194,7 @@ mod tests {
     fn resolves_python_relative_modules_and_packages() {
         let available = BTreeMap::from([
             ("app/users.py".to_string(), "users-file".to_string()),
-            ("shared/routes/__init__.py".to_string(), "routes-package".to_string()),
+            ("app/shared/routes/__init__.py".to_string(), "routes-package".to_string()),
         ]);
 
         let direct = resolve_import(
