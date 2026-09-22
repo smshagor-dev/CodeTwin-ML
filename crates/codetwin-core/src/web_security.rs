@@ -1376,6 +1376,7 @@ mod tests {
                 &scan.id,
                 &WebEndpointInput {
                     url: "http://localhost:8080/search?q=a".to_string(),
+                    route_template: None,
                     method: "GET".to_string(),
                     depth: 1,
                     source: "html".to_string(),
@@ -1580,6 +1581,7 @@ app.post("/api/login/:tenant", (req, res) => {
                 &scan.id,
                 &WebEndpointInput {
                     url: "http://localhost:8080/api/login/acme".to_string(),
+                    route_template: Some("http://localhost:8080/api/login/%7Btenant%7D".to_string()),
                     method: "POST".to_string(),
                     depth: 0,
                     source: "source_route:express:src/server.ts:2".to_string(),
