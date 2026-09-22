@@ -24,6 +24,7 @@ const MIGRATION_0018: &str = include_str!("../migrations/0018_authorized_web_sec
 const MIGRATION_0019: &str = include_str!("../migrations/0019_guided_security_operator.sql");
 const MIGRATION_0020: &str = include_str!("../migrations/0020_security_fix_verify.sql");
 const MIGRATION_0021: &str = include_str!("../migrations/0021_security_remediation_campaigns.sql");
+const MIGRATION_0022: &str = include_str!("../migrations/0022_source_route_mapping.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -82,6 +83,7 @@ impl Database {
         self.apply_migration(19, MIGRATION_0019)?;
         self.apply_migration(20, MIGRATION_0020)?;
         self.apply_migration(21, MIGRATION_0021)?;
+        self.apply_migration(22, MIGRATION_0022)?;
         Ok(())
     }
 
@@ -120,12 +122,13 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites','web_security_scans','web_security_endpoints','web_security_findings','web_security_evidence','guided_security_sessions','guided_security_plan_items','guided_security_activity','guided_security_source_candidates','guided_security_finding_lifecycle','guided_security_retests','guided_security_comparisons','guided_security_fix_links','security_fix_attempts','security_fix_validation_results','security_fix_events',
                               'security_remediation_campaigns','security_remediation_campaign_findings',
-                              'security_remediation_campaign_relationships','security_remediation_campaign_events')",
+                              'security_remediation_campaign_relationships','security_remediation_campaign_events',
+                              'source_routes')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 50);
+        assert_eq!(count, 51);
     }
 
     #[test]
@@ -135,8 +138,8 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 21);
-        for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21] {
+        assert_eq!(count, 22);
+        for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22] {
             let applied: i64 = db
                 .connection()
                 .query_row(
@@ -176,7 +179,7 @@ mod tests {
                      DROP TABLE web_security_endpoints;
                      DROP TABLE web_security_scans;
                      DROP TABLE websites;
-                     DELETE FROM schema_migrations WHERE version IN (17,18,19,20,21);",
+                     DELETE FROM schema_migrations WHERE version IN (17,18,19,20,21,22);",
                 )
                 .expect("rewind dashboard and later migrations");
         }
@@ -239,7 +242,7 @@ mod tests {
                      DROP TABLE web_security_findings;
                      DROP TABLE web_security_endpoints;
                      DROP TABLE web_security_scans;
-                     DELETE FROM schema_migrations WHERE version IN (18,19,20,21);",
+                     DELETE FROM schema_migrations WHERE version IN (18,19,20,21,22);",
                 )
                 .expect("rewind web security and guided migrations");
         }
@@ -282,7 +285,7 @@ mod tests {
                      DROP TABLE guided_security_activity;
                      DROP TABLE guided_security_plan_items;
                      DROP TABLE guided_security_sessions;
-                     DELETE FROM schema_migrations WHERE version IN (19,20,21);",
+                     DELETE FROM schema_migrations WHERE version IN (19,20,21,22);",
                 )
                 .expect("rewind guided security migration");
         }
@@ -359,7 +362,7 @@ mod tests {
                      DROP TABLE security_fix_events;
                      DROP TABLE security_fix_validation_results;
                      DROP TABLE security_fix_attempts;
-                     DELETE FROM schema_migrations WHERE version IN (20,21);",
+                     DELETE FROM schema_migrations WHERE version IN (20,21,22);",
                 )
                 .expect("rewind security fix migration");
             db.connection()
