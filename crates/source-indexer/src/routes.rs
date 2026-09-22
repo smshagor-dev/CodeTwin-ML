@@ -552,9 +552,14 @@ fn flask_router_prefixes(
         let Some(child) = child else {
             return;
         };
-        let prefix = keyword_string(value, "url_prefix")
-            .map(|value| normalize_path(&value))
-            .unwrap_or_else(|| "/".to_string());
+        let explicit_prefix = keyword_string(value, "url_prefix")
+            .map(|value| normalize_path(&value));
+        if let Some(prefix) = explicit_prefix.as_ref() {
+            if prefixes.contains_key(child) {
+                prefixes.insert(child.to_string(), prefix.clone());
+            }
+        }
+        let prefix = explicit_prefix.unwrap_or_else(|| "/".to_string());
         let start = node.start_position();
         let end = node.end_position();
         mounts.push(IndexedRouteMount {
@@ -1178,7 +1183,7 @@ app.register_blueprint(api, url_prefix="/api")
             .find(|route| {
                 route.framework == "flask"
                     && route.http_method == "POST"
-                    && route.path_template == "/v1/users/<int:user_id>"
+                    && route.path_template == "/api/users/<int:user_id>"
             })
             .expect("flask typed route");
         assert!(user
