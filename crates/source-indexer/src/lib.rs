@@ -17,7 +17,7 @@ use walkdir::{DirEntry, WalkDir};
 const MAX_SOURCE_BYTES: u64 = 5 * 1024 * 1024;
 const TYPESCRIPT_DEFINITIONS_QUERY: &str = include_str!("../queries/typescript.scm");
 pub const INDEXER_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const QUERY_VERSION: &str = "definitions-v2-imports-v2-routes-v5-handlers-v1";
+pub const QUERY_VERSION: &str = "definitions-v2-imports-v2-routes-v6-handlers-v1";
 
 #[derive(Debug, Error)]
 pub enum IndexError {
@@ -84,14 +84,22 @@ pub struct IndexedRouteMount {
     pub parent_router: String,
     pub mounted_binding: String,
     pub prefix: String,
+    #[serde(default = "default_route_prefix_mode")]
+    pub prefix_mode: String,
     pub start_line: usize,
     pub end_line: usize,
+}
+
+fn default_route_prefix_mode() -> String {
+    "prepend".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedRoute {
     pub framework: String,
     pub router_name: String,
+    #[serde(default)]
+    pub router_prefix: String,
     pub http_method: String,
     pub path_template: String,
     pub handler_name: Option<String>,
