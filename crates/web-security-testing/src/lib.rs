@@ -3,6 +3,7 @@ mod discover;
 mod evidence;
 mod passive;
 mod operator;
+mod payload_policy;
 mod request;
 mod retest;
 mod scope;
@@ -37,6 +38,10 @@ pub struct ScopeConfig {
     pub excluded_paths: Vec<String>,
     pub max_crawl_depth: usize,
     pub max_requests: usize,
+    #[serde(default = "default_max_requests_per_endpoint")]
+    pub max_requests_per_endpoint: usize,
+    #[serde(default = "default_min_request_interval_ms")]
+    pub min_request_interval_ms: u64,
     pub concurrency: usize,
     pub timeout_ms: u64,
     pub response_limit_bytes: usize,
@@ -47,6 +52,14 @@ pub struct ScopeConfig {
     pub allow_private_networks: bool,
     pub enable_timing_probes: bool,
     pub authorization_confirmed: bool,
+}
+
+fn default_max_requests_per_endpoint() -> usize {
+    40
+}
+
+fn default_min_request_interval_ms() -> u64 {
+    100
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
