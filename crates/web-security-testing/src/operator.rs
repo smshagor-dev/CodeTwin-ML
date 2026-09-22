@@ -805,6 +805,8 @@ mod tests {
                 excluded_paths: vec!["/logout".into(), "/payment".into()],
                 max_crawl_depth: 2,
                 max_requests: 200,
+                max_requests_per_endpoint: 40,
+                min_request_interval_ms: 100,
                 concurrency: 2,
                 timeout_ms: 5_000,
                 response_limit_bytes: 128_000,
