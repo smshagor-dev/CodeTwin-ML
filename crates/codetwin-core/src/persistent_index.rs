@@ -778,7 +778,6 @@ fn persist_route_mounts(
                 &mount.parent_router,
                 &mount.mounted_binding,
                 &mount.prefix,
-                &mount.prefix_mode,
                 &mount.start_line.to_string(),
             ],
         );
