@@ -25,6 +25,7 @@ const MIGRATION_0019: &str = include_str!("../migrations/0019_guided_security_op
 const MIGRATION_0020: &str = include_str!("../migrations/0020_security_fix_verify.sql");
 const MIGRATION_0021: &str = include_str!("../migrations/0021_security_remediation_campaigns.sql");
 const MIGRATION_0022: &str = include_str!("../migrations/0022_source_route_mapping.sql");
+const MIGRATION_0023: &str = include_str!("../migrations/0023_route_prefix_semantics.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -84,6 +85,7 @@ impl Database {
         self.apply_migration(20, MIGRATION_0020)?;
         self.apply_migration(21, MIGRATION_0021)?;
         self.apply_migration(22, MIGRATION_0022)?;
+        self.apply_migration(23, MIGRATION_0023)?;
         Ok(())
     }
 
@@ -138,8 +140,8 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
             .expect("query migrations");
-        assert_eq!(count, 22);
-        for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22] {
+        assert_eq!(count, 23);
+        for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23] {
             let applied: i64 = db
                 .connection()
                 .query_row(
@@ -184,7 +186,7 @@ mod tests {
                      DROP TABLE web_security_endpoints;
                      DROP TABLE web_security_scans;
                      DROP TABLE websites;
-                     DELETE FROM schema_migrations WHERE version IN (17,18,19,20,21,22);",
+                     DELETE FROM schema_migrations WHERE version IN (17,18,19,20,21,22,23,23,23,23,23);",
                 )
                 .expect("rewind dashboard and later migrations");
         }
@@ -252,7 +254,7 @@ mod tests {
                      DROP TABLE web_security_findings;
                      DROP TABLE web_security_endpoints;
                      DROP TABLE web_security_scans;
-                     DELETE FROM schema_migrations WHERE version IN (18,19,20,21,22);",
+                     DELETE FROM schema_migrations WHERE version IN (18,19,20,21,22,23,23,23,23);",
                 )
                 .expect("rewind web security and guided migrations");
         }
@@ -301,7 +303,7 @@ mod tests {
                      DROP TABLE guided_security_activity;
                      DROP TABLE guided_security_plan_items;
                      DROP TABLE guided_security_sessions;
-                     DELETE FROM schema_migrations WHERE version IN (19,20,21,22);",
+                     DELETE FROM schema_migrations WHERE version IN (19,20,21,22,23,23,23);",
                 )
                 .expect("rewind guided security migration");
         }
@@ -384,7 +386,7 @@ mod tests {
                      DROP TABLE security_fix_events;
                      DROP TABLE security_fix_validation_results;
                      DROP TABLE security_fix_attempts;
-                     DELETE FROM schema_migrations WHERE version IN (20,21,22);",
+                     DELETE FROM schema_migrations WHERE version IN (20,21,22,23,23);",
                 )
                 .expect("rewind security fix migration");
             db.connection()
@@ -517,7 +519,7 @@ mod tests {
                      DROP TABLE security_remediation_campaign_relationships;
                      DROP TABLE security_remediation_campaign_findings;
                      DROP TABLE security_remediation_campaigns;
-                     DELETE FROM schema_migrations WHERE version IN (21,22);",
+                     DELETE FROM schema_migrations WHERE version IN (21,22,23);",
                 )
                 .expect("rewind campaign migration while preserving schema-20 data");
         }
@@ -586,7 +588,7 @@ mod tests {
                      DROP TABLE source_route_mounts;
                      DROP TABLE source_handler_inputs;
                      DROP TABLE source_routes;
-                     DELETE FROM schema_migrations WHERE version=22;",
+                     DELETE FROM schema_migrations WHERE version IN (22,23);",
                 )
                 .expect("rewind source route mapping migration");
         }
