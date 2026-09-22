@@ -37,11 +37,22 @@ pub fn extract_routes(
             && left.router_name == right.router_name
     });
     mounts.sort_by(|left, right| {
-        (&left.prefix, &left.mounted_binding, left.start_line)
-            .cmp(&(&right.prefix, &right.mounted_binding, right.start_line))
+        (
+            &left.parent_router,
+            &left.prefix,
+            &left.mounted_binding,
+            left.start_line,
+        )
+            .cmp(&(
+                &right.parent_router,
+                &right.prefix,
+                &right.mounted_binding,
+                right.start_line,
+            ))
     });
     mounts.dedup_by(|left, right| {
         left.framework == right.framework
+            && left.parent_router == right.parent_router
             && left.mounted_binding == right.mounted_binding
             && left.prefix == right.prefix
             && left.start_line == right.start_line
