@@ -249,31 +249,7 @@ pub enum PlanError {
 }
 
 pub fn current_backend_info() -> ExecutionBackendInfo {
-    #[cfg(windows)]
-    {
-        let mut info = backend::current_backend_info();
-        info.limitations.retain(|item| {
-            !item.contains("restricted-token/AppContainer identity isolation is not implemented")
-                && !item.contains("filesystem/write isolation is not implemented")
-        });
-        info.limitations.insert(
-            0,
-            "the crate-level Windows execution path now builds a bounded, hash-pinned, project-local dependency-complete mirror and runs from that mirror with a WRITE_RESTRICTED low-integrity primary token; filesystem_isolation remains false until adversarial Windows validation proves the remaining host/desktop escape boundaries".to_string(),
-        );
-        info.limitations.insert(
-            1,
-            "declared external runtime/toolchain roots can be hash-pinned and re-attested before launch, but undeclared host reads are not denied and the declared trees are not held immutable during execution".to_string(),
-        );
-        info.limitations.insert(
-            2,
-            "the restricted runner still shares the caller desktop/window station; separate desktop isolation is pending before public execution".to_string(),
-        );
-        info
-    }
-    #[cfg(not(windows))]
-    {
-        backend::current_backend_info()
-    }
+    backend::current_backend_info()
 }
 
 pub fn build_execution_plan(
