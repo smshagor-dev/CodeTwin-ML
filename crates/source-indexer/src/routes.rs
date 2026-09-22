@@ -114,6 +114,7 @@ fn extract_nextjs_app_routes(
         routes.push(IndexedRoute {
             framework: "nextjs".to_string(),
             router_name: "app_router".to_string(),
+            router_prefix: String::new(),
             http_method: method.to_string(),
             path_template: path_template.clone(),
             handler_name: Some(method.to_string()),
@@ -228,7 +229,11 @@ fn extract_express_routes(
             .last()
             .and_then(|value| handler_reference(source, *value));
 
-        let full_path = combine_paths(prefixes.get(&router).map(String::as_str), &path);
+        let router_prefix = prefixes.get(&router).cloned().unwrap_or_default();
+        let full_path = combine_paths(
+            (!router_prefix.is_empty()).then_some(router_prefix.as_str()),
+            &path,
+        );
         let mut parameters = path_parameters(&full_path);
         for handler_arg in &handler_args {
             let handler_node = if is_function_like(*handler_arg) {
@@ -256,6 +261,7 @@ fn extract_express_routes(
         routes.push(IndexedRoute {
             framework: "express".to_string(),
             router_name: router,
+            router_prefix,
             http_method: method.to_ascii_uppercase(),
             path_template: full_path,
             handler_name,
@@ -377,6 +383,7 @@ fn express_mount_prefixes(
             parent_router,
             mounted_binding: child_router.to_string(),
             prefix: normalize_path(&prefix),
+            prefix_mode: "prepend".to_string(),
             start_line: start.row + 1,
             end_line: end.row + 1,
         });
@@ -507,6 +514,7 @@ fn extract_fastapi_routes(
                 continue;
             };
             let prefix = router_prefixes.get(&router).map(String::as_str);
+            let router_prefix = prefix.unwrap_or("").to_string();
             let full_path = combine_paths(prefix, &path);
             let mut parameters = path_parameters(&full_path);
             parameters.extend(fastapi_function_parameters(
@@ -528,6 +536,7 @@ fn extract_fastapi_routes(
             routes.push(IndexedRoute {
                 framework: "fastapi".to_string(),
                 router_name: router,
+                router_prefix,
                 http_method: method.to_ascii_uppercase(),
                 path_template: full_path,
                 handler_name: handler_name.clone(),
@@ -579,7 +588,11 @@ fn extract_flask_routes(
             else {
                 continue;
             };
-            let full_path = combine_paths(prefixes.get(&router).map(String::as_str), &path);
+            let router_prefix = prefixes.get(&router).cloned().unwrap_or_default();
+            let full_path = combine_paths(
+                (!router_prefix.is_empty()).then_some(router_prefix.as_str()),
+                &path,
+            );
             let mut parameters = path_parameters(&full_path);
             normalize_parameters(&mut parameters);
             let start = decorator.start_position();
@@ -588,6 +601,7 @@ fn extract_flask_routes(
                 routes.push(IndexedRoute {
                     framework: "flask".to_string(),
                     router_name: router.clone(),
+                    router_prefix: router_prefix.clone(),
                     http_method: method,
                     path_template: full_path.clone(),
                     handler_name: handler_name.clone(),
@@ -666,6 +680,11 @@ fn flask_router_prefixes(
                 prefixes.insert(child.to_string(), prefix.clone());
             }
         }
+        let prefix_mode = if explicit_prefix.is_some() {
+            "override_router_prefix"
+        } else {
+            "prepend"
+        };
         let prefix = explicit_prefix.unwrap_or_else(|| "/".to_string());
         let start = node.start_position();
         let end = node.end_position();
@@ -674,6 +693,7 @@ fn flask_router_prefixes(
             parent_router: parent_router.to_string(),
             mounted_binding: child.to_string(),
             prefix,
+            prefix_mode: prefix_mode.to_string(),
             start_line: start.row + 1,
             end_line: end.row + 1,
         });
@@ -745,7 +765,8 @@ fn extract_laravel_routes(
         let Some(path) = first_quoted_string(&tail[open + 1..]) else {
             return;
         };
-        let full_path = normalize_path(&path);
+        let group_prefix = laravel_ancestor_prefix(source, node);
+        let full_path = combine_paths(group_prefix.as_deref(), &path);
         let mut parameters = path_parameters(&full_path);
         normalize_parameters(&mut parameters);
         let start = node.start_position();
@@ -753,6 +774,7 @@ fn extract_laravel_routes(
         routes.push(IndexedRoute {
             framework: "laravel".to_string(),
             router_name: "Route".to_string(),
+            router_prefix: group_prefix.clone().unwrap_or_default(),
             http_method: method.to_ascii_uppercase(),
             path_template: full_path,
             handler_name: None,
@@ -763,6 +785,58 @@ fn extract_laravel_routes(
         });
     });
     (routes, Vec::new())
+}
+
+fn laravel_ancestor_prefix(source: &str, node: Node<'_>) -> Option<String> {
+    let mut prefixes = Vec::new();
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        let Some(value) = text(source, parent) else {
+            current = parent.parent();
+            continue;
+        };
+        if parent.kind().contains("call")
+            && (value.contains("->group(") || value.contains("Route::group("))
+        {
+            if let Some(prefix) = laravel_chain_prefix(value) {
+                prefixes.push(prefix);
+            }
+        }
+        current = parent.parent();
+    }
+    if prefixes.is_empty() {
+        return None;
+    }
+    prefixes.reverse();
+    let mut combined = String::new();
+    for prefix in prefixes {
+        let next = if combined.is_empty() {
+            combine_paths(None, &prefix)
+        } else {
+            combine_paths(Some(combined.as_str()), &prefix)
+        };
+        combined = next;
+    }
+    Some(combined)
+}
+
+fn laravel_chain_prefix(value: &str) -> Option<String> {
+    if let Some(index) = value.find("->prefix(") {
+        return first_quoted_string(&value[index + "->prefix(".len()..])
+            .map(|prefix| normalize_path(&prefix));
+    }
+    if value.contains("Route::group(") {
+        let compact = value.split_whitespace().collect::<String>();
+        for quote in ['\'', '"'] {
+            let marker = format!("{quote}prefix{quote}=>{quote}");
+            if let Some(index) = compact.find(&marker) {
+                let tail = &compact[index + marker.len()..];
+                let end = tail.find(quote)?;
+                return Some(normalize_path(&tail[..end]));
+            }
+        }
+    }
+    None
 }
 
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
@@ -872,6 +946,7 @@ fn fastapi_router_prefixes(
                     parent_router: parent_router.to_string(),
                     mounted_binding: child.to_string(),
                     prefix: normalize_path(&prefix),
+                    prefix_mode: "prepend".to_string(),
                     start_line: start.row + 1,
                     end_line: end.row + 1,
                 });
@@ -883,6 +958,7 @@ fn fastapi_router_prefixes(
                     parent_router: parent_router.to_string(),
                     mounted_binding: child.to_string(),
                     prefix: "/".to_string(),
+                    prefix_mode: "prepend".to_string(),
                     start_line: start.row + 1,
                     end_line: end.row + 1,
                 });
@@ -1372,6 +1448,67 @@ app.register_blueprint(api, url_prefix = "/api")
                 && mount.parent_router == "app"
                 && mount.mounted_binding == "api"
                 && mount.prefix == "/api"
+        }));
+    }
+
+    #[test]
+    fn composes_nested_laravel_route_group_prefixes() {
+        let source = r#"<?php
+use Illuminate\Support\Facades\Route;
+
+Route::prefix('api')->group(function () {
+    Route::middleware('auth')->prefix('v1')->group(function () {
+        Route::get('/users/{id}', [UserController::class, 'show']);
+    });
+});
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "PHP",
+            "routes/api.php",
+            source,
+            tree.root_node(),
+        );
+        let route = routes
+            .iter()
+            .find(|route| {
+                route.framework == "laravel"
+                    && route.http_method == "GET"
+                    && route.path_template == "/api/v1/users/{id}"
+            })
+            .expect("nested Laravel group route");
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "id" && parameter.location == "path"));
+    }
+
+    #[test]
+    fn composes_laravel_array_group_prefix() {
+        let source = r#"<?php
+Route::group(['prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+});
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, _handler_inputs) = extract_routes(
+            "PHP",
+            "routes/web.php",
+            source,
+            tree.root_node(),
+        );
+        assert!(routes.iter().any(|route| {
+            route.framework == "laravel"
+                && route.http_method == "POST"
+                && route.path_template == "/admin/users"
         }));
     }
 

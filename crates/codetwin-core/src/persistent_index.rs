@@ -696,14 +696,14 @@ fn persist_routes(
         connection.execute(
             "INSERT INTO source_routes(
                id, project_id, file_id, symbol_id, handler_file_id, handler_symbol_id,
-               framework, router_name, http_method, path_template, handler_name,
+               framework, router_name, router_prefix, http_method, path_template, handler_name,
                declared_parameter_names_json, declared_parameter_locations_json,
                declared_request_content_type, parameter_names_json, parameter_locations_json,
                request_content_type, source_content_hash, start_line, end_line,
                last_index_run_id, is_active
              ) VALUES (
                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-               ?15, ?16, ?17, ?18, ?19, ?20, ?21, 1
+               ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, 1
              )
              ON CONFLICT(id) DO UPDATE SET
                symbol_id = excluded.symbol_id,
@@ -711,6 +711,7 @@ fn persist_routes(
                handler_symbol_id = excluded.handler_symbol_id,
                framework = excluded.framework,
                router_name = excluded.router_name,
+               router_prefix = excluded.router_prefix,
                handler_name = excluded.handler_name,
                declared_parameter_names_json = excluded.declared_parameter_names_json,
                declared_parameter_locations_json = excluded.declared_parameter_locations_json,
@@ -732,6 +733,7 @@ fn persist_routes(
                 symbol_id,
                 route.framework,
                 route.router_name,
+                route.router_prefix,
                 route.http_method,
                 route.path_template,
                 route.handler_name,
@@ -782,13 +784,14 @@ fn persist_route_mounts(
         connection.execute(
             "INSERT INTO source_route_mounts(
                id, project_id, source_file_id, framework, parent_router, mounted_binding,
-               prefix, start_line, end_line, last_index_run_id, is_active
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1)
+               prefix, prefix_mode, start_line, end_line, last_index_run_id, is_active
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1)
              ON CONFLICT(id) DO UPDATE SET
                framework = excluded.framework,
                parent_router = excluded.parent_router,
                mounted_binding = excluded.mounted_binding,
                prefix = excluded.prefix,
+               prefix_mode = excluded.prefix_mode,
                end_line = excluded.end_line,
                last_index_run_id = excluded.last_index_run_id,
                is_active = 1,
@@ -801,6 +804,7 @@ fn persist_route_mounts(
                 mount.parent_router,
                 mount.mounted_binding,
                 mount.prefix,
+                mount.prefix_mode,
                 to_i64(mount.start_line),
                 to_i64(mount.end_line),
                 run_id,
@@ -1621,6 +1625,7 @@ mod tests {
         )
         .expect("main");
         fs::write(repository.path().join("main.py"), "import os\n").expect("python");
+        fs::write(repository.path().join("main.rs"), "use crate::local;\n").expect("rust");
         let database = Database::open_in_memory().expect("database");
         let summary = ProjectIndexService::new(&database)
             .index_project(repository.path())
