@@ -39,6 +39,9 @@ impl ScopePolicy {
         config.response_limit_bytes = config.response_limit_bytes.clamp(16_384, 2_097_152);
         config.redirect_limit = config.redirect_limit.min(8);
         config.retry_limit = config.retry_limit.min(2);
+        // Timing/delay probes are intentionally disabled by the strict active-payload policy.
+        // Keep the field for backward-compatible persisted configs, but never execute them.
+        config.enable_timing_probes = false;
 
         let target = normalize_url(&config.target_url)?;
         let target_host = target
