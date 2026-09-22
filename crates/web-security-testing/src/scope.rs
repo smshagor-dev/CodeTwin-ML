@@ -206,10 +206,9 @@ fn normalize_hosts(values: &[String]) -> Vec<String> {
 fn normalize_paths(values: &[String]) -> Result<Vec<String>, ScopeError> {
     let mut normalized = Vec::with_capacity(values.len());
     for value in values {
-        normalized.push(
-            canonicalize_scope_path(value)
-                .map_err(|message| ScopeError::InvalidTarget(format!("invalid scope path: {message}")))?,
-        );
+        normalized.push(canonicalize_scope_path(value).map_err(|message| {
+            ScopeError::InvalidTarget(format!("invalid scope path: {message}"))
+        })?);
     }
     normalized.sort();
     normalized.dedup();
