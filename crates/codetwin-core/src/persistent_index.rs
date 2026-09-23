@@ -2091,9 +2091,10 @@ class StoreUserRequest extends FormRequest
             )
             .expect("grouped-import route");
         assert_eq!(handler_name.as_deref(), Some("Users.store"));
-        let locations: BTreeMap<String, String> =
-            serde_json::from_str(&locations_json).expect("locations");
-        assert_eq!(locations.get("email").map(String::as_str), Some("body"));
+        let locations = super::parse_parameter_locations_json(&locations_json);
+        assert!(locations
+            .get("email")
+            .is_some_and(|values| values.iter().any(|value| value == "body")));
     }
 
     #[test]
@@ -2195,13 +2196,11 @@ class StoreUserRequest extends FormRequest
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .expect("store route");
-        let store_locations: BTreeMap<String, String> =
-            serde_json::from_str(&store_locations_json).expect("store locations");
+        let store_locations = super::parse_parameter_locations_json(&store_locations_json);
         for field in ["email", "password", "profile.name"] {
-            assert_eq!(
-                store_locations.get(field).map(String::as_str),
-                Some("body")
-            );
+            assert!(store_locations
+                .get(field)
+                .is_some_and(|values| values.iter().any(|value| value == "body")));
         }
         assert!(store_content_type.is_none());
 
@@ -2219,13 +2218,11 @@ class StoreUserRequest extends FormRequest
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .expect("JSON store route");
-        let json_locations: BTreeMap<String, String> =
-            serde_json::from_str(&json_locations_json).expect("JSON locations");
+        let json_locations = super::parse_parameter_locations_json(&json_locations_json);
         for field in ["email", "password", "profile.name"] {
-            assert_eq!(
-                json_locations.get(field).map(String::as_str),
-                Some("json")
-            );
+            assert!(json_locations
+                .get(field)
+                .is_some_and(|values| values.iter().any(|value| value == "json")));
         }
         assert_eq!(json_content_type.as_deref(), Some("application/json"));
     }
@@ -2313,14 +2310,16 @@ class UserController
             .expect("resolved Laravel source route");
         assert_eq!(handler_name.as_deref(), Some("UserController.store"));
         assert!(handler_file_id.is_some());
-        let locations: BTreeMap<String, String> =
-            serde_json::from_str(&locations_json).expect("parameter locations");
-        assert_eq!(locations.get("email").map(String::as_str), Some("json"));
-        assert_eq!(locations.get("source").map(String::as_str), Some("query"));
-        assert_eq!(
-            locations.get("X-Tenant").map(String::as_str),
-            Some("header")
-        );
+        let locations = super::parse_parameter_locations_json(&locations_json);
+        assert!(locations
+            .get("email")
+            .is_some_and(|values| values.iter().any(|value| value == "json")));
+        assert!(locations
+            .get("source")
+            .is_some_and(|values| values.iter().any(|value| value == "query")));
+        assert!(locations
+            .get("X-Tenant")
+            .is_some_and(|values| values.iter().any(|value| value == "header")));
         assert_eq!(content_type.as_deref(), Some("application/json"));
     }
     #[test]
