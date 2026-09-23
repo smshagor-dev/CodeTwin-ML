@@ -664,11 +664,13 @@ fn persist_handler_inputs(
                 &handler.start_line.to_string(),
             ],
         );
-        let parameter_names: Vec<String> = handler
+        let mut parameter_names: Vec<String> = handler
             .parameters
             .iter()
             .map(|parameter| parameter.name.clone())
             .collect();
+        parameter_names.sort();
+        parameter_names.dedup();
         let parameter_locations = parameter_locations_from_indexed(&handler.parameters);
         connection.execute(
             "INSERT INTO source_handler_inputs(
@@ -724,11 +726,13 @@ fn persist_routes(
                 &route.start_line.to_string(),
             ],
         );
-        let parameter_names: Vec<String> = route
+        let mut parameter_names: Vec<String> = route
             .parameters
             .iter()
             .map(|parameter| parameter.name.clone())
             .collect();
+        parameter_names.sort();
+        parameter_names.dedup();
         let parameter_locations = parameter_locations_from_indexed(&route.parameters);
         let parameter_names_json = serde_json::to_string(&parameter_names)
             .unwrap_or_else(|_| "[]".to_string());
