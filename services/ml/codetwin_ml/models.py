@@ -362,13 +362,27 @@ def load_package(package_path: Path | str) -> tuple[Path, dict[str, Any]]:
         raise ModelManifestError(f"cannot read model.json: {error}") from error
     manifest = validate_manifest(raw)
     for artifact in manifest["artifacts"]:
-        relative = _safe_relative_path(artifact["path"])
-        path = _canonical_package_file(root, relative)
-        if path.stat().st_size != artifact["size_bytes"]:
-            raise ModelIntegrityError(f"artifact size mismatch: {artifact['path']}")
-        if _sha256(path) != artifact["sha256"]:
-            raise ModelIntegrityError(f"artifact sha256 mismatch: {artifact['path']}")
+        _verify_artifact_bytes(root, artifact, context="package")
     return root, manifest
+
+
+def _verify_artifact_bytes(
+    root: Path,
+    artifact: dict[str, Any],
+    *,
+    context: str,
+) -> Path:
+    relative = _safe_relative_path(artifact["path"])
+    path = _canonical_package_file(root, relative)
+    if path.stat().st_size != artifact["size_bytes"]:
+        raise ModelIntegrityError(
+            f"{context} artifact size mismatch: {artifact['path']}"
+        )
+    if _sha256(path) != artifact["sha256"]:
+        raise ModelIntegrityError(
+            f"{context} artifact sha256 mismatch: {artifact['path']}"
+        )
+    return path
 
 
 def _package_digest(manifest: dict[str, Any]) -> str:
@@ -436,6 +450,10 @@ def install_model(
             destination = stage.joinpath(*relative.parts)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
+
+        for artifact in manifest["artifacts"]:
+            _verify_artifact_bytes(stage, artifact, context="staged")
+
         metadata = {
             **manifest,
             "package_digest": package_digest,
@@ -482,10 +500,7 @@ def _installed_ready(model_dir: Path, metadata: dict[str, Any]) -> bool:
         return False
     try:
         for artifact in manifest["artifacts"]:
-            relative = _safe_relative_path(artifact["path"])
-            path = _canonical_package_file(model_dir, relative)
-            if path.stat().st_size != artifact["size_bytes"] or _sha256(path) != artifact["sha256"]:
-                return False
+            _verify_artifact_bytes(model_dir, artifact, context="installed")
     except (OSError, ModelError):
         return False
     return True
