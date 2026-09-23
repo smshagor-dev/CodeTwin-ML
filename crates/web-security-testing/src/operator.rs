@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::sync::{atomic::AtomicBool, Arc};
 
@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    fingerprint, run_authorized_scan_with_seeds, AuthContext, EndpointObservation,
-    FindingObservation, ScanConfig, ScanError, ScopePolicy, SourceEndpointSeed,
+    fingerprint, run_authorized_scan_with_seeds, single_parameter_location, AuthContext,
+    EndpointObservation, FindingObservation, ParameterLocations, ScanConfig, ScanError,
+    ScopePolicy, SourceEndpointSeed,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,7 +79,7 @@ pub struct ApplicationRoute {
     pub method: String,
     pub source: String,
     pub parameters: Vec<String>,
-    pub parameter_locations: BTreeMap<String, String>,
+    pub parameter_locations: ParameterLocations,
     pub content_type: Option<String>,
     pub status_code: Option<u16>,
     pub cookies: Vec<String>,
@@ -395,11 +396,11 @@ pub fn build_test_plan(
         }
 
         for parameter in &endpoint.parameter_names {
-            let location = endpoint
-                .parameter_locations
-                .get(parameter)
-                .map(String::as_str)
-                .unwrap_or(if endpoint.method == "GET" { "query" } else { "form" });
+            let Some(location) =
+                single_parameter_location(&endpoint.parameter_locations, parameter)
+            else {
+                continue;
+            };
             let (risk, selected, skip_reason) = mutation_policy(endpoint, config, &environment);
 
             if config.checks.sql_injection && injection_candidate(endpoint, location) {
@@ -590,11 +591,11 @@ pub(crate) fn check_applicable(
     parameter: &str,
     category: &str,
 ) -> bool {
-    let location = endpoint
-        .parameter_locations
-        .get(parameter)
-        .map(String::as_str)
-        .unwrap_or(if endpoint.method == "GET" { "query" } else { "form" });
+    let Some(location) =
+        single_parameter_location(&endpoint.parameter_locations, parameter)
+    else {
+        return false;
+    };
     match category {
         "sql_injection" => injection_candidate(endpoint, location),
         "xss" => xss_candidate(endpoint, location),
@@ -801,7 +802,10 @@ mod tests {
             depth: 1,
             source: source.into(),
             parameter_names: vec![parameter.into()],
-            parameter_locations: BTreeMap::from([(parameter.into(), location.into())]),
+            parameter_locations: ParameterLocations::from([(
+                parameter.into(),
+                vec![location.into()],
+            )]),
             response_header_names: vec![],
             cookie_names: vec![],
             content_type: Some(if source == "openapi" { "application/json" } else { "text/html" }.into()),
