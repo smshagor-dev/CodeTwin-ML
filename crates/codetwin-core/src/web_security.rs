@@ -2022,6 +2022,83 @@ mod tests {
     }
 
     #[test]
+    fn repeated_endpoint_persistence_merges_metadata_instead_of_replacing_it() {
+        let database = Database::open_in_memory().expect("database");
+        let store = AuthorizedWebSecurityStore::new(&database);
+        let scan = store.create_scan(&create()).expect("scan");
+        let url = "http://localhost:8080/api/items/1?id=1";
+
+        store
+            .record_endpoint(
+                &scan.id,
+                &WebEndpointInput {
+                    url: url.to_string(),
+                    route_template: None,
+                    method: "GET".to_string(),
+                    depth: 2,
+                    source: "html".to_string(),
+                    parameter_names: vec!["id".to_string()],
+                    parameter_locations: std::collections::BTreeMap::from([(
+                        "id".to_string(),
+                        vec!["query".to_string()],
+                    )]),
+                    response_header_names: vec!["content-type".to_string()],
+                    cookie_names: vec!["session".to_string()],
+                    content_type: Some("text/html".to_string()),
+                    status_code: Some(200),
+                    redirect_to: None,
+                },
+            )
+            .expect("first endpoint");
+
+        let merged = store
+            .record_endpoint(
+                &scan.id,
+                &WebEndpointInput {
+                    url: url.to_string(),
+                    route_template: Some(
+                        "http://localhost:8080/api/items/{id}?id=1".to_string(),
+                    ),
+                    method: "GET".to_string(),
+                    depth: 0,
+                    source: "source_route:express:src/routes.ts:10".to_string(),
+                    parameter_names: vec!["id".to_string(), "filter".to_string()],
+                    parameter_locations: std::collections::BTreeMap::from([
+                        ("id".to_string(), vec!["path".to_string()]),
+                        ("filter".to_string(), vec!["query".to_string()]),
+                    ]),
+                    response_header_names: Vec::new(),
+                    cookie_names: Vec::new(),
+                    content_type: Some("application/json".to_string()),
+                    status_code: None,
+                    redirect_to: None,
+                },
+            )
+            .expect("merged endpoint");
+
+        assert_eq!(store.list_endpoints(&scan.id, 20).expect("endpoints").len(), 1);
+        assert_eq!(merged.depth, 0);
+        assert!(merged.source.starts_with("source_route:"));
+        assert_eq!(merged.status_code, Some(200));
+        assert_eq!(merged.content_type.as_deref(), Some("application/json"));
+        assert_eq!(
+            merged.parameter_names,
+            vec!["filter".to_string(), "id".to_string()]
+        );
+        assert_eq!(
+            merged.parameter_locations.get("id"),
+            Some(&vec!["path".to_string(), "query".to_string()])
+        );
+        assert_eq!(
+            merged.parameter_locations.get("filter"),
+            Some(&vec!["query".to_string()])
+        );
+        assert_eq!(merged.response_header_names, vec!["content-type"]);
+        assert_eq!(merged.cookie_names, vec!["session"]);
+        assert!(merged.route_template.is_some());
+    }
+
+    #[test]
     fn interrupted_scans_are_recovered_as_failed() {
         let database = Database::open_in_memory().expect("database");
         let store = AuthorizedWebSecurityStore::new(&database);
