@@ -3101,17 +3101,29 @@ fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
     let mut fields = Vec::new();
     let mut pending_rename: Option<String> = None;
     let mut skip_next = false;
-    for line in raw[open + 1..close].lines() {
-        let line = line.split("//").next().unwrap_or("").trim();
+    let mut serde_attribute: Option<String> = None;
+
+    for raw_line in raw[open + 1..close].lines() {
+        let line = raw_line.split("//").next().unwrap_or("").trim();
         if line.is_empty() {
             continue;
         }
-        if line.starts_with("#[serde(") {
-            if line.contains("skip") || line.contains("flatten") {
-                skip_next = true;
+
+        if let Some(attribute) = serde_attribute.as_mut() {
+            attribute.push(' ');
+            attribute.push_str(line);
+            if line.ends_with(']') {
+                rust_apply_field_serde_attribute(attribute, &mut pending_rename, &mut skip_next);
+                serde_attribute = None;
             }
-            if let Some(rename) = rust_serde_rename(line) {
-                pending_rename = Some(rename);
+            continue;
+        }
+
+        if line.starts_with("#[serde(") {
+            if line.ends_with(']') {
+                rust_apply_field_serde_attribute(line, &mut pending_rename, &mut skip_next);
+            } else {
+                serde_attribute = Some(line.to_string());
             }
             continue;
         }
@@ -3161,27 +3173,62 @@ fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
 }
 
 fn rust_preceding_serde_rename_all(source: &str, struct_row: usize) -> Option<String> {
-    let lines: Vec<&str> = source.lines().collect();
-    if struct_row == 0 || struct_row > lines.len() {
-        return None;
-    }
-    let mut row = struct_row;
-    while row > 0 {
-        row -= 1;
-        let line = lines[row].trim();
-        if line.is_empty() {
-            continue;
-        }
-        if !line.starts_with("#[") {
-            break;
-        }
-        if line.starts_with("#[serde(") {
-            if let Some(value) = rust_serde_rename_all(line) {
+    for attribute in rust_preceding_attributes(source, struct_row) {
+        if attribute.starts_with("#[serde(") {
+            if let Some(value) = rust_serde_rename_all(&attribute) {
                 return Some(value);
             }
         }
     }
     None
+}
+
+fn rust_preceding_attributes(source: &str, row: usize) -> Vec<String> {
+    let lines: Vec<&str> = source.lines().collect();
+    if row == 0 || row > lines.len() {
+        return Vec::new();
+    }
+
+    let mut attributes = Vec::new();
+    let mut cursor = row;
+    while cursor > 0 {
+        cursor -= 1;
+        let line = lines[cursor].trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if line.starts_with("#[") && line.ends_with(']') {
+            attributes.push(line.to_string());
+            continue;
+        }
+
+        if line.ends_with(']') {
+            let mut parts = vec![line.to_string()];
+            let mut found_start = false;
+            while cursor > 0 {
+                cursor -= 1;
+                let previous = lines[cursor].trim();
+                if previous.is_empty() {
+                    continue;
+                }
+                parts.push(previous.to_string());
+                if previous.starts_with("#[") {
+                    found_start = true;
+                    break;
+                }
+            }
+            if !found_start {
+                break;
+            }
+            parts.reverse();
+            attributes.push(parts.join(" "));
+            continue;
+        }
+
+        break;
+    }
+    attributes
 }
 
 fn rust_serde_rename_all(attribute: &str) -> Option<String> {
@@ -3263,12 +3310,32 @@ fn rust_capitalize(value: &str) -> String {
     output
 }
 
+fn rust_apply_field_serde_attribute(
+    attribute: &str,
+    pending_rename: &mut Option<String>,
+    skip_next: &mut bool,
+) {
+    if attribute.contains("skip") || attribute.contains("flatten") {
+        *skip_next = true;
+    }
+    if let Some(rename) = rust_serde_rename(attribute) {
+        *pending_rename = Some(rename);
+    }
+}
+
 fn rust_serde_rename(attribute: &str) -> Option<String> {
     let marker = "rename";
-    let index = attribute.find(marker)?;
-    let tail = &attribute[index + marker.len()..];
-    let equals = tail.find('=')?;
-    first_quoted_string(&tail[equals + 1..])
+    let mut offset = 0usize;
+    while let Some(relative) = attribute[offset..].find(marker) {
+        let index = offset + relative;
+        let tail = &attribute[index + marker.len()..];
+        let trimmed = tail.trim_start();
+        if let Some(value) = trimmed.strip_prefix('=') {
+            return first_quoted_string(value);
+        }
+        offset = index + marker.len();
+    }
+    None
 }
 
 fn rust_handler_inputs(
