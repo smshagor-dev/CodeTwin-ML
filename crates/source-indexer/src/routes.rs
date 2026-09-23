@@ -5716,6 +5716,65 @@ func fetch(client *Client) {
     }
 
     #[test]
+    fn honors_multiline_serde_container_and_field_attributes() {
+        let source = r#"
+use axum::{routing::post, Json, Router};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+#[serde(
+    rename_all = "camelCase"
+)]
+struct CreateUser {
+    display_name: String,
+    #[serde(
+        rename = "emailAddress"
+    )]
+    email_address: String,
+    #[serde(
+        skip
+    )]
+    internal_note: String,
+    #[serde(
+        flatten
+    )]
+    metadata: Metadata,
+}
+
+#[derive(Deserialize)]
+struct Metadata {
+    trace_id: String,
+}
+
+async fn create(Json(_body): Json<CreateUser>) {}
+
+fn app() -> Router {
+    Router::new().route("/users", post(create))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "axum" && route.http_method == "POST")
+            .expect("axum route");
+
+        for field in ["displayName", "emailAddress"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        for excluded in ["display_name", "email_address", "internalNote", "metadata", "trace_id"] {
+            assert!(!route.parameters.iter().any(|parameter| parameter.name == excluded));
+        }
+    }
+
+    #[test]
     fn honors_serde_rename_all_with_field_override_for_rust_extractors() {
         let source = r#"
 use axum::{routing::post, Json, Router};
