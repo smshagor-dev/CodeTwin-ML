@@ -1812,6 +1812,140 @@ mod tests {
     }
 
     #[test]
+    fn laravel_form_request_rules_merge_across_controller_imports() {
+        let repository = tempdir().expect("repository");
+        fs::create_dir_all(repository.path().join("routes")).expect("routes dir");
+        fs::create_dir_all(repository.path().join("app/Http/Controllers"))
+            .expect("controllers dir");
+        fs::create_dir_all(repository.path().join("app/Http/Requests"))
+            .expect("requests dir");
+
+        fs::write(
+            repository.path().join("routes/api.php"),
+            r#"<?php
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\UserController;
+
+Route::post('/users', [UserController::class, 'store']);
+Route::post('/users/json', [UserController::class, 'storeJson']);
+"#,
+        )
+        .expect("routes source");
+
+        fs::write(
+            repository.path().join("app/Http/Controllers/UserController.php"),
+            r#"<?php
+namespace App\Http\Controllers;
+
+use App\Http\Requests\StoreUserRequest;
+
+class UserController
+{
+    public function store(StoreUserRequest $request)
+    {
+        return response()->json(['ok' => true]);
+    }
+
+    public function storeJson(StoreUserRequest $request)
+    {
+        $email = $request->json('email');
+        return response()->json(['email' => $email]);
+    }
+}
+"#,
+        )
+        .expect("controller source");
+
+        fs::write(
+            repository.path().join("app/Http/Requests/StoreUserRequest.php"),
+            r#"<?php
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StoreUserRequest extends FormRequest
+{
+    public function rules(): array
+    {
+        return [
+            'email' => ['required', 'email'],
+            'password' => ['required', 'min:12'],
+            'profile.name' => ['nullable', 'string'],
+        ];
+    }
+}
+"#,
+        )
+        .expect("request source");
+
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(repository.path())
+            .expect("index");
+
+        let resolved_request_imports: i64 = database
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM import_references
+                 WHERE project_id=?1
+                   AND raw_specifier='App\\Http\\Requests\\StoreUserRequest'
+                   AND resolution_state='resolved_local'",
+                [&summary.project_id],
+                |row| row.get(0),
+            )
+            .expect("resolved FormRequest import");
+        assert_eq!(resolved_request_imports, 1);
+
+        let (store_locations_json, store_content_type): (String, Option<String>) = database
+            .connection()
+            .query_row(
+                "SELECT parameter_locations_json, request_content_type
+                 FROM source_routes
+                 WHERE project_id=?1
+                   AND framework='laravel'
+                   AND http_method='POST'
+                   AND path_template='/users'
+                   AND is_active=1",
+                [&summary.project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("store route");
+        let store_locations: BTreeMap<String, String> =
+            serde_json::from_str(&store_locations_json).expect("store locations");
+        for field in ["email", "password", "profile.name"] {
+            assert_eq!(
+                store_locations.get(field).map(String::as_str),
+                Some("body")
+            );
+        }
+        assert!(store_content_type.is_none());
+
+        let (json_locations_json, json_content_type): (String, Option<String>) = database
+            .connection()
+            .query_row(
+                "SELECT parameter_locations_json, request_content_type
+                 FROM source_routes
+                 WHERE project_id=?1
+                   AND framework='laravel'
+                   AND http_method='POST'
+                   AND path_template='/users/json'
+                   AND is_active=1",
+                [&summary.project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("JSON store route");
+        let json_locations: BTreeMap<String, String> =
+            serde_json::from_str(&json_locations_json).expect("JSON locations");
+        for field in ["email", "password", "profile.name"] {
+            assert_eq!(
+                json_locations.get(field).map(String::as_str),
+                Some("json")
+            );
+        }
+        assert_eq!(json_content_type.as_deref(), Some("application/json"));
+    }
+
+    #[test]
     fn laravel_route_resolves_controller_inputs_across_files() {
         let repository = tempdir().expect("repository");
         fs::create_dir_all(repository.path().join("routes")).expect("routes dir");
