@@ -351,11 +351,20 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
             parameters.push(route_parameter(&name, "header"));
         }
     }
+    for method in ["get", "getAll", "has"] {
+        let marker = format!("{request_name}.cookies.{method}(");
+        for name in marker_quoted_arguments(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, "cookie"));
+            }
+        }
+    }
 
     let mut json_variables = Vec::new();
     let mut form_variables = Vec::new();
     let mut query_variables = Vec::new();
     let mut header_variables = Vec::new();
+    let mut cookie_variables = Vec::new();
     walk(handler, &mut |node| {
         if node.kind() != "variable_declarator" {
             return;
@@ -397,6 +406,12 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
             && is_identifier(name_text)
         {
             header_variables.push(name_text.to_string());
+        }
+        if value == format!("{request_name}.cookies")
+            && name_node.kind() == "identifier"
+            && is_identifier(name_text)
+        {
+            cookie_variables.push(name_text.to_string());
         }
     });
 
@@ -456,6 +471,16 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
         for name in marker_quoted_arguments(function_text, &marker) {
             if !name.is_empty() && name.len() <= 256 {
                 parameters.push(route_parameter(&name, "header"));
+            }
+        }
+    }
+    for variable in cookie_variables {
+        for method in ["get", "getAll", "has"] {
+            let marker = format!("{variable}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, "cookie"));
+                }
             }
         }
     }
