@@ -4264,6 +4264,114 @@ fn pydantic_apply_alias_generator(field: &str, generator: &str) -> Option<String
     }
 }
 
+fn pydantic_direct_field_declarations(class_text: &str) -> Vec<String> {
+    let lines: Vec<&str> = class_text.lines().collect();
+    if lines.len() <= 1 {
+        return Vec::new();
+    }
+
+    let body_indent = lines
+        .iter()
+        .skip(1)
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            Some(line.len().saturating_sub(line.trim_start().len()))
+        })
+        .min()
+        .unwrap_or(0);
+    if body_indent == 0 {
+        return Vec::new();
+    }
+
+    let mut declarations = Vec::new();
+    let mut index = 1usize;
+    while index < lines.len() {
+        let line = lines[index];
+        let trimmed = line.trim();
+        let indent = line.len().saturating_sub(line.trim_start().len());
+        if trimmed.is_empty() || indent != body_indent {
+            index += 1;
+            continue;
+        }
+        if trimmed.starts_with('#')
+            || trimmed.starts_with('@')
+            || trimmed.starts_with("def ")
+            || trimmed.starts_with("async def ")
+            || trimmed.starts_with("class ")
+            || trimmed.starts_with("model_config")
+        {
+            index += 1;
+            continue;
+        }
+
+        let Some((candidate, _)) = trimmed.split_once(':') else {
+            index += 1;
+            continue;
+        };
+        let candidate = candidate.trim();
+        if !is_identifier(candidate) {
+            index += 1;
+            continue;
+        }
+
+        let mut statement = trimmed.to_string();
+        let mut balance = python_grouping_balance(trimmed);
+        let mut consumed = 1usize;
+        while balance > 0 && index + consumed < lines.len() && consumed < 64 {
+            let continuation = lines[index + consumed].trim();
+            if !continuation.is_empty() {
+                if statement.len() + continuation.len() + 1 > 16 * 1024 {
+                    statement.clear();
+                    break;
+                }
+                statement.push(' ');
+                statement.push_str(continuation);
+                balance += python_grouping_balance(continuation);
+            }
+            consumed += 1;
+        }
+        if !statement.is_empty() && balance == 0 {
+            declarations.push(statement);
+        }
+        index += consumed.max(1);
+    }
+    declarations
+}
+
+fn python_grouping_balance(value: &str) -> i32 {
+    let mut balance = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for character in value.chars() {
+        if let Some(current_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == current_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match character {
+            '\'' | '"' => quote = Some(character),
+            '(' | '[' | '{' => balance += 1,
+            ')' | ']' | '}' => balance -= 1,
+            '#' => break,
+            _ => {}
+        }
+    }
+    balance
+}
+
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let local_aliases = pydantic_local_alias_constants(source, root);
     let mut models = BTreeMap::new();
@@ -4285,23 +4393,13 @@ fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<S
         };
         let alias_generator = pydantic_known_alias_generator(source, class_text);
         let mut fields = Vec::new();
-        for line in class_text.lines().skip(1) {
-            let trimmed = line.trim();
-            if trimmed.is_empty()
-                || trimmed.starts_with('#')
-                || trimmed.starts_with('@')
-                || trimmed.starts_with("def ")
-                || trimmed.starts_with("async def ")
-                || trimmed.starts_with("class ")
-            {
-                continue;
-            }
-            let Some((candidate, _)) = trimmed.split_once(':') else {
+        for declaration in pydantic_direct_field_declarations(class_text) {
+            let Some((candidate, _)) = declaration.split_once(':') else {
                 continue;
             };
             let candidate = candidate.trim();
             if is_identifier(candidate) && !candidate.starts_with('_') {
-                match pydantic_field_input_aliases(trimmed, &local_aliases) {
+                match pydantic_field_input_aliases(&declaration, &local_aliases) {
                     Some(aliases) => fields.extend(aliases),
                     None => fields.push(
                         alias_generator
