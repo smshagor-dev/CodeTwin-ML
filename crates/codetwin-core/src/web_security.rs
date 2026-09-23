@@ -411,6 +411,10 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         scan_id: &str,
         endpoint: &WebEndpointInput,
     ) -> Result<WebEndpointRecord, WebSecurityStoreError> {
+        let endpoint = match self.endpoint_by_identity(scan_id, &endpoint.method, &endpoint.url)? {
+            Some(existing) => merge_endpoint_input(existing, endpoint.clone()),
+            None => normalize_endpoint_input(endpoint.clone()),
+        };
         let id = stable_id("webendpoint", &[scan_id, &endpoint.method, &endpoint.url]);
         let parameters_json = serde_json::to_string(&endpoint.parameter_names)?;
         let locations_json = serde_json::to_string(&endpoint.parameter_locations)?;
@@ -460,6 +464,27 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 params![scan_id, endpoint.method, endpoint.url],
                 map_endpoint,
             )
+            .map_err(Into::into)
+    }
+
+    fn endpoint_by_identity(
+        &self,
+        scan_id: &str,
+        method: &str,
+        url: &str,
+    ) -> Result<Option<WebEndpointRecord>, WebSecurityStoreError> {
+        self.database
+            .connection()
+            .query_row(
+                "SELECT id, scan_id, url, method, depth, source, parameter_names_json,
+                        parameter_locations_json, response_header_names_json, cookie_names_json,
+                        content_type, status_code, redirect_to, route_template, created_at
+                 FROM web_security_endpoints
+                 WHERE scan_id=?1 AND method=?2 AND url=?3",
+                params![scan_id, method, url],
+                map_endpoint,
+            )
+            .optional()
             .map_err(Into::into)
     }
 
@@ -1333,6 +1358,99 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
     }
 }
 
+fn normalize_endpoint_input(mut endpoint: WebEndpointInput) -> WebEndpointInput {
+    endpoint.parameter_names.sort();
+    endpoint.parameter_names.dedup();
+    endpoint.response_header_names.sort();
+    endpoint.response_header_names.dedup();
+    endpoint.cookie_names.sort();
+    endpoint.cookie_names.dedup();
+    for locations in endpoint.parameter_locations.values_mut() {
+        locations.sort();
+        locations.dedup();
+    }
+    endpoint
+}
+
+fn merge_endpoint_input(
+    existing: WebEndpointRecord,
+    incoming: WebEndpointInput,
+) -> WebEndpointInput {
+    let mut merged = WebEndpointInput {
+        url: existing.url,
+        route_template: existing.route_template,
+        method: existing.method,
+        depth: existing.depth,
+        source: existing.source,
+        parameter_names: existing.parameter_names,
+        parameter_locations: existing.parameter_locations,
+        response_header_names: existing.response_header_names,
+        cookie_names: existing.cookie_names,
+        content_type: existing.content_type,
+        status_code: existing.status_code,
+        redirect_to: existing.redirect_to,
+    };
+    let incoming = normalize_endpoint_input(incoming);
+    let incoming_priority = endpoint_source_priority(&incoming.source);
+    let existing_priority = endpoint_source_priority(&merged.source);
+    let incoming_preferred = incoming_priority > existing_priority
+        || (incoming_priority == existing_priority && incoming.source < merged.source);
+
+    merged.depth = merged.depth.min(incoming.depth);
+    merged.parameter_names.extend(incoming.parameter_names);
+    merged.parameter_names.sort();
+    merged.parameter_names.dedup();
+    for (name, locations) in incoming.parameter_locations {
+        for location in locations {
+            insert_parameter_location(&mut merged.parameter_locations, name.clone(), location);
+        }
+    }
+    merged
+        .response_header_names
+        .extend(incoming.response_header_names);
+    merged.response_header_names.sort();
+    merged.response_header_names.dedup();
+    merged.cookie_names.extend(incoming.cookie_names);
+    merged.cookie_names.sort();
+    merged.cookie_names.dedup();
+
+    if merged.route_template.is_none()
+        || (incoming.route_template.is_some() && incoming_preferred)
+    {
+        merged.route_template = incoming.route_template;
+    }
+    merged.content_type = match (merged.content_type.take(), incoming.content_type) {
+        (None, value) | (value, None) => value,
+        (Some(left), Some(right)) if left.eq_ignore_ascii_case(&right) => Some(left),
+        (Some(_), Some(right)) if incoming_preferred => Some(right),
+        (Some(left), Some(_)) => Some(left),
+    };
+    if merged.status_code.is_none() {
+        merged.status_code = incoming.status_code;
+    }
+    if merged.redirect_to.is_none() {
+        merged.redirect_to = incoming.redirect_to;
+    }
+    if incoming_preferred {
+        merged.source = incoming.source;
+    }
+    normalize_endpoint_input(merged)
+}
+
+fn endpoint_source_priority(source: &str) -> u8 {
+    if source.starts_with("source_route:") {
+        5
+    } else {
+        match source {
+            "openapi" => 4,
+            "form" => 3,
+            "html" | "javascript_reference" => 2,
+            "redirect" => 1,
+            _ => 0,
+        }
+    }
+}
+
 fn map_scan(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebScanRecord> {
     Ok(WebScanRecord {
         id: row.get(0)?,
@@ -1901,6 +2019,83 @@ mod tests {
             1
         );
         assert_eq!(store.list_scans(None, None, 20).expect("history").len(), 1);
+    }
+
+    #[test]
+    fn repeated_endpoint_persistence_merges_metadata_instead_of_replacing_it() {
+        let database = Database::open_in_memory().expect("database");
+        let store = AuthorizedWebSecurityStore::new(&database);
+        let scan = store.create_scan(&create()).expect("scan");
+        let url = "http://localhost:8080/api/items/1?id=1";
+
+        store
+            .record_endpoint(
+                &scan.id,
+                &WebEndpointInput {
+                    url: url.to_string(),
+                    route_template: None,
+                    method: "GET".to_string(),
+                    depth: 2,
+                    source: "html".to_string(),
+                    parameter_names: vec!["id".to_string()],
+                    parameter_locations: std::collections::BTreeMap::from([(
+                        "id".to_string(),
+                        vec!["query".to_string()],
+                    )]),
+                    response_header_names: vec!["content-type".to_string()],
+                    cookie_names: vec!["session".to_string()],
+                    content_type: Some("text/html".to_string()),
+                    status_code: Some(200),
+                    redirect_to: None,
+                },
+            )
+            .expect("first endpoint");
+
+        let merged = store
+            .record_endpoint(
+                &scan.id,
+                &WebEndpointInput {
+                    url: url.to_string(),
+                    route_template: Some(
+                        "http://localhost:8080/api/items/{id}?id=1".to_string(),
+                    ),
+                    method: "GET".to_string(),
+                    depth: 0,
+                    source: "source_route:express:src/routes.ts:10".to_string(),
+                    parameter_names: vec!["id".to_string(), "filter".to_string()],
+                    parameter_locations: std::collections::BTreeMap::from([
+                        ("id".to_string(), vec!["path".to_string()]),
+                        ("filter".to_string(), vec!["query".to_string()]),
+                    ]),
+                    response_header_names: Vec::new(),
+                    cookie_names: Vec::new(),
+                    content_type: Some("application/json".to_string()),
+                    status_code: None,
+                    redirect_to: None,
+                },
+            )
+            .expect("merged endpoint");
+
+        assert_eq!(store.list_endpoints(&scan.id, 20).expect("endpoints").len(), 1);
+        assert_eq!(merged.depth, 0);
+        assert!(merged.source.starts_with("source_route:"));
+        assert_eq!(merged.status_code, Some(200));
+        assert_eq!(merged.content_type.as_deref(), Some("application/json"));
+        assert_eq!(
+            merged.parameter_names,
+            vec!["filter".to_string(), "id".to_string()]
+        );
+        assert_eq!(
+            merged.parameter_locations.get("id"),
+            Some(&vec!["path".to_string(), "query".to_string()])
+        );
+        assert_eq!(
+            merged.parameter_locations.get("filter"),
+            Some(&vec!["query".to_string()])
+        );
+        assert_eq!(merged.response_header_names, vec!["content-type"]);
+        assert_eq!(merged.cookie_names, vec!["session"]);
+        assert!(merged.route_template.is_some());
     }
 
     #[test]
