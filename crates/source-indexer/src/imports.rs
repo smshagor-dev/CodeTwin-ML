@@ -526,3 +526,66 @@ fn push_with_bindings(
         end_column: end.column,
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use tree_sitter::Parser;
+
+    use super::extract_imports;
+
+    #[test]
+    fn expands_grouped_and_multi_php_class_imports() {
+        let source = r#"<?php
+use App\\Http\\Controllers\\{UserController, AdminController as Admin};
+use App\\Http\\Requests\\StoreUserRequest, App\\Http\\Requests\\UpdateUserRequest as UpdateRequest;
+use App\\Support\\{Thing, function helper, const FLAG};
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let imports = extract_imports("PHP", source, tree.root_node());
+
+        let expected = [
+            (
+                "App\\\\Http\\\\Controllers\\\\UserController",
+                "UserController",
+                "UserController",
+            ),
+            (
+                "App\\\\Http\\\\Controllers\\\\AdminController",
+                "Admin",
+                "AdminController",
+            ),
+            (
+                "App\\\\Http\\\\Requests\\\\StoreUserRequest",
+                "StoreUserRequest",
+                "StoreUserRequest",
+            ),
+            (
+                "App\\\\Http\\\\Requests\\\\UpdateUserRequest",
+                "UpdateRequest",
+                "UpdateUserRequest",
+            ),
+            ("App\\\\Support\\\\Thing", "Thing", "Thing"),
+        ];
+
+        for (specifier, local, imported) in expected {
+            let reference = imports
+                .iter()
+                .find(|reference| reference.raw_specifier == specifier)
+                .unwrap_or_else(|| panic!("missing import {specifier}"));
+            assert_eq!(reference.bindings.len(), 1);
+            assert_eq!(reference.bindings[0].local_name, local);
+            assert_eq!(reference.bindings[0].imported_name, imported);
+        }
+
+        assert!(!imports.iter().any(|reference| {
+            reference
+                .bindings
+                .iter()
+                .any(|binding| matches!(binding.local_name.as_str(), "helper" | "FLAG"))
+        }));
+    }
+}
