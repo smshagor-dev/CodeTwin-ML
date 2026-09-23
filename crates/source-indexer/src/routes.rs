@@ -6559,11 +6559,13 @@ from fastapi import FastAPI, Query, Header, Cookie
 from pydantic import AliasChoices, BaseModel, Field
 
 app = FastAPI()
+ALIASES = ("legacy", "current")
 
 class CreateUser(BaseModel):
     display_name: str = Field(alias="displayName")
     account_id: str = Field(alias="legacyAccount", validation_alias="accountId")
     ignored_choice: str = Field(validation_alias=AliasChoices("first", "second"))
+    dynamic_choice: str = Field(validation_alias=AliasChoices(*ALIASES))
 
 @app.post("/users")
 async def create_user(
@@ -6592,10 +6594,14 @@ async def create_user(
                 parameter.name == field && parameter.location == "json"
             }));
         }
-        assert!(route.parameters.iter().any(|parameter| {
-            parameter.name == "ignored_choice" && parameter.location == "json"
-        }));
-        assert!(!route.parameters.iter().any(|parameter| parameter.name == "first"));
+        for field in ["first", "second"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        for field in ["ignored_choice", "dynamic_choice"] {
+            assert!(!route.parameters.iter().any(|parameter| parameter.name == field));
+        }
         assert!(route.parameters.iter().any(|parameter| {
             parameter.name == "q" && parameter.location == "query"
         }));
