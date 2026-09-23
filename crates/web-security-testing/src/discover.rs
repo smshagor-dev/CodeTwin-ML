@@ -532,7 +532,7 @@ fn collect_parameter_array(
 
 fn collect_request_body_parameters(
     operation: &serde_json::Value,
-    output: &mut BTreeMap<String, String>,
+    output: &mut ParameterLocations,
 ) -> Option<String> {
     let content = operation
         .get("requestBody")
