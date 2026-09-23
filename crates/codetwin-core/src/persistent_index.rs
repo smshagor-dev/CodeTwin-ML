@@ -995,7 +995,7 @@ fn resolve_imported_route_handlers(
     drop(import_statement);
 
     let mut route_statement = connection.prepare(
-        "SELECT id, file_id, handler_name, parameter_locations_json, request_content_type
+        "SELECT id, file_id, handler_name, framework, parameter_locations_json, request_content_type
          FROM source_routes
          WHERE project_id=?1 AND is_active=1 AND handler_name IS NOT NULL",
     )?;
@@ -1005,7 +1005,8 @@ fn resolve_imported_route_handlers(
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
-            row.get::<_, Option<String>>(4)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, Option<String>>(5)?,
         ))
     })?;
     let mut routes = Vec::new();
@@ -1014,7 +1015,14 @@ fn resolve_imported_route_handlers(
     }
     drop(route_statement);
 
-    for (route_id, route_file_id, handler_reference, locations_json, current_content_type) in routes {
+    for (
+        route_id,
+        route_file_id,
+        handler_reference,
+        framework,
+        locations_json,
+        current_content_type,
+    ) in routes {
         let (binding_name, member_name) = split_handler_reference(&handler_reference);
         let Some((_, target_file_id, binding)) = bindings.iter().find(|(source, _, binding)| {
             source == &route_file_id && binding.local_name == binding_name
@@ -1040,7 +1048,7 @@ fn resolve_imported_route_handlers(
             names[0].clone()
         };
 
-        let handler = connection
+        let handler_locations_json = connection
             .query_row(
                 "SELECT parameter_locations_json
                  FROM source_handler_inputs
@@ -1050,17 +1058,48 @@ fn resolve_imported_route_handlers(
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
-        let Some(handler_locations_json) = handler else {
-            continue;
+
+        let mut symbol_statement = connection.prepare(
+            "SELECT id, signature
+             FROM symbols
+             WHERE file_id=?1 AND is_active=1 AND name=?2
+             ORDER BY start_line LIMIT 2",
+        )?;
+        let symbol_rows = symbol_statement.query_map(
+            params![target_file_id, target_handler_name],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )?;
+        let symbols = symbol_rows.collect::<Result<Vec<_>, _>>()?;
+        let (handler_symbol_id, handler_signature) = if symbols.len() == 1 {
+            (Some(symbols[0].0.clone()), symbols[0].1.clone())
+        } else {
+            (None, None)
         };
+        drop(symbol_statement);
 
         let mut locations: BTreeMap<String, String> =
             serde_json::from_str(&locations_json).unwrap_or_default();
-        let handler_locations: BTreeMap<String, String> =
-            serde_json::from_str(&handler_locations_json).unwrap_or_default();
-        for (name, location) in handler_locations {
-            locations.entry(name).or_insert(location);
+        if let Some(handler_locations_json) = handler_locations_json {
+            let handler_locations: BTreeMap<String, String> =
+                serde_json::from_str(&handler_locations_json).unwrap_or_default();
+            for (name, location) in handler_locations {
+                locations.entry(name).or_insert(location);
+            }
         }
+
+        if framework == "laravel" {
+            if let Some(signature) = handler_signature.as_deref() {
+                merge_laravel_form_request_inputs(
+                    connection,
+                    &bindings,
+                    target_file_id,
+                    signature,
+                    current_content_type.as_deref(),
+                    &mut locations,
+                )?;
+            }
+        }
+
         let parameter_names: Vec<String> = locations.keys().cloned().collect();
         let inferred_content_type = if locations.values().any(|value| value == "json") {
             Some("application/json".to_string())
@@ -1069,17 +1108,6 @@ fn resolve_imported_route_handlers(
         } else {
             current_content_type.clone()
         };
-
-        let handler_symbol_id: Option<String> = connection
-            .query_row(
-                "SELECT CASE WHEN COUNT(*)=1 THEN MIN(id) ELSE NULL END
-                 FROM symbols
-                 WHERE file_id=?1 AND is_active=1 AND name=?2",
-                params![target_file_id, target_handler_name],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
 
         connection.execute(
             "UPDATE source_routes
@@ -1101,6 +1129,130 @@ fn resolve_imported_route_handlers(
         )?;
     }
     Ok(())
+}
+
+fn merge_laravel_form_request_inputs(
+    connection: &Connection,
+    bindings: &[(String, String, IndexedImportBinding)],
+    controller_file_id: &str,
+    handler_signature: &str,
+    current_content_type: Option<&str>,
+    locations: &mut BTreeMap<String, String>,
+) -> Result<(), IndexServiceError> {
+    let candidate_types = php_parameter_type_names(handler_signature);
+    if candidate_types.is_empty() {
+        return Ok(());
+    }
+
+    let has_json = locations.values().any(|location| location == "json")
+        || current_content_type.is_some_and(|value| value.contains("application/json"));
+    let has_form = locations.values().any(|location| location == "form")
+        || current_content_type.is_some_and(|value| {
+            value.contains("application/x-www-form-urlencoded")
+                || value.contains("multipart/form-data")
+        });
+    let body_location = match (has_json, has_form) {
+        (true, false) => "json",
+        (false, true) => "form",
+        _ => "body",
+    };
+
+    for candidate in candidate_types {
+        let matches: Vec<&(String, String, IndexedImportBinding)> = bindings
+            .iter()
+            .filter(|(source_file_id, _, binding)| {
+                source_file_id == controller_file_id && binding.local_name == candidate
+            })
+            .collect();
+        if matches.len() != 1 {
+            continue;
+        }
+        let (_, request_file_id, binding) = matches[0];
+        let request_locations_json = connection
+            .query_row(
+                "SELECT parameter_locations_json
+                 FROM source_handler_inputs
+                 WHERE file_id=?1 AND handler_name=?2 AND is_active=1
+                 ORDER BY start_line LIMIT 1",
+                params![request_file_id, binding.imported_name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(request_locations_json) = request_locations_json else {
+            continue;
+        };
+        let request_locations: BTreeMap<String, String> =
+            serde_json::from_str(&request_locations_json).unwrap_or_default();
+        for (name, location) in request_locations {
+            if location == "body" {
+                locations
+                    .entry(name)
+                    .or_insert_with(|| body_location.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn php_parameter_type_names(signature: &str) -> Vec<String> {
+    let Some(open) = signature.find('(') else {
+        return Vec::new();
+    };
+    let Some(close) = signature.rfind(')') else {
+        return Vec::new();
+    };
+    if close <= open {
+        return Vec::new();
+    }
+
+    let mut names = Vec::new();
+    for parameter in signature[open + 1..close].split(',') {
+        let Some(dollar) = parameter.rfind('$') else {
+            continue;
+        };
+        let type_text = parameter[..dollar].trim();
+        for token in type_text
+            .split(|character: char| !(character == '_' || character.is_ascii_alphanumeric()))
+            .filter(|token| is_php_type_identifier(token))
+        {
+            names.push(token.to_string());
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn is_php_type_identifier(value: &str) -> bool {
+    if value.is_empty()
+        || matches!(
+            value,
+            "array"
+                | "bool"
+                | "callable"
+                | "false"
+                | "float"
+                | "int"
+                | "iterable"
+                | "mixed"
+                | "never"
+                | "null"
+                | "object"
+                | "parent"
+                | "self"
+                | "static"
+                | "string"
+                | "true"
+                | "void"
+        )
+    {
+        return false;
+    }
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
 fn split_handler_reference(value: &str) -> (&str, Option<&str>) {
@@ -1657,6 +1809,140 @@ mod tests {
             )
             .expect("unsupported");
         assert!(unsupported >= 1);
+    }
+
+    #[test]
+    fn laravel_form_request_rules_merge_across_controller_imports() {
+        let repository = tempdir().expect("repository");
+        fs::create_dir_all(repository.path().join("routes")).expect("routes dir");
+        fs::create_dir_all(repository.path().join("app/Http/Controllers"))
+            .expect("controllers dir");
+        fs::create_dir_all(repository.path().join("app/Http/Requests"))
+            .expect("requests dir");
+
+        fs::write(
+            repository.path().join("routes/api.php"),
+            r#"<?php
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\UserController;
+
+Route::post('/users', [UserController::class, 'store']);
+Route::post('/users/json', [UserController::class, 'storeJson']);
+"#,
+        )
+        .expect("routes source");
+
+        fs::write(
+            repository.path().join("app/Http/Controllers/UserController.php"),
+            r#"<?php
+namespace App\Http\Controllers;
+
+use App\Http\Requests\StoreUserRequest;
+
+class UserController
+{
+    public function store(StoreUserRequest $request)
+    {
+        return response()->json(['ok' => true]);
+    }
+
+    public function storeJson(StoreUserRequest $request)
+    {
+        $email = $request->json('email');
+        return response()->json(['email' => $email]);
+    }
+}
+"#,
+        )
+        .expect("controller source");
+
+        fs::write(
+            repository.path().join("app/Http/Requests/StoreUserRequest.php"),
+            r#"<?php
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StoreUserRequest extends FormRequest
+{
+    public function rules(): array
+    {
+        return [
+            'email' => ['required', 'email'],
+            'password' => ['required', 'min:12'],
+            'profile.name' => ['nullable', 'string'],
+        ];
+    }
+}
+"#,
+        )
+        .expect("request source");
+
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(repository.path())
+            .expect("index");
+
+        let resolved_request_imports: i64 = database
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM import_references
+                 WHERE project_id=?1
+                   AND raw_specifier='App\\Http\\Requests\\StoreUserRequest'
+                   AND resolution_state='resolved_local'",
+                [&summary.project_id],
+                |row| row.get(0),
+            )
+            .expect("resolved FormRequest import");
+        assert_eq!(resolved_request_imports, 1);
+
+        let (store_locations_json, store_content_type): (String, Option<String>) = database
+            .connection()
+            .query_row(
+                "SELECT parameter_locations_json, request_content_type
+                 FROM source_routes
+                 WHERE project_id=?1
+                   AND framework='laravel'
+                   AND http_method='POST'
+                   AND path_template='/users'
+                   AND is_active=1",
+                [&summary.project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("store route");
+        let store_locations: BTreeMap<String, String> =
+            serde_json::from_str(&store_locations_json).expect("store locations");
+        for field in ["email", "password", "profile.name"] {
+            assert_eq!(
+                store_locations.get(field).map(String::as_str),
+                Some("body")
+            );
+        }
+        assert!(store_content_type.is_none());
+
+        let (json_locations_json, json_content_type): (String, Option<String>) = database
+            .connection()
+            .query_row(
+                "SELECT parameter_locations_json, request_content_type
+                 FROM source_routes
+                 WHERE project_id=?1
+                   AND framework='laravel'
+                   AND http_method='POST'
+                   AND path_template='/users/json'
+                   AND is_active=1",
+                [&summary.project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("JSON store route");
+        let json_locations: BTreeMap<String, String> =
+            serde_json::from_str(&json_locations_json).expect("JSON locations");
+        for field in ["email", "password", "profile.name"] {
+            assert_eq!(
+                json_locations.get(field).map(String::as_str),
+                Some("json")
+            );
+        }
+        assert_eq!(json_content_type.as_deref(), Some("application/json"));
     }
 
     #[test]

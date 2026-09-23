@@ -1372,7 +1372,158 @@ fn laravel_handler_inputs(source: &str, root: Node<'_>) -> Vec<IndexedHandlerInp
             end_line: end.row + 1,
         });
     });
+    output.extend(laravel_form_request_inputs(source, root));
     output
+}
+
+fn laravel_form_request_inputs(
+    source: &str,
+    root: Node<'_>,
+) -> Vec<IndexedHandlerInput> {
+    let mut output = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "class_declaration" {
+            return;
+        }
+        let Some(class_text) = text(source, node) else {
+            return;
+        };
+        let extends_form_request = class_text.contains("extends FormRequest")
+            || class_text.contains("extends \\Illuminate\\Foundation\\Http\\FormRequest");
+        if !extends_form_request {
+            return;
+        }
+        let Some(class_name) = node
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(str::trim)
+        else {
+            return;
+        };
+        if !is_identifier(class_name) {
+            return;
+        }
+
+        let mut rules_method: Option<Node<'_>> = None;
+        walk(node, &mut |child| {
+            if rules_method.is_some() || child.kind() != "method_declaration" {
+                return;
+            }
+            let Some(name) = child
+                .child_by_field_name("name")
+                .and_then(|value| text(source, value))
+                .map(str::trim)
+            else {
+                return;
+            };
+            if name == "rules" {
+                rules_method = Some(child);
+            }
+        });
+        let Some(rules_method) = rules_method else {
+            return;
+        };
+        let Some(rules_text) = text(source, rules_method) else {
+            return;
+        };
+        let mut parameters: Vec<IndexedRouteParameter> = php_top_level_return_array_keys(rules_text)
+            .into_iter()
+            .map(|name| route_parameter(&name, "body"))
+            .collect();
+        normalize_parameters(&mut parameters);
+        if parameters.is_empty() {
+            return;
+        }
+        let start = rules_method.start_position();
+        let end = rules_method.end_position();
+        output.push(IndexedHandlerInput {
+            handler_name: class_name.to_string(),
+            parameters,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    });
+    output
+}
+
+fn php_top_level_return_array_keys(method_text: &str) -> Vec<String> {
+    let Some(return_index) = method_text.find("return") else {
+        return Vec::new();
+    };
+    let Some(relative_open) = method_text[return_index..].find('[') else {
+        return Vec::new();
+    };
+    let open = return_index + relative_open;
+    let bytes = method_text.as_bytes();
+    let mut index = open + 1;
+    let mut depth = 1usize;
+    let mut keys = Vec::new();
+
+    while index < bytes.len() && depth > 0 {
+        match bytes[index] {
+            b'[' => {
+                depth += 1;
+                index += 1;
+            }
+            b']' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            quote @ (b'\'' | b'"') => {
+                let start = index + 1;
+                index += 1;
+                let mut escaped = false;
+                while index < bytes.len() {
+                    let byte = bytes[index];
+                    if escaped {
+                        escaped = false;
+                        index += 1;
+                        continue;
+                    }
+                    if byte == b'\\' {
+                        escaped = true;
+                        index += 1;
+                        continue;
+                    }
+                    if byte == quote {
+                        break;
+                    }
+                    index += 1;
+                }
+                if index >= bytes.len() {
+                    break;
+                }
+                let end = index;
+                index += 1;
+
+                if depth != 1 {
+                    continue;
+                }
+                let mut lookahead = index;
+                while lookahead < bytes.len() && bytes[lookahead].is_ascii_whitespace() {
+                    lookahead += 1;
+                }
+                if lookahead + 1 >= bytes.len()
+                    || bytes[lookahead] != b'='
+                    || bytes[lookahead + 1] != b'>'
+                {
+                    continue;
+                }
+                let Ok(candidate) = std::str::from_utf8(&bytes[start..end]) else {
+                    continue;
+                };
+                let candidate = candidate.trim();
+                if !candidate.is_empty() && candidate.len() <= 256 {
+                    keys.push(candidate.to_string());
+                }
+            }
+            _ => index += 1,
+        }
+    }
+
+    keys.sort();
+    keys.dedup();
+    keys
 }
 
 fn laravel_request_parameters(method_text: &str) -> Vec<IndexedRouteParameter> {
@@ -3535,6 +3686,51 @@ app.register_blueprint(api, url_prefix = "/api")
                 && mount.mounted_binding == "api"
                 && mount.prefix == "/api"
         }));
+    }
+
+    #[test]
+    fn extracts_laravel_form_request_rule_keys_as_ambiguous_body_inputs() {
+        let source = r#"<?php
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StoreUserRequest extends FormRequest
+{
+    public function rules(): array
+    {
+        return [
+            'email' => ['required', 'email'],
+            "password" => 'required|min:12',
+            'profile.name' => ['nullable', 'string'],
+            'items.*.sku' => ['required', 'string'],
+            'metadata' => [
+                'nested' => 'not-a-top-level-validation-key',
+            ],
+        ];
+    }
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (_routes, _mounts, inputs) =
+            extract_routes("PHP", "app/Http/Requests/StoreUserRequest.php", source, tree.root_node());
+        let request = inputs
+            .iter()
+            .find(|input| input.handler_name == "StoreUserRequest")
+            .expect("FormRequest evidence");
+        for field in ["email", "password", "profile.name", "items.*.sku", "metadata"] {
+            assert!(request.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "body"
+            }));
+        }
+        assert!(!request
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "nested"));
     }
 
     #[test]

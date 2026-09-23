@@ -641,6 +641,12 @@ fn send_payload(
             "cookie parameter active probes are intentionally disabled".to_string(),
         ));
     }
+    if location == "body" {
+        return Err(RequestError::Http(
+            "ambiguous body parameter probes require proven JSON or form content-type evidence"
+                .to_string(),
+        ));
+    }
     if location == "header" && !active_header_probe_allowed(parameter) {
         return Err(RequestError::Http(
             "sensitive or transport-controlled header probes are intentionally disabled".to_string(),
@@ -1000,6 +1006,31 @@ mod tests {
             truncated: false,
             redaction_secrets: Vec::new(),
         }
+    }
+
+    #[test]
+    fn ambiguous_body_location_does_not_build_a_probe_body() {
+        use std::collections::BTreeMap;
+
+        let endpoint = crate::EndpointObservation {
+            url: "https://example.test/users".to_string(),
+            route_template: None,
+            method: "POST".to_string(),
+            depth: 0,
+            source: "source_route:laravel:routes/api.php:1".to_string(),
+            parameter_names: vec!["email".to_string()],
+            parameter_locations: BTreeMap::from([(
+                "email".to_string(),
+                "body".to_string(),
+            )]),
+            response_header_names: vec![],
+            cookie_names: vec![],
+            content_type: None,
+            status_code: None,
+            redirect_to: None,
+        };
+        let body = super::contextual_request_body(&endpoint, "email", "body", "probe");
+        assert!(body.is_none());
     }
 
     #[test]

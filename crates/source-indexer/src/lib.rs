@@ -17,7 +17,7 @@ use walkdir::{DirEntry, WalkDir};
 const MAX_SOURCE_BYTES: u64 = 5 * 1024 * 1024;
 const TYPESCRIPT_DEFINITIONS_QUERY: &str = include_str!("../queries/typescript.scm");
 pub const INDEXER_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const QUERY_VERSION: &str = "definitions-v2-imports-v2-routes-v16-handlers-v7";
+pub const QUERY_VERSION: &str = "definitions-v2-imports-v2-routes-v17-handlers-v8";
 
 #[derive(Debug, Error)]
 pub enum IndexError {
