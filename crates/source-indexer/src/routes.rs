@@ -2590,7 +2590,8 @@ fn rust_struct_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<Stri
         if !raw.contains('{') {
             return;
         }
-        let fields = rust_struct_fields(raw);
+        let rename_all = rust_preceding_serde_rename_all(source, node.start_position().row);
+        let fields = rust_struct_fields(raw, rename_all.as_deref());
         if !fields.is_empty() {
             models.insert(name.to_string(), fields);
         }
@@ -2598,7 +2599,7 @@ fn rust_struct_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<Stri
     models
 }
 
-fn rust_struct_fields(raw: &str) -> Vec<String> {
+fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
     let Some(open) = raw.find('{') else {
         return Vec::new();
     };
@@ -2653,7 +2654,10 @@ fn rust_struct_fields(raw: &str) -> Vec<String> {
             continue;
         }
         if !skip_next {
-            let name = pending_rename.take().unwrap_or_else(|| field.to_string());
+            let name = pending_rename
+                .take()
+                .or_else(|| rename_all.and_then(|rule| rust_apply_serde_rename_all(field, rule)))
+                .unwrap_or_else(|| field.to_string());
             if !name.is_empty() && name.len() <= 256 {
                 fields.push(name);
             }
@@ -2666,6 +2670,109 @@ fn rust_struct_fields(raw: &str) -> Vec<String> {
     fields.dedup();
     fields.truncate(256);
     fields
+}
+
+fn rust_preceding_serde_rename_all(source: &str, struct_row: usize) -> Option<String> {
+    let lines: Vec<&str> = source.lines().collect();
+    if struct_row == 0 || struct_row > lines.len() {
+        return None;
+    }
+    let mut row = struct_row;
+    while row > 0 {
+        row -= 1;
+        let line = lines[row].trim();
+        if line.is_empty() {
+            continue;
+        }
+        if !line.starts_with("#[") {
+            break;
+        }
+        if line.starts_with("#[serde(") {
+            if let Some(value) = rust_serde_rename_all(line) {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn rust_serde_rename_all(attribute: &str) -> Option<String> {
+    let marker = "rename_all";
+    let index = attribute.find(marker)?;
+    let tail = &attribute[index + marker.len()..];
+    let equals = tail.find('=')?;
+    first_quoted_string(&tail[equals + 1..])
+}
+
+fn rust_apply_serde_rename_all(field: &str, rule: &str) -> Option<String> {
+    let words = rust_field_words(field);
+    if words.is_empty() {
+        return None;
+    }
+    let lower_words: Vec<String> = words
+        .iter()
+        .map(|word| word.to_ascii_lowercase())
+        .collect();
+
+    let value = match rule {
+        "lowercase" => lower_words.join(""),
+        "UPPERCASE" => lower_words.join("").to_ascii_uppercase(),
+        "PascalCase" => lower_words
+            .iter()
+            .map(|word| rust_capitalize(word))
+            .collect::<String>(),
+        "camelCase" => {
+            let mut iter = lower_words.iter();
+            let first = iter.next()?.clone();
+            first
+                + &iter
+                    .map(|word| rust_capitalize(word))
+                    .collect::<String>()
+        }
+        "snake_case" => lower_words.join("_"),
+        "SCREAMING_SNAKE_CASE" => lower_words.join("_").to_ascii_uppercase(),
+        "kebab-case" => lower_words.join("-"),
+        "SCREAMING-KEBAB-CASE" => lower_words.join("-").to_ascii_uppercase(),
+        _ => return None,
+    };
+    Some(value)
+}
+
+fn rust_field_words(field: &str) -> Vec<String> {
+    if field.contains('_') {
+        return field
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .map(ToString::to_string)
+            .collect();
+    }
+
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut previous_lower_or_digit = false;
+    for character in field.chars() {
+        let boundary = character.is_ascii_uppercase() && previous_lower_or_digit;
+        if boundary && !current.is_empty() {
+            words.push(std::mem::take(&mut current));
+        }
+        previous_lower_or_digit = character.is_ascii_lowercase() || character.is_ascii_digit();
+        current.push(character);
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+fn rust_capitalize(value: &str) -> String {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut output = String::new();
+    output.push(first.to_ascii_uppercase());
+    output.extend(chars);
+    output
 }
 
 fn rust_serde_rename(attribute: &str) -> Option<String> {
@@ -4624,6 +4731,46 @@ func fetch(client *Client) {
         assert!(routes.is_empty());
     }
 
+    #[test]
+    fn honors_serde_rename_all_with_field_override_for_rust_extractors() {
+        let source = r#"
+use axum::{routing::post, Json, Router};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateUser {
+    display_name: String,
+    account_id: String,
+    #[serde(rename = "email_address")]
+    email: String,
+}
+
+async fn create(Json(_body): Json<CreateUser>) {}
+
+fn app() -> Router {
+    Router::new().route("/users", post(create))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "axum" && route.http_method == "POST")
+            .expect("axum route");
+        for field in ["displayName", "accountId", "email_address"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert!(!route.parameters.iter().any(|parameter| parameter.name == "display_name"));
+        assert!(!route.parameters.iter().any(|parameter| parameter.name == "account_id"));
+    }
     #[test]
     fn maps_axum_typed_extractors_and_static_header_keys_to_routes() {
         let source = r#"
