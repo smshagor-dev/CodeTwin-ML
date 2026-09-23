@@ -224,163 +224,243 @@ fn run_scan_background(
     match outcome {
         Ok(outcome) => {
             if cancelled.load(Ordering::SeqCst) {
-                store.cancel_scan(scan_id).map_err(|error| error.to_string())?;
+                mark_scan_cancelled(&store, &guided, guided_session_id.as_deref(), scan_id)?;
                 return Ok(());
             }
 
-            for endpoint in &outcome.endpoints {
-                let persisted_endpoint = store
-                    .record_endpoint(
-                        scan_id,
-                        &WebEndpointInput {
-                            url: endpoint.url.clone(),
-                            route_template: endpoint.route_template.clone(),
-                            method: endpoint.method.clone(),
-                            depth: endpoint.depth,
-                            source: endpoint.source.clone(),
-                            parameter_names: endpoint.parameter_names.clone(),
-                            parameter_locations: endpoint.parameter_locations.clone(),
-                            response_header_names: endpoint.response_header_names.clone(),
-                            cookie_names: endpoint.cookie_names.clone(),
-                            content_type: endpoint.content_type.clone(),
-                            status_code: endpoint.status_code,
-                            redirect_to: endpoint.redirect_to.clone(),
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-                store
-                    .link_endpoint_to_source_route(
-                        request.project_id.as_deref(),
-                        &persisted_endpoint,
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-
-            let mut persisted_findings = 0usize;
-            for finding in outcome.findings {
-                let source = store
-                    .correlate_source_for_request(
-                        request.project_id.as_deref(),
-                        &finding.endpoint,
-                        Some(&finding.method),
-                        finding.parameter.as_deref(),
-                    )
-                    .map_err(|error| error.to_string())?;
-                let persisted = store
-                    .record_finding(
-                        scan_id,
-                        &WebFindingInput {
-                            fingerprint: finding.stable_fingerprint(),
-                            category: finding.category,
-                            severity: finding.severity,
-                            confidence: finding.confidence,
-                            target: finding.target,
-                            endpoint_url: finding.endpoint,
-                            method: finding.method,
-                            parameter_name: finding.parameter,
-                            title: finding.title,
-                            description: finding.description,
-                            reproduction_summary: finding.reproduction_summary,
-                            impact: finding.impact,
-                            remediation: finding.remediation,
-                            references: finding.references,
-                            source,
-                        },
-                    )
-                    .map_err(|error| error.to_string())?;
-                persisted_findings += 1;
-                if let Some(session_id) = guided_session_id.as_deref() {
-                    let _ = guided.set_finding_lifecycle(&persisted.id, Some(session_id), "open");
-                    let _ = guided.correlate_source_candidates(&persisted.id, 5);
-                    let _ = guided.append_activity(
-                        session_id,
-                        "anomaly_observed",
-                        "verification",
-                        "Security-relevant behavior was observed and recorded for verification.",
-                        &serde_json::json!({
-                            "finding_id": &persisted.id,
-                            "category": &persisted.category,
-                            "endpoint": &persisted.endpoint_url,
-                            "method": &persisted.method,
-                        }).to_string(),
-                    );
-                    if matches!(persisted.confidence.as_str(), "Likely" | "Confirmed") {
-                        let _ = guided.append_activity(
-                            session_id,
-                            "verification_performed",
-                            "verification",
-                            "Control/reproduction evidence supported classification above Potential.",
-                            &serde_json::json!({
-                                "finding_id": &persisted.id,
-                                "confidence": &persisted.confidence,
-                            }).to_string(),
-                        );
+            let endpoints_total = outcome.endpoints.len();
+            let requests_total = outcome.requests_performed;
+            let persistence_result = (|| -> Result<usize, String> {
+                for endpoint in &outcome.endpoints {
+                    if cancelled.load(Ordering::SeqCst) {
+                        return Err("scan cancelled while persisting endpoint results".to_string());
                     }
-                    let _ = guided.append_activity(
-                        session_id,
-                        "finding_classified",
-                        "verification",
-                        &format!("Finding classified as {} confidence.", persisted.confidence),
-                        &serde_json::json!({
-                            "finding_id": &persisted.id,
-                            "severity": &persisted.severity,
-                            "confidence": &persisted.confidence,
-                        }).to_string(),
-                    );
-                }
-                for evidence in finding.evidence {
-                    store
-                        .record_evidence(
-                            &persisted.id,
-                            &WebEvidenceInput {
-                                summary: evidence.summary,
-                                request_metadata_json: evidence.request_metadata.to_string(),
-                                response_metadata_json: evidence.response_metadata.to_string(),
+                    let persisted_endpoint = store
+                        .record_endpoint(
+                            scan_id,
+                            &WebEndpointInput {
+                                url: endpoint.url.clone(),
+                                route_template: endpoint.route_template.clone(),
+                                method: endpoint.method.clone(),
+                                depth: endpoint.depth,
+                                source: endpoint.source.clone(),
+                                parameter_names: endpoint.parameter_names.clone(),
+                                parameter_locations: endpoint.parameter_locations.clone(),
+                                response_header_names: endpoint.response_header_names.clone(),
+                                cookie_names: endpoint.cookie_names.clone(),
+                                content_type: endpoint.content_type.clone(),
+                                status_code: endpoint.status_code,
+                                redirect_to: endpoint.redirect_to.clone(),
                             },
                         )
                         .map_err(|error| error.to_string())?;
+                    store
+                        .link_endpoint_to_source_route(
+                            request.project_id.as_deref(),
+                            &persisted_endpoint,
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+
+                let mut persisted_findings = 0usize;
+                for finding in outcome.findings {
+                    if cancelled.load(Ordering::SeqCst) {
+                        return Err("scan cancelled while persisting finding results".to_string());
+                    }
+                    let source = store
+                        .correlate_source_for_request(
+                            request.project_id.as_deref(),
+                            &finding.endpoint,
+                            Some(&finding.method),
+                            finding.parameter.as_deref(),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let persisted = store
+                        .record_finding(
+                            scan_id,
+                            &WebFindingInput {
+                                fingerprint: finding.stable_fingerprint(),
+                                category: finding.category,
+                                severity: finding.severity,
+                                confidence: finding.confidence,
+                                target: finding.target,
+                                endpoint_url: finding.endpoint,
+                                method: finding.method,
+                                parameter_name: finding.parameter,
+                                title: finding.title,
+                                description: finding.description,
+                                reproduction_summary: finding.reproduction_summary,
+                                impact: finding.impact,
+                                remediation: finding.remediation,
+                                references: finding.references,
+                                source,
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                    persisted_findings += 1;
+                    if let Some(session_id) = guided_session_id.as_deref() {
+                        let _ = guided.set_finding_lifecycle(&persisted.id, Some(session_id), "open");
+                        let _ = guided.correlate_source_candidates(&persisted.id, 5);
+                        let _ = guided.append_activity(
+                            session_id,
+                            "anomaly_observed",
+                            "verification",
+                            "Security-relevant behavior was observed and recorded for verification.",
+                            &serde_json::json!({
+                                "finding_id": &persisted.id,
+                                "category": &persisted.category,
+                                "endpoint": &persisted.endpoint_url,
+                                "method": &persisted.method,
+                            })
+                            .to_string(),
+                        );
+                        if matches!(persisted.confidence.as_str(), "Likely" | "Confirmed") {
+                            let _ = guided.append_activity(
+                                session_id,
+                                "verification_performed",
+                                "verification",
+                                "Control/reproduction evidence supported classification above Potential.",
+                                &serde_json::json!({
+                                    "finding_id": &persisted.id,
+                                    "confidence": &persisted.confidence,
+                                })
+                                .to_string(),
+                            );
+                        }
+                        let _ = guided.append_activity(
+                            session_id,
+                            "finding_classified",
+                            "verification",
+                            &format!(
+                                "Finding classified as {} confidence.",
+                                persisted.confidence
+                            ),
+                            &serde_json::json!({
+                                "finding_id": &persisted.id,
+                                "severity": &persisted.severity,
+                                "confidence": &persisted.confidence,
+                            })
+                            .to_string(),
+                        );
+                    }
+                    for evidence in finding.evidence {
+                        if cancelled.load(Ordering::SeqCst) {
+                            return Err(
+                                "scan cancelled while persisting finding evidence".to_string()
+                            );
+                        }
+                        store
+                            .record_evidence(
+                                &persisted.id,
+                                &WebEvidenceInput {
+                                    summary: evidence.summary,
+                                    request_metadata_json: evidence.request_metadata.to_string(),
+                                    response_metadata_json: evidence.response_metadata.to_string(),
+                                },
+                            )
+                            .map_err(|error| error.to_string())?;
+                    }
+                }
+
+                if cancelled.load(Ordering::SeqCst) {
+                    return Err("scan cancelled before completion was committed".to_string());
+                }
+                store
+                    .update_progress(
+                        scan_id,
+                        "completed",
+                        "completed",
+                        endpoints_total,
+                        requests_total,
+                        persisted_findings,
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(persisted_findings)
+            })();
+
+            match persistence_result {
+                Ok(_) => {
+                    if let Some(session_id) = guided_session_id.as_deref() {
+                        guided
+                            .update_from_scan(session_id, "completed", "completed", None)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    Ok(())
+                }
+                Err(error) if cancelled.load(Ordering::SeqCst) => {
+                    mark_scan_cancelled(
+                        &store,
+                        &guided,
+                        guided_session_id.as_deref(),
+                        scan_id,
+                    )?;
+                    Ok(())
+                }
+                Err(error) => {
+                    let message = format!("scan result persistence failed: {error}");
+                    mark_scan_failed(
+                        &store,
+                        &guided,
+                        guided_session_id.as_deref(),
+                        scan_id,
+                        &message,
+                    )?;
+                    Err(message)
                 }
             }
-
-            store
-                .update_progress(
-                    scan_id,
-                    "completed",
-                    "completed",
-                    outcome.endpoints.len(),
-                    outcome.requests_performed,
-                    persisted_findings,
-                )
-                .map_err(|error| error.to_string())?;
-            if let Some(session_id) = guided_session_id.as_deref() {
-                guided
-                    .update_from_scan(session_id, "completed", "completed", None)
-                    .map_err(|error| error.to_string())?;
-            }
-            Ok(())
         }
         Err(ScanError::Cancelled) => {
-            store.cancel_scan(scan_id).map_err(|error| error.to_string())?;
-            if let Some(session_id) = guided_session_id.as_deref() {
-                let _ = guided.update_from_scan(session_id, "cancelled", "cancelled", None);
-            }
+            mark_scan_cancelled(&store, &guided, guided_session_id.as_deref(), scan_id)?;
             Ok(())
         }
         Err(error) => {
-            store
-                .fail_scan(scan_id, &error.to_string())
-                .map_err(|store_error| store_error.to_string())?;
-            if let Some(session_id) = guided_session_id.as_deref() {
-                let _ = guided.update_from_scan(
-                    session_id,
-                    "failed",
-                    "failed",
-                    Some(&error.to_string()),
-                );
-            }
-            Err(error.to_string())
+            let message = error.to_string();
+            mark_scan_failed(
+                &store,
+                &guided,
+                guided_session_id.as_deref(),
+                scan_id,
+                &message,
+            )?;
+            Err(message)
         }
     }
+}
+
+fn mark_scan_cancelled(
+    store: &AuthorizedWebSecurityStore<'_>,
+    guided: &GuidedSecurityStore<'_>,
+    guided_session_id: Option<&str>,
+    scan_id: &str,
+) -> Result<(), String> {
+    store
+        .cancel_scan(scan_id)
+        .map_err(|error| error.to_string())?;
+    if let Some(session_id) = guided_session_id {
+        guided
+            .update_from_scan(session_id, "cancelled", "cancelled", None)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn mark_scan_failed(
+    store: &AuthorizedWebSecurityStore<'_>,
+    guided: &GuidedSecurityStore<'_>,
+    guided_session_id: Option<&str>,
+    scan_id: &str,
+    error: &str,
+) -> Result<(), String> {
+    store
+        .fail_scan(scan_id, error)
+        .map_err(|store_error| store_error.to_string())?;
+    if let Some(session_id) = guided_session_id {
+        guided
+            .update_from_scan(session_id, "failed", "failed", Some(error))
+            .map_err(|guided_error| guided_error.to_string())?;
+    }
+    Ok(())
+}
 }
 
 #[tauri::command]
