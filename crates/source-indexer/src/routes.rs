@@ -3000,6 +3000,42 @@ fn contains_method_call(value: &str, method: &str) -> bool {
         })
     })
 }
+fn keyword_direct_string(value: &str, keyword: &str) -> Option<String> {
+    let tail = keyword_value_tail(value, keyword)?;
+    let first = tail.chars().next()?;
+    if !matches!(first, '"' | '\'') {
+        return None;
+    }
+    let rest = &tail[first.len_utf8()..];
+    let end = rest.find(first)?;
+    let value = &rest[..end];
+    if value.is_empty() || value.len() > 256 {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn keyword_direct_python_bool(value: &str, keyword: &str) -> Option<bool> {
+    let tail = keyword_value_tail(value, keyword)?;
+    let token = tail
+        .split(|character: char| character == ',' || character == ')' || character.is_whitespace())
+        .next()
+        .unwrap_or("");
+    match token {
+        "True" => Some(true),
+        "False" => Some(false),
+        _ => None,
+    }
+}
+
+fn pydantic_field_input_alias(line: &str) -> Option<String> {
+    if !line.contains("Field(") {
+        return None;
+    }
+    keyword_direct_string(line, "validation_alias")
+        .or_else(|| keyword_direct_string(line, "alias"))
+}
+
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let mut models = BTreeMap::new();
     walk(root, &mut |node| {
@@ -3035,7 +3071,10 @@ fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<S
             };
             let candidate = candidate.trim();
             if is_identifier(candidate) {
-                fields.push(candidate.to_string());
+                fields.push(
+                    pydantic_field_input_alias(trimmed)
+                        .unwrap_or_else(|| candidate.to_string()),
+                );
             }
         }
         fields.sort();
@@ -3166,10 +3205,19 @@ fn fastapi_function_parameters(
             ("Body(", "json"),
         ]
         .into_iter()
-        .find(|(marker, _)| raw.contains(marker))
-        .map(|(_, location)| location);
-        if let Some(location) = explicit {
-            output.push(route_parameter(name, location));
+        .find(|(marker, _)| raw.contains(marker));
+        if let Some((marker, location)) = explicit {
+            let alias = keyword_direct_string(raw, "alias");
+            let external_name = if let Some(alias) = alias {
+                alias
+            } else if marker == "Header("
+                && keyword_direct_python_bool(raw, "convert_underscores") != Some(false)
+            {
+                name.replace('_', "-")
+            } else {
+                name.to_string()
+            };
+            output.push(route_parameter(&external_name, location));
             continue;
         }
 
@@ -5042,6 +5090,63 @@ fn app() -> Router {
         }));
     }
 
+    #[test]
+    fn maps_fastapi_parameter_and_pydantic_input_aliases() {
+        let source = r#"
+from fastapi import FastAPI, Query, Header, Cookie
+from pydantic import AliasChoices, BaseModel, Field
+
+app = FastAPI()
+
+class CreateUser(BaseModel):
+    display_name: str = Field(alias="displayName")
+    account_id: str = Field(alias="legacyAccount", validation_alias="accountId")
+    ignored_choice: str = Field(validation_alias=AliasChoices("first", "second"))
+
+@app.post("/users")
+async def create_user(
+    payload: CreateUser,
+    search_term: str = Query("", alias="q"),
+    x_tenant_id: str = Header(""),
+    raw_header: str = Header("", convert_underscores=False),
+    session_cookie: str = Cookie("", alias="session-id"),
+):
+    return {"ok": True}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Python", "app.py", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "fastapi" && route.path_template == "/users")
+            .expect("fastapi route");
+
+        for field in ["displayName", "accountId"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert!(route.parameters.iter().any(|parameter| {
+            parameter.name == "ignored_choice" && parameter.location == "json"
+        }));
+        assert!(!route.parameters.iter().any(|parameter| parameter.name == "first"));
+        assert!(route.parameters.iter().any(|parameter| {
+            parameter.name == "q" && parameter.location == "query"
+        }));
+        assert!(route.parameters.iter().any(|parameter| {
+            parameter.name == "x-tenant-id" && parameter.location == "header"
+        }));
+        assert!(route.parameters.iter().any(|parameter| {
+            parameter.name == "raw_header" && parameter.location == "header"
+        }));
+        assert!(route.parameters.iter().any(|parameter| {
+            parameter.name == "session-id" && parameter.location == "cookie"
+        }));
+    }
     #[test]
     fn extracts_fastapi_route_and_pydantic_body_fields() {
         let source = r#"
