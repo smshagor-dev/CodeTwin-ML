@@ -3773,6 +3773,13 @@ fn pydantic_field_input_aliases(line: &str) -> Option<Vec<String>> {
         if tail.trim_start().starts_with("AliasChoices(") {
             return Some(pydantic_static_alias_choices(tail).unwrap_or_default());
         }
+        if tail.trim_start().starts_with("AliasPath(") {
+            return Some(
+                pydantic_static_single_alias_path(tail)
+                    .into_iter()
+                    .collect(),
+            );
+        }
         // An explicit but non-static validation_alias is authoritative. Do not
         // fall back to alias/generator/field-name guesses.
         return Some(Vec::new());
@@ -3787,6 +3794,29 @@ fn pydantic_field_input_aliases(line: &str) -> Option<Vec<String>> {
     }
 
     None
+}
+
+fn pydantic_static_single_alias_path(value: &str) -> Option<String> {
+    let input = value.trim_start().strip_prefix("AliasPath(")?.trim_start();
+    let quote = input.chars().next()?;
+    if !matches!(quote, '"' | '\'') {
+        return None;
+    }
+    let rest = &input[quote.len_utf8()..];
+    let end = rest.find(quote)?;
+    let alias = &rest[..end];
+    if alias.is_empty() || alias.len() > 256 || alias.contains('\\') {
+        return None;
+    }
+
+    let mut remaining = rest[end + quote.len_utf8()..].trim_start();
+    if let Some(tail) = remaining.strip_prefix(',') {
+        remaining = tail.trim_start();
+    }
+    if !remaining.starts_with(')') {
+        return None;
+    }
+    Some(alias.to_string())
 }
 
 fn pydantic_static_alias_choices(value: &str) -> Option<Vec<String>> {
