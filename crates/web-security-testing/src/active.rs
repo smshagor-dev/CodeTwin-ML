@@ -1027,7 +1027,7 @@ fn normalized_key(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_sql_error, materially_different, similar_response};
+    use super::{baseline_key, contains_sql_error, materially_different, similar_response};
     use crate::ObservedResponse;
 
     fn response(status: u16, body: &str) -> ObservedResponse {
@@ -1041,6 +1041,18 @@ mod tests {
             truncated: false,
             redaction_secrets: Vec::new(),
         }
+    }
+
+    #[test]
+    fn baseline_keys_are_method_specific_and_fragment_stable() {
+        assert_eq!(
+            baseline_key("post", "https://example.test/users#details"),
+            "POST https://example.test/users"
+        );
+        assert_ne!(
+            baseline_key("GET", "https://example.test/users"),
+            baseline_key("POST", "https://example.test/users")
+        );
     }
 
     #[test]
