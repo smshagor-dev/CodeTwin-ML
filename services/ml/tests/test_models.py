@@ -4,6 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -141,6 +142,38 @@ class ModelRegistryTests(unittest.TestCase):
             (package / "model.onnx").write_bytes(b"different")
             with self.assertRaises(ModelIntegrityError):
                 install_model(package, model_root=root / "models")
+
+    def test_staged_artifact_is_reverified_after_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            model_root = root / "models"
+            package = self._package(root)
+
+            import codetwin_ml.models as models_module
+
+            original_copyfile = models_module.shutil.copyfile
+
+            def corrupt_after_copy(source, destination):
+                result = original_copyfile(source, destination)
+                pathlib.Path(destination).write_bytes(b"corrupted-after-copy")
+                return result
+
+            with mock.patch(
+                "codetwin_ml.models.shutil.copyfile",
+                side_effect=corrupt_after_copy,
+            ):
+                with self.assertRaises(ModelIntegrityError):
+                    install_model(package, model_root=model_root)
+
+            target = (
+                model_root
+                / "openmindai-security-screen-v1"
+                / "1.0.0"
+            )
+            self.assertFalse(target.exists())
+            model_dir = target.parent
+            self.assertTrue(model_dir.is_dir())
+            self.assertEqual(list(model_dir.iterdir()), [])
 
     def test_required_model_license_must_be_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
