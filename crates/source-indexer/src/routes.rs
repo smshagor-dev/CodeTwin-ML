@@ -773,15 +773,16 @@ fn typescript_direct_json_assertion_model(
         }
         expression = stripped;
     }
-    if let Some(rest) = expression.strip_prefix("await ") {
-        expression = rest.trim();
-        for _ in 0..4 {
-            let stripped = typescript_strip_balanced_outer_parentheses(expression);
-            if stripped == expression {
-                break;
-            }
-            expression = stripped;
+    let Some(rest) = expression.strip_prefix("await ") else {
+        return None;
+    };
+    expression = rest.trim();
+    for _ in 0..4 {
+        let stripped = typescript_strip_balanced_outer_parentheses(expression);
+        if stripped == expression {
+            break;
         }
+        expression = stripped;
     }
 
     (expression == format!("{request_name}.json()")).then(|| type_name.to_string())
@@ -5441,6 +5442,11 @@ export async function OPTIONS(request: Request) {
   const payload = await request.json() as CreateUser | BaseUser;
   return Response.json(payload);
 }
+
+export async function HEAD(request: Request) {
+  const payload = request.json() as CreateUser;
+  return Response.json(payload);
+}
 "#;
         let mut parser = Parser::new();
         parser
@@ -5467,7 +5473,7 @@ export async function OPTIONS(request: Request) {
             assert!(!route.parameters.iter().any(|parameter| parameter.name == "displayName"));
         }
 
-        for method in ["PATCH", "DELETE", "OPTIONS"] {
+        for method in ["PATCH", "DELETE", "OPTIONS", "HEAD"] {
             let route = routes
                 .iter()
                 .find(|route| route.framework == "nextjs" && route.http_method == method)
