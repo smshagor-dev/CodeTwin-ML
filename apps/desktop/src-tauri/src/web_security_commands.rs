@@ -156,27 +156,43 @@ fn run_scan_background(
     let mut last_guided_phase = String::new();
     let mut execution_config = request.config.clone();
 
-    if let Some(session_id) = guided_session_id.as_deref() {
-        let selected_categories = guided
-            .selected_plan_categories(session_id)
-            .map_err(|error| error.to_string())?;
-        let state_changing_selected = guided
-            .has_selected_state_changing(session_id)
-            .map_err(|error| error.to_string())?;
-        execution_config = apply_approved_execution_policy(
-            &execution_config,
-            &ApprovedExecutionPolicy {
-                selected_categories,
-                state_changing_selected,
-            },
-        );
-    }
+    let preparation_result = (|| -> Result<Vec<web_security_testing::SourceEndpointSeed>, String> {
+        if let Some(session_id) = guided_session_id.as_deref() {
+            let selected_categories = guided
+                .selected_plan_categories(session_id)
+                .map_err(|error| error.to_string())?;
+            let state_changing_selected = guided
+                .has_selected_state_changing(session_id)
+                .map_err(|error| error.to_string())?;
+            execution_config = apply_approved_execution_policy(
+                &execution_config,
+                &ApprovedExecutionPolicy {
+                    selected_categories,
+                    state_changing_selected,
+                },
+            );
+        }
 
-    let source_seeds = source_endpoint_seeds_for_project(
-        &database,
-        request.project_id.as_deref(),
-        &execution_config.scope.target_url,
-    )?;
+        source_endpoint_seeds_for_project(
+            &database,
+            request.project_id.as_deref(),
+            &execution_config.scope.target_url,
+        )
+    })();
+    let source_seeds = match preparation_result {
+        Ok(source_seeds) => source_seeds,
+        Err(error) => {
+            let message = format!("scan preparation failed: {error}");
+            mark_scan_failed(
+                &store,
+                &guided,
+                guided_session_id.as_deref(),
+                scan_id,
+                &message,
+            )?;
+            return Err(message);
+        }
+    };
 
     let outcome = run_authorized_scan_with_seeds(
         &execution_config,
