@@ -2098,6 +2098,32 @@ class StoreUserRequest extends FormRequest
     }
 
     #[test]
+    fn parameter_location_persistence_keeps_same_name_in_multiple_locations() {
+        let parameters = vec![
+            source_indexer::IndexedRouteParameter {
+                name: "id".to_string(),
+                location: "path".to_string(),
+            },
+            source_indexer::IndexedRouteParameter {
+                name: "id".to_string(),
+                location: "query".to_string(),
+            },
+        ];
+        let locations = super::parameter_locations_from_indexed(&parameters);
+        assert_eq!(
+            locations.get("id"),
+            Some(&vec!["path".to_string(), "query".to_string()])
+        );
+
+        let encoded = serde_json::to_string(&locations).expect("locations json");
+        let decoded = super::parse_parameter_locations_json(&encoded);
+        assert_eq!(decoded, locations);
+
+        let legacy = super::parse_parameter_locations_json(r#"{"id":"query"}"#);
+        assert_eq!(legacy.get("id"), Some(&vec!["query".to_string()]));
+    }
+
+    #[test]
     fn laravel_form_request_rules_merge_across_controller_imports() {
         let repository = tempdir().expect("repository");
         fs::create_dir_all(repository.path().join("routes")).expect("routes dir");
