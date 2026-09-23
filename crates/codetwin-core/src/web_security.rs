@@ -22,6 +22,8 @@ pub enum WebSecurityStoreError {
     InvalidConfig(String),
     #[error("web security scan not found: {0}")]
     NotFound(String),
+    #[error("invalid web security scan state: {0}")]
+    State(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -351,25 +353,43 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         findings: usize,
     ) -> Result<(), WebSecurityStoreError> {
         validate_status(status, phase)?;
-        self.database.connection().execute(
+        let changed = self.database.connection().execute(
             "UPDATE web_security_scans
              SET status = ?2, phase = ?3,
                  endpoints_discovered = ?4,
                  requests_performed = ?5,
                  findings_count = ?6,
                  started_at = CASE WHEN started_at IS NULL AND ?2 = 'running' THEN CURRENT_TIMESTAMP ELSE started_at END,
-                 finished_at = CASE WHEN ?2 IN ('completed','failed','cancelled') THEN CURRENT_TIMESTAMP ELSE finished_at END
-             WHERE id = ?1",
+                 finished_at = CASE WHEN ?2 = 'completed' THEN CURRENT_TIMESTAMP ELSE finished_at END
+             WHERE id = ?1 AND status IN ('queued','running')",
             params![scan_id, status, phase, endpoints as i64, requests as i64, findings as i64],
         )?;
-        Ok(())
+        if changed == 1 {
+            return Ok(());
+        }
+
+        let current_status: Option<String> = self
+            .database
+            .connection()
+            .query_row(
+                "SELECT status FROM web_security_scans WHERE id=?1",
+                [scan_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match current_status {
+            Some(current) => Err(WebSecurityStoreError::State(format!(
+                "scan {scan_id} is already terminal in status {current}; refusing transition to {status}"
+            ))),
+            None => Err(WebSecurityStoreError::NotFound(scan_id.to_string())),
+        }
     }
 
     pub fn fail_scan(&self, scan_id: &str, error: &str) -> Result<(), WebSecurityStoreError> {
         self.database.connection().execute(
             "UPDATE web_security_scans
              SET status='failed', phase='failed', last_error=?2, finished_at=CURRENT_TIMESTAMP
-             WHERE id=?1",
+             WHERE id=?1 AND status IN ('queued','running')",
             params![scan_id, bounded_text(error, 2_000)],
         )?;
         Ok(())
