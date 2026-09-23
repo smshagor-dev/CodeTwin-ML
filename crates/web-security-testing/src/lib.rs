@@ -283,6 +283,7 @@ fn normalize_route_template(template: &str) -> Option<String> {
     if trimmed.contains('*') {
         return None;
     }
+    let preserve_trailing_slash = trimmed.len() > 1 && trimmed.ends_with('/');
     let mut segments = Vec::new();
     for segment in trimmed.trim_matches('/').split('/') {
         if segment.is_empty() {
@@ -330,7 +331,11 @@ fn normalize_route_template(template: &str) -> Option<String> {
     Some(if segments.is_empty() {
         "/".to_string()
     } else {
-        format!("/{}", segments.join("/"))
+        let mut path = format!("/{}", segments.join("/"));
+        if preserve_trailing_slash {
+            path.push('/');
+        }
+        path
     })
 }
 
@@ -409,6 +414,7 @@ fn materialize_route_path(
     if template.contains('*') {
         return None;
     }
+    let preserve_trailing_slash = template.len() > 1 && template.ends_with('/');
     let mut segments = Vec::new();
     for segment in template.trim_matches('/').split('/') {
         if segment.is_empty() {
@@ -428,7 +434,11 @@ fn materialize_route_path(
     Some(if segments.is_empty() {
         "/".to_string()
     } else {
-        format!("/{}", segments.join("/"))
+        let mut path = format!("/{}", segments.join("/"));
+        if preserve_trailing_slash {
+            path.push('/');
+        }
+        path
     })
 }
 
