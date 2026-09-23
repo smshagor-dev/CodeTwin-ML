@@ -3529,8 +3529,16 @@ fn combine_paths(prefix: Option<&str>, path: &str) -> String {
     if prefix.is_empty() {
         return normalize_path(path);
     }
-    if path.is_empty() || path == "/" {
+    if path.is_empty() {
         return normalize_path(prefix);
+    }
+    if path == "/" {
+        let base = normalize_path(prefix);
+        return if base == "/" || base.ends_with('/') {
+            base
+        } else {
+            format!("{base}/")
+        };
     }
     normalize_path(&format!(
         "{}/{}",
@@ -3544,6 +3552,7 @@ fn normalize_path(value: &str) -> String {
     if trimmed.is_empty() {
         return "/".to_string();
     }
+    let preserve_trailing_slash = trimmed.len() > 1 && trimmed.ends_with('/');
     let mut path = if trimmed.starts_with('/') {
         trimmed.to_string()
     } else {
@@ -3554,6 +3563,9 @@ fn normalize_path(value: &str) -> String {
     }
     if path.len() > 1 {
         path = path.trim_end_matches('/').to_string();
+        if preserve_trailing_slash {
+            path.push('/');
+        }
     }
     path
 }
