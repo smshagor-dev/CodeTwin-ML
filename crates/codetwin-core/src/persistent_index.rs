@@ -37,6 +37,18 @@ fn insert_parameter_location(
     }
 }
 
+fn parameter_names_from_indexed(
+    parameters: &[source_indexer::IndexedRouteParameter],
+) -> Vec<String> {
+    let mut names: Vec<String> = parameters
+        .iter()
+        .map(|parameter| parameter.name.clone())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn parameter_locations_from_indexed(
     parameters: &[source_indexer::IndexedRouteParameter],
 ) -> ParameterLocations {
@@ -664,13 +676,7 @@ fn persist_handler_inputs(
                 &handler.start_line.to_string(),
             ],
         );
-        let mut parameter_names: Vec<String> = handler
-            .parameters
-            .iter()
-            .map(|parameter| parameter.name.clone())
-            .collect();
-        parameter_names.sort();
-        parameter_names.dedup();
+        let parameter_names = parameter_names_from_indexed(&handler.parameters);
         let parameter_locations = parameter_locations_from_indexed(&handler.parameters);
         connection.execute(
             "INSERT INTO source_handler_inputs(
@@ -726,13 +732,7 @@ fn persist_routes(
                 &route.start_line.to_string(),
             ],
         );
-        let mut parameter_names: Vec<String> = route
-            .parameters
-            .iter()
-            .map(|parameter| parameter.name.clone())
-            .collect();
-        parameter_names.sort();
-        parameter_names.dedup();
+        let parameter_names = parameter_names_from_indexed(&route.parameters);
         let parameter_locations = parameter_locations_from_indexed(&route.parameters);
         let parameter_names_json = serde_json::to_string(&parameter_names)
             .unwrap_or_else(|_| "[]".to_string());
@@ -2113,6 +2113,9 @@ class StoreUserRequest extends FormRequest
                 location: "query".to_string(),
             },
         ];
+        let names = super::parameter_names_from_indexed(&parameters);
+        assert_eq!(names, vec!["id".to_string()]);
+
         let locations = super::parameter_locations_from_indexed(&parameters);
         assert_eq!(
             locations.get("id"),
