@@ -2241,8 +2241,19 @@ fn extract_go_routes(
     };
 
     let handlers = go_handlers(source, root);
-    let json_models = go_json_models(source, root);
-    let handler_inputs = go_handler_inputs(source, &handlers, framework, &json_models);
+    let json_models = go_tagged_models(source, root, "json");
+    let query_models = go_tagged_models(source, root, "form");
+    let header_models = go_tagged_models(source, root, "header");
+    let path_models = go_tagged_models(source, root, "uri");
+    let handler_inputs = go_handler_inputs(
+        source,
+        &handlers,
+        framework,
+        &json_models,
+        &query_models,
+        &header_models,
+        &path_models,
+    );
     let handler_parameters: BTreeMap<String, Vec<IndexedRouteParameter>> = handler_inputs
         .iter()
         .map(|input| (input.handler_name.clone(), input.parameters.clone()))
@@ -2359,13 +2370,23 @@ fn go_handler_inputs(
     handlers: &BTreeMap<String, Node<'_>>,
     framework: &str,
     json_models: &BTreeMap<String, Vec<String>>,
+    query_models: &BTreeMap<String, Vec<String>>,
+    header_models: &BTreeMap<String, Vec<String>>,
+    path_models: &BTreeMap<String, Vec<String>>,
 ) -> Vec<IndexedHandlerInput> {
     let mut output = Vec::new();
     for (name, node) in handlers {
         let Some(body) = text(source, *node) else {
             continue;
         };
-        let mut parameters = go_handler_parameters(body, framework, json_models);
+        let mut parameters = go_handler_parameters(
+            body,
+            framework,
+            json_models,
+            query_models,
+            header_models,
+            path_models,
+        );
         normalize_parameters(&mut parameters);
         if parameters.is_empty() {
             continue;
@@ -2386,6 +2407,9 @@ fn go_handler_parameters(
     body: &str,
     framework: &str,
     json_models: &BTreeMap<String, Vec<String>>,
+    query_models: &BTreeMap<String, Vec<String>>,
+    header_models: &BTreeMap<String, Vec<String>>,
+    path_models: &BTreeMap<String, Vec<String>>,
 ) -> Vec<IndexedRouteParameter> {
     let mut parameters = Vec::new();
     let mut collect = |markers: &[&str], location: &str| {
@@ -2433,10 +2457,39 @@ fn go_handler_parameters(
             }
         }
     }
+    for (markers, location, models) in [
+        (
+            &[".ShouldBindQuery(", ".BindQuery("][..],
+            "query",
+            query_models,
+        ),
+        (
+            &[".ShouldBindHeader(", ".BindHeader("][..],
+            "header",
+            header_models,
+        ),
+        (
+            &[".ShouldBindUri(", ".BindUri("][..],
+            "path",
+            path_models,
+        ),
+    ] {
+        if let Some(model) = go_explicit_binding_model(body, markers) {
+            if let Some(fields) = models.get(&model) {
+                for field in fields {
+                    parameters.push(route_parameter(field, location));
+                }
+            }
+        }
+    }
     parameters
 }
 
-fn go_json_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
+fn go_tagged_models(
+    source: &str,
+    root: Node<'_>,
+    tag_name: &str,
+) -> BTreeMap<String, Vec<String>> {
     let mut models = BTreeMap::new();
     walk(root, &mut |node| {
         if node.kind() != "type_spec" {
@@ -2458,7 +2511,7 @@ fn go_json_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>>
         if !raw.contains("struct") || !raw.contains('{') {
             return;
         }
-        let fields = go_struct_json_fields(raw);
+        let fields = go_struct_tag_fields(raw, tag_name);
         if !fields.is_empty() {
             models.insert(name.to_string(), fields);
         }
@@ -2466,7 +2519,7 @@ fn go_json_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>>
     models
 }
 
-fn go_struct_json_fields(raw: &str) -> Vec<String> {
+fn go_struct_tag_fields(raw: &str, tag_name: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let Some(open) = raw.find('{') else {
         return fields;
@@ -2499,11 +2552,15 @@ fn go_struct_json_fields(raw: &str) -> Vec<String> {
             continue;
         }
 
-        let json_name = go_json_tag_name(line).unwrap_or_else(|| field_name.to_string());
-        if json_name == "-" || json_name.is_empty() || json_name.len() > 256 {
+        let external_name = go_struct_tag_name(line, tag_name)
+            .or_else(|| (tag_name == "json").then(|| field_name.to_string()));
+        let Some(external_name) = external_name else {
+            continue;
+        };
+        if external_name == "-" || external_name.is_empty() || external_name.len() > 256 {
             continue;
         }
-        fields.push(json_name);
+        fields.push(external_name);
     }
 
     fields.sort();
@@ -2512,9 +2569,9 @@ fn go_struct_json_fields(raw: &str) -> Vec<String> {
     fields
 }
 
-fn go_json_tag_name(line: &str) -> Option<String> {
-    let marker = r#"json:""#;
-    let index = line.find(marker)?;
+fn go_struct_tag_name(line: &str, tag_name: &str) -> Option<String> {
+    let marker = format!("{tag_name}:\"");
+    let index = line.find(&marker)?;
     let tail = &line[index + marker.len()..];
     let end = tail.find('"')?;
     let tag = &tail[..end];
@@ -2526,6 +2583,18 @@ fn go_json_tag_name(line: &str) -> Option<String> {
         return None;
     }
     Some(name.to_string())
+}
+
+fn go_explicit_binding_model(body: &str, markers: &[&str]) -> Option<String> {
+    let variables = go_handler_local_types(body);
+    for marker in markers {
+        if let Some(variable) = go_bound_variable(body, marker) {
+            if let Some(model) = variables.get(&variable) {
+                return Some(model.clone());
+            }
+        }
+    }
+    None
 }
 
 fn go_explicit_json_binding_model(body: &str) -> Option<String> {
@@ -5223,6 +5292,79 @@ func routes(e *echo.Echo) {
         let (routes, _, _) = extract_routes("Go", "echo.go", source, tree.root_node());
         let route = routes.iter().find(|route| route.framework == "echo").expect("echo");
         assert!(!route.parameters.iter().any(|parameter| parameter.location == "json"));
+    }
+    #[test]
+    fn maps_gin_typed_binding_struct_tags() {
+        let source = r#"
+package main
+
+import "github.com/gin-gonic/gin"
+
+type ListQuery struct {
+    Search string `form:"q"`
+    Page int `form:"page"`
+    Ignored string `form:"-"`
+}
+
+type TenantHeader struct {
+    Tenant string `header:"X-Tenant"`
+}
+
+type UserURI struct {
+    UserID string `uri:"id"`
+}
+
+type Ambiguous struct {
+    Email string `form:"email" json:"email"`
+}
+
+func show(c *gin.Context) {
+    var query ListQuery
+    var headers TenantHeader
+    var uri UserURI
+    var ambiguous Ambiguous
+    _ = c.ShouldBindQuery(&query)
+    _ = c.ShouldBindHeader(&headers)
+    _ = c.ShouldBindUri(&uri)
+    _ = c.ShouldBind(&ambiguous)
+}
+
+func routes(r *gin.Engine) {
+    r.GET("/users/:id", show)
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_go::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, handler_inputs) =
+            extract_routes("Go", "main.go", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "gin" && route.http_method == "GET")
+            .expect("gin route");
+
+        for field in ["q", "page"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "query"
+            }));
+        }
+        assert!(route.parameters.iter().any(|parameter| {
+            parameter.name == "X-Tenant" && parameter.location == "header"
+        }));
+        assert!(route.parameters.iter().any(|parameter| {
+            parameter.name == "id" && parameter.location == "path"
+        }));
+        assert!(!route.parameters.iter().any(|parameter| parameter.name == "Ignored"));
+        assert!(!route.parameters.iter().any(|parameter| parameter.name == "email"));
+
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "show"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "X-Tenant" && parameter.location == "header"
+                })
+        }));
     }
     #[test]
     fn maps_gin_handler_inputs_back_to_source_route() {
