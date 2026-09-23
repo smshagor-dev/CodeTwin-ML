@@ -52,7 +52,7 @@ pub use guided_security::{
 pub use impact_analysis::{
     ImpactAnalysisError, ImpactAnalysisService, ImpactReport, ImpactedFileRecord,
 };
-pub use import_resolver::{resolve_import, ResolvedImport};
+pub use import_resolver::{resolve_import, resolve_import_with_php_psr4, PhpPsr4Root, ResolvedImport};
 pub use lsp_enrichment::{LanguageServerConfig, LanguageServerKind};
 pub use ml_inference::{
     MlFindingLinkRecord, MlInferenceError, MlInferenceObservation, MlInferenceRecord,
