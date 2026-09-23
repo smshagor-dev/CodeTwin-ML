@@ -7284,6 +7284,80 @@ fn app() -> Router {
     }
 
     #[test]
+    fn maps_multiline_pydantic_fields_only_from_direct_class_body() {
+        let source = r#"
+from fastapi import FastAPI
+from pydantic import AliasChoices, AliasPath, BaseModel, Field
+
+app = FastAPI()
+
+class CreateUser(BaseModel):
+    display_name: str = Field(
+        alias="displayName",
+    )
+    account_id: str = Field(
+        validation_alias=AliasChoices(
+            "accountId",
+            "legacyAccount",
+        ),
+    )
+    external_id: str = Field(
+        validation_alias=AliasPath(
+            "externalId",
+        ),
+    )
+    annotated: str = Field(
+        default="value",
+        alias="annotatedField",
+    )
+
+    class Nested:
+        nested_secret: str = "hidden"
+
+    def helper(self):
+        local_secret: str = "hidden"
+        return local_secret
+
+@app.post("/users")
+async def create_user(payload: CreateUser):
+    return {"ok": True}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Python", "app.py", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "fastapi" && route.path_template == "/users")
+            .expect("fastapi route");
+
+        for field in [
+            "displayName",
+            "accountId",
+            "legacyAccount",
+            "externalId",
+            "annotatedField",
+        ] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        for excluded in [
+            "display_name",
+            "account_id",
+            "external_id",
+            "annotated",
+            "nested_secret",
+            "local_secret",
+        ] {
+            assert!(!route.parameters.iter().any(|parameter| parameter.name == excluded));
+        }
+    }
+
+    #[test]
     fn maps_known_pydantic_alias_generator_names() {
         let source = r#"
 from fastapi import FastAPI
