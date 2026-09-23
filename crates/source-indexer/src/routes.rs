@@ -3666,11 +3666,110 @@ fn rust_preceding_attributes(source: &str, row: usize) -> Vec<String> {
 }
 
 fn rust_serde_rename_all(attribute: &str) -> Option<String> {
-    let marker = "rename_all";
-    let index = attribute.find(marker)?;
-    let tail = &attribute[index + marker.len()..];
-    let equals = tail.find('=')?;
-    first_quoted_string(&tail[equals + 1..])
+    rust_serde_deserialize_name(attribute, "rename_all")
+}
+
+fn rust_serde_deserialize_name(attribute: &str, marker: &str) -> Option<String> {
+    let index = rust_find_unquoted_token(attribute, marker)?;
+    let tail = attribute[index + marker.len()..].trim_start();
+
+    if let Some(value) = tail.strip_prefix('=') {
+        return rust_direct_quoted_value(value);
+    }
+
+    let group = tail.strip_prefix('(')?;
+    let group = rust_parenthesized_content(group)?;
+    let deserialize_index = rust_find_unquoted_token(group, "deserialize")?;
+    let deserialize_tail = group[deserialize_index + "deserialize".len()..].trim_start();
+    let value = deserialize_tail.strip_prefix('=')?;
+    rust_direct_quoted_value(value)
+}
+
+fn rust_direct_quoted_value(value: &str) -> Option<String> {
+    let value = value.trim_start();
+    if !value.starts_with('"') {
+        return None;
+    }
+    first_quoted_string(value)
+}
+
+fn rust_find_unquoted_token(value: &str, token: &str) -> Option<usize> {
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (index, character) in value.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match character {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        if character == '"' {
+            in_string = true;
+            continue;
+        }
+        if !value[index..].starts_with(token) {
+            continue;
+        }
+
+        let previous = value[..index].chars().next_back();
+        if previous.is_some_and(rust_serde_identifier_char) {
+            continue;
+        }
+        let next = value[index + token.len()..].chars().next();
+        if next.is_some_and(rust_serde_identifier_char) {
+            continue;
+        }
+        return Some(index);
+    }
+
+    None
+}
+
+fn rust_serde_identifier_char(character: char) -> bool {
+    character == '_' || character.is_ascii_alphanumeric()
+}
+
+fn rust_parenthesized_content(value: &str) -> Option<&str> {
+    let mut depth = 1usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (index, character) in value.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match character {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match character {
+            '"' => in_string = true,
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(&value[..index]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn rust_apply_serde_rename_all(field: &str, rule: &str) -> Option<String> {
@@ -3856,18 +3955,7 @@ fn rust_serde_aliases(attribute: &str) -> Vec<String> {
 }
 
 fn rust_serde_rename(attribute: &str) -> Option<String> {
-    let marker = "rename";
-    let mut offset = 0usize;
-    while let Some(relative) = attribute[offset..].find(marker) {
-        let index = offset + relative;
-        let tail = &attribute[index + marker.len()..];
-        let trimmed = tail.trim_start();
-        if let Some(value) = trimmed.strip_prefix('=') {
-            return first_quoted_string(value);
-        }
-        offset = index + marker.len();
-    }
-    None
+    rust_serde_deserialize_name(attribute, "rename")
 }
 
 fn rust_handler_inputs(
@@ -6967,6 +7055,72 @@ fn app() -> Router {
         assert!(!route.parameters.iter().any(|parameter| parameter.name == "display_name"));
         assert!(!route.parameters.iter().any(|parameter| parameter.name == "account_id"));
     }
+    #[test]
+    fn uses_serde_deserialize_direction_for_request_field_names() {
+        let source = r#"
+use axum::{routing::post, Json, Router};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+#[serde(
+    rename_all(
+        serialize = "snake_case",
+        deserialize = "camelCase"
+    )
+)]
+struct CreateUser {
+    display_name: String,
+    #[serde(rename(serialize = "email_out", deserialize = "incomingEmail"))]
+    email: String,
+    #[serde(rename(serialize = "account_out"))]
+    account_id: String,
+    #[serde(
+        rename(
+            serialize = "token_out",
+            deserialize = "requestToken"
+        )
+    )]
+    token: String,
+}
+
+async fn create(Json(_body): Json<CreateUser>) {}
+
+fn app() -> Router {
+    Router::new().route("/users", post(create))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "axum" && route.http_method == "POST")
+            .expect("axum route");
+
+        for field in ["displayName", "incomingEmail", "accountId", "requestToken"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+
+        for excluded in [
+            "display_name",
+            "snake_case",
+            "email",
+            "email_out",
+            "account_id",
+            "account_out",
+            "token",
+            "token_out",
+        ] {
+            assert!(!route.parameters.iter().any(|parameter| parameter.name == excluded));
+        }
+    }
+
     #[test]
     fn maps_static_serde_field_aliases_without_guessing_dynamic_values() {
         let source = r#"
