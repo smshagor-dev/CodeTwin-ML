@@ -544,10 +544,10 @@ fn typescript_object_models(
                 return;
             };
             let type_value = type_value.trim().trim_end_matches(';').trim();
-            if !(type_value.starts_with('{') && type_value.ends_with('}')) {
+            let Some(parent_names) = typescript_type_alias_parents(type_value) else {
                 return;
-            }
-            Vec::new()
+            };
+            parent_names
         };
 
         let mut fields = Vec::new();
@@ -615,6 +615,104 @@ fn typescript_object_models(
         }
     }
     resolved
+}
+
+fn typescript_type_alias_parents(type_value: &str) -> Option<Vec<String>> {
+    let type_value = type_value.trim();
+    if type_value.starts_with('{') && type_value.ends_with('}') {
+        return Some(Vec::new());
+    }
+
+    let parts = typescript_top_level_type_parts(type_value, '&')?;
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let mut parents = Vec::new();
+    for part in parts {
+        let part = part.trim();
+        if is_identifier(part) {
+            parents.push(part.to_string());
+            continue;
+        }
+        if part.starts_with('{') && part.ends_with('}') {
+            continue;
+        }
+        return None;
+    }
+
+    Some(parents)
+}
+
+fn typescript_top_level_type_parts(value: &str, separator: char) -> Option<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut braces = 0usize;
+    let mut parentheses = 0usize;
+    let mut brackets = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+
+    for (index, character) in value.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match character {
+            '"' | '\'' | '`' => quote = Some(character),
+            '{' => braces += 1,
+            '}' => {
+                if braces == 0 {
+                    return None;
+                }
+                braces -= 1;
+            }
+            '(' => parentheses += 1,
+            ')' => {
+                if parentheses == 0 {
+                    return None;
+                }
+                parentheses -= 1;
+            }
+            '[' => brackets += 1,
+            ']' => {
+                if brackets == 0 {
+                    return None;
+                }
+                brackets -= 1;
+            }
+            _ if character == separator && braces == 0 && parentheses == 0 && brackets == 0 => {
+                let part = value[start..index].trim();
+                if part.is_empty() {
+                    return None;
+                }
+                parts.push(part);
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    if quote.is_some() || braces != 0 || parentheses != 0 || brackets != 0 {
+        return None;
+    }
+    let tail = value[start..].trim();
+    if tail.is_empty() {
+        return None;
+    }
+    parts.push(tail);
+    Some(parts)
 }
 
 fn typescript_interface_parents(raw: &str) -> Option<Vec<String>> {
@@ -5220,6 +5318,110 @@ export async function GET() {
                 })
         }));
     }
+    #[test]
+    fn resolves_local_typescript_intersection_models_conservatively() {
+        let source = r#"
+interface BaseUser {
+  email: string;
+  profile: {
+    displayName: string;
+  };
+}
+
+interface Audited {
+  auditId: string;
+}
+
+type CreateUser = BaseUser & Audited & {
+  role: string;
+};
+
+type InlinePair = {
+  first: string;
+} & {
+  second: string;
+};
+
+type UnknownParent = BaseUser & ImportedShape & {
+  localOnly: string;
+};
+
+type GenericIntersection = BaseUser & Record<string, string>;
+type UnionModel = BaseUser | Audited;
+
+export async function POST(request: Request) {
+  const payload: CreateUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function PUT(request: Request) {
+  const payload: InlinePair = await request.json();
+  return Response.json(payload);
+}
+
+export async function PATCH(request: Request) {
+  const payload: UnknownParent = await request.json();
+  return Response.json(payload);
+}
+
+export async function DELETE(request: Request) {
+  const payload: GenericIntersection = await request.json();
+  return Response.json(payload);
+}
+
+export async function OPTIONS(request: Request) {
+  const payload: UnionModel = await request.json();
+  return Response.json(payload);
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes(
+            "TypeScript",
+            "src/app/admin/route.ts",
+            source,
+            tree.root_node(),
+        );
+
+        let post = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "POST")
+            .expect("POST route");
+        for field in ["email", "profile", "auditId", "role"] {
+            assert!(post.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert!(!post.parameters.iter().any(|parameter| parameter.name == "displayName"));
+
+        let put = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PUT")
+            .expect("PUT route");
+        for field in ["first", "second"] {
+            assert!(put.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+
+        for method in ["PATCH", "DELETE", "OPTIONS"] {
+            let route = routes
+                .iter()
+                .find(|route| route.framework == "nextjs" && route.http_method == method)
+                .expect("conservative route");
+            assert!(!route.parameters.iter().any(|parameter| {
+                parameter.location == "json"
+                    && matches!(
+                        parameter.name.as_str(),
+                        "email" | "profile" | "auditId" | "localOnly" | "first" | "second"
+                    )
+            }));
+        }
+    }
+
     #[test]
     fn resolves_local_typescript_interface_inheritance_without_promoting_nested_fields() {
         let source = r#"
