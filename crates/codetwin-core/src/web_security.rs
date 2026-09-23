@@ -1840,7 +1840,7 @@ mod tests {
                     parameter_names: vec!["q".to_string()],
                     parameter_locations: std::collections::BTreeMap::from([(
                         "q".to_string(),
-                        "query".to_string(),
+                        vec!["query".to_string()],
                     )]),
                     response_header_names: vec!["content-type".to_string()],
                     cookie_names: Vec::new(),
