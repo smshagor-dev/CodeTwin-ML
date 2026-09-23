@@ -425,14 +425,13 @@ fn merge_source_seed(existing: &mut SourceEndpointSeed, incoming: &SourceEndpoin
         (Some(_), Some(_)) => None,
     };
 
-    if incoming.source_label < existing.source_label {
+    let incoming_preferred = incoming.source_label < existing.source_label;
+    if incoming_preferred {
         existing.source_label = incoming.source_label.clone();
-    }
-    if existing.discovery_url.is_none() {
-        existing.discovery_url = incoming.discovery_url.clone();
-    }
-    if incoming.url < existing.url {
         existing.url = incoming.url.clone();
+        existing.discovery_url = incoming.discovery_url.clone();
+    } else if existing.discovery_url.is_none() {
+        existing.discovery_url = incoming.discovery_url.clone();
     }
 }
 
