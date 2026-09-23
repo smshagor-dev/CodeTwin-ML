@@ -6432,14 +6432,107 @@ fn app() -> Router {
             .find(|route| route.framework == "axum" && route.http_method == "POST")
             .expect("axum route");
 
-        for field in ["displayName", "emailAddress"] {
+        for field in ["displayName", "emailAddress", "trace_id"] {
             assert!(route.parameters.iter().any(|parameter| {
                 parameter.name == field && parameter.location == "json"
             }));
         }
-        for excluded in ["display_name", "email_address", "internalNote", "metadata", "trace_id"] {
+        for excluded in ["display_name", "email_address", "internalNote", "metadata"] {
             assert!(!route.parameters.iter().any(|parameter| parameter.name == excluded));
         }
+    }
+
+    #[test]
+    fn serde_flatten_merges_local_fields_and_preserves_unknown_or_cyclic_own_fields() {
+        let source = r#"
+use axum::{routing::{post, put, patch}, Json, Router};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Audit {
+    #[serde(rename = "traceId")]
+    trace_id: String,
+    actor: String,
+}
+
+#[derive(Deserialize)]
+struct CreateUser {
+    email: String,
+    #[serde(flatten)]
+    audit: Audit,
+}
+
+#[derive(Deserialize)]
+struct ExternalWrap {
+    own: String,
+    #[serde(flatten)]
+    external: ImportedPayload,
+}
+
+#[derive(Deserialize)]
+struct CycleA {
+    a: String,
+    #[serde(flatten)]
+    b: CycleB,
+}
+
+#[derive(Deserialize)]
+struct CycleB {
+    b: String,
+    #[serde(flatten)]
+    a: CycleA,
+}
+
+async fn create(Json(_body): Json<CreateUser>) {}
+async fn update(Json(_body): Json<ExternalWrap>) {}
+async fn patch(Json(_body): Json<CycleA>) {}
+
+fn app() -> Router {
+    Router::new()
+        .route("/users", post(create))
+        .route("/users/{id}", put(update).patch(patch))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+
+        let create = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/users")
+            .expect("create route");
+        for field in ["email", "traceId", "actor"] {
+            assert!(create.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert!(!create.parameters.iter().any(|parameter| parameter.name == "audit"));
+
+        let update = routes
+            .iter()
+            .find(|route| route.http_method == "PUT" && route.path_template == "/users/{id}")
+            .expect("update route");
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "own" && parameter.location == "json"
+        }));
+        for unknown in ["external", "traceId", "actor"] {
+            assert!(!update.parameters.iter().any(|parameter| parameter.name == unknown));
+        }
+
+        let patch = routes
+            .iter()
+            .find(|route| route.http_method == "PATCH" && route.path_template == "/users/{id}")
+            .expect("patch route");
+        assert!(patch.parameters.iter().any(|parameter| {
+            parameter.name == "a" && parameter.location == "json"
+        }));
+        assert!(!patch.parameters.iter().any(|parameter| {
+            parameter.name == "b" && parameter.location == "json"
+        }));
     }
 
     #[test]
