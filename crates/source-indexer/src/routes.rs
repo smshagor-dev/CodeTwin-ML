@@ -2241,8 +2241,19 @@ fn extract_go_routes(
     };
 
     let handlers = go_handlers(source, root);
-    let json_models = go_json_models(source, root);
-    let handler_inputs = go_handler_inputs(source, &handlers, framework, &json_models);
+    let json_models = go_tagged_models(source, root, "json");
+    let query_models = go_tagged_models(source, root, "form");
+    let header_models = go_tagged_models(source, root, "header");
+    let path_models = go_tagged_models(source, root, "uri");
+    let handler_inputs = go_handler_inputs(
+        source,
+        &handlers,
+        framework,
+        &json_models,
+        &query_models,
+        &header_models,
+        &path_models,
+    );
     let handler_parameters: BTreeMap<String, Vec<IndexedRouteParameter>> = handler_inputs
         .iter()
         .map(|input| (input.handler_name.clone(), input.parameters.clone()))
@@ -2359,13 +2370,23 @@ fn go_handler_inputs(
     handlers: &BTreeMap<String, Node<'_>>,
     framework: &str,
     json_models: &BTreeMap<String, Vec<String>>,
+    query_models: &BTreeMap<String, Vec<String>>,
+    header_models: &BTreeMap<String, Vec<String>>,
+    path_models: &BTreeMap<String, Vec<String>>,
 ) -> Vec<IndexedHandlerInput> {
     let mut output = Vec::new();
     for (name, node) in handlers {
         let Some(body) = text(source, *node) else {
             continue;
         };
-        let mut parameters = go_handler_parameters(body, framework, json_models);
+        let mut parameters = go_handler_parameters(
+            body,
+            framework,
+            json_models,
+            query_models,
+            header_models,
+            path_models,
+        );
         normalize_parameters(&mut parameters);
         if parameters.is_empty() {
             continue;
@@ -2386,6 +2407,9 @@ fn go_handler_parameters(
     body: &str,
     framework: &str,
     json_models: &BTreeMap<String, Vec<String>>,
+    query_models: &BTreeMap<String, Vec<String>>,
+    header_models: &BTreeMap<String, Vec<String>>,
+    path_models: &BTreeMap<String, Vec<String>>,
 ) -> Vec<IndexedRouteParameter> {
     let mut parameters = Vec::new();
     let mut collect = |markers: &[&str], location: &str| {
@@ -2433,10 +2457,39 @@ fn go_handler_parameters(
             }
         }
     }
+    for (markers, location, models) in [
+        (
+            &[".ShouldBindQuery(", ".BindQuery("][..],
+            "query",
+            query_models,
+        ),
+        (
+            &[".ShouldBindHeader(", ".BindHeader("][..],
+            "header",
+            header_models,
+        ),
+        (
+            &[".ShouldBindUri(", ".BindUri("][..],
+            "path",
+            path_models,
+        ),
+    ] {
+        if let Some(model) = go_explicit_binding_model(body, markers) {
+            if let Some(fields) = models.get(&model) {
+                for field in fields {
+                    parameters.push(route_parameter(field, location));
+                }
+            }
+        }
+    }
     parameters
 }
 
-fn go_json_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
+fn go_tagged_models(
+    source: &str,
+    root: Node<'_>,
+    tag_name: &str,
+) -> BTreeMap<String, Vec<String>> {
     let mut models = BTreeMap::new();
     walk(root, &mut |node| {
         if node.kind() != "type_spec" {
@@ -2458,7 +2511,7 @@ fn go_json_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>>
         if !raw.contains("struct") || !raw.contains('{') {
             return;
         }
-        let fields = go_struct_json_fields(raw);
+        let fields = go_struct_tag_fields(raw, tag_name);
         if !fields.is_empty() {
             models.insert(name.to_string(), fields);
         }
@@ -2466,7 +2519,7 @@ fn go_json_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>>
     models
 }
 
-fn go_struct_json_fields(raw: &str) -> Vec<String> {
+fn go_struct_tag_fields(raw: &str, tag_name: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let Some(open) = raw.find('{') else {
         return fields;
@@ -2499,11 +2552,15 @@ fn go_struct_json_fields(raw: &str) -> Vec<String> {
             continue;
         }
 
-        let json_name = go_json_tag_name(line).unwrap_or_else(|| field_name.to_string());
-        if json_name == "-" || json_name.is_empty() || json_name.len() > 256 {
+        let external_name = go_struct_tag_name(line, tag_name)
+            .or_else(|| (tag_name == "json").then(|| field_name.to_string()));
+        let Some(external_name) = external_name else {
+            continue;
+        };
+        if external_name == "-" || external_name.is_empty() || external_name.len() > 256 {
             continue;
         }
-        fields.push(json_name);
+        fields.push(external_name);
     }
 
     fields.sort();
@@ -2512,9 +2569,9 @@ fn go_struct_json_fields(raw: &str) -> Vec<String> {
     fields
 }
 
-fn go_json_tag_name(line: &str) -> Option<String> {
-    let marker = r#"json:""#;
-    let index = line.find(marker)?;
+fn go_struct_tag_name(line: &str, tag_name: &str) -> Option<String> {
+    let marker = format!("{tag_name}:\"");
+    let index = line.find(&marker)?;
     let tail = &line[index + marker.len()..];
     let end = tail.find('"')?;
     let tag = &tail[..end];
@@ -2526,6 +2583,18 @@ fn go_json_tag_name(line: &str) -> Option<String> {
         return None;
     }
     Some(name.to_string())
+}
+
+fn go_explicit_binding_model(body: &str, markers: &[&str]) -> Option<String> {
+    let variables = go_handler_local_types(body);
+    for marker in markers {
+        if let Some(variable) = go_bound_variable(body, marker) {
+            if let Some(model) = variables.get(&variable) {
+                return Some(model.clone());
+            }
+        }
+    }
+    None
 }
 
 fn go_explicit_json_binding_model(body: &str) -> Option<String> {
