@@ -861,6 +861,25 @@ mod source_seed_tests {
     }
 
     #[test]
+    fn preserves_trailing_slash_when_materializing_live_route_seed() {
+        let locations = BTreeMap::from([("id".to_string(), "path".to_string())]);
+        let seed = source_endpoint_seed(
+            "https://example.test",
+            "GET",
+            "/users/{id}/",
+            &["id".to_string()],
+            &locations,
+            None,
+            "source_route:fastapi:app.py:1",
+        )
+        .expect("seed");
+        assert_eq!(seed.route_template, "/users/{id}/");
+        assert_eq!(
+            seed.discovery_url.as_deref(),
+            Some("https://example.test/users/codetwin-test/")
+        );
+    }
+    #[test]
     fn preserves_deployment_base_path_without_double_prefix() {
         let parameters = vec!["id".to_string()];
         let locations = BTreeMap::from([("id".to_string(), "path".to_string())]);
