@@ -5335,6 +5335,29 @@ async def create_user(
         }));
     }
     #[test]
+    fn preserves_explicit_trailing_slash_in_indexed_routes() {
+        let source = r#"
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/users/{id}/")
+async def user(id: str):
+    return {"id": id}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes("Python", "app.py", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "fastapi" && route.http_method == "GET")
+            .expect("route");
+        assert_eq!(route.path_template, "/users/{id}/");
+    }
+    #[test]
     fn extracts_fastapi_route_and_pydantic_body_fields() {
         let source = r#"
 from fastapi import FastAPI, APIRouter, Query
