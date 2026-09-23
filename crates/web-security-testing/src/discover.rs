@@ -717,9 +717,134 @@ fn response_inventory(response: &ObservedResponse) -> (Vec<String>, Vec<String>)
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use url::Url;
 
-    use super::{attribute_from_tag, extract_forms, extract_links};
+    use super::{
+        add_endpoint, attribute_from_tag, extract_forms, extract_links, merge_source_seed,
+    };
+    use crate::{
+        EndpointObservation, ParameterLocations, SourceEndpointSeed,
+    };
+
+    #[test]
+    fn duplicate_endpoints_merge_richer_metadata_without_overwrite() {
+        let mut endpoints = Vec::new();
+        let mut keys = HashMap::new();
+
+        add_endpoint(
+            &mut endpoints,
+            &mut keys,
+            EndpointObservation {
+                url: "https://example.test/api/items/1?id=1".into(),
+                route_template: Some("https://example.test/api/items/{id}?id=1".into()),
+                method: "GET".into(),
+                depth: 0,
+                source: "source_route:express:src/routes.ts:10".into(),
+                parameter_names: vec!["id".into()],
+                parameter_locations: ParameterLocations::from([(
+                    "id".into(),
+                    vec!["path".into()],
+                )]),
+                response_header_names: Vec::new(),
+                cookie_names: Vec::new(),
+                content_type: Some("application/json".into()),
+                status_code: None,
+                redirect_to: None,
+            },
+        );
+        add_endpoint(
+            &mut endpoints,
+            &mut keys,
+            EndpointObservation {
+                url: "https://example.test/api/items/1?id=1#fragment".into(),
+                route_template: None,
+                method: "GET".into(),
+                depth: 2,
+                source: "openapi".into(),
+                parameter_names: vec!["id".into(), "q".into()],
+                parameter_locations: ParameterLocations::from([
+                    ("id".into(), vec!["query".into()]),
+                    ("q".into(), vec!["query".into()]),
+                ]),
+                response_header_names: vec!["content-type".into()],
+                cookie_names: vec!["session".into()],
+                content_type: None,
+                status_code: Some(200),
+                redirect_to: None,
+            },
+        );
+
+        assert_eq!(endpoints.len(), 1);
+        let endpoint = &endpoints[0];
+        assert_eq!(endpoint.depth, 0);
+        assert_eq!(
+            endpoint.parameter_names,
+            vec!["id".to_string(), "q".to_string()]
+        );
+        assert_eq!(
+            endpoint.parameter_locations.get("id"),
+            Some(&vec!["path".to_string(), "query".to_string()])
+        );
+        assert_eq!(
+            endpoint.parameter_locations.get("q"),
+            Some(&vec!["query".to_string()])
+        );
+        assert_eq!(endpoint.response_header_names, vec!["content-type"]);
+        assert_eq!(endpoint.cookie_names, vec!["session"]);
+        assert_eq!(endpoint.content_type.as_deref(), Some("application/json"));
+        assert_eq!(endpoint.status_code, Some(200));
+        assert!(endpoint.source.starts_with("source_route:"));
+        assert!(endpoint.route_template.is_some());
+    }
+
+    #[test]
+    fn duplicate_get_source_seeds_union_parameters_and_fail_closed_on_content_type_conflict() {
+        let mut existing = SourceEndpointSeed {
+            url: "https://example.test/api/items/{id}".into(),
+            discovery_url: Some("https://example.test/api/items/1".into()),
+            method: "GET".into(),
+            parameter_names: vec!["id".into()],
+            parameter_locations: ParameterLocations::from([(
+                "id".into(),
+                vec!["path".into()],
+            )]),
+            content_type: Some("application/json".into()),
+            source_label: "source_route:express:a.ts:1".into(),
+        };
+        let incoming = SourceEndpointSeed {
+            url: "https://example.test/api/items/{id}".into(),
+            discovery_url: Some("https://example.test/api/items/1".into()),
+            method: "GET".into(),
+            parameter_names: vec!["id".into(), "filter".into()],
+            parameter_locations: ParameterLocations::from([
+                ("id".into(), vec!["query".into()]),
+                ("filter".into(), vec!["query".into()]),
+            ]),
+            content_type: Some("application/x-www-form-urlencoded".into()),
+            source_label: "source_route:express:b.ts:2".into(),
+        };
+
+        merge_source_seed(&mut existing, &incoming);
+
+        assert_eq!(
+            existing.parameter_names,
+            vec!["filter".to_string(), "id".to_string()]
+        );
+        assert_eq!(
+            existing.parameter_locations.get("id"),
+            Some(&vec!["path".to_string(), "query".to_string()])
+        );
+        assert_eq!(
+            existing.parameter_locations.get("filter"),
+            Some(&vec!["query".to_string()])
+        );
+        assert!(
+            existing.content_type.is_none(),
+            "conflicting request content types must not be guessed"
+        );
+    }
 
     #[test]
     fn extracts_links_and_forms_without_executing_html() {
