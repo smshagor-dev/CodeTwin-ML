@@ -3540,18 +3540,52 @@ fn keyword_direct_identifier(value: &str, keyword: &str) -> Option<String> {
     }
 }
 
-fn pydantic_known_alias_generator(source: &str, class_text: &str) -> Option<String> {
-    if !source.contains("pydantic.alias_generators") || !class_text.contains("ConfigDict(") {
+fn pydantic_alias_generator_bindings(
+    source: &str,
+    root: Node<'_>,
+) -> BTreeMap<String, String> {
+    let mut bindings = BTreeMap::new();
+    walk(root, &mut |node| {
+        if node.kind() != "import_from_statement" {
+            return;
+        }
+        let Some(raw) = text(source, node).map(str::trim) else {
+            return;
+        };
+        let Some(rest) = raw.strip_prefix("from pydantic.alias_generators import ") else {
+            return;
+        };
+        let normalized = rest
+            .replace(['(', ')', '\n', '\r'], " ");
+        for item in normalized.split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            let (imported, local) = item
+                .split_once(" as ")
+                .map(|(imported, local)| (imported.trim(), local.trim()))
+                .unwrap_or((item, item));
+            if !matches!(imported, "to_camel" | "to_pascal" | "to_snake")
+                || !is_identifier(local)
+            {
+                continue;
+            }
+            bindings.insert(local.to_string(), imported.to_string());
+        }
+    });
+    bindings
+}
+
+fn pydantic_known_alias_generator(
+    class_text: &str,
+    bindings: &BTreeMap<String, String>,
+) -> Option<String> {
+    if !class_text.contains("ConfigDict(") {
         return None;
     }
-    let generator = keyword_direct_identifier(class_text, "alias_generator")?;
-    if !matches!(generator.as_str(), "to_camel" | "to_pascal" | "to_snake") {
-        return None;
-    }
-    if !source.contains(&generator) {
-        return None;
-    }
-    Some(generator)
+    let local = keyword_direct_identifier(class_text, "alias_generator")?;
+    bindings.get(&local).cloned()
 }
 
 fn pydantic_apply_alias_generator(field: &str, generator: &str) -> Option<String> {
@@ -3579,6 +3613,7 @@ fn pydantic_apply_alias_generator(field: &str, generator: &str) -> Option<String
 }
 
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
+    let alias_generator_bindings = pydantic_alias_generator_bindings(source, root);
     let mut models = BTreeMap::new();
     walk(root, &mut |node| {
         if node.kind() != "class_definition" {
@@ -3596,7 +3631,8 @@ fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<S
         else {
             return;
         };
-        let alias_generator = pydantic_known_alias_generator(source, class_text);
+        let alias_generator =
+            pydantic_known_alias_generator(class_text, &alias_generator_bindings);
         let mut fields = Vec::new();
         for line in class_text.lines().skip(1) {
             let trimmed = line.trim();
