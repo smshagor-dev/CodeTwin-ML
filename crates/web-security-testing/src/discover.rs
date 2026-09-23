@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -9,8 +9,9 @@ use std::{
 use url::Url;
 
 use crate::{
-    passive, query_parameters, CheckConfig, EndpointObservation, FindingObservation,
-    ObservedResponse, ScanConfig, ScanError, ScopePolicy, ScopedRequester, SourceEndpointSeed,
+    insert_parameter_location, passive, query_parameters, CheckConfig, EndpointObservation,
+    FindingObservation, ObservedResponse, ParameterLocations, ScanConfig, ScanError, ScopePolicy,
+    ScopedRequester, SourceEndpointSeed,
 };
 
 pub struct DiscoveryResult {
@@ -132,13 +133,19 @@ pub fn crawl_with_seeds(
         }
         parameter_names.sort();
         parameter_names.dedup();
-        let mut parameter_locations: BTreeMap<String, String> = parameter_names
-            .iter()
-            .map(|name| (name.clone(), "query".to_string()))
-            .collect();
+        let mut parameter_locations = ParameterLocations::new();
+        for name in &parameter_names {
+            insert_parameter_location(&mut parameter_locations, name.clone(), "query");
+        }
         if let Some(seed) = source_seed {
-            for (name, location) in &seed.parameter_locations {
-                parameter_locations.insert(name.clone(), location.clone());
+            for (name, locations) in &seed.parameter_locations {
+                for location in locations {
+                    insert_parameter_location(
+                        &mut parameter_locations,
+                        name.clone(),
+                        location.clone(),
+                    );
+                }
             }
         }
         let (response_header_names, cookie_names) = response_inventory(&response);
@@ -192,11 +199,14 @@ pub fn crawl_with_seeds(
                     }
                     let forms = extract_forms(&url, &body);
                     for form in forms {
-                        let parameter_locations = form
-                            .parameters
-                            .iter()
-                            .map(|name| (name.clone(), if form.method == "GET" { "query" } else { "form" }.to_string()))
-                            .collect();
+                        let mut parameter_locations = ParameterLocations::new();
+                        for name in &form.parameters {
+                            insert_parameter_location(
+                                &mut parameter_locations,
+                                name.clone(),
+                                if form.method == "GET" { "query" } else { "form" },
+                            );
+                        }
                         let form_endpoint = EndpointObservation {
                             url: form.action.to_string(),
                             route_template: None,
@@ -228,10 +238,14 @@ pub fn crawl_with_seeds(
                                 &mut endpoint_keys,
                                 {
                                     let parameter_names = query_parameters(&next);
-                                    let parameter_locations = parameter_names
-                                        .iter()
-                                        .map(|name| (name.clone(), "query".to_string()))
-                                        .collect();
+                                    let mut parameter_locations = ParameterLocations::new();
+                                    for name in &parameter_names {
+                                        insert_parameter_location(
+                                            &mut parameter_locations,
+                                            name.clone(),
+                                            "query",
+                                        );
+                                    }
                                     EndpointObservation {
                                         url: next.to_string(),
                                         route_template: None,
@@ -469,7 +483,7 @@ fn discover_openapi(
                 continue;
             }
 
-            let mut parameter_locations = BTreeMap::new();
+            let mut parameter_locations = ParameterLocations::new();
             collect_parameter_array(path_item.get("parameters"), &mut parameter_locations);
             collect_parameter_array(operation.get("parameters"), &mut parameter_locations);
             let request_content_type = collect_request_body_parameters(operation, &mut parameter_locations);
@@ -500,7 +514,7 @@ fn discover_openapi(
 
 fn collect_parameter_array(
     value: Option<&serde_json::Value>,
-    output: &mut BTreeMap<String, String>,
+    output: &mut ParameterLocations,
 ) {
     let Some(values) = value.and_then(|value| value.as_array()) else { return };
     for parameter in values.iter().take(256) {
@@ -511,7 +525,7 @@ fn collect_parameter_array(
             .unwrap_or("query")
             .to_ascii_lowercase();
         if matches!(location.as_str(), "query" | "path" | "header" | "cookie") {
-            output.insert(name.to_string(), location);
+            insert_parameter_location(output, name.to_string(), location);
         }
     }
 }
@@ -537,7 +551,7 @@ fn collect_request_body_parameters(
             .and_then(|value| value.as_object())
         {
             for name in properties.keys().take(256) {
-                output.insert(name.clone(), location.to_string());
+                insert_parameter_location(output, name.clone(), location);
             }
         }
         return Some(content_type.to_string());
