@@ -461,7 +461,6 @@ fn mark_scan_failed(
     }
     Ok(())
 }
-}
 
 #[tauri::command]
 pub fn cancel_web_security_scan(
