@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -16,6 +17,53 @@ use url::Url;
 const MAX_LSP_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ARGUMENTS: usize = 32;
 const MAX_ARGUMENT_BYTES: usize = 4096;
+const LSP_ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "TMP",
+    "TEMP",
+    "TMPDIR",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+];
+
+fn is_allowed_lsp_environment_key(key: &str) -> bool {
+    LSP_ENV_ALLOWLIST
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(key))
+}
+
+fn sanitized_lsp_environment_from<I>(variables: I) -> Vec<(OsString, OsString)>
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    variables
+        .into_iter()
+        .filter(|(key, _)| {
+            key.to_str()
+                .is_some_and(is_allowed_lsp_environment_key)
+        })
+        .collect()
+}
+
+fn sanitized_lsp_environment() -> Vec<(OsString, OsString)> {
+    sanitized_lsp_environment_from(std::env::vars_os())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -244,6 +292,8 @@ impl StdioLanguageServer {
         command
             .args(&validated.arguments)
             .current_dir(&canonical_root)
+            .env_clear()
+            .envs(sanitized_lsp_environment())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -769,8 +819,37 @@ mod tests {
 
     use super::{
         language_id_for_indexed_language, parse_document_symbols, parse_locations, read_lsp_message,
-        LspPosition,
+        sanitized_lsp_environment_from, LspPosition,
     };
+
+    #[test]
+    fn lsp_environment_allowlist_excludes_credentials() {
+        let filtered = sanitized_lsp_environment_from([
+            ("PATH".into(), "/usr/bin".into()),
+            ("HOME".into(), "/home/test".into()),
+            ("Cargo_Home".into(), "/home/test/.cargo".into()),
+            ("SYSTEMROOT".into(), r"C:\\Windows".into()),
+            ("GITHUB_TOKEN".into(), "gh-secret".into()),
+            ("OPENAI_API_KEY".into(), "sk-secret".into()),
+            ("AWS_SECRET_ACCESS_KEY".into(), "aws-secret".into()),
+            ("DATABASE_URL".into(), "postgres://secret".into()),
+        ]);
+        let keys: Vec<String> = filtered
+            .iter()
+            .filter_map(|(key, _)| key.to_str().map(ToString::to_string))
+            .collect();
+
+        assert!(keys.iter().any(|key| key.eq_ignore_ascii_case("PATH")));
+        assert!(keys.iter().any(|key| key.eq_ignore_ascii_case("HOME")));
+        assert!(keys.iter().any(|key| key.eq_ignore_ascii_case("CARGO_HOME")));
+        assert!(keys.iter().any(|key| key.eq_ignore_ascii_case("SYSTEMROOT")));
+        assert!(!keys.iter().any(|key| key.eq_ignore_ascii_case("GITHUB_TOKEN")));
+        assert!(!keys.iter().any(|key| key.eq_ignore_ascii_case("OPENAI_API_KEY")));
+        assert!(!keys
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case("AWS_SECRET_ACCESS_KEY")));
+        assert!(!keys.iter().any(|key| key.eq_ignore_ascii_case("DATABASE_URL")));
+    }
 
     #[test]
     fn parses_content_length_framing() {
