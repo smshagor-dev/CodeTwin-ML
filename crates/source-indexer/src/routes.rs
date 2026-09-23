@@ -3653,9 +3653,13 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const page = params.get("page");
   const tenant = request.headers.get("X-Tenant");
+  const session = request.cookies.get("session");
+  const cookies = request.cookies;
+  const csrf = cookies.get("csrf-token");
   const dynamic = "secret";
   request.nextUrl.searchParams.get(dynamic);
-  return Response.json({ q, page, tenant });
+  request.cookies.get(dynamic);
+  return Response.json({ q, page, tenant, session, csrf });
 }
 
 export async function POST(request: Request) {
@@ -3702,6 +3706,11 @@ export const PATCH = async (request: Request) => {
         assert!(get.parameters.iter().any(|parameter| {
             parameter.name == "X-Tenant" && parameter.location == "header"
         }));
+        for field in ["session", "csrf-token"] {
+            assert!(get.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "cookie"
+            }));
+        }
         assert!(!get.parameters.iter().any(|parameter| parameter.name == "secret"));
         assert!(get.parameters.iter().any(|parameter| {
             parameter.name == "id" && parameter.location == "path"
@@ -3744,6 +3753,12 @@ export const PATCH = async (request: Request) => {
             input.handler_name == "GET"
                 && input.parameters.iter().any(|parameter| {
                     parameter.name == "X-Tenant" && parameter.location == "header"
+                })
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "session" && parameter.location == "cookie"
+                })
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "csrf-token" && parameter.location == "cookie"
                 })
         }));
     }
