@@ -67,7 +67,7 @@ pub struct WebEndpointInput {
     pub depth: usize,
     pub source: String,
     pub parameter_names: Vec<String>,
-    pub parameter_locations: BTreeMap<String, String>,
+    pub parameter_locations: BTreeMap<String, Vec<String>>,
     pub response_header_names: Vec<String>,
     pub cookie_names: Vec<String>,
     pub content_type: Option<String>,
@@ -85,7 +85,7 @@ pub struct WebEndpointRecord {
     pub depth: usize,
     pub source: String,
     pub parameter_names: Vec<String>,
-    pub parameter_locations: BTreeMap<String, String>,
+    pub parameter_locations: BTreeMap<String, Vec<String>>,
     pub response_header_names: Vec<String>,
     pub cookie_names: Vec<String>,
     pub content_type: Option<String>,
@@ -122,7 +122,7 @@ pub struct SourceRouteRecord {
     pub path_template: String,
     pub handler_name: Option<String>,
     pub parameter_names: Vec<String>,
-    pub parameter_locations: BTreeMap<String, String>,
+    pub parameter_locations: BTreeMap<String, Vec<String>>,
     pub request_content_type: Option<String>,
     pub source_content_hash: String,
     pub start_line: usize,
@@ -724,7 +724,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 path_template: row.get(14)?,
                 handler_name: row.get(15)?,
                 parameter_names: serde_json::from_str(&parameter_names_json).unwrap_or_default(),
-                parameter_locations: serde_json::from_str(&parameter_locations_json).unwrap_or_default(),
+                parameter_locations: parse_parameter_locations_json(&parameter_locations_json),
                 request_content_type: row.get(18)?,
                 source_content_hash: row.get(19)?,
                 start_line: row.get::<_, i64>(20)?.max(0) as usize,
@@ -1364,9 +1364,7 @@ fn map_endpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebEndpointRecord> 
     let parameter_names = serde_json::from_str(&parameter_names_json).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(error))
     })?;
-    let parameter_locations = serde_json::from_str(&parameter_locations_json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(error))
-    })?;
+    let parameter_locations = parse_parameter_locations_json(&parameter_locations_json);
     let response_header_names = serde_json::from_str(&response_header_names_json).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(error))
     })?;
@@ -1722,6 +1720,49 @@ fn route_template_match(template: &str, observed: &str) -> Option<bool> {
     Some(false)
 }
 
+fn insert_parameter_location(
+    locations: &mut BTreeMap<String, Vec<String>>,
+    name: impl Into<String>,
+    location: impl Into<String>,
+) {
+    let values = locations.entry(name.into()).or_default();
+    let location = location.into();
+    if !values.iter().any(|value| value == &location) {
+        values.push(location);
+        values.sort();
+    }
+}
+
+fn parse_parameter_locations_json(raw: &str) -> BTreeMap<String, Vec<String>> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return BTreeMap::new();
+    };
+    let Some(object) = value.as_object() else {
+        return BTreeMap::new();
+    };
+    let mut locations = BTreeMap::new();
+    for (name, raw_location) in object {
+        match raw_location {
+            serde_json::Value::String(location) => {
+                insert_parameter_location(&mut locations, name.clone(), location.clone());
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    if let Some(location) = value.as_str() {
+                        insert_parameter_location(
+                            &mut locations,
+                            name.clone(),
+                            location.to_string(),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    locations
+}
+
 fn bounded(value: usize) -> usize {
     value.clamp(1, MAX_LIST)
 }
@@ -1799,7 +1840,7 @@ mod tests {
                     parameter_names: vec!["q".to_string()],
                     parameter_locations: std::collections::BTreeMap::from([(
                         "q".to_string(),
-                        "query".to_string(),
+                        vec!["query".to_string()],
                     )]),
                     response_header_names: vec!["content-type".to_string()],
                     cookie_names: Vec::new(),
@@ -2003,9 +2044,18 @@ app.post("/api/login/:tenant", (req, res) => {
             .find(|route| route.path_template == "/api/login/:tenant")
             .expect("login route");
         assert_eq!(route.http_method, "POST");
-        assert!(route.parameter_locations.get("tenant").is_some_and(|value| value == "path"));
-        assert!(route.parameter_locations.get("email").is_some_and(|value| value == "json"));
-        assert!(route.parameter_locations.get("password").is_some_and(|value| value == "json"));
+        assert!(route
+            .parameter_locations
+            .get("tenant")
+            .is_some_and(|values| values.iter().any(|value| value == "path")));
+        assert!(route
+            .parameter_locations
+            .get("email")
+            .is_some_and(|values| values.iter().any(|value| value == "json")));
+        assert!(route
+            .parameter_locations
+            .get("password")
+            .is_some_and(|values| values.iter().any(|value| value == "json")));
 
         let correlated = store
             .correlate_source_for_request(
@@ -2037,9 +2087,9 @@ app.post("/api/login/:tenant", (req, res) => {
                         "password".to_string(),
                     ],
                     parameter_locations: std::collections::BTreeMap::from([
-                        ("tenant".to_string(), "path".to_string()),
-                        ("email".to_string(), "json".to_string()),
-                        ("password".to_string(), "json".to_string()),
+                        ("tenant".to_string(), vec!["path".to_string()]),
+                        ("email".to_string(), vec!["json".to_string()]),
+                        ("password".to_string(), vec!["json".to_string()]),
                     ]),
                     response_header_names: Vec::new(),
                     cookie_names: Vec::new(),
@@ -2186,9 +2236,18 @@ export function login(req, res) {
         assert!(route.relative_path.ends_with("auth.js"));
         assert!(route.handler_relative_path.as_deref().is_some_and(|path| path.ends_with("controllers.js")));
         assert_eq!(route.handler_symbol_name.as_deref(), Some("login"));
-        assert_eq!(route.parameter_locations.get("tenant").map(String::as_str), Some("path"));
-        assert_eq!(route.parameter_locations.get("email").map(String::as_str), Some("json"));
-        assert_eq!(route.parameter_locations.get("password").map(String::as_str), Some("json"));
+        assert!(route
+            .parameter_locations
+            .get("tenant")
+            .is_some_and(|values| values.iter().any(|value| value == "path")));
+        assert!(route
+            .parameter_locations
+            .get("email")
+            .is_some_and(|values| values.iter().any(|value| value == "json")));
+        assert!(route
+            .parameter_locations
+            .get("password")
+            .is_some_and(|values| values.iter().any(|value| value == "json")));
 
         let correlated = store
             .correlate_source_for_request(

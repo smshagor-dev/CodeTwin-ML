@@ -22,6 +22,77 @@ const DEFAULT_CONFIG_JSON: &str = "{}";
 const MAX_COMPOSER_JSON_BYTES: u64 = 1024 * 1024;
 const MAX_COMPOSER_PSR4_ROOTS: usize = 256;
 
+type ParameterLocations = BTreeMap<String, Vec<String>>;
+
+fn insert_parameter_location(
+    locations: &mut ParameterLocations,
+    name: impl Into<String>,
+    location: impl Into<String>,
+) {
+    let values = locations.entry(name.into()).or_default();
+    let location = location.into();
+    if !values.iter().any(|value| value == &location) {
+        values.push(location);
+        values.sort();
+    }
+}
+
+fn parameter_names_from_indexed(
+    parameters: &[source_indexer::IndexedRouteParameter],
+) -> Vec<String> {
+    let mut names: Vec<String> = parameters
+        .iter()
+        .map(|parameter| parameter.name.clone())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn parameter_locations_from_indexed(
+    parameters: &[source_indexer::IndexedRouteParameter],
+) -> ParameterLocations {
+    let mut locations = ParameterLocations::new();
+    for parameter in parameters {
+        insert_parameter_location(
+            &mut locations,
+            parameter.name.clone(),
+            parameter.location.clone(),
+        );
+    }
+    locations
+}
+
+fn parse_parameter_locations_json(raw: &str) -> ParameterLocations {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return ParameterLocations::new();
+    };
+    let Some(object) = value.as_object() else {
+        return ParameterLocations::new();
+    };
+    let mut locations = ParameterLocations::new();
+    for (name, raw_location) in object {
+        match raw_location {
+            Value::String(location) => {
+                insert_parameter_location(&mut locations, name.clone(), location.clone());
+            }
+            Value::Array(values) => {
+                for value in values {
+                    if let Some(location) = value.as_str() {
+                        insert_parameter_location(
+                            &mut locations,
+                            name.clone(),
+                            location.to_string(),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    locations
+}
+
 #[derive(Debug, Error)]
 pub enum IndexServiceError {
     #[error("I/O error: {0}")]
@@ -605,16 +676,8 @@ fn persist_handler_inputs(
                 &handler.start_line.to_string(),
             ],
         );
-        let parameter_names: Vec<String> = handler
-            .parameters
-            .iter()
-            .map(|parameter| parameter.name.clone())
-            .collect();
-        let parameter_locations: BTreeMap<String, String> = handler
-            .parameters
-            .iter()
-            .map(|parameter| (parameter.name.clone(), parameter.location.clone()))
-            .collect();
+        let parameter_names = parameter_names_from_indexed(&handler.parameters);
+        let parameter_locations = parameter_locations_from_indexed(&handler.parameters);
         connection.execute(
             "INSERT INTO source_handler_inputs(
                id, project_id, file_id, handler_name, parameter_names_json,
@@ -669,16 +732,8 @@ fn persist_routes(
                 &route.start_line.to_string(),
             ],
         );
-        let parameter_names: Vec<String> = route
-            .parameters
-            .iter()
-            .map(|parameter| parameter.name.clone())
-            .collect();
-        let parameter_locations: BTreeMap<String, String> = route
-            .parameters
-            .iter()
-            .map(|parameter| (parameter.name.clone(), parameter.location.clone()))
-            .collect();
+        let parameter_names = parameter_names_from_indexed(&route.parameters);
+        let parameter_locations = parameter_locations_from_indexed(&route.parameters);
         let parameter_names_json = serde_json::to_string(&parameter_names)
             .unwrap_or_else(|_| "[]".to_string());
         let parameter_locations_json = serde_json::to_string(&parameter_locations)
@@ -1150,13 +1205,13 @@ fn resolve_imported_route_handlers(
         };
         drop(symbol_statement);
 
-        let mut locations: BTreeMap<String, String> =
-            serde_json::from_str(&locations_json).unwrap_or_default();
+        let mut locations = parse_parameter_locations_json(&locations_json);
         if let Some(handler_locations_json) = handler_locations_json {
-            let handler_locations: BTreeMap<String, String> =
-                serde_json::from_str(&handler_locations_json).unwrap_or_default();
-            for (name, location) in handler_locations {
-                locations.entry(name).or_insert(location);
+            let handler_locations = parse_parameter_locations_json(&handler_locations_json);
+            for (name, values) in handler_locations {
+                for location in values {
+                    insert_parameter_location(&mut locations, name.clone(), location);
+                }
             }
         }
 
@@ -1174,9 +1229,17 @@ fn resolve_imported_route_handlers(
         }
 
         let parameter_names: Vec<String> = locations.keys().cloned().collect();
-        let inferred_content_type = if locations.values().any(|value| value == "json") {
+        let inferred_content_type = if locations
+            .values()
+            .flatten()
+            .any(|value| value == "json")
+        {
             Some("application/json".to_string())
-        } else if locations.values().any(|value| value == "form") {
+        } else if locations
+            .values()
+            .flatten()
+            .any(|value| value == "form")
+        {
             Some("application/x-www-form-urlencoded".to_string())
         } else {
             current_content_type.clone()
@@ -1210,16 +1273,22 @@ fn merge_laravel_form_request_inputs(
     controller_file_id: &str,
     handler_signature: &str,
     current_content_type: Option<&str>,
-    locations: &mut BTreeMap<String, String>,
+    locations: &mut ParameterLocations,
 ) -> Result<(), IndexServiceError> {
     let candidate_types = php_parameter_type_names(handler_signature);
     if candidate_types.is_empty() {
         return Ok(());
     }
 
-    let has_json = locations.values().any(|location| location == "json")
+    let has_json = locations
+        .values()
+        .flatten()
+        .any(|location| location == "json")
         || current_content_type.is_some_and(|value| value.contains("application/json"));
-    let has_form = locations.values().any(|location| location == "form")
+    let has_form = locations
+        .values()
+        .flatten()
+        .any(|location| location == "form")
         || current_content_type.is_some_and(|value| {
             value.contains("application/x-www-form-urlencoded")
                 || value.contains("multipart/form-data")
@@ -1254,13 +1323,10 @@ fn merge_laravel_form_request_inputs(
         let Some(request_locations_json) = request_locations_json else {
             continue;
         };
-        let request_locations: BTreeMap<String, String> =
-            serde_json::from_str(&request_locations_json).unwrap_or_default();
-        for (name, location) in request_locations {
-            if location == "body" {
-                locations
-                    .entry(name)
-                    .or_insert_with(|| body_location.to_string());
+        let request_locations = parse_parameter_locations_json(&request_locations_json);
+        for (name, values) in request_locations {
+            if values.iter().any(|location| location == "body") {
+                insert_parameter_location(locations, name, body_location);
             }
         }
     }
@@ -2029,9 +2095,39 @@ class StoreUserRequest extends FormRequest
             )
             .expect("grouped-import route");
         assert_eq!(handler_name.as_deref(), Some("Users.store"));
-        let locations: BTreeMap<String, String> =
-            serde_json::from_str(&locations_json).expect("locations");
-        assert_eq!(locations.get("email").map(String::as_str), Some("body"));
+        let locations = super::parse_parameter_locations_json(&locations_json);
+        assert!(locations
+            .get("email")
+            .is_some_and(|values| values.iter().any(|value| value == "body")));
+    }
+
+    #[test]
+    fn parameter_location_persistence_keeps_same_name_in_multiple_locations() {
+        let parameters = vec![
+            source_indexer::IndexedRouteParameter {
+                name: "id".to_string(),
+                location: "path".to_string(),
+            },
+            source_indexer::IndexedRouteParameter {
+                name: "id".to_string(),
+                location: "query".to_string(),
+            },
+        ];
+        let names = super::parameter_names_from_indexed(&parameters);
+        assert_eq!(names, vec!["id".to_string()]);
+
+        let locations = super::parameter_locations_from_indexed(&parameters);
+        assert_eq!(
+            locations.get("id"),
+            Some(&vec!["path".to_string(), "query".to_string()])
+        );
+
+        let encoded = serde_json::to_string(&locations).expect("locations json");
+        let decoded = super::parse_parameter_locations_json(&encoded);
+        assert_eq!(decoded, locations);
+
+        let legacy = super::parse_parameter_locations_json(r#"{"id":"query"}"#);
+        assert_eq!(legacy.get("id"), Some(&vec!["query".to_string()]));
     }
 
     #[test]
@@ -2133,13 +2229,11 @@ class StoreUserRequest extends FormRequest
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .expect("store route");
-        let store_locations: BTreeMap<String, String> =
-            serde_json::from_str(&store_locations_json).expect("store locations");
+        let store_locations = super::parse_parameter_locations_json(&store_locations_json);
         for field in ["email", "password", "profile.name"] {
-            assert_eq!(
-                store_locations.get(field).map(String::as_str),
-                Some("body")
-            );
+            assert!(store_locations
+                .get(field)
+                .is_some_and(|values| values.iter().any(|value| value == "body")));
         }
         assert!(store_content_type.is_none());
 
@@ -2157,13 +2251,11 @@ class StoreUserRequest extends FormRequest
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .expect("JSON store route");
-        let json_locations: BTreeMap<String, String> =
-            serde_json::from_str(&json_locations_json).expect("JSON locations");
+        let json_locations = super::parse_parameter_locations_json(&json_locations_json);
         for field in ["email", "password", "profile.name"] {
-            assert_eq!(
-                json_locations.get(field).map(String::as_str),
-                Some("json")
-            );
+            assert!(json_locations
+                .get(field)
+                .is_some_and(|values| values.iter().any(|value| value == "json")));
         }
         assert_eq!(json_content_type.as_deref(), Some("application/json"));
     }
@@ -2251,14 +2343,16 @@ class UserController
             .expect("resolved Laravel source route");
         assert_eq!(handler_name.as_deref(), Some("UserController.store"));
         assert!(handler_file_id.is_some());
-        let locations: BTreeMap<String, String> =
-            serde_json::from_str(&locations_json).expect("parameter locations");
-        assert_eq!(locations.get("email").map(String::as_str), Some("json"));
-        assert_eq!(locations.get("source").map(String::as_str), Some("query"));
-        assert_eq!(
-            locations.get("X-Tenant").map(String::as_str),
-            Some("header")
-        );
+        let locations = super::parse_parameter_locations_json(&locations_json);
+        assert!(locations
+            .get("email")
+            .is_some_and(|values| values.iter().any(|value| value == "json")));
+        assert!(locations
+            .get("source")
+            .is_some_and(|values| values.iter().any(|value| value == "query")));
+        assert!(locations
+            .get("X-Tenant")
+            .is_some_and(|values| values.iter().any(|value| value == "header")));
         assert_eq!(content_type.as_deref(), Some("application/json"));
     }
     #[test]

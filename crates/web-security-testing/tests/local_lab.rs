@@ -974,7 +974,7 @@ fn guided_developer_workflow_runs_end_to_end_on_local_fixtures() {
             parameter_locations: sql
                 .parameter_name
                 .clone()
-                .map(|name| (name, "query".to_string()))
+                .map(|name| (name, vec!["query".to_string()]))
                 .into_iter()
                 .collect(),
             parameter_name: sql.parameter_name.clone(),

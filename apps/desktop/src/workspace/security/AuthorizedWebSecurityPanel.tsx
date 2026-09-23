@@ -327,7 +327,10 @@ export function AuthorizedWebSecurityPanel() {
                       {!!endpoint.parameter_names.length && (
                         <em>
                           Inputs: {endpoint.parameter_names.map((name) =>
-                            name + " (" + (endpoint.parameter_locations[name] ?? "unknown") + ")",
+                            name +
+                            " (" +
+                            (endpoint.parameter_locations[name]?.join(" / ") ?? "unknown") +
+                            ")",
                           ).join(", ")}
                         </em>
                       )}

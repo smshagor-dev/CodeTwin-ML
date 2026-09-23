@@ -430,7 +430,7 @@ export type WebEndpointRecord = {
   depth: number;
   source: string;
   parameter_names: string[];
-  parameter_locations: Record<string, string>;
+  parameter_locations: Record<string, string[]>;
   response_header_names: string[];
   cookie_names: string[];
   content_type: string | null;
@@ -456,7 +456,7 @@ export type SourceRouteRecord = {
   path_template: string;
   handler_name: string | null;
   parameter_names: string[];
-  parameter_locations: Record<string, string>;
+  parameter_locations: Record<string, string[]>;
   request_content_type: string | null;
   source_content_hash: string;
   start_line: number;
@@ -591,7 +591,7 @@ export type GuidedApplicationRoute = {
   method: string;
   source: string;
   parameters: string[];
-  parameter_locations: Record<string, string>;
+  parameter_locations: Record<string, string[]>;
   content_type: string | null;
   status_code: number | null;
   cookies: string[];

@@ -11,9 +11,10 @@ use reqwest::Method;
 use url::Url;
 
 use crate::{
-    body_hash, fingerprint, operator::check_applicable, payload_policy::validate_active_payload, response_evidence, response_header, AuthContext, EndpointObservation,
-    FindingObservation, ObservedResponse, RequestError, ScanConfig, ScanError, ScopePolicy,
-    ScopedRequester,
+    body_hash, fingerprint, operator::check_applicable, parameter_has_location,
+    payload_policy::validate_active_payload, response_evidence, response_header,
+    single_parameter_location, AuthContext, EndpointObservation, FindingObservation,
+    ObservedResponse, RequestError, ScanConfig, ScanError, ScopePolicy, ScopedRequester,
 };
 
 pub(crate) struct ActiveCheckContext<'a> {
@@ -736,15 +737,23 @@ fn proven_parameter_location<'a>(
     endpoint: &'a EndpointObservation,
     parameter: &str,
 ) -> Result<&'a str, RequestError> {
-    endpoint
+    if let Some(location) = single_parameter_location(&endpoint.parameter_locations, parameter) {
+        return Ok(location);
+    }
+    let count = endpoint
         .parameter_locations
         .get(parameter)
-        .map(String::as_str)
-        .ok_or_else(|| {
-            RequestError::Http(format!(
-                "active probe requires proven location evidence for parameter {parameter}"
-            ))
-        })
+        .map(Vec::len)
+        .unwrap_or(0);
+    Err(RequestError::Http(if count > 1 {
+        format!(
+            "active probe requires an unambiguous parameter location; {parameter} has {count} proven locations"
+        )
+    } else {
+        format!(
+            "active probe requires proven location evidence for parameter {parameter}"
+        )
+    }))
 }
 
 fn replace_query_parameter(url: &mut Url, parameter: &str, payload: &str) {
@@ -786,10 +795,7 @@ fn contextual_request_body(
         .parameter_names
         .iter()
         .filter(|name| {
-            endpoint
-                .parameter_locations
-                .get(*name)
-                .is_some_and(|location| location == "json")
+            parameter_has_location(&endpoint.parameter_locations, name, "json")
         })
         .map(String::as_str)
         .collect();
@@ -797,10 +803,7 @@ fn contextual_request_body(
         .parameter_names
         .iter()
         .filter(|name| {
-            endpoint
-                .parameter_locations
-                .get(*name)
-                .is_some_and(|location| location == "form")
+            parameter_has_location(&endpoint.parameter_locations, name, "form")
         })
         .map(String::as_str)
         .collect();
@@ -1118,7 +1121,7 @@ mod tests {
             depth: 0,
             source: "fixture".into(),
             parameter_names: vec!["q".into()],
-            parameter_locations: BTreeMap::from([("q".into(), "query".into())]),
+            parameter_locations: BTreeMap::from([("q".into(), vec!["query".into()])]),
             response_header_names: Vec::new(),
             cookie_names: Vec::new(),
             content_type: None,
@@ -1161,6 +1164,33 @@ mod tests {
     }
 
     #[test]
+    fn multiple_parameter_locations_are_not_guessed() {
+        use std::collections::BTreeMap;
+
+        let endpoint = crate::EndpointObservation {
+            url: "https://example.test/users?id=1".to_string(),
+            route_template: Some("https://example.test/users/{id}".to_string()),
+            method: "GET".to_string(),
+            depth: 0,
+            source: "fixture".to_string(),
+            parameter_names: vec!["id".to_string()],
+            parameter_locations: BTreeMap::from([(
+                "id".to_string(),
+                vec!["path".to_string(), "query".to_string()],
+            )]),
+            response_header_names: vec![],
+            cookie_names: vec![],
+            content_type: None,
+            status_code: None,
+            redirect_to: None,
+        };
+
+        let error = super::proven_parameter_location(&endpoint, "id")
+            .expect_err("ambiguous location must fail closed");
+        assert!(error.to_string().contains("unambiguous parameter location"));
+    }
+
+    #[test]
     fn missing_parameter_location_is_not_guessed() {
         use std::collections::BTreeMap;
 
@@ -1195,7 +1225,7 @@ mod tests {
             parameter_names: vec!["email".to_string()],
             parameter_locations: BTreeMap::from([(
                 "email".to_string(),
-                "body".to_string(),
+                vec!["body".to_string()],
             )]),
             response_header_names: vec![],
             cookie_names: vec![],
@@ -1224,10 +1254,10 @@ mod tests {
                 "password".into(),
             ],
             parameter_locations: BTreeMap::from([
-                ("tenant".into(), "path".into()),
-                ("next".into(), "query".into()),
-                ("email".into(), "json".into()),
-                ("password".into(), "json".into()),
+                ("tenant".into(), vec!["path".into()]),
+                ("next".into(), vec!["query".into()]),
+                ("email".into(), vec!["json".into()]),
+                ("password".into(), vec!["json".into()]),
             ]),
             response_header_names: vec![],
             cookie_names: vec![],

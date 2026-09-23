@@ -1,12 +1,13 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{atomic::AtomicBool, Arc};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    active, passive, query_parameters, AuthContext, CheckConfig, EndpointObservation, FindingObservation,
-    RequestBudget, RequestError, ScanConfig, ScanError, ScopePolicy, ScopedRequester,
+    active, insert_parameter_location, passive, query_parameters, AuthContext, CheckConfig,
+    EndpointObservation, FindingObservation, ParameterLocations, RequestBudget, RequestError,
+    ScanConfig, ScanError, ScopePolicy, ScopedRequester,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -17,8 +18,8 @@ pub struct TargetedRetestRequest {
     pub method: String,
     #[serde(default)]
     pub parameter_names: Vec<String>,
-    #[serde(default)]
-    pub parameter_locations: BTreeMap<String, String>,
+    #[serde(default, deserialize_with = "crate::deserialize_parameter_locations")]
+    pub parameter_locations: ParameterLocations,
     pub parameter_name: Option<String>,
     pub parameter_location: Option<String>,
     pub category: String,
@@ -85,9 +86,7 @@ pub fn run_targeted_retest(
     parameter_names.dedup();
     let mut parameter_locations = request.parameter_locations.clone();
     for name in query_parameters(&url) {
-        parameter_locations
-            .entry(name)
-            .or_insert_with(|| "query".to_string());
+        insert_parameter_location(&mut parameter_locations, name, "query");
     }
     if let Some(parameter) = request
         .parameter_name
@@ -103,7 +102,11 @@ pub fn run_targeted_retest(
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            parameter_locations.insert(parameter.to_string(), location.to_string());
+            insert_parameter_location(
+                &mut parameter_locations,
+                parameter.to_string(),
+                location.to_string(),
+            );
         } else if !parameter_locations.contains_key(parameter) {
             return Ok(TargetedRetestOutcome {
                 requests_performed: 0,
