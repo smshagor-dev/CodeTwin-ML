@@ -791,8 +791,8 @@ mod tests {
             endpoint.parameter_locations.get("q"),
             Some(&vec!["query".to_string()])
         );
-        assert_eq!(endpoint.response_header_names, vec!["content-type"]);
-        assert_eq!(endpoint.cookie_names, vec!["session"]);
+        assert_eq!(endpoint.response_header_names, vec!["content-type".to_string()]);
+        assert_eq!(endpoint.cookie_names, vec!["session".to_string()]);
         assert_eq!(endpoint.content_type.as_deref(), Some("application/json"));
         assert_eq!(endpoint.status_code, Some(200));
         assert!(endpoint.source.starts_with("source_route:"));
