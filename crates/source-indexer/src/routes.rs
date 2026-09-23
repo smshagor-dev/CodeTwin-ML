@@ -4388,7 +4388,13 @@ from django.views.decorators.http import require_GET, require_POST, require_safe
 
 @require_GET
 def user(request, id):
-    return None
+    q = request.GET.get("q")
+    headers = request.headers
+    tenant = headers["X-Tenant"]
+    session = request.COOKIES.get("session")
+    form = request.POST
+    ignored = form.get("should_not_probe")
+    return (q, tenant, session, ignored)
 
 @require_safe
 def health(request):
@@ -4396,7 +4402,10 @@ def health(request):
 
 @require_http_methods(["POST", "PATCH"])
 def update(request, id):
-    return None
+    form = request.POST
+    email = form.get("email")
+    admin = request.headers.get("X-Admin")
+    return (email, admin)
 
 def undecorated(request):
     return None
@@ -4414,7 +4423,8 @@ urlpatterns = [
             .set_language(&tree_sitter_python::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) = extract_routes("Python", "urls.py", source, tree.root_node());
+        let (routes, _, handler_inputs) =
+            extract_routes("Python", "urls.py", source, tree.root_node());
 
         let user = routes
             .iter()
@@ -4423,6 +4433,18 @@ urlpatterns = [
         assert_eq!(user.handler_name.as_deref(), Some("user"));
         assert!(user.parameters.iter().any(|parameter| {
             parameter.name == "id" && parameter.location == "path"
+        }));
+        assert!(user.parameters.iter().any(|parameter| {
+            parameter.name == "q" && parameter.location == "query"
+        }));
+        assert!(user.parameters.iter().any(|parameter| {
+            parameter.name == "X-Tenant" && parameter.location == "header"
+        }));
+        assert!(user.parameters.iter().any(|parameter| {
+            parameter.name == "session" && parameter.location == "cookie"
+        }));
+        assert!(!user.parameters.iter().any(|parameter| {
+            parameter.name == "should_not_probe" && parameter.location == "form"
         }));
 
         assert!(routes.iter().any(|route| {
@@ -4436,14 +4458,33 @@ urlpatterns = [
                 && route.path_template == "/health/"
         }));
         for method in ["POST", "PATCH"] {
-            assert!(routes.iter().any(|route| {
-                route.framework == "django"
-                    && route.http_method == method
-                    && route.path_template == "/users/<int:id>/update/"
+            let route = routes
+                .iter()
+                .find(|route| {
+                    route.framework == "django"
+                        && route.http_method == method
+                        && route.path_template == "/users/<int:id>/update/"
+                })
+                .expect("django write route");
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == "email" && parameter.location == "form"
             }));
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == "X-Admin" && parameter.location == "header"
+            }));
+            assert_eq!(
+                route.request_content_type.as_deref(),
+                Some("application/x-www-form-urlencoded")
+            );
         }
         assert!(!routes.iter().any(|route| route.path_template == "/plain/"));
         assert!(!routes.iter().any(|route| route.path_template == "/external/"));
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "user"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "should_not_probe" && parameter.location == "form"
+                })
+        }));
     }
     #[test]
     fn extracts_flask_routes_blueprints_and_converters() {
