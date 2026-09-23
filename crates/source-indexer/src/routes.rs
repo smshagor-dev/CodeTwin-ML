@@ -3441,6 +3441,7 @@ fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
 
     let mut fields = Vec::new();
     let mut pending_rename: Option<String> = None;
+    let mut pending_aliases = Vec::<String>::new();
     let mut skip_next = false;
     let mut serde_attribute: Option<String> = None;
 
@@ -3454,7 +3455,12 @@ fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
             attribute.push(' ');
             attribute.push_str(line);
             if line.ends_with(']') {
-                rust_apply_field_serde_attribute(attribute, &mut pending_rename, &mut skip_next);
+                rust_apply_field_serde_attribute(
+                    attribute,
+                    &mut pending_rename,
+                    &mut pending_aliases,
+                    &mut skip_next,
+                );
                 serde_attribute = None;
             }
             continue;
@@ -3462,7 +3468,12 @@ fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
 
         if line.starts_with("#[serde(") {
             if line.ends_with(']') {
-                rust_apply_field_serde_attribute(line, &mut pending_rename, &mut skip_next);
+                rust_apply_field_serde_attribute(
+                    line,
+                    &mut pending_rename,
+                    &mut pending_aliases,
+                    &mut skip_next,
+                );
             } else {
                 serde_attribute = Some(line.to_string());
             }
@@ -3478,6 +3489,7 @@ fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
         } else if declaration.starts_with("pub(") {
             let Some(close_visibility) = declaration.find(')') else {
                 pending_rename = None;
+                pending_aliases.clear();
                 skip_next = false;
                 continue;
             };
@@ -3485,12 +3497,14 @@ fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
         }
         let Some((field, _)) = declaration.split_once(':') else {
             pending_rename = None;
+            pending_aliases.clear();
             skip_next = false;
             continue;
         };
         let field = field.trim();
         if !is_identifier(field) {
             pending_rename = None;
+            pending_aliases.clear();
             skip_next = false;
             continue;
         }
@@ -3502,8 +3516,14 @@ fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
             if !name.is_empty() && name.len() <= 256 {
                 fields.push(name);
             }
+            for alias in pending_aliases.drain(..) {
+                if !alias.is_empty() && alias.len() <= 256 {
+                    fields.push(alias);
+                }
+            }
         } else {
             pending_rename = None;
+            pending_aliases.clear();
         }
         skip_next = false;
     }
@@ -3538,7 +3558,9 @@ fn rust_struct_flatten_types(raw: &str) -> Vec<String> {
             attribute.push(' ');
             attribute.push_str(line);
             if line.ends_with(']') {
-                flatten_next = attribute.contains("flatten") && !attribute.contains("skip");
+                flatten_next =
+                    rust_serde_has_flag(attribute, "flatten")
+                        && !rust_serde_skips_deserialization(attribute);
                 serde_attribute = None;
             }
             continue;
@@ -3546,7 +3568,9 @@ fn rust_struct_flatten_types(raw: &str) -> Vec<String> {
 
         if line.starts_with("#[serde(") {
             if line.ends_with(']') {
-                flatten_next = line.contains("flatten") && !line.contains("skip");
+                flatten_next =
+                    rust_serde_has_flag(line, "flatten")
+                        && !rust_serde_skips_deserialization(line);
             } else {
                 serde_attribute = Some(line.to_string());
             }
@@ -3723,14 +3747,112 @@ fn rust_capitalize(value: &str) -> String {
 fn rust_apply_field_serde_attribute(
     attribute: &str,
     pending_rename: &mut Option<String>,
+    pending_aliases: &mut Vec<String>,
     skip_next: &mut bool,
 ) {
-    if attribute.contains("skip") || attribute.contains("flatten") {
+    if rust_serde_skips_deserialization(attribute) || rust_serde_has_flag(attribute, "flatten") {
         *skip_next = true;
     }
     if let Some(rename) = rust_serde_rename(attribute) {
         *pending_rename = Some(rename);
     }
+    pending_aliases.extend(rust_serde_aliases(attribute));
+}
+
+fn rust_serde_skips_deserialization(attribute: &str) -> bool {
+    rust_serde_has_flag(attribute, "skip")
+        || rust_serde_has_flag(attribute, "skip_deserializing")
+}
+
+fn rust_serde_has_flag(attribute: &str, flag: &str) -> bool {
+    let mut token = String::new();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for character in attribute.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match character {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        if character == '"' {
+            if token == flag {
+                return true;
+            }
+            token.clear();
+            in_string = true;
+            continue;
+        }
+
+        if character == '_' || character.is_ascii_alphanumeric() {
+            token.push(character);
+            continue;
+        }
+
+        if token == flag {
+            return true;
+        }
+        token.clear();
+    }
+
+    token == flag
+}
+
+fn rust_serde_aliases(attribute: &str) -> Vec<String> {
+    let marker = "alias";
+    let mut aliases = Vec::new();
+    let mut offset = 0usize;
+
+    while let Some(relative) = attribute[offset..].find(marker) {
+        let index = offset + relative;
+        if index > 0 {
+            let previous = attribute[..index].chars().next_back();
+            if previous.is_some_and(|character| character == '_' || character.is_ascii_alphanumeric()) {
+                offset = index + marker.len();
+                continue;
+            }
+        }
+
+        let tail = &attribute[index + marker.len()..];
+        if tail
+            .chars()
+            .next()
+            .is_some_and(|character| character == '_' || character.is_ascii_alphanumeric())
+        {
+            offset = index + marker.len();
+            continue;
+        }
+
+        let trimmed = tail.trim_start();
+        let Some(value) = trimmed.strip_prefix('=') else {
+            offset = index + marker.len();
+            continue;
+        };
+        let value = value.trim_start();
+        if !value.starts_with('"') {
+            offset = index + marker.len();
+            continue;
+        }
+        if let Some(alias) = first_quoted_string(value) {
+            if !alias.is_empty() && alias.len() <= 256 {
+                aliases.push(alias);
+            }
+        }
+        offset = index + marker.len();
+    }
+
+    aliases.sort();
+    aliases.dedup();
+    aliases.truncate(256);
+    aliases
 }
 
 fn rust_serde_rename(attribute: &str) -> Option<String> {
@@ -6845,6 +6967,88 @@ fn app() -> Router {
         assert!(!route.parameters.iter().any(|parameter| parameter.name == "display_name"));
         assert!(!route.parameters.iter().any(|parameter| parameter.name == "account_id"));
     }
+    #[test]
+    fn maps_static_serde_field_aliases_without_guessing_dynamic_values() {
+        let source = r#"
+use axum::{routing::post, Json, Router};
+use serde::Deserialize;
+
+const DYNAMIC_ALIAS: &str = "runtimeAlias";
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateUser {
+    #[serde(alias = "legacyDisplayName", alias = "skipLegacy", alias = "flattenLegacy")]
+    display_name: String,
+    #[serde(rename = "emailAddress", alias = "email", alias = "legacy_email")]
+    primary_email: String,
+    #[serde(alias = DYNAMIC_ALIAS)]
+    dynamic_name: String,
+    #[serde(skip, alias = "ignoredAlias")]
+    internal_note: String,
+    #[serde(skip_deserializing, alias = "ignoredDeserializeAlias")]
+    incoming_blocked: String,
+    #[serde(skip_serializing, alias = "acceptedInputAlias")]
+    write_only: String,
+    #[serde(
+        alias = "legacyTraceId",
+        alias = "trace"
+    )]
+    trace_id: String,
+}
+
+async fn create(Json(_body): Json<CreateUser>) {}
+
+fn app() -> Router {
+    Router::new().route("/users", post(create))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "axum" && route.http_method == "POST")
+            .expect("axum route");
+
+        for field in [
+            "displayName",
+            "legacyDisplayName",
+            "skipLegacy",
+            "flattenLegacy",
+            "emailAddress",
+            "email",
+            "legacy_email",
+            "dynamicName",
+            "writeOnly",
+            "acceptedInputAlias",
+            "traceId",
+            "legacyTraceId",
+            "trace",
+        ] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+
+        for excluded in [
+            "display_name",
+            "primary_email",
+            "runtimeAlias",
+            "ignoredAlias",
+            "internalNote",
+            "incomingBlocked",
+            "ignoredDeserializeAlias",
+            "trace_id",
+        ] {
+            assert!(!route.parameters.iter().any(|parameter| parameter.name == excluded));
+        }
+    }
+
     #[test]
     fn unwraps_only_transparent_rust_extractor_wrappers() {
         let source = r#"
