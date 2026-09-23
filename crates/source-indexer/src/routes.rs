@@ -3000,6 +3000,38 @@ fn contains_method_call(value: &str, method: &str) -> bool {
         })
     })
 }
+fn keyword_direct_string(value: &str, keyword: &str) -> Option<String> {
+    let tail = keyword_value_tail(value, keyword)?;
+    let first = tail.chars().next()?;
+    if !matches!(first, '"' | ''') {
+        return None;
+    }
+    let rest = &tail[first.len_utf8()..];
+    let end = rest.find(first)?;
+    Some(rest[..end].to_string())
+}
+
+fn keyword_direct_python_bool(value: &str, keyword: &str) -> Option<bool> {
+    let tail = keyword_value_tail(value, keyword)?;
+    let token = tail
+        .split(|character: char| character == ',' || character == ')' || character.is_whitespace())
+        .next()
+        .unwrap_or("");
+    match token {
+        "True" => Some(true),
+        "False" => Some(false),
+        _ => None,
+    }
+}
+
+fn pydantic_field_input_alias(line: &str) -> Option<String> {
+    if !line.contains("Field(") {
+        return None;
+    }
+    keyword_direct_string(line, "validation_alias")
+        .or_else(|| keyword_direct_string(line, "alias"))
+}
+
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let mut models = BTreeMap::new();
     walk(root, &mut |node| {
@@ -3035,7 +3067,10 @@ fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<S
             };
             let candidate = candidate.trim();
             if is_identifier(candidate) {
-                fields.push(candidate.to_string());
+                fields.push(
+                    pydantic_field_input_alias(trimmed)
+                        .unwrap_or_else(|| candidate.to_string()),
+                );
             }
         }
         fields.sort();
@@ -3166,10 +3201,19 @@ fn fastapi_function_parameters(
             ("Body(", "json"),
         ]
         .into_iter()
-        .find(|(marker, _)| raw.contains(marker))
-        .map(|(_, location)| location);
-        if let Some(location) = explicit {
-            output.push(route_parameter(name, location));
+        .find(|(marker, _)| raw.contains(marker));
+        if let Some((marker, location)) = explicit {
+            let alias = keyword_direct_string(raw, "alias");
+            let external_name = if let Some(alias) = alias {
+                alias
+            } else if marker == "Header("
+                && keyword_direct_python_bool(raw, "convert_underscores") != Some(false)
+            {
+                name.replace('_', "-")
+            } else {
+                name.to_string()
+            };
+            output.push(route_parameter(&external_name, location));
             continue;
         }
 
