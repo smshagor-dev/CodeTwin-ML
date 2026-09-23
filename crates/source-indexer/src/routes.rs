@@ -6586,7 +6586,7 @@ async def create_user(payload: CreateUser):
     fn maps_fastapi_parameter_and_pydantic_input_aliases() {
         let source = r#"
 from fastapi import FastAPI, Query, Header, Cookie
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, AliasPath, BaseModel, Field
 
 app = FastAPI()
 ALIASES = ("legacy", "current")
@@ -6596,6 +6596,8 @@ class CreateUser(BaseModel):
     account_id: str = Field(alias="legacyAccount", validation_alias="accountId")
     ignored_choice: str = Field(validation_alias=AliasChoices("first", "second"))
     dynamic_choice: str = Field(validation_alias=AliasChoices(*ALIASES))
+    single_path: str = Field(validation_alias=AliasPath("singleKey"))
+    nested_path: str = Field(validation_alias=AliasPath("user", "email"))
 
 @app.post("/users")
 async def create_user(
@@ -6624,12 +6626,12 @@ async def create_user(
                 parameter.name == field && parameter.location == "json"
             }));
         }
-        for field in ["first", "second"] {
+        for field in ["first", "second", "singleKey"] {
             assert!(route.parameters.iter().any(|parameter| {
                 parameter.name == field && parameter.location == "json"
             }));
         }
-        for field in ["ignored_choice", "dynamic_choice"] {
+        for field in ["ignored_choice", "dynamic_choice", "single_path", "nested_path", "user", "email"] {
             assert!(!route.parameters.iter().any(|parameter| parameter.name == field));
         }
         assert!(route.parameters.iter().any(|parameter| {
