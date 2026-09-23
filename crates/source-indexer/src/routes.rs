@@ -5818,6 +5818,47 @@ fn app() -> Router {
     }
 
     #[test]
+    fn maps_known_pydantic_alias_generator_names() {
+        let source = r#"
+from fastapi import FastAPI
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
+
+app = FastAPI()
+
+class CreateUser(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel)
+    display_name: str
+    account_id: str
+    email: str = Field(alias="email_address")
+    _private: str
+
+@app.post("/users")
+async def create_user(payload: CreateUser):
+    return {"ok": True}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Python", "app.py", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "fastapi" && route.path_template == "/users")
+            .expect("fastapi route");
+
+        for field in ["displayName", "accountId", "email_address"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        for field in ["display_name", "account_id", "_private"] {
+            assert!(!route.parameters.iter().any(|parameter| parameter.name == field));
+        }
+    }
+    #[test]
     fn maps_fastapi_parameter_and_pydantic_input_aliases() {
         let source = r#"
 from fastapi import FastAPI, Query, Header, Cookie
