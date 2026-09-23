@@ -67,7 +67,7 @@ pub struct WebEndpointInput {
     pub depth: usize,
     pub source: String,
     pub parameter_names: Vec<String>,
-    pub parameter_locations: BTreeMap<String, String>,
+    pub parameter_locations: BTreeMap<String, Vec<String>>,
     pub response_header_names: Vec<String>,
     pub cookie_names: Vec<String>,
     pub content_type: Option<String>,
@@ -85,7 +85,7 @@ pub struct WebEndpointRecord {
     pub depth: usize,
     pub source: String,
     pub parameter_names: Vec<String>,
-    pub parameter_locations: BTreeMap<String, String>,
+    pub parameter_locations: BTreeMap<String, Vec<String>>,
     pub response_header_names: Vec<String>,
     pub cookie_names: Vec<String>,
     pub content_type: Option<String>,
@@ -122,7 +122,7 @@ pub struct SourceRouteRecord {
     pub path_template: String,
     pub handler_name: Option<String>,
     pub parameter_names: Vec<String>,
-    pub parameter_locations: BTreeMap<String, String>,
+    pub parameter_locations: BTreeMap<String, Vec<String>>,
     pub request_content_type: Option<String>,
     pub source_content_hash: String,
     pub start_line: usize,
@@ -724,7 +724,7 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                 path_template: row.get(14)?,
                 handler_name: row.get(15)?,
                 parameter_names: serde_json::from_str(&parameter_names_json).unwrap_or_default(),
-                parameter_locations: serde_json::from_str(&parameter_locations_json).unwrap_or_default(),
+                parameter_locations: parse_parameter_locations_json(&parameter_locations_json),
                 request_content_type: row.get(18)?,
                 source_content_hash: row.get(19)?,
                 start_line: row.get::<_, i64>(20)?.max(0) as usize,
@@ -1364,9 +1364,7 @@ fn map_endpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebEndpointRecord> 
     let parameter_names = serde_json::from_str(&parameter_names_json).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(error))
     })?;
-    let parameter_locations = serde_json::from_str(&parameter_locations_json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(error))
-    })?;
+    let parameter_locations = parse_parameter_locations_json(&parameter_locations_json);
     let response_header_names = serde_json::from_str(&response_header_names_json).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(error))
     })?;
@@ -1720,6 +1718,49 @@ fn route_template_match(template: &str, observed: &str) -> Option<bool> {
         }
     }
     Some(false)
+}
+
+fn insert_parameter_location(
+    locations: &mut BTreeMap<String, Vec<String>>,
+    name: impl Into<String>,
+    location: impl Into<String>,
+) {
+    let values = locations.entry(name.into()).or_default();
+    let location = location.into();
+    if !values.iter().any(|value| value == &location) {
+        values.push(location);
+        values.sort();
+    }
+}
+
+fn parse_parameter_locations_json(raw: &str) -> BTreeMap<String, Vec<String>> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return BTreeMap::new();
+    };
+    let Some(object) = value.as_object() else {
+        return BTreeMap::new();
+    };
+    let mut locations = BTreeMap::new();
+    for (name, raw_location) in object {
+        match raw_location {
+            serde_json::Value::String(location) => {
+                insert_parameter_location(&mut locations, name.clone(), location.clone());
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    if let Some(location) = value.as_str() {
+                        insert_parameter_location(
+                            &mut locations,
+                            name.clone(),
+                            location.to_string(),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    locations
 }
 
 fn bounded(value: usize) -> usize {
