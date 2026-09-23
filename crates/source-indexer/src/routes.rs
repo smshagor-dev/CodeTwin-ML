@@ -3455,6 +3455,60 @@ fn pydantic_field_input_alias(line: &str) -> Option<String> {
         .or_else(|| keyword_direct_string(line, "alias"))
 }
 
+fn keyword_direct_identifier(value: &str, keyword: &str) -> Option<String> {
+    let tail = keyword_value_tail(value, keyword)?;
+    let token = tail
+        .split(|character: char| {
+            character == ',' || character == ')' || character.is_whitespace()
+        })
+        .next()
+        .unwrap_or("")
+        .trim();
+    if is_identifier(token) {
+        Some(token.to_string())
+    } else {
+        None
+    }
+}
+
+fn pydantic_known_alias_generator(source: &str, class_text: &str) -> Option<String> {
+    if !source.contains("pydantic.alias_generators") || !class_text.contains("ConfigDict(") {
+        return None;
+    }
+    let generator = keyword_direct_identifier(class_text, "alias_generator")?;
+    if !matches!(generator.as_str(), "to_camel" | "to_pascal" | "to_snake") {
+        return None;
+    }
+    if !source.contains(&generator) {
+        return None;
+    }
+    Some(generator)
+}
+
+fn pydantic_apply_alias_generator(field: &str, generator: &str) -> Option<String> {
+    if field.starts_with('_') {
+        return None;
+    }
+    let words = rust_field_words(field);
+    if words.is_empty() {
+        return None;
+    }
+    let lower: Vec<String> = words
+        .iter()
+        .map(|word| word.to_ascii_lowercase())
+        .collect();
+    match generator {
+        "to_pascal" => Some(lower.iter().map(|word| rust_capitalize(word)).collect()),
+        "to_camel" => {
+            let mut iter = lower.iter();
+            let first = iter.next()?.clone();
+            Some(first + &iter.map(|word| rust_capitalize(word)).collect::<String>())
+        }
+        "to_snake" => Some(lower.join("_")),
+        _ => None,
+    }
+}
+
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let mut models = BTreeMap::new();
     walk(root, &mut |node| {
@@ -3473,6 +3527,7 @@ fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<S
         else {
             return;
         };
+        let alias_generator = pydantic_known_alias_generator(source, class_text);
         let mut fields = Vec::new();
         for line in class_text.lines().skip(1) {
             let trimmed = line.trim();
@@ -3489,9 +3544,14 @@ fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<S
                 continue;
             };
             let candidate = candidate.trim();
-            if is_identifier(candidate) {
+            if is_identifier(candidate) && !candidate.starts_with('_') {
                 fields.push(
                     pydantic_field_input_alias(trimmed)
+                        .or_else(|| {
+                            alias_generator.as_deref().and_then(|generator| {
+                                pydantic_apply_alias_generator(candidate, generator)
+                            })
+                        })
                         .unwrap_or_else(|| candidate.to_string()),
                 );
             }
@@ -5757,6 +5817,47 @@ fn app() -> Router {
         }));
     }
 
+    #[test]
+    fn maps_known_pydantic_alias_generator_names() {
+        let source = r#"
+from fastapi import FastAPI
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
+
+app = FastAPI()
+
+class CreateUser(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel)
+    display_name: str
+    account_id: str
+    email: str = Field(alias="email_address")
+    _private: str
+
+@app.post("/users")
+async def create_user(payload: CreateUser):
+    return {"ok": True}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Python", "app.py", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "fastapi" && route.path_template == "/users")
+            .expect("fastapi route");
+
+        for field in ["displayName", "accountId", "email_address"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        for field in ["display_name", "account_id", "_private"] {
+            assert!(!route.parameters.iter().any(|parameter| parameter.name == field));
+        }
+    }
     #[test]
     fn maps_fastapi_parameter_and_pydantic_input_aliases() {
         let source = r#"
