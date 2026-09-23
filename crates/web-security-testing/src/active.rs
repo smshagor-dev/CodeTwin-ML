@@ -75,7 +75,7 @@ pub(crate) fn run_active_checks(
             return Err(ScanError::Cancelled);
         }
         let mut chunk_results = Vec::new();
-        let chunk_state = thread::scope(|scope| {
+        let chunk_state = thread::scope(|scope| -> Result<bool, ScanError> {
             let mut handles = Vec::new();
             for task in chunk.iter().cloned() {
                 let requester = requester.clone();
@@ -86,16 +86,33 @@ pub(crate) fn run_active_checks(
                     probe_parameter(&policy, &requester, &config, &task, cancelled)
                 }));
             }
+
             let mut cancelled_observed = false;
+            let mut first_error = None;
+            let mut worker_panicked = false;
             for handle in handles {
                 match handle.join() {
                     Ok(Ok(mut observed)) => chunk_results.append(&mut observed),
                     Ok(Err(ScanError::Cancelled)) => cancelled_observed = true,
-                    Ok(Err(_)) | Err(_) => {}
+                    Ok(Err(error)) => {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                    Err(_) => worker_panicked = true,
                 }
             }
-            cancelled_observed
-        });
+
+            if worker_panicked {
+                return Err(ScanError::Discovery(
+                    "active probe worker panicked before producing a result".to_string(),
+                ));
+            }
+            if let Some(error) = first_error {
+                return Err(error);
+            }
+            Ok(cancelled_observed)
+        })?;
         if chunk_state || cancelled.load(Ordering::SeqCst) {
             return Err(ScanError::Cancelled);
         }
