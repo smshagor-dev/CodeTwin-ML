@@ -330,10 +330,13 @@ fn nextjs_handler_inputs(
 
 fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRouteParameter> {
     let mut parameters = express_handler_parameters(source, handler);
-    let Some(request_name) = request_parameter_name(source, handler) else {
+    let Some(function_text) = text(source, handler) else {
         return parameters;
     };
-    let Some(function_text) = text(source, handler) else {
+    if source.contains("next/headers") {
+        parameters.extend(nextjs_server_context_parameters(source, handler, function_text));
+    }
+    let Some(request_name) = request_parameter_name(source, handler) else {
         return parameters;
     };
 
@@ -481,6 +484,85 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
                 if !name.is_empty() && name.len() <= 256 {
                     parameters.push(route_parameter(&name, "cookie"));
                 }
+            }
+        }
+    }
+    parameters
+}
+
+fn nextjs_server_context_parameters(
+    source: &str,
+    handler: Node<'_>,
+    function_text: &str,
+) -> Vec<IndexedRouteParameter> {
+    let mut parameters = Vec::new();
+    let mut cookie_variables = Vec::new();
+    let mut header_variables = Vec::new();
+
+    for method in ["get", "getAll", "has"] {
+        for prefix in ["cookies().", "cookies())."] {
+            let marker = format!("{prefix}{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, "cookie"));
+                }
+            }
+        }
+    }
+    for prefix in ["headers().", "headers())."] {
+        let marker = format!("{prefix}get(");
+        for name in marker_quoted_arguments(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, "header"));
+            }
+        }
+    }
+
+    walk(handler, &mut |node| {
+        if node.kind() != "variable_declarator" {
+            return;
+        }
+        let Some(name_node) = node.child_by_field_name("name") else {
+            return;
+        };
+        if name_node.kind() != "identifier" {
+            return;
+        }
+        let Some(value_node) = node.child_by_field_name("value") else {
+            return;
+        };
+        let Some(name) = text(source, name_node).map(str::trim) else {
+            return;
+        };
+        let Some(value) = text(source, value_node).map(str::trim) else {
+            return;
+        };
+        if !is_identifier(name) {
+            return;
+        }
+        if value == "cookies()" || value == "await cookies()" {
+            cookie_variables.push(name.to_string());
+        }
+        if value == "headers()" || value == "await headers()" {
+            header_variables.push(name.to_string());
+        }
+    });
+
+    for variable in cookie_variables {
+        for method in ["get", "getAll", "has"] {
+            let marker = format!("{variable}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, "cookie"));
+                }
+            }
+        }
+    }
+    for variable in header_variables {
+        let marker = format!("{variable}.get(");
+        for name in marker_quoted_arguments(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, "header"));
             }
         }
     }
