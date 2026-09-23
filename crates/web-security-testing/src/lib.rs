@@ -14,7 +14,7 @@ use std::sync::{
     Arc,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 pub use evidence::{body_hash, fingerprint, redact_body, redact_headers, redact_url, response_evidence};
@@ -28,6 +28,80 @@ pub use operator::{
 pub use request::{RequestBudget, RequestError, ScopedRequester};
 pub use retest::{run_targeted_retest, TargetedRetestOutcome, TargetedRetestRequest};
 pub use scope::{normalize_url, ScopeError, ScopePolicy};
+
+pub type ParameterLocations = BTreeMap<String, Vec<String>>;
+
+pub fn insert_parameter_location(
+    locations: &mut ParameterLocations,
+    name: impl Into<String>,
+    location: impl Into<String>,
+) {
+    let name = name.into();
+    let location = location.into();
+    let values = locations.entry(name).or_default();
+    if !values.iter().any(|value| value == &location) {
+        values.push(location);
+        values.sort();
+    }
+}
+
+pub fn parameter_has_location(
+    locations: &ParameterLocations,
+    name: &str,
+    expected: &str,
+) -> bool {
+    locations
+        .get(name)
+        .is_some_and(|values| values.iter().any(|value| value == expected))
+}
+
+pub fn single_parameter_location<'a>(
+    locations: &'a ParameterLocations,
+    name: &str,
+) -> Option<&'a str> {
+    let values = locations.get(name)?;
+    (values.len() == 1).then(|| values[0].as_str())
+}
+
+fn deserialize_parameter_locations<'de, D>(
+    deserializer: D,
+) -> Result<ParameterLocations, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| de::Error::custom("parameter locations must be a JSON object"))?;
+    let mut output = ParameterLocations::new();
+    for (name, raw) in object {
+        match raw {
+            serde_json::Value::String(location) => {
+                insert_parameter_location(&mut output, name.clone(), location.clone());
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    let Some(location) = value.as_str() else {
+                        return Err(de::Error::custom(
+                            "parameter location arrays must contain only strings",
+                        ));
+                    };
+                    insert_parameter_location(
+                        &mut output,
+                        name.clone(),
+                        location.to_string(),
+                    );
+                }
+            }
+            _ => {
+                return Err(de::Error::custom(
+                    "parameter location values must be strings or string arrays",
+                ));
+            }
+        }
+    }
+    Ok(output)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScopeConfig {
@@ -195,7 +269,8 @@ pub struct SourceEndpointSeed {
     pub discovery_url: Option<String>,
     pub method: String,
     pub parameter_names: Vec<String>,
-    pub parameter_locations: BTreeMap<String, String>,
+    #[serde(default, deserialize_with = "deserialize_parameter_locations")]
+    pub parameter_locations: ParameterLocations,
     pub content_type: Option<String>,
     pub source_label: String,
 }
@@ -205,7 +280,7 @@ pub fn source_endpoint_seed(
     method: &str,
     path_template: &str,
     parameter_names: &[String],
-    parameter_locations: &BTreeMap<String, String>,
+    parameter_locations: &ParameterLocations,
     content_type: Option<&str>,
     source_label: &str,
 ) -> Option<SourceEndpointSeed> {
@@ -228,10 +303,7 @@ pub fn source_endpoint_seed(
     for url in [&mut template_url, &mut discovery_url] {
         let mut query = url.query_pairs_mut();
         for name in parameter_names {
-            if parameter_locations
-                .get(name)
-                .is_some_and(|location| location == "query")
-            {
+            if parameter_has_location(parameter_locations, name, "query") {
                 query.append_pair(name, "codetwin-test");
             }
         }
@@ -451,8 +523,8 @@ pub struct EndpointObservation {
     pub depth: usize,
     pub source: String,
     pub parameter_names: Vec<String>,
-    #[serde(default)]
-    pub parameter_locations: BTreeMap<String, String>,
+    #[serde(default, deserialize_with = "deserialize_parameter_locations")]
+    pub parameter_locations: ParameterLocations,
     #[serde(default)]
     pub response_header_names: Vec<String>,
     #[serde(default)]
