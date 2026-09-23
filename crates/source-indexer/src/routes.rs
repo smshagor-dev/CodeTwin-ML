@@ -3726,6 +3726,59 @@ export const POST = async (request: Request) => {
     }
 
     #[test]
+    fn maps_nextjs_server_context_inputs_without_request_parameter() {
+        let source = r#"
+import { cookies, headers } from "next/headers";
+
+export async function GET() {
+  const cookieStore = await cookies();
+  const headerStore = await headers();
+  const session = cookieStore.get("session");
+  const csrf = (await cookies()).get("csrf-token");
+  const tenant = headerStore.get("X-Tenant");
+  const trace = (await headers()).get("X-Trace");
+  const dynamic = "secret";
+  cookieStore.get(dynamic);
+  return Response.json({ session, csrf, tenant, trace });
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, handler_inputs) = extract_routes(
+            "TypeScript",
+            "src/app/session/route.ts",
+            source,
+            tree.root_node(),
+        );
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "GET")
+            .expect("GET route");
+        for field in ["session", "csrf-token"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "cookie"
+            }));
+        }
+        for field in ["X-Tenant", "X-Trace"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "header"
+            }));
+        }
+        assert!(!route.parameters.iter().any(|parameter| parameter.name == "secret"));
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "GET"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "session" && parameter.location == "cookie"
+                })
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "X-Tenant" && parameter.location == "header"
+                })
+        }));
+    }
+    #[test]
     fn maps_nextjs_request_inputs_to_source_routes() {
         let source = r#"
 import { NextRequest } from "next/server";
