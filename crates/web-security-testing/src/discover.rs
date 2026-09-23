@@ -47,7 +47,7 @@ pub fn crawl_with_seeds(
 ) -> Result<DiscoveryResult, ScanError> {
     let mut queue = VecDeque::new();
     let mut seen = HashSet::new();
-    let mut endpoint_keys = HashSet::new();
+    let mut endpoint_keys = HashMap::new();
     let mut endpoints = Vec::new();
     let mut findings = Vec::new();
     let mut responses = HashMap::new();
@@ -70,7 +70,11 @@ pub fn crawl_with_seeds(
             let Ok(discovery_url) = policy.normalize_and_assert(discovery_raw) else {
                 continue;
             };
-            source_seed_by_url.insert(normalized_key(&discovery_url), seed.clone());
+            let key = normalized_key(&discovery_url);
+            source_seed_by_url
+                .entry(key)
+                .and_modify(|existing| merge_source_seed(existing, seed))
+                .or_insert_with(|| seed.clone());
             if discovery_url != *policy.target() {
                 queue.push_back((discovery_url, 0, "source_route".to_string(), 0));
             }
@@ -292,14 +296,143 @@ struct FormObservation {
 
 fn add_endpoint(
     endpoints: &mut Vec<EndpointObservation>,
-    keys: &mut HashSet<String>,
+    keys: &mut HashMap<String, usize>,
     mut endpoint: EndpointObservation,
 ) {
+    normalize_endpoint_metadata(&mut endpoint);
+    let key = format!("{} {}", endpoint.method, normalized_url_string(&endpoint.url));
+    if let Some(index) = keys.get(&key).copied() {
+        if let Some(existing) = endpoints.get_mut(index) {
+            merge_endpoint(existing, endpoint);
+        }
+        return;
+    }
+    let index = endpoints.len();
+    endpoints.push(endpoint);
+    keys.insert(key, index);
+}
+
+fn normalize_endpoint_metadata(endpoint: &mut EndpointObservation) {
     endpoint.parameter_names.sort();
     endpoint.parameter_names.dedup();
-    let key = format!("{} {}", endpoint.method, normalized_url_string(&endpoint.url));
-    if keys.insert(key) {
-        endpoints.push(endpoint);
+    endpoint.response_header_names.sort();
+    endpoint.response_header_names.dedup();
+    endpoint.cookie_names.sort();
+    endpoint.cookie_names.dedup();
+    for locations in endpoint.parameter_locations.values_mut() {
+        locations.sort();
+        locations.dedup();
+    }
+}
+
+fn merge_endpoint(existing: &mut EndpointObservation, mut incoming: EndpointObservation) {
+    normalize_endpoint_metadata(&mut incoming);
+    let incoming_priority = source_priority(&incoming.source);
+    let existing_priority = source_priority(&existing.source);
+    let incoming_preferred = incoming_priority > existing_priority
+        || (incoming_priority == existing_priority && incoming.source < existing.source);
+
+    existing.depth = existing.depth.min(incoming.depth);
+
+    existing.parameter_names.extend(incoming.parameter_names);
+    existing.parameter_names.sort();
+    existing.parameter_names.dedup();
+    for (name, locations) in incoming.parameter_locations {
+        for location in locations {
+            insert_parameter_location(&mut existing.parameter_locations, name.clone(), location);
+        }
+    }
+
+    existing
+        .response_header_names
+        .extend(incoming.response_header_names);
+    existing.response_header_names.sort();
+    existing.response_header_names.dedup();
+    existing.cookie_names.extend(incoming.cookie_names);
+    existing.cookie_names.sort();
+    existing.cookie_names.dedup();
+
+    if existing.route_template.is_none()
+        || (incoming.route_template.is_some() && incoming_preferred)
+    {
+        existing.route_template = incoming.route_template;
+    }
+    existing.content_type = merge_content_type(
+        existing.content_type.take(),
+        incoming.content_type,
+        incoming_preferred,
+    );
+    if existing.status_code.is_none() {
+        existing.status_code = incoming.status_code;
+    }
+    if existing.redirect_to.is_none() {
+        existing.redirect_to = incoming.redirect_to;
+    }
+    if incoming_preferred {
+        existing.source = incoming.source;
+    }
+}
+
+fn merge_content_type(
+    existing: Option<String>,
+    incoming: Option<String>,
+    incoming_preferred: bool,
+) -> Option<String> {
+    match (existing, incoming) {
+        (None, value) | (value, None) => value,
+        (Some(left), Some(right)) if left.eq_ignore_ascii_case(&right) => Some(left),
+        (Some(_), Some(right)) if incoming_preferred => Some(right),
+        (Some(left), Some(_)) => Some(left),
+    }
+}
+
+fn source_priority(source: &str) -> u8 {
+    if source.starts_with("source_route:") {
+        5
+    } else {
+        match source {
+            "openapi" => 4,
+            "form" => 3,
+            "html" | "javascript_reference" => 2,
+            "redirect" => 1,
+            _ => 0,
+        }
+    }
+}
+
+fn merge_source_seed(existing: &mut SourceEndpointSeed, incoming: &SourceEndpointSeed) {
+    existing
+        .parameter_names
+        .extend(incoming.parameter_names.iter().cloned());
+    existing.parameter_names.sort();
+    existing.parameter_names.dedup();
+    for (name, locations) in &incoming.parameter_locations {
+        for location in locations {
+            insert_parameter_location(
+                &mut existing.parameter_locations,
+                name.clone(),
+                location.clone(),
+            );
+        }
+    }
+
+    existing.content_type = match (&existing.content_type, &incoming.content_type) {
+        (None, value) => value.clone(),
+        (Some(_), None) => existing.content_type.clone(),
+        (Some(left), Some(right)) if left.eq_ignore_ascii_case(right) => {
+            existing.content_type.clone()
+        }
+        (Some(_), Some(_)) => None,
+    };
+
+    if incoming.source_label < existing.source_label {
+        existing.source_label = incoming.source_label.clone();
+    }
+    if existing.discovery_url.is_none() {
+        existing.discovery_url = incoming.discovery_url.clone();
+    }
+    if incoming.url < existing.url {
+        existing.url = incoming.url.clone();
     }
 }
 
@@ -464,7 +597,7 @@ fn discover_openapi(
     body: &[u8],
     depth: usize,
     endpoints: &mut Vec<EndpointObservation>,
-    keys: &mut HashSet<String>,
+    keys: &mut HashMap<String, usize>,
 ) {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else { return };
     if value.get("openapi").is_none() && value.get("swagger").is_none() {
