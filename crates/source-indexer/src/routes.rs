@@ -3765,15 +3765,33 @@ fn rust_generic_models(value: &str, marker: &str) -> Vec<String> {
 }
 
 fn rust_simple_type_name(value: &str) -> Option<String> {
+    rust_simple_type_name_inner(value, 0)
+}
+
+fn rust_simple_type_name_inner(value: &str, depth: usize) -> Option<String> {
+    if depth > 4 {
+        return None;
+    }
     let value = value
         .trim()
         .trim_start_matches('&')
         .trim_start_matches("mut ")
         .trim();
-    if value.is_empty()
-        || value
-            .chars()
-            .any(|character| matches!(character, '<' | '>' | '(' | ')' | '[' | ']' | ',' | ';'))
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Some((wrapper, inner)) = rust_single_generic_type(value) {
+        let wrapper = wrapper.rsplit("::").next().unwrap_or(wrapper).trim();
+        if matches!(wrapper, "Option" | "Box") {
+            return rust_simple_type_name_inner(inner, depth + 1);
+        }
+        return None;
+    }
+
+    if value
+        .chars()
+        .any(|character| matches!(character, '<' | '>' | '(' | ')' | '[' | ']' | ',' | ';'))
         || value.chars().any(char::is_whitespace)
     {
         return None;
@@ -3784,6 +3802,37 @@ fn rust_simple_type_name(value: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn rust_single_generic_type(value: &str) -> Option<(&str, &str)> {
+    let open = value.find('<')?;
+    if !value.ends_with('>') {
+        return None;
+    }
+    let wrapper = value[..open].trim();
+    if wrapper.is_empty() {
+        return None;
+    }
+
+    let inner = &value[open + 1..value.len() - 1];
+    let mut depth = 0usize;
+    for character in inner.chars() {
+        match character {
+            '<' => depth += 1,
+            '>' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => return None,
+            _ => {}
+        }
+    }
+    if depth != 0 || inner.trim().is_empty() {
+        return None;
+    }
+    Some((wrapper, inner.trim()))
 }
 
 fn rust_header_map_bindings(parameter_text: &str) -> Vec<String> {
@@ -6575,6 +6624,75 @@ fn app() -> Router {
         assert!(!route.parameters.iter().any(|parameter| parameter.name == "display_name"));
         assert!(!route.parameters.iter().any(|parameter| parameter.name == "account_id"));
     }
+    #[test]
+    fn unwraps_only_transparent_rust_extractor_wrappers() {
+        let source = r#"
+use axum::{extract::Query, routing::{get, post, put, patch}, Json, Router};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Filters {
+    q: String,
+    page: usize,
+}
+
+#[derive(Deserialize)]
+struct Payload {
+    email: String,
+}
+
+async fn list(Query(_filters): Query<Option<Box<Filters>>>) {}
+async fn create(Json(_body): Json<Box<Payload>>) {}
+async fn vector(Json(_body): Json<Vec<Payload>>) {}
+async fn tuple(Json(_body): Json<(Payload, Payload)>) {}
+async fn result(Json(_body): Json<Result<Payload, String>>) {}
+
+fn app() -> Router {
+    Router::new()
+        .route("/users", get(list))
+        .route("/users", post(create))
+        .route("/vector", put(vector))
+        .route("/tuple", patch(tuple))
+        .route("/result", post(result))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+
+        let list = routes
+            .iter()
+            .find(|route| route.http_method == "GET" && route.path_template == "/users")
+            .expect("list route");
+        for field in ["q", "page"] {
+            assert!(list.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "query"
+            }));
+        }
+
+        let create = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/users")
+            .expect("create route");
+        assert!(create.parameters.iter().any(|parameter| {
+            parameter.name == "email" && parameter.location == "json"
+        }));
+
+        for path in ["/vector", "/tuple", "/result"] {
+            let route = routes
+                .iter()
+                .find(|route| route.path_template == path)
+                .expect("opaque wrapper route");
+            assert!(!route.parameters.iter().any(|parameter| {
+                matches!(parameter.name.as_str(), "email" | "q" | "page")
+            }));
+        }
+    }
+
     #[test]
     fn maps_axum_typed_extractors_and_static_header_keys_to_routes() {
         let source = r#"
