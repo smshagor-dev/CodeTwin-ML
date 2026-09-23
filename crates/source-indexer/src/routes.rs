@@ -351,11 +351,20 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
             parameters.push(route_parameter(&name, "header"));
         }
     }
+    for method in ["get", "getAll", "has"] {
+        let marker = format!("{request_name}.cookies.{method}(");
+        for name in marker_quoted_arguments(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, "cookie"));
+            }
+        }
+    }
 
     let mut json_variables = Vec::new();
     let mut form_variables = Vec::new();
     let mut query_variables = Vec::new();
     let mut header_variables = Vec::new();
+    let mut cookie_variables = Vec::new();
     walk(handler, &mut |node| {
         if node.kind() != "variable_declarator" {
             return;
@@ -397,6 +406,12 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
             && is_identifier(name_text)
         {
             header_variables.push(name_text.to_string());
+        }
+        if value == format!("{request_name}.cookies")
+            && name_node.kind() == "identifier"
+            && is_identifier(name_text)
+        {
+            cookie_variables.push(name_text.to_string());
         }
     });
 
@@ -456,6 +471,16 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
         for name in marker_quoted_arguments(function_text, &marker) {
             if !name.is_empty() && name.len() <= 256 {
                 parameters.push(route_parameter(&name, "header"));
+            }
+        }
+    }
+    for variable in cookie_variables {
+        for method in ["get", "getAll", "has"] {
+            let marker = format!("{variable}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, "cookie"));
+                }
             }
         }
     }
@@ -3628,9 +3653,13 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const page = params.get("page");
   const tenant = request.headers.get("X-Tenant");
+  const session = request.cookies.get("session");
+  const cookies = request.cookies;
+  const csrf = cookies.get("csrf-token");
   const dynamic = "secret";
   request.nextUrl.searchParams.get(dynamic);
-  return Response.json({ q, page, tenant });
+  request.cookies.get(dynamic);
+  return Response.json({ q, page, tenant, session, csrf });
 }
 
 export async function POST(request: Request) {
@@ -3677,6 +3706,11 @@ export const PATCH = async (request: Request) => {
         assert!(get.parameters.iter().any(|parameter| {
             parameter.name == "X-Tenant" && parameter.location == "header"
         }));
+        for field in ["session", "csrf-token"] {
+            assert!(get.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "cookie"
+            }));
+        }
         assert!(!get.parameters.iter().any(|parameter| parameter.name == "secret"));
         assert!(get.parameters.iter().any(|parameter| {
             parameter.name == "id" && parameter.location == "path"
@@ -3719,6 +3753,12 @@ export const PATCH = async (request: Request) => {
             input.handler_name == "GET"
                 && input.parameters.iter().any(|parameter| {
                     parameter.name == "X-Tenant" && parameter.location == "header"
+                })
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "session" && parameter.location == "cookie"
+                })
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "csrf-token" && parameter.location == "cookie"
                 })
         }));
     }
