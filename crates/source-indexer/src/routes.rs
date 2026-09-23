@@ -568,7 +568,7 @@ fn typescript_object_models(
                 && field.len() <= 256
                 && (is_identifier(&field)
                     || raw_name.starts_with('"')
-                    || raw_name.starts_with('''))
+                    || raw_name.starts_with('\''))
             {
                 fields.push(field);
             }
