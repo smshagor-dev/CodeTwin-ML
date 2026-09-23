@@ -6625,6 +6625,75 @@ fn app() -> Router {
         assert!(!route.parameters.iter().any(|parameter| parameter.name == "account_id"));
     }
     #[test]
+    fn unwraps_only_transparent_rust_extractor_wrappers() {
+        let source = r#"
+use axum::{extract::Query, routing::{get, post, put, patch}, Json, Router};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Filters {
+    q: String,
+    page: usize,
+}
+
+#[derive(Deserialize)]
+struct Payload {
+    email: String,
+}
+
+async fn list(Query(_filters): Query<Option<Box<Filters>>>) {}
+async fn create(Json(_body): Json<Box<Payload>>) {}
+async fn vector(Json(_body): Json<Vec<Payload>>) {}
+async fn tuple(Json(_body): Json<(Payload, Payload)>) {}
+async fn result(Json(_body): Json<Result<Payload, String>>) {}
+
+fn app() -> Router {
+    Router::new()
+        .route("/users", get(list))
+        .route("/users", post(create))
+        .route("/vector", put(vector))
+        .route("/tuple", patch(tuple))
+        .route("/result", post(result))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+
+        let list = routes
+            .iter()
+            .find(|route| route.http_method == "GET" && route.path_template == "/users")
+            .expect("list route");
+        for field in ["q", "page"] {
+            assert!(list.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "query"
+            }));
+        }
+
+        let create = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/users")
+            .expect("create route");
+        assert!(create.parameters.iter().any(|parameter| {
+            parameter.name == "email" && parameter.location == "json"
+        }));
+
+        for path in ["/vector", "/tuple", "/result"] {
+            let route = routes
+                .iter()
+                .find(|route| route.path_template == path)
+                .expect("opaque wrapper route");
+            assert!(!route.parameters.iter().any(|parameter| {
+                matches!(parameter.name.as_str(), "email" | "q" | "page")
+            }));
+        }
+    }
+
+    #[test]
     fn maps_axum_typed_extractors_and_static_header_keys_to_routes() {
         let source = r#"
 use axum::{
