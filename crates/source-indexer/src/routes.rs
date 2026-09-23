@@ -392,8 +392,8 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
         if value.contains(&json_marker) {
             if name_node.kind() == "identifier" && is_identifier(name_text) {
                 json_variables.push(name_text.to_string());
-                if let Some(model) =
-                    typescript_declared_variable_model(source, node, name_text)
+                if let Some(model) = typescript_declared_variable_model(source, node, name_text)
+                    .or_else(|| typescript_direct_json_assertion_model(value, &request_name))
                 {
                     if let Some(fields) = type_models.get(&model) {
                         for field in fields {
@@ -753,6 +753,87 @@ fn typescript_property_belongs_directly_to_model(
         current = parent;
     }
     false
+}
+
+fn typescript_direct_json_assertion_model(
+    value: &str,
+    request_name: &str,
+) -> Option<String> {
+    let (expression, type_name) = value.rsplit_once(" as ")?;
+    let type_name = type_name.trim().trim_end_matches(';').trim();
+    if !is_identifier(type_name) {
+        return None;
+    }
+
+    let mut expression = expression.trim();
+    for _ in 0..4 {
+        let stripped = typescript_strip_balanced_outer_parentheses(expression);
+        if stripped == expression {
+            break;
+        }
+        expression = stripped;
+    }
+    let Some(rest) = expression.strip_prefix("await ") else {
+        return None;
+    };
+    expression = rest.trim();
+    for _ in 0..4 {
+        let stripped = typescript_strip_balanced_outer_parentheses(expression);
+        if stripped == expression {
+            break;
+        }
+        expression = stripped;
+    }
+
+    (expression == format!("{request_name}.json()")).then(|| type_name.to_string())
+}
+
+fn typescript_strip_balanced_outer_parentheses(value: &str) -> &str {
+    let value = value.trim();
+    if !(value.starts_with('(') && value.ends_with(')')) {
+        return value;
+    }
+
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match character {
+            '"' | '\'' | '`' => quote = Some(character),
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    return value;
+                }
+                depth -= 1;
+                if depth == 0 && index + character.len_utf8() != value.len() {
+                    return value;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if depth == 0 && quote.is_none() {
+        value[1..value.len() - 1].trim()
+    } else {
+        value
+    }
 }
 
 fn typescript_declared_variable_model(
@@ -5321,6 +5402,92 @@ export async function GET() {
                 })
         }));
     }
+    #[test]
+    fn maps_direct_nextjs_json_type_assertions_conservatively() {
+        let source = r#"
+interface BaseUser {
+  email: string;
+  profile: {
+    displayName: string;
+  };
+}
+
+type CreateUser = BaseUser & {
+  role: string;
+};
+
+type AliasCreate = CreateUser;
+
+export async function POST(request: Request) {
+  const payload = await request.json() as CreateUser;
+  return Response.json(payload);
+}
+
+export async function PUT(request: Request) {
+  const payload = (await request.json()) as AliasCreate;
+  return Response.json(payload);
+}
+
+export async function PATCH(request: Request) {
+  const payload = validate(await request.json()) as CreateUser;
+  return Response.json(payload);
+}
+
+export async function DELETE(request: Request) {
+  const payload = await request.json() as ImportedPayload;
+  return Response.json(payload);
+}
+
+export async function OPTIONS(request: Request) {
+  const payload = await request.json() as CreateUser | BaseUser;
+  return Response.json(payload);
+}
+
+export async function HEAD(request: Request) {
+  const payload = request.json() as CreateUser;
+  return Response.json(payload);
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes(
+            "TypeScript",
+            "src/app/users/route.ts",
+            source,
+            tree.root_node(),
+        );
+
+        for method in ["POST", "PUT"] {
+            let route = routes
+                .iter()
+                .find(|route| route.framework == "nextjs" && route.http_method == method)
+                .expect("typed assertion route");
+            for field in ["email", "profile", "role"] {
+                assert!(route.parameters.iter().any(|parameter| {
+                    parameter.name == field && parameter.location == "json"
+                }));
+            }
+            assert!(!route.parameters.iter().any(|parameter| parameter.name == "displayName"));
+        }
+
+        for method in ["PATCH", "DELETE", "OPTIONS", "HEAD"] {
+            let route = routes
+                .iter()
+                .find(|route| route.framework == "nextjs" && route.http_method == method)
+                .expect("conservative route");
+            assert!(!route.parameters.iter().any(|parameter| {
+                parameter.location == "json"
+                    && matches!(
+                        parameter.name.as_str(),
+                        "email" | "profile" | "role" | "displayName"
+                    )
+            }));
+        }
+    }
+
     #[test]
     fn resolves_local_typescript_type_alias_chains_conservatively() {
         let source = r#"
