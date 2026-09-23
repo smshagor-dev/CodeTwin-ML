@@ -52,7 +52,14 @@ pub(crate) fn run_active_checks(
         if !method_probe_allowed(&endpoint.method, config.scope.allow_non_idempotent_methods) {
             continue;
         }
-        let baseline = baselines.get(&normalized_key(&endpoint.url)).cloned();
+        let baseline = baselines
+            .get(&baseline_key(&endpoint.method, &endpoint.url))
+            .or_else(|| {
+                (endpoint.method == "GET")
+                    .then(|| baselines.get(&normalized_key(&endpoint.url)))
+                    .flatten()
+            })
+            .cloned();
         for parameter in &endpoint.parameter_names {
             tasks.push(ProbeTask {
                 endpoint: endpoint.clone(),
@@ -123,7 +130,12 @@ pub(crate) fn run_active_checks(
                     continue;
                 }
                 let Ok(url) = policy.normalize_and_assert(&endpoint.url) else { continue };
-                let Some(primary) = baselines.get(&normalized_key(&endpoint.url)) else { continue };
+                let Some(primary) = baselines
+                    .get(&baseline_key("GET", &endpoint.url))
+                    .or_else(|| baselines.get(&normalized_key(&endpoint.url)))
+                else {
+                    continue;
+                };
                 match secondary_requester.get(&url) {
                     Ok(secondary_response) => {
                         if (200..300).contains(&primary.status)
@@ -621,6 +633,21 @@ fn probe_options(
     Ok(findings)
 }
 
+pub(crate) fn send_endpoint_baseline(
+    requester: &ScopedRequester,
+    endpoint: &EndpointObservation,
+    url: &Url,
+    parameter: Option<&str>,
+) -> Result<ObservedResponse, RequestError> {
+    if let Some(parameter) = parameter.filter(|value| !value.trim().is_empty()) {
+        return send_payload(requester, endpoint, url, parameter, "");
+    }
+
+    let method = Method::from_bytes(endpoint.method.as_bytes())
+        .map_err(|_| RequestError::Http("unsupported HTTP method".to_string()))?;
+    requester.send(method, url, None, &[])
+}
+
 fn send_payload(
     requester: &ScopedRequester,
     endpoint: &EndpointObservation,
@@ -978,6 +1005,14 @@ fn active_header_probe_allowed(name: &str) -> bool {
             | "content-length"
             | "transfer-encoding"
             | "connection"
+    )
+}
+
+pub(crate) fn baseline_key(method: &str, raw: &str) -> String {
+    format!(
+        "{} {}",
+        method.trim().to_ascii_uppercase(),
+        normalized_key(raw)
     )
 }
 
