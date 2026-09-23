@@ -2670,7 +2670,9 @@ fn go_tagged_models(
     root: Node<'_>,
     tag_name: &str,
 ) -> BTreeMap<String, Vec<String>> {
-    let mut models = BTreeMap::new();
+    let mut own_fields = BTreeMap::<String, Vec<String>>::new();
+    let mut embedded_types = BTreeMap::<String, Vec<String>>::new();
+
     walk(root, &mut |node| {
         if node.kind() != "type_spec" {
             return;
@@ -2691,14 +2693,112 @@ fn go_tagged_models(
         if !raw.contains("struct") || !raw.contains('{') {
             return;
         }
-        let fields = go_struct_tag_fields(raw, tag_name);
-        if !fields.is_empty() {
-            models.insert(name.to_string(), fields);
+        own_fields.insert(name.to_string(), go_struct_tag_fields(raw, tag_name));
+        if tag_name == "json" {
+            embedded_types.insert(
+                name.to_string(),
+                go_json_untagged_embedded_types(raw),
+            );
         }
     });
-    models
+
+    if tag_name != "json" {
+        return own_fields
+            .into_iter()
+            .filter(|(_, fields)| !fields.is_empty())
+            .collect();
+    }
+
+    let names: Vec<String> = own_fields.keys().cloned().collect();
+    let mut resolved = BTreeMap::<String, Vec<String>>::new();
+    for _ in 0..names.len().max(1) {
+        let mut changed = false;
+        for name in &names {
+            if resolved.contains_key(name) {
+                continue;
+            }
+            let local_embeds: Vec<&String> = embedded_types
+                .get(name)
+                .into_iter()
+                .flatten()
+                .filter(|target| own_fields.contains_key(*target))
+                .collect();
+            if !local_embeds
+                .iter()
+                .all(|target| resolved.contains_key(*target))
+            {
+                continue;
+            }
+
+            let mut fields = own_fields.get(name).cloned().unwrap_or_default();
+            for target in local_embeds {
+                if let Some(target_fields) = resolved.get(target) {
+                    fields.extend(target_fields.iter().cloned());
+                }
+            }
+            fields.sort();
+            fields.dedup();
+            fields.truncate(256);
+            resolved.insert(name.clone(), fields);
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Unknown or cyclic embeddings preserve only the struct's own static fields.
+    for name in names {
+        if resolved.contains_key(&name) {
+            continue;
+        }
+        let mut fields = own_fields.remove(&name).unwrap_or_default();
+        fields.sort();
+        fields.dedup();
+        fields.truncate(256);
+        resolved.insert(name, fields);
+    }
+
+    resolved
 }
 
+fn go_json_untagged_embedded_types(raw: &str) -> Vec<String> {
+    let Some(open) = raw.find('{') else {
+        return Vec::new();
+    };
+    let Some(close) = raw.rfind('}') else {
+        return Vec::new();
+    };
+    if close <= open {
+        return Vec::new();
+    }
+
+    let mut embedded = Vec::new();
+    for line in raw[open + 1..close].lines() {
+        let line = line.split("//").next().unwrap_or("").trim();
+        if line.is_empty() || line.starts_with('}') || line.contains(char::from(96)) {
+            continue;
+        }
+
+        let declaration = line.trim_end_matches(',').trim();
+        if declaration.chars().any(char::is_whitespace) {
+            continue;
+        }
+        let candidate = declaration.trim_start_matches('*').trim();
+        if !is_identifier(candidate)
+            || !candidate
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_uppercase())
+        {
+            continue;
+        }
+        embedded.push(candidate.to_string());
+    }
+    embedded.sort();
+    embedded.dedup();
+    embedded
+}
 fn go_struct_tag_fields(raw: &str, tag_name: &str) -> Vec<String> {
     let mut fields = Vec::new();
     let Some(open) = raw.find('{') else {
@@ -5963,6 +6063,127 @@ Route::post('/login', [AuthController::class, 'login']);
             route.framework == "laravel"
                 && route.http_method == "POST"
                 && route.path_template == "/login"
+        }));
+    }
+
+    #[test]
+    fn promotes_only_local_untagged_go_embedded_json_struct_fields() {
+        let source = r#"
+package main
+
+import "github.com/gin-gonic/gin"
+
+type Audit struct {
+    TraceID string `json:"traceId"`
+    Actor string `json:"actor"`
+}
+
+type Profile struct {
+    DisplayName string `json:"displayName"`
+}
+
+type CreateUser struct {
+    Email string `json:"email"`
+    Audit
+    *Profile
+}
+
+type TaggedEmbed struct {
+    Own string `json:"own"`
+    Audit `json:"audit"`
+}
+
+type UnknownEmbed struct {
+    Own string `json:"own"`
+    ImportedPayload
+}
+
+type CycleA struct {
+    A string `json:"a"`
+    CycleB
+}
+
+type CycleB struct {
+    B string `json:"b"`
+    CycleA
+}
+
+func create(c *gin.Context) {
+    var payload CreateUser
+    _ = c.ShouldBindJSON(&payload)
+}
+
+func tagged(c *gin.Context) {
+    var payload TaggedEmbed
+    _ = c.ShouldBindJSON(&payload)
+}
+
+func unknown(c *gin.Context) {
+    var payload UnknownEmbed
+    _ = c.ShouldBindJSON(&payload)
+}
+
+func cyclic(c *gin.Context) {
+    var payload CycleA
+    _ = c.ShouldBindJSON(&payload)
+}
+
+func routes(r *gin.Engine) {
+    r.POST("/users", create)
+    r.PUT("/tagged", tagged)
+    r.PATCH("/unknown", unknown)
+    r.POST("/cycle", cyclic)
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_go::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes("Go", "main.go", source, tree.root_node());
+
+        let create = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/users")
+            .expect("create route");
+        for field in ["email", "traceId", "actor", "displayName"] {
+            assert!(create.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        for wrapper in ["Audit", "Profile"] {
+            assert!(!create.parameters.iter().any(|parameter| parameter.name == wrapper));
+        }
+
+        let tagged = routes
+            .iter()
+            .find(|route| route.http_method == "PUT" && route.path_template == "/tagged")
+            .expect("tagged route");
+        assert!(tagged.parameters.iter().any(|parameter| {
+            parameter.name == "own" && parameter.location == "json"
+        }));
+        for excluded in ["audit", "traceId", "actor"] {
+            assert!(!tagged.parameters.iter().any(|parameter| parameter.name == excluded));
+        }
+
+        let unknown = routes
+            .iter()
+            .find(|route| route.http_method == "PATCH" && route.path_template == "/unknown")
+            .expect("unknown route");
+        assert!(unknown.parameters.iter().any(|parameter| {
+            parameter.name == "own" && parameter.location == "json"
+        }));
+        assert!(!unknown.parameters.iter().any(|parameter| parameter.name == "ImportedPayload"));
+
+        let cycle = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/cycle")
+            .expect("cycle route");
+        assert!(cycle.parameters.iter().any(|parameter| {
+            parameter.name == "a" && parameter.location == "json"
+        }));
+        assert!(!cycle.parameters.iter().any(|parameter| {
+            parameter.name == "b" && parameter.location == "json"
         }));
     }
 
