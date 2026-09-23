@@ -1478,7 +1478,7 @@ fn to_usize(value: i64) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::BTreeMap, fs};
 
     use tempfile::tempdir;
 
@@ -1659,6 +1659,99 @@ mod tests {
         assert!(unsupported >= 1);
     }
 
+    #[test]
+    fn laravel_route_resolves_controller_inputs_across_files() {
+        let repository = tempdir().expect("repository");
+        fs::create_dir_all(repository.path().join("routes")).expect("routes dir");
+        fs::create_dir_all(
+            repository
+                .path()
+                .join("app/Http/Controllers"),
+        )
+        .expect("controllers dir");
+        fs::write(
+            repository.path().join("routes/api.php"),
+            r#"<?php
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\UserController;
+
+Route::prefix('api')->group(function () {
+    Route::post('/users', [UserController::class, 'store']);
+});
+"#,
+        )
+        .expect("routes source");
+        fs::write(
+            repository
+                .path()
+                .join("app/Http/Controllers/UserController.php"),
+            r#"<?php
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class UserController
+{
+    public function store(Request $request)
+    {
+        $email = $request->json('email');
+        $source = $request->query('source');
+        $tenant = $request->header('X-Tenant');
+    }
+}
+"#,
+        )
+        .expect("controller source");
+
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(repository.path())
+            .expect("index");
+
+        let resolved_imports: i64 = database
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM import_references
+                 WHERE project_id=?1
+                   AND raw_specifier='App\\Http\\Controllers\\UserController'
+                   AND resolution_state='resolved_local'",
+                [&summary.project_id],
+                |row| row.get(0),
+            )
+            .expect("resolved Laravel controller import");
+        assert_eq!(resolved_imports, 1);
+
+        let (handler_name, handler_file_id, locations_json, content_type): (
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+        ) = database
+            .connection()
+            .query_row(
+                "SELECT handler_name, handler_file_id, parameter_locations_json, request_content_type
+                 FROM source_routes
+                 WHERE project_id=?1
+                   AND framework='laravel'
+                   AND http_method='POST'
+                   AND path_template='/api/users'
+                   AND is_active=1",
+                [&summary.project_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("resolved Laravel source route");
+        assert_eq!(handler_name.as_deref(), Some("UserController.store"));
+        assert!(handler_file_id.is_some());
+        let locations: BTreeMap<String, String> =
+            serde_json::from_str(&locations_json).expect("parameter locations");
+        assert_eq!(locations.get("email").map(String::as_str), Some("json"));
+        assert_eq!(locations.get("source").map(String::as_str), Some("query"));
+        assert_eq!(
+            locations.get("X-Tenant").map(String::as_str),
+            Some("header")
+        );
+        assert_eq!(content_type.as_deref(), Some("application/json"));
+    }
     #[test]
     fn parse_errors_are_persisted_in_run_metrics() {
         let repository = tempdir().expect("repository");

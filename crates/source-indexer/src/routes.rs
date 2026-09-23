@@ -32,8 +32,8 @@ pub fn extract_routes(
             (routes, mounts, flask_inputs)
         }
         "PHP" => {
-            let (routes, mounts) = extract_laravel_routes(source, root);
-            (routes, mounts, Vec::new())
+            let (routes, mounts, handler_inputs) = extract_laravel_routes(source, root);
+            (routes, mounts, handler_inputs)
         }
         "Go" => {
             let (routes, mounts, handler_inputs) = extract_go_routes(source, root);
@@ -1186,7 +1186,12 @@ fn parse_flask_decorator(
 fn extract_laravel_routes(
     source: &str,
     root: Node<'_>,
-) -> (Vec<IndexedRoute>, Vec<IndexedRouteMount>) {
+) -> (
+    Vec<IndexedRoute>,
+    Vec<IndexedRouteMount>,
+    Vec<IndexedHandlerInput>,
+) {
+    let handler_inputs = laravel_handler_inputs(source, root);
     let mut routes = Vec::new();
     walk(root, &mut |node| {
         if !node.kind().contains("call") {
@@ -1214,25 +1219,30 @@ fn extract_laravel_routes(
             let Some(parameter) = laravel_resource_parameter(&base) else {
                 return;
             };
+            let controller = laravel_controller_class(value);
             let member = format!("{base}/{{{parameter}}}");
             let mut expanded = vec![
-                ("GET", base.clone()),
-                ("POST", base.clone()),
-                ("GET", member.clone()),
-                ("PUT", member.clone()),
-                ("PATCH", member.clone()),
-                ("DELETE", member.clone()),
+                ("GET", base.clone(), "index"),
+                ("POST", base.clone(), "store"),
+                ("GET", member.clone(), "show"),
+                ("PUT", member.clone(), "update"),
+                ("PATCH", member.clone(), "update"),
+                ("DELETE", member.clone(), "destroy"),
             ];
             if method == "resource" {
-                expanded.push(("GET", format!("{base}/create")));
-                expanded.push(("GET", format!("{member}/edit")));
+                expanded.push(("GET", format!("{base}/create"), "create"));
+                expanded.push(("GET", format!("{member}/edit"), "edit"));
             }
-            for (http_method, resource_path) in expanded {
+            for (http_method, resource_path, action) in expanded {
+                let handler_name = controller
+                    .as_deref()
+                    .map(|controller| format!("{controller}.{action}"));
                 push_laravel_indexed_route(
                     &mut routes,
                     http_method,
                     resource_path,
                     group_prefix.as_deref(),
+                    handler_name,
                     start.row + 1,
                     end.row + 1,
                 );
@@ -1249,11 +1259,12 @@ fn extract_laravel_routes(
             &method.to_ascii_uppercase(),
             full_path,
             group_prefix.as_deref(),
+            laravel_route_handler_reference(value),
             start.row + 1,
             end.row + 1,
         );
     });
-    (routes, Vec::new())
+    (routes, Vec::new(), handler_inputs)
 }
 
 fn push_laravel_indexed_route(
@@ -1261,6 +1272,7 @@ fn push_laravel_indexed_route(
     method: &str,
     path_template: String,
     router_prefix: Option<&str>,
+    handler_name: Option<String>,
     start_line: usize,
     end_line: usize,
 ) {
@@ -1272,7 +1284,7 @@ fn push_laravel_indexed_route(
         router_prefix: router_prefix.unwrap_or("").to_string(),
         http_method: method.to_ascii_uppercase(),
         path_template,
-        handler_name: None,
+        handler_name,
         parameters,
         request_content_type: None,
         start_line,
@@ -1280,6 +1292,187 @@ fn push_laravel_indexed_route(
     });
 }
 
+fn laravel_route_handler_reference(value: &str) -> Option<String> {
+    let controller = laravel_controller_class(value);
+    let quoted = quoted_strings(value);
+
+    if let Some(controller) = controller {
+        let action = quoted
+            .iter()
+            .skip(1)
+            .find(|candidate| is_identifier(candidate))
+            .cloned()
+            .unwrap_or_else(|| "__invoke".to_string());
+        return Some(format!("{controller}.{action}"));
+    }
+
+    for candidate in quoted.iter().skip(1) {
+        if let Some((controller, action)) = candidate.split_once('@') {
+            let controller = controller
+                .rsplit(['\\', '/'])
+                .next()
+                .unwrap_or(controller)
+                .trim();
+            let action = action.trim();
+            if is_identifier(controller) && is_identifier(action) {
+                return Some(format!("{controller}.{action}"));
+            }
+        }
+    }
+    None
+}
+
+fn laravel_controller_class(value: &str) -> Option<String> {
+    let index = value.rfind("::class")?;
+    let before = value[..index].trim_end();
+    let start = before
+        .char_indices()
+        .rev()
+        .find(|(_, character)| !(*character == '_' || character.is_ascii_alphanumeric()))
+        .map(|(index, character)| index + character.len_utf8())
+        .unwrap_or(0);
+    let controller = before[start..].trim();
+    if is_identifier(controller) && controller != "Route" {
+        Some(controller.to_string())
+    } else {
+        None
+    }
+}
+
+fn laravel_handler_inputs(source: &str, root: Node<'_>) -> Vec<IndexedHandlerInput> {
+    let mut output = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "method_declaration" {
+            return;
+        }
+        let Some(name) = node
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(str::trim)
+        else {
+            return;
+        };
+        if !is_identifier(name) {
+            return;
+        }
+        let Some(method_text) = text(source, node) else {
+            return;
+        };
+        let mut parameters = laravel_request_parameters(method_text);
+        normalize_parameters(&mut parameters);
+        if parameters.is_empty() {
+            return;
+        }
+        let start = node.start_position();
+        let end = node.end_position();
+        output.push(IndexedHandlerInput {
+            handler_name: name.to_string(),
+            parameters,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    });
+    output
+}
+
+fn laravel_request_parameters(method_text: &str) -> Vec<IndexedRouteParameter> {
+    let request_variables = laravel_request_variables(method_text);
+    let mut parameters = Vec::new();
+    for variable in request_variables {
+        for (method, location) in [
+            ("query", "query"),
+            ("header", "header"),
+            ("cookie", "cookie"),
+            ("json", "json"),
+            ("post", "form"),
+            ("route", "path"),
+        ] {
+            let marker = format!("${variable}->{method}(");
+            for name in marker_quoted_arguments(method_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, location));
+                }
+            }
+        }
+        let json_bag = format!("${variable}->json()->get(");
+        for name in marker_quoted_arguments(method_text, &json_bag) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, "json"));
+            }
+        }
+    }
+
+    for (method, location) in [
+        ("query", "query"),
+        ("header", "header"),
+        ("cookie", "cookie"),
+        ("json", "json"),
+        ("post", "form"),
+        ("route", "path"),
+    ] {
+        let marker = format!("request()->{method}(");
+        for name in marker_quoted_arguments(method_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, location));
+            }
+        }
+    }
+    parameters
+}
+
+fn laravel_request_variables(method_text: &str) -> Vec<String> {
+    let Some(function_index) = method_text.find("function") else {
+        return Vec::new();
+    };
+    let Some(relative_open) = method_text[function_index..].find('(') else {
+        return Vec::new();
+    };
+    let open = function_index + relative_open;
+    let mut depth = 0usize;
+    let mut close = None;
+    for (offset, character) in method_text[open..].char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    close = Some(open + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close else {
+        return Vec::new();
+    };
+
+    let mut variables = Vec::new();
+    for parameter in method_text[open + 1..close].split(',') {
+        let parameter = parameter.trim();
+        let Some(dollar) = parameter.rfind('$') else {
+            continue;
+        };
+        let variable = parameter[dollar + 1..]
+            .split(|character: char| !(character == '_' || character.is_ascii_alphanumeric()))
+            .next()
+            .unwrap_or("")
+            .trim();
+        if !is_identifier(variable) {
+            continue;
+        }
+        let type_text = parameter[..dollar].trim();
+        let request_typed = type_text
+            .split(|character: char| !(character == '_' || character.is_ascii_alphanumeric()))
+            .any(|token| token == "Request" || token.ends_with("Request"));
+        if variable == "request" || request_typed {
+            variables.push(variable.to_string());
+        }
+    }
+    variables.sort();
+    variables.dedup();
+    variables
+}
 fn laravel_resource_parameter(path: &str) -> Option<String> {
     let segment = path
         .trim_matches('/')
@@ -3345,6 +3538,88 @@ app.register_blueprint(api, url_prefix = "/api")
     }
 
     #[test]
+    fn extracts_laravel_controller_request_inputs() {
+        let source = r#"<?php
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class UserController
+{
+    public function store(Request $request)
+    {
+        $email = $request->json('email');
+        $timezone = $request->json()->get('timezone');
+        $source = $request->query('source');
+        $tenant = $request->header('X-Tenant');
+        $session = $request->cookie('session');
+        $csrf = $request->post('csrf');
+    }
+
+    public function show($id)
+    {
+        $expand = request()->query('expand');
+    }
+
+    public function update(UpdateUserRequest $req)
+    {
+        $email = $req->json('email');
+        $routeId = $req->route('user');
+        $ambiguous = $req->input('ignored');
+    }
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _mounts, handler_inputs) = extract_routes(
+            "PHP",
+            "app/Http/Controllers/UserController.php",
+            source,
+            tree.root_node(),
+        );
+        assert!(routes.is_empty());
+
+        let store = handler_inputs
+            .iter()
+            .find(|input| input.handler_name == "store")
+            .expect("store handler inputs");
+        for (name, location) in [
+            ("email", "json"),
+            ("timezone", "json"),
+            ("source", "query"),
+            ("X-Tenant", "header"),
+            ("session", "cookie"),
+            ("csrf", "form"),
+        ] {
+            assert!(store.parameters.iter().any(|parameter| {
+                parameter.name == name && parameter.location == location
+            }));
+        }
+
+        let show = handler_inputs
+            .iter()
+            .find(|input| input.handler_name == "show")
+            .expect("show handler inputs");
+        assert!(show.parameters.iter().any(|parameter| {
+            parameter.name == "expand" && parameter.location == "query"
+        }));
+
+        let update = handler_inputs
+            .iter()
+            .find(|input| input.handler_name == "update")
+            .expect("update handler inputs");
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "email" && parameter.location == "json"
+        }));
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "user" && parameter.location == "path"
+        }));
+        assert!(!update.parameters.iter().any(|parameter| parameter.name == "ignored"));
+    }
+    #[test]
     fn expands_laravel_resource_and_api_resource_routes() {
         let source = r#"<?php
 use Illuminate\Support\Facades\Route;
@@ -3395,6 +3670,22 @@ Route::prefix('api')->group(function () {
             route.path_template == "/api/categories/create"
                 || route.path_template == "/api/categories/{category}/edit"
         }));
+        let photo_store = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/api/photos")
+            .expect("photo store route");
+        assert_eq!(
+            photo_store.handler_name.as_deref(),
+            Some("PhotoController.store")
+        );
+        let photo_update = routes
+            .iter()
+            .find(|route| route.http_method == "PATCH" && route.path_template == "/api/photos/{photo}")
+            .expect("photo update route");
+        assert_eq!(
+            photo_update.handler_name.as_deref(),
+            Some("PhotoController.update")
+        );
     }
 
     #[test]
@@ -3484,6 +3775,7 @@ Route::post('/login', [AuthController::class, 'login']);
             .parameters
             .iter()
             .any(|parameter| parameter.name == "id" && parameter.location == "path"));
+        assert_eq!(user.handler_name.as_deref(), Some("UserController.show"));
         assert!(routes.iter().any(|route| {
             route.framework == "laravel"
                 && route.http_method == "POST"

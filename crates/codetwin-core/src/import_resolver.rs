@@ -50,6 +50,16 @@ pub fn resolve_import(
             };
             python_resolution_candidates(&base)
         }
+        "PHP" => {
+            let candidates = php_resolution_candidates(specifier);
+            if candidates.is_empty() {
+                return ResolvedImport {
+                    state: ImportResolutionState::External,
+                    target_file_id: None,
+                };
+            }
+            candidates
+        }
         _ => {
             return ResolvedImport {
                 state: ImportResolutionState::Unsupported,
@@ -108,6 +118,32 @@ fn javascript_resolution_candidates(base: &str) -> Vec<String> {
     candidates
 }
 
+fn php_resolution_candidates(specifier: &str) -> Vec<String> {
+    let raw = specifier
+        .split_once(" as ")
+        .map(|(qualified, _)| qualified)
+        .unwrap_or(specifier)
+        .trim()
+        .trim_start_matches('\\');
+    if raw.is_empty() || raw.contains('{') || raw.contains('}') || raw.contains(',') {
+        return Vec::new();
+    }
+    let namespace_path = raw.replace('\\', "/");
+    if namespace_path.is_empty() {
+        return Vec::new();
+    }
+
+    let mut candidates = vec![format!("{namespace_path}.php")];
+    if let Some(rest) = namespace_path.strip_prefix("App/") {
+        candidates.push(format!("app/{rest}.php"));
+    }
+    if let Some(rest) = namespace_path.strip_prefix("Tests/") {
+        candidates.push(format!("tests/{rest}.php"));
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
 fn python_relative_import_base(
     source_relative_path: &str,
     specifier: &str,
@@ -218,6 +254,49 @@ mod tests {
         assert_eq!(package.target_file_id.as_deref(), Some("routes-package"));
     }
 
+    #[test]
+    fn resolves_laravel_app_namespace_and_aliases() {
+        let available = BTreeMap::from([
+            (
+                "app/Http/Controllers/UserController.php".to_string(),
+                "user-controller".to_string(),
+            ),
+            (
+                "tests/Feature/UserTest.php".to_string(),
+                "user-test".to_string(),
+            ),
+        ]);
+
+        let controller = resolve_import(
+            "routes/api.php",
+            "PHP",
+            r"App\Http\Controllers\UserController",
+            &available,
+            false,
+        );
+        assert_eq!(controller.state, ImportResolutionState::ResolvedLocal);
+        assert_eq!(controller.target_file_id.as_deref(), Some("user-controller"));
+
+        let aliased = resolve_import(
+            "routes/api.php",
+            "PHP",
+            r"App\Http\Controllers\UserController as Users",
+            &available,
+            false,
+        );
+        assert_eq!(aliased.state, ImportResolutionState::ResolvedLocal);
+        assert_eq!(aliased.target_file_id.as_deref(), Some("user-controller"));
+
+        let test = resolve_import(
+            "routes/api.php",
+            "PHP",
+            r"Tests\Feature\UserTest",
+            &available,
+            false,
+        );
+        assert_eq!(test.state, ImportResolutionState::ResolvedLocal);
+        assert_eq!(test.target_file_id.as_deref(), Some("user-test"));
+    }
     #[test]
     fn distinguishes_external_unresolved_and_unsupported() {
         let available = BTreeMap::new();
