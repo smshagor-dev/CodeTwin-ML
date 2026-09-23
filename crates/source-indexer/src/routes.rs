@@ -1216,7 +1216,7 @@ fn extract_laravel_routes(
 
         if matches!(method.as_str(), "resource" | "apiresource") {
             let base = combine_paths(group_prefix.as_deref(), &path);
-            let Some(parameter) = laravel_resource_parameter(&base) else {
+            let Some(parameter) = laravel_effective_resource_parameter(value, &base) else {
                 return;
             };
             let controller = laravel_controller_class(value);
@@ -1624,6 +1624,77 @@ fn laravel_request_variables(method_text: &str) -> Vec<String> {
     variables.dedup();
     variables
 }
+fn laravel_effective_resource_parameter(
+    call_text: &str,
+    path: &str,
+) -> Option<String> {
+    let default = laravel_resource_parameter(path)?;
+    if !call_text.contains("->parameters(") {
+        return Some(default);
+    }
+
+    let mappings = laravel_static_resource_parameter_map(call_text)?;
+    let resource = path
+        .trim_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .trim();
+    if resource.is_empty() {
+        return None;
+    }
+    Some(
+        mappings
+            .get(resource)
+            .cloned()
+            .unwrap_or(default),
+    )
+}
+
+fn laravel_static_resource_parameter_map(
+    call_text: &str,
+) -> Option<BTreeMap<String, String>> {
+    let marker = "->parameters(";
+    let index = call_text.find(marker)?;
+    let tail = &call_text[index + marker.len()..];
+    let open = tail.find('[')?;
+    let content = &tail[open + 1..];
+    let close = content.find(']')?;
+    let content = &content[..close];
+
+    let mut mappings = BTreeMap::new();
+    for item in content.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let (key, value) = item.split_once("=>")?;
+        let key = php_exact_quoted_string(key.trim())?;
+        let value = php_exact_quoted_string(value.trim())?;
+        if key.is_empty() || !is_identifier(&value) {
+            return None;
+        }
+        mappings.insert(key, value);
+    }
+    Some(mappings)
+}
+
+fn php_exact_quoted_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.len() < 2 {
+        return None;
+    }
+    let quote = value.chars().next()?;
+    if !matches!(quote, '\'' | '"') || !value.ends_with(quote) {
+        return None;
+    }
+    let inner = &value[quote.len_utf8()..value.len() - quote.len_utf8()];
+    if inner.contains(quote) {
+        return None;
+    }
+    Some(inner.to_string())
+}
+
 fn laravel_resource_parameter(path: &str) -> Option<String> {
     let segment = path
         .trim_matches('/')
@@ -3815,6 +3886,65 @@ class UserController
         }));
         assert!(!update.parameters.iter().any(|parameter| parameter.name == "ignored"));
     }
+    #[test]
+    fn applies_static_laravel_resource_parameter_overrides() {
+        let source = r#"<?php
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\PersonController;
+
+Route::apiResource('/people', PersonController::class)
+    ->parameters(['people' => 'member']);
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("PHP", "routes/api.php", source, tree.root_node());
+
+        assert!(routes.iter().any(|route| {
+            route.framework == "laravel"
+                && route.http_method == "GET"
+                && route.path_template == "/people/{member}"
+                && route
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "member" && parameter.location == "path")
+        }));
+        assert!(routes.iter().any(|route| {
+            route.framework == "laravel"
+                && route.http_method == "PATCH"
+                && route.path_template == "/people/{member}"
+        }));
+        assert!(!routes
+            .iter()
+            .any(|route| route.path_template == "/people/{person}"));
+    }
+
+    #[test]
+    fn skips_laravel_resource_expansion_when_parameter_override_is_dynamic() {
+        let source = r#"<?php
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\PersonController;
+
+Route::resource('/people', PersonController::class)
+    ->parameters($resourceParameters);
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("PHP", "routes/web.php", source, tree.root_node());
+
+        assert!(!routes.iter().any(|route| {
+            route.framework == "laravel"
+                && route.path_template.starts_with("/people")
+        }));
+    }
+
     #[test]
     fn expands_laravel_resource_and_api_resource_routes() {
         let source = r#"<?php
