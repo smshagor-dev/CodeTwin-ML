@@ -63,7 +63,7 @@ pub fn single_parameter_location<'a>(
     (values.len() == 1).then(|| values[0].as_str())
 }
 
-fn deserialize_parameter_locations<'de, D>(
+pub(crate) fn deserialize_parameter_locations<'de, D>(
     deserializer: D,
 ) -> Result<ParameterLocations, D::Error>
 where
