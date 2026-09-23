@@ -622,6 +622,9 @@ fn typescript_type_alias_parents(type_value: &str) -> Option<Vec<String>> {
     if type_value.starts_with('{') && type_value.ends_with('}') {
         return Some(Vec::new());
     }
+    if is_identifier(type_value) {
+        return Some(vec![type_value.to_string()]);
+    }
 
     let parts = typescript_top_level_type_parts(type_value, '&')?;
     if parts.len() < 2 {
@@ -5318,6 +5321,86 @@ export async function GET() {
                 })
         }));
     }
+    #[test]
+    fn resolves_local_typescript_type_alias_chains_conservatively() {
+        let source = r#"
+interface BaseUser {
+  email: string;
+  profile: {
+    displayName: string;
+  };
+}
+
+type UserPayload = BaseUser;
+type CreateUser = UserPayload;
+type DeepCreateUser = CreateUser;
+
+type UnknownAlias = ImportedPayload;
+type CycleA = CycleB;
+type CycleB = CycleA;
+type GenericAlias = Record<string, string>;
+type UnionAlias = BaseUser | { phone: string };
+
+export async function POST(request: Request) {
+  const payload: DeepCreateUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function PUT(request: Request) {
+  const payload: UnknownAlias = await request.json();
+  return Response.json(payload);
+}
+
+export async function PATCH(request: Request) {
+  const payload: CycleA = await request.json();
+  return Response.json(payload);
+}
+
+export async function DELETE(request: Request) {
+  const payload: GenericAlias = await request.json();
+  return Response.json(payload);
+}
+
+export async function OPTIONS(request: Request) {
+  const payload: UnionAlias = await request.json();
+  return Response.json(payload);
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes(
+            "TypeScript",
+            "src/app/users/route.ts",
+            source,
+            tree.root_node(),
+        );
+
+        let post = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "POST")
+            .expect("POST route");
+        for field in ["email", "profile"] {
+            assert!(post.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert!(!post.parameters.iter().any(|parameter| parameter.name == "displayName"));
+
+        for method in ["PUT", "PATCH", "DELETE", "OPTIONS"] {
+            let route = routes
+                .iter()
+                .find(|route| route.framework == "nextjs" && route.http_method == method)
+                .expect("conservative route");
+            assert!(!route.parameters.iter().any(|parameter| {
+                parameter.location == "json"
+                    && matches!(parameter.name.as_str(), "email" | "profile" | "displayName")
+            }));
+        }
+    }
+
     #[test]
     fn resolves_local_typescript_intersection_models_conservatively() {
         let source = r#"
