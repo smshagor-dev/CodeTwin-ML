@@ -3761,7 +3761,10 @@ fn keyword_direct_python_bool(value: &str, keyword: &str) -> Option<bool> {
     }
 }
 
-fn pydantic_field_input_aliases(line: &str) -> Option<Vec<String>> {
+fn pydantic_field_input_aliases(
+    line: &str,
+    local_aliases: &BTreeMap<String, Vec<String>>,
+) -> Option<Vec<String>> {
     if !line.contains("Field(") {
         return None;
     }
@@ -3779,6 +3782,11 @@ fn pydantic_field_input_aliases(line: &str) -> Option<Vec<String>> {
                     .into_iter()
                     .collect(),
             );
+        }
+        if let Some(identifier) = keyword_direct_identifier(line, "validation_alias") {
+            if let Some(aliases) = local_aliases.get(&identifier) {
+                return Some(aliases.clone());
+            }
         }
         // An explicit but non-static validation_alias is authoritative. Do not
         // fall back to alias/generator/field-name guesses.
@@ -3874,6 +3882,61 @@ fn keyword_direct_identifier(value: &str, keyword: &str) -> Option<String> {
     }
 }
 
+fn pydantic_local_alias_constants(
+    source: &str,
+    root: Node<'_>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut aliases = BTreeMap::new();
+    walk(root, &mut |node| {
+        if node.kind() != "assignment" || !python_assignment_is_module_level(node) {
+            return;
+        }
+        let Some(left) = node.child_by_field_name("left") else {
+            return;
+        };
+        let Some(right) = node.child_by_field_name("right") else {
+            return;
+        };
+        let Some(name) = text(source, left).map(str::trim) else {
+            return;
+        };
+        let Some(value) = text(source, right).map(str::trim) else {
+            return;
+        };
+        if !is_identifier(name) {
+            return;
+        }
+
+        let resolved = if value.starts_with("AliasChoices(") {
+            pydantic_static_alias_choices(value)
+        } else if value.starts_with("AliasPath(") {
+            pydantic_static_single_alias_path(value).map(|alias| vec![alias])
+        } else {
+            None
+        };
+        if let Some(mut resolved) = resolved {
+            resolved.sort();
+            resolved.dedup();
+            if !resolved.is_empty() {
+                aliases.insert(name.to_string(), resolved);
+            }
+        }
+    });
+    aliases
+}
+
+fn python_assignment_is_module_level(node: Node<'_>) -> bool {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "function_definition" | "class_definition" | "lambda" => return false,
+            "module" => return true,
+            _ => current = parent,
+        }
+    }
+    false
+}
+
 fn pydantic_known_alias_generator(source: &str, class_text: &str) -> Option<String> {
     if !source.contains("pydantic.alias_generators") || !class_text.contains("ConfigDict(") {
         return None;
@@ -3913,6 +3976,7 @@ fn pydantic_apply_alias_generator(field: &str, generator: &str) -> Option<String
 }
 
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
+    let local_aliases = pydantic_local_alias_constants(source, root);
     let mut models = BTreeMap::new();
     walk(root, &mut |node| {
         if node.kind() != "class_definition" {
@@ -3948,7 +4012,7 @@ fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<S
             };
             let candidate = candidate.trim();
             if is_identifier(candidate) && !candidate.starts_with('_') {
-                match pydantic_field_input_aliases(trimmed) {
+                match pydantic_field_input_aliases(trimmed, &local_aliases) {
                     Some(aliases) => fields.extend(aliases),
                     None => fields.push(
                         alias_generator
@@ -6590,6 +6654,9 @@ from pydantic import AliasChoices, AliasPath, BaseModel, Field
 
 app = FastAPI()
 ALIASES = ("legacy", "current")
+LOCAL_CHOICES = AliasChoices("username", "emailAddress")
+LOCAL_PATH = AliasPath("externalId")
+DYNAMIC_CONST = AliasChoices(*ALIASES)
 
 class CreateUser(BaseModel):
     display_name: str = Field(alias="displayName")
@@ -6598,6 +6665,9 @@ class CreateUser(BaseModel):
     dynamic_choice: str = Field(validation_alias=AliasChoices(*ALIASES))
     single_path: str = Field(validation_alias=AliasPath("singleKey"))
     nested_path: str = Field(validation_alias=AliasPath("user", "email"))
+    local_choices: str = Field(validation_alias=LOCAL_CHOICES)
+    local_path: str = Field(validation_alias=LOCAL_PATH)
+    local_dynamic: str = Field(validation_alias=DYNAMIC_CONST)
 
 @app.post("/users")
 async def create_user(
@@ -6626,12 +6696,22 @@ async def create_user(
                 parameter.name == field && parameter.location == "json"
             }));
         }
-        for field in ["first", "second", "singleKey"] {
+        for field in ["first", "second", "singleKey", "username", "emailAddress", "externalId"] {
             assert!(route.parameters.iter().any(|parameter| {
                 parameter.name == field && parameter.location == "json"
             }));
         }
-        for field in ["ignored_choice", "dynamic_choice", "single_path", "nested_path", "user", "email"] {
+        for field in [
+            "ignored_choice",
+            "dynamic_choice",
+            "single_path",
+            "nested_path",
+            "local_choices",
+            "local_path",
+            "local_dynamic",
+            "user",
+            "email",
+        ] {
             assert!(!route.parameters.iter().any(|parameter| parameter.name == field));
         }
         assert!(route.parameters.iter().any(|parameter| {
