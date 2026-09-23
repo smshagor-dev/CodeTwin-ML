@@ -804,9 +804,9 @@ mod source_seed_tests {
             "email".to_string(),
         ];
         let locations = BTreeMap::from([
-            ("tenant".to_string(), "path".to_string()),
-            ("next".to_string(), "query".to_string()),
-            ("email".to_string(), "json".to_string()),
+            ("tenant".to_string(), vec!["path".to_string()]),
+            ("next".to_string(), vec!["query".to_string()]),
+            ("email".to_string(), vec!["json".to_string()]),
         ]);
         let seed = source_endpoint_seed(
             "https://example.test/root",
@@ -825,12 +825,18 @@ mod source_seed_tests {
         let discovery = seed.discovery_url.as_deref().expect("discovery url");
         assert!(discovery.starts_with("https://example.test/root/api/login/codetwin-test"));
         assert!(discovery.contains("next=codetwin-test"));
-        assert_eq!(seed.parameter_locations.get("email").map(String::as_str), Some("json"));
+        assert_eq!(
+            seed.parameter_locations
+                .get("email")
+                .and_then(|values| values.first())
+                .map(String::as_str),
+            Some("json")
+        );
     }
 
     #[test]
     fn materializes_typed_source_routes_with_constraint_compatible_values() {
-        let locations = BTreeMap::from([("id".to_string(), "path".to_string())]);
+        let locations = BTreeMap::from([("id".to_string(), vec!["path".to_string()])]);
 
         let fastapi = source_endpoint_seed(
             "https://example.test",
@@ -880,7 +886,7 @@ mod source_seed_tests {
 
     #[test]
     fn materializes_optional_laravel_parameters() {
-        let locations = BTreeMap::from([("id".to_string(), "path".to_string())]);
+        let locations = BTreeMap::from([("id".to_string(), vec!["path".to_string()])]);
         let seed = source_endpoint_seed(
             "https://example.test",
             "GET",
@@ -934,7 +940,7 @@ mod source_seed_tests {
 
     #[test]
     fn preserves_trailing_slash_when_materializing_live_route_seed() {
-        let locations = BTreeMap::from([("id".to_string(), "path".to_string())]);
+        let locations = BTreeMap::from([("id".to_string(), vec!["path".to_string()])]);
         let seed = source_endpoint_seed(
             "https://example.test",
             "GET",
@@ -954,7 +960,7 @@ mod source_seed_tests {
     #[test]
     fn preserves_deployment_base_path_without_double_prefix() {
         let parameters = vec!["id".to_string()];
-        let locations = BTreeMap::from([("id".to_string(), "path".to_string())]);
+        let locations = BTreeMap::from([("id".to_string(), vec!["path".to_string()])]);
 
         let prefixed = source_endpoint_seed(
             "https://example.test/app",
