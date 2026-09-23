@@ -6654,6 +6654,9 @@ from pydantic import AliasChoices, AliasPath, BaseModel, Field
 
 app = FastAPI()
 ALIASES = ("legacy", "current")
+LOCAL_CHOICES = AliasChoices("username", "emailAddress")
+LOCAL_PATH = AliasPath("externalId")
+DYNAMIC_CONST = AliasChoices(*ALIASES)
 
 class CreateUser(BaseModel):
     display_name: str = Field(alias="displayName")
@@ -6662,6 +6665,9 @@ class CreateUser(BaseModel):
     dynamic_choice: str = Field(validation_alias=AliasChoices(*ALIASES))
     single_path: str = Field(validation_alias=AliasPath("singleKey"))
     nested_path: str = Field(validation_alias=AliasPath("user", "email"))
+    local_choices: str = Field(validation_alias=LOCAL_CHOICES)
+    local_path: str = Field(validation_alias=LOCAL_PATH)
+    local_dynamic: str = Field(validation_alias=DYNAMIC_CONST)
 
 @app.post("/users")
 async def create_user(
@@ -6690,12 +6696,22 @@ async def create_user(
                 parameter.name == field && parameter.location == "json"
             }));
         }
-        for field in ["first", "second", "singleKey"] {
+        for field in ["first", "second", "singleKey", "username", "emailAddress", "externalId"] {
             assert!(route.parameters.iter().any(|parameter| {
                 parameter.name == field && parameter.location == "json"
             }));
         }
-        for field in ["ignored_choice", "dynamic_choice", "single_path", "nested_path", "user", "email"] {
+        for field in [
+            "ignored_choice",
+            "dynamic_choice",
+            "single_path",
+            "nested_path",
+            "local_choices",
+            "local_path",
+            "local_dynamic",
+            "user",
+            "email",
+        ] {
             assert!(!route.parameters.iter().any(|parameter| parameter.name == field));
         }
         assert!(route.parameters.iter().any(|parameter| {
