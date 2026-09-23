@@ -4477,6 +4477,95 @@ export async function GET() {
         }));
     }
     #[test]
+    fn resolves_local_typescript_interface_inheritance_without_promoting_nested_fields() {
+        let source = r#"
+interface BaseUser {
+  email: string;
+  profile: {
+    displayName: string;
+    timezone: string;
+  };
+}
+
+interface Audited {
+  auditId: string;
+}
+
+interface AdminUser extends BaseUser, Audited {
+  role: string;
+}
+
+interface UnknownParentUser extends ImportedUser {
+  localOnly: string;
+}
+
+interface CycleA extends CycleB {
+  a: string;
+}
+
+interface CycleB extends CycleA {
+  b: string;
+}
+
+export async function POST(request: Request) {
+  const payload: AdminUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function PUT(request: Request) {
+  const payload: UnknownParentUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function PATCH(request: Request) {
+  const payload: CycleA = await request.json();
+  return Response.json(payload);
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes(
+            "TypeScript",
+            "src/app/admin/route.ts",
+            source,
+            tree.root_node(),
+        );
+
+        let post = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "POST")
+            .expect("POST route");
+        for field in ["email", "profile", "auditId", "role"] {
+            assert!(post.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        for nested in ["displayName", "timezone"] {
+            assert!(!post.parameters.iter().any(|parameter| parameter.name == nested));
+        }
+
+        let put = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PUT")
+            .expect("PUT route");
+        assert!(!put.parameters.iter().any(|parameter| {
+            matches!(parameter.name.as_str(), "localOnly" | "email")
+                && parameter.location == "json"
+        }));
+
+        let patch = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PATCH")
+            .expect("PATCH route");
+        assert!(!patch.parameters.iter().any(|parameter| {
+            matches!(parameter.name.as_str(), "a" | "b") && parameter.location == "json"
+        }));
+    }
+
+    #[test]
     fn maps_explicit_typescript_json_body_models_without_guessing_complex_types() {
         let source = r#"
 interface CreateUser {
