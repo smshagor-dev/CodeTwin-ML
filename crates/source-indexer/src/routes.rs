@@ -3560,7 +3560,7 @@ fn rust_struct_flatten_types(raw: &str) -> Vec<String> {
             if line.ends_with(']') {
                 flatten_next =
                     rust_serde_has_flag(attribute, "flatten")
-                        && !rust_serde_has_flag(attribute, "skip");
+                        && !rust_serde_skips_deserialization(attribute);
                 serde_attribute = None;
             }
             continue;
@@ -3570,7 +3570,7 @@ fn rust_struct_flatten_types(raw: &str) -> Vec<String> {
             if line.ends_with(']') {
                 flatten_next =
                     rust_serde_has_flag(line, "flatten")
-                        && !rust_serde_has_flag(line, "skip");
+                        && !rust_serde_skips_deserialization(line);
             } else {
                 serde_attribute = Some(line.to_string());
             }
@@ -3750,13 +3750,18 @@ fn rust_apply_field_serde_attribute(
     pending_aliases: &mut Vec<String>,
     skip_next: &mut bool,
 ) {
-    if rust_serde_has_flag(attribute, "skip") || rust_serde_has_flag(attribute, "flatten") {
+    if rust_serde_skips_deserialization(attribute) || rust_serde_has_flag(attribute, "flatten") {
         *skip_next = true;
     }
     if let Some(rename) = rust_serde_rename(attribute) {
         *pending_rename = Some(rename);
     }
     pending_aliases.extend(rust_serde_aliases(attribute));
+}
+
+fn rust_serde_skips_deserialization(attribute: &str) -> bool {
+    rust_serde_has_flag(attribute, "skip")
+        || rust_serde_has_flag(attribute, "skip_deserializing")
 }
 
 fn rust_serde_has_flag(attribute: &str, flag: &str) -> bool {
@@ -6981,6 +6986,10 @@ struct CreateUser {
     dynamic_name: String,
     #[serde(skip, alias = "ignoredAlias")]
     internal_note: String,
+    #[serde(skip_deserializing, alias = "ignoredDeserializeAlias")]
+    incoming_blocked: String,
+    #[serde(skip_serializing, alias = "acceptedInputAlias")]
+    write_only: String,
     #[serde(
         alias = "legacyTraceId",
         alias = "trace"
@@ -7015,6 +7024,8 @@ fn app() -> Router {
             "email",
             "legacy_email",
             "dynamicName",
+            "writeOnly",
+            "acceptedInputAlias",
             "traceId",
             "legacyTraceId",
             "trace",
@@ -7030,6 +7041,8 @@ fn app() -> Router {
             "runtimeAlias",
             "ignoredAlias",
             "internalNote",
+            "incomingBlocked",
+            "ignoredDeserializeAlias",
             "trace_id",
         ] {
             assert!(!route.parameters.iter().any(|parameter| parameter.name == excluded));
