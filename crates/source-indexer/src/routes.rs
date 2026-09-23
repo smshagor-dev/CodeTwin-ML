@@ -6691,7 +6691,10 @@ class CreateUser(BaseModel):
 async def create_user(
     payload: CreateUser,
     search_term: str = Query("", alias="q"),
+    search_alt: str = Query("", validation_alias=LOCAL_CHOICES),
+    dynamic_param: str = Query("", validation_alias=DYNAMIC_CONST),
     x_tenant_id: str = Header(""),
+    client_header: str = Header("", validation_alias=LOCAL_PATH),
     raw_header: str = Header("", convert_underscores=False),
     session_cookie: str = Cookie("", alias="session-id"),
 ):
@@ -6735,8 +6738,24 @@ async def create_user(
         assert!(route.parameters.iter().any(|parameter| {
             parameter.name == "q" && parameter.location == "query"
         }));
+        for field in ["username", "emailAddress"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "query"
+            }));
+        }
+        assert!(!route.parameters.iter().any(|parameter| {
+            matches!(parameter.name.as_str(), "search_alt" | "dynamic_param")
+                && parameter.location == "query"
+        }));
         assert!(route.parameters.iter().any(|parameter| {
             parameter.name == "x-tenant-id" && parameter.location == "header"
+        }));
+        assert!(route.parameters.iter().any(|parameter| {
+            parameter.name == "externalId" && parameter.location == "header"
+        }));
+        assert!(!route.parameters.iter().any(|parameter| {
+            matches!(parameter.name.as_str(), "client_header" | "client-header")
+                && parameter.location == "header"
         }));
         assert!(route.parameters.iter().any(|parameter| {
             parameter.name == "raw_header" && parameter.location == "header"
