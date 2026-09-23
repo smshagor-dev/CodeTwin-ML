@@ -142,7 +142,10 @@ fn javascript_resolution_candidates(base: &str) -> Vec<String> {
     candidates
 }
 
-fn php_resolution_candidates(specifier: &str) -> Vec<String> {
+fn php_resolution_candidates(
+    specifier: &str,
+    php_psr4_roots: &[PhpPsr4Root],
+) -> Vec<String> {
     let raw = specifier
         .split_once(" as ")
         .map(|(qualified, _)| qualified)
@@ -152,22 +155,50 @@ fn php_resolution_candidates(specifier: &str) -> Vec<String> {
     if raw.is_empty() || raw.contains('{') || raw.contains('}') || raw.contains(',') {
         return Vec::new();
     }
+
+    let mut candidates = Vec::new();
+    for root in php_psr4_roots {
+        let prefix = root
+            .namespace_prefix
+            .trim()
+            .trim_start_matches('\\')
+            .trim_end_matches('\\');
+        if prefix.is_empty() {
+            continue;
+        }
+        let Some(rest) = raw
+            .strip_prefix(prefix)
+            .and_then(|tail| tail.strip_prefix('\\'))
+        else {
+            continue;
+        };
+        let directory = root.directory.replace('\\', "/");
+        let directory = directory.trim().trim_matches('/');
+        if directory.is_empty() {
+            continue;
+        }
+        let relative = rest.replace('\\', "/");
+        if relative.is_empty() {
+            continue;
+        }
+        candidates.push(format!("{directory}/{relative}.php"));
+    }
+
     let namespace_path = raw.replace('\\', "/");
     if namespace_path.is_empty() {
         return Vec::new();
     }
-
-    let mut candidates = vec![format!("{namespace_path}.php")];
+    candidates.push(format!("{namespace_path}.php"));
     if let Some(rest) = namespace_path.strip_prefix("App/") {
         candidates.push(format!("app/{rest}.php"));
     }
     if let Some(rest) = namespace_path.strip_prefix("Tests/") {
         candidates.push(format!("tests/{rest}.php"));
     }
-    candidates.sort();
     candidates.dedup();
     candidates
 }
+
 fn python_relative_import_base(
     source_relative_path: &str,
     specifier: &str,
