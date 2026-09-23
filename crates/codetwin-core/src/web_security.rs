@@ -1878,6 +1878,36 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_scan_cannot_be_revived_or_overwritten() {
+        let database = Database::open_in_memory().expect("database");
+        let store = AuthorizedWebSecurityStore::new(&database);
+        let scan = store.create_scan(&create()).expect("scan");
+        store
+            .update_progress(&scan.id, "running", "crawling", 2, 3, 0)
+            .expect("running");
+        store.cancel_scan(&scan.id).expect("cancel");
+
+        assert!(store
+            .update_progress(&scan.id, "completed", "completed", 9, 12, 4)
+            .is_err());
+        store
+            .fail_scan(&scan.id, "late persistence error")
+            .expect("late failure is ignored for terminal scan");
+
+        let persisted = store
+            .get_scan(&scan.id)
+            .expect("scan lookup")
+            .expect("scan exists");
+        assert_eq!(persisted.status, "cancelled");
+        assert_eq!(persisted.phase, "cancelled");
+        assert_eq!(persisted.endpoints_discovered, 2);
+        assert_eq!(persisted.requests_performed, 3);
+        assert_eq!(persisted.findings_count, 0);
+        assert!(persisted.cancelled_at.is_some());
+        assert!(persisted.last_error.is_none());
+    }
+
+    #[test]
     fn endpoint_filter_and_first_detection_history_are_persistent() {
         let database = Database::open_in_memory().expect("database");
         let store = AuthorizedWebSecurityStore::new(&database);
