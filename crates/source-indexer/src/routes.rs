@@ -996,6 +996,7 @@ fn extract_django_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
             routes.push(IndexedRoute {
                 framework: "django".to_string(),
                 router_name: "urlpatterns".to_string(),
+                router_prefix: String::new(),
                 http_method: method.clone(),
                 path_template: full_path.clone(),
                 handler_name: Some(handler_name.clone()),
