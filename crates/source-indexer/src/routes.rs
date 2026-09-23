@@ -513,7 +513,9 @@ fn typescript_object_models(
         root = parent;
     }
 
-    let mut models = BTreeMap::new();
+    let mut own_fields = BTreeMap::<String, Vec<String>>::new();
+    let mut parents = BTreeMap::<String, Vec<String>>::new();
+
     walk(root, &mut |node| {
         if !matches!(node.kind(), "interface_declaration" | "type_alias_declaration") {
             return;
@@ -532,11 +534,11 @@ fn typescript_object_models(
             return;
         };
 
-        if node.kind() == "interface_declaration" {
-            let header = raw.split('{').next().unwrap_or(raw);
-            if header.contains(" extends ") {
+        let parent_names = if node.kind() == "interface_declaration" {
+            let Some(parent_names) = typescript_interface_parents(raw) else {
                 return;
-            }
+            };
+            parent_names
         } else {
             let Some((_, type_value)) = raw.split_once('=') else {
                 return;
@@ -545,11 +547,14 @@ fn typescript_object_models(
             if !(type_value.starts_with('{') && type_value.ends_with('}')) {
                 return;
             }
-        }
+            Vec::new()
+        };
 
         let mut fields = Vec::new();
         walk(node, &mut |child| {
-            if child.kind() != "property_signature" {
+            if child.kind() != "property_signature"
+                || !typescript_property_belongs_directly_to_model(child, node)
+            {
                 return;
             }
             let Some(name_node) = child.child_by_field_name("name") else {
@@ -571,11 +576,82 @@ fn typescript_object_models(
         fields.sort();
         fields.dedup();
         fields.truncate(256);
-        if !fields.is_empty() {
-            models.insert(name.to_string(), fields);
-        }
+
+        own_fields.insert(name.to_string(), fields);
+        parents.insert(name.to_string(), parent_names);
     });
-    models
+
+    let mut resolved = BTreeMap::<String, Vec<String>>::new();
+    let names: Vec<String> = own_fields.keys().cloned().collect();
+    for _ in 0..names.len().max(1) {
+        let mut changed = false;
+        for name in &names {
+            if resolved.contains_key(name) {
+                continue;
+            }
+            let parent_names = parents.get(name).cloned().unwrap_or_default();
+            if !parent_names.iter().all(|parent| resolved.contains_key(parent)) {
+                continue;
+            }
+            let mut fields = Vec::new();
+            for parent in &parent_names {
+                if let Some(parent_fields) = resolved.get(parent) {
+                    fields.extend(parent_fields.iter().cloned());
+                }
+            }
+            if let Some(model_fields) = own_fields.get(name) {
+                fields.extend(model_fields.iter().cloned());
+            }
+            fields.sort();
+            fields.dedup();
+            fields.truncate(256);
+            if !fields.is_empty() {
+                resolved.insert(name.clone(), fields);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    resolved
+}
+
+fn typescript_interface_parents(raw: &str) -> Option<Vec<String>> {
+    let header = raw.split('{').next().unwrap_or(raw).trim();
+    let Some((_, tail)) = header.split_once(" extends ") else {
+        return Some(Vec::new());
+    };
+    let mut parents = Vec::new();
+    for candidate in tail.split(',') {
+        let candidate = candidate.trim();
+        if !is_identifier(candidate) {
+            return None;
+        }
+        parents.push(candidate.to_string());
+    }
+    if parents.is_empty() {
+        None
+    } else {
+        Some(parents)
+    }
+}
+
+fn typescript_property_belongs_directly_to_model(
+    property: Node<'_>,
+    model: Node<'_>,
+) -> bool {
+    let mut current = property;
+    while let Some(parent) = current.parent() {
+        if parent.start_byte() == model.start_byte() && parent.end_byte() == model.end_byte() {
+            return true;
+        }
+        if parent.kind() == "property_signature" {
+            return false;
+        }
+        current = parent;
+    }
+    false
 }
 
 fn typescript_declared_variable_model(
@@ -4400,6 +4476,95 @@ export async function GET() {
                 })
         }));
     }
+    #[test]
+    fn resolves_local_typescript_interface_inheritance_without_promoting_nested_fields() {
+        let source = r#"
+interface BaseUser {
+  email: string;
+  profile: {
+    displayName: string;
+    timezone: string;
+  };
+}
+
+interface Audited {
+  auditId: string;
+}
+
+interface AdminUser extends BaseUser, Audited {
+  role: string;
+}
+
+interface UnknownParentUser extends ImportedUser {
+  localOnly: string;
+}
+
+interface CycleA extends CycleB {
+  a: string;
+}
+
+interface CycleB extends CycleA {
+  b: string;
+}
+
+export async function POST(request: Request) {
+  const payload: AdminUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function PUT(request: Request) {
+  const payload: UnknownParentUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function PATCH(request: Request) {
+  const payload: CycleA = await request.json();
+  return Response.json(payload);
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes(
+            "TypeScript",
+            "src/app/admin/route.ts",
+            source,
+            tree.root_node(),
+        );
+
+        let post = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "POST")
+            .expect("POST route");
+        for field in ["email", "profile", "auditId", "role"] {
+            assert!(post.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        for nested in ["displayName", "timezone"] {
+            assert!(!post.parameters.iter().any(|parameter| parameter.name == nested));
+        }
+
+        let put = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PUT")
+            .expect("PUT route");
+        assert!(!put.parameters.iter().any(|parameter| {
+            matches!(parameter.name.as_str(), "localOnly" | "email")
+                && parameter.location == "json"
+        }));
+
+        let patch = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PATCH")
+            .expect("PATCH route");
+        assert!(!patch.parameters.iter().any(|parameter| {
+            matches!(parameter.name.as_str(), "a" | "b") && parameter.location == "json"
+        }));
+    }
+
     #[test]
     fn maps_explicit_typescript_json_body_models_without_guessing_complex_types() {
         let source = r#"
