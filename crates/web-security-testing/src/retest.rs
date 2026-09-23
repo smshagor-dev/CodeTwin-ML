@@ -97,13 +97,25 @@ pub fn run_targeted_retest(
         if !parameter_names.iter().any(|value| value == parameter) {
             parameter_names.push(parameter.to_string());
         }
-        parameter_locations.insert(
-            parameter.to_string(),
-            request
-                .parameter_location
-                .clone()
-                .unwrap_or_else(|| if method == "GET" { "query".to_string() } else { "form".to_string() }),
-        );
+        if let Some(location) = request
+            .parameter_location
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            parameter_locations.insert(parameter.to_string(), location.to_string());
+        } else if !parameter_locations.contains_key(parameter) {
+            return Ok(TargetedRetestOutcome {
+                requests_performed: 0,
+                responses_observed: 0,
+                baseline_status: None,
+                verification_completed: false,
+                failure_reason: Some(format!(
+                    "targeted retest requires proven location evidence for parameter {parameter}"
+                )),
+                findings: Vec::new(),
+            });
+        }
     }
 
     let endpoint = EndpointObservation {
@@ -285,7 +297,64 @@ fn normalized_key(url: &Url) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::checks_for;
+    use std::{
+        collections::BTreeMap,
+        sync::{atomic::AtomicBool, Arc},
+    };
+
+    use super::{checks_for, run_targeted_retest, TargetedRetestRequest};
+    use crate::{AuthContext, CheckConfig, ScanConfig, ScopeConfig};
+
+    #[test]
+    fn targeted_retest_refuses_to_guess_missing_parameter_location() {
+        let config = ScanConfig {
+            scope: ScopeConfig {
+                target_url: "http://127.0.0.1:9/".into(),
+                allowed_hostnames: vec!["127.0.0.1".into()],
+                allowed_subdomains: Vec::new(),
+                allowed_paths: vec!["/".into()],
+                excluded_paths: Vec::new(),
+                max_crawl_depth: 0,
+                max_requests: 12,
+                concurrency: 1,
+                timeout_ms: 500,
+                response_limit_bytes: 16_384,
+                redirect_limit: 0,
+                retry_limit: 0,
+                active_testing: true,
+                allow_non_idempotent_methods: true,
+                allow_private_networks: true,
+                enable_timing_probes: false,
+                authorization_confirmed: true,
+            },
+            checks: CheckConfig::default(),
+        };
+        let outcome = run_targeted_retest(
+            &config,
+            &AuthContext::default(),
+            None,
+            &TargetedRetestRequest {
+                endpoint_url: "http://127.0.0.1:9/update".into(),
+                route_template: None,
+                method: "POST".into(),
+                parameter_names: vec!["email".into()],
+                parameter_locations: BTreeMap::new(),
+                parameter_name: Some("email".into()),
+                parameter_location: None,
+                category: "xss".into(),
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("fail-closed retest outcome");
+
+        assert_eq!(outcome.requests_performed, 0);
+        assert_eq!(outcome.responses_observed, 0);
+        assert!(!outcome.verification_completed);
+        assert!(outcome
+            .failure_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("proven location evidence")));
+    }
 
     #[test]
     fn detector_families_require_enough_observed_responses() {

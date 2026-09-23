@@ -674,11 +674,7 @@ fn send_payload(
 ) -> Result<ObservedResponse, RequestError> {
     validate_active_payload(payload)
         .map_err(|reason| RequestError::PayloadRejected(reason.to_string()))?;
-    let location = endpoint
-        .parameter_locations
-        .get(parameter)
-        .map(String::as_str)
-        .unwrap_or_else(|| if endpoint.method == "GET" { "query" } else { "form" });
+    let location = proven_parameter_location(endpoint, parameter)?;
 
     if location == "cookie" {
         return Err(RequestError::Http(
@@ -734,6 +730,21 @@ fn send_payload(
         }
         (None, _) => requester.send(method, &url, None, &[]),
     }
+}
+
+fn proven_parameter_location<'a>(
+    endpoint: &'a EndpointObservation,
+    parameter: &str,
+) -> Result<&'a str, RequestError> {
+    endpoint
+        .parameter_locations
+        .get(parameter)
+        .map(String::as_str)
+        .ok_or_else(|| {
+            RequestError::Http(format!(
+                "active probe requires proven location evidence for parameter {parameter}"
+            ))
+        })
 }
 
 fn replace_query_parameter(url: &mut Url, parameter: &str, payload: &str) {
@@ -1147,6 +1158,28 @@ mod tests {
             baseline_key("GET", "https://example.test/users"),
             baseline_key("POST", "https://example.test/users")
         );
+    }
+
+    #[test]
+    fn missing_parameter_location_is_not_guessed() {
+        use std::collections::BTreeMap;
+
+        let endpoint = crate::EndpointObservation {
+            url: "https://example.test/users".to_string(),
+            route_template: None,
+            method: "POST".to_string(),
+            depth: 0,
+            source: "fixture".to_string(),
+            parameter_names: vec!["email".to_string()],
+            parameter_locations: BTreeMap::new(),
+            response_header_names: vec![],
+            cookie_names: vec![],
+            content_type: None,
+            status_code: None,
+            redirect_to: None,
+        };
+
+        assert!(super::proven_parameter_location(&endpoint, "email").is_err());
     }
 
     #[test]
