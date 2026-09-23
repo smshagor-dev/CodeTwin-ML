@@ -208,8 +208,20 @@ fn extract_php(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImport>) {
                 .trim_end_matches(';')
                 .trim();
             if !raw.is_empty() {
-                let bindings = php_use_bindings(raw);
-                push_with_bindings(imports, "use", raw.to_string(), node, bindings);
+                let expanded = php_class_use_imports(raw);
+                if expanded.is_empty() {
+                    push(imports, "use", raw.to_string(), node);
+                } else {
+                    for (specifier, binding) in expanded {
+                        push_with_bindings(
+                            imports,
+                            "use",
+                            specifier,
+                            node,
+                            vec![binding],
+                        );
+                    }
+                }
             }
         }
         "require_expression" | "require_once_expression" | "include_expression"
@@ -253,28 +265,87 @@ fn extract_c_family(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImpor
     }
 }
 
-fn php_use_bindings(raw: &str) -> Vec<IndexedImportBinding> {
-    // Grouped PHP imports require a different specifier model because one
-    // declaration can target several files. Leave them unresolved instead of
-    // manufacturing an incorrect single-file binding.
-    if raw.contains('{') || raw.contains('}') || raw.contains(',') {
+fn php_class_use_imports(raw: &str) -> Vec<(String, IndexedImportBinding)> {
+    let raw = raw.trim();
+    if raw.is_empty() {
         return Vec::new();
     }
-    let (qualified, alias) = raw
-        .rsplit_once(" as ")
-        .map(|(qualified, alias)| (qualified.trim(), Some(alias.trim())))
-        .unwrap_or((raw.trim(), None));
-    let qualified = qualified.trim_start_matches('\\');
-    let imported = qualified.rsplit('\\').next().unwrap_or(qualified).trim();
-    let local = alias.unwrap_or(imported);
-    if !is_identifier(imported) || !is_identifier(local) {
-        return Vec::new();
+
+    let mut imports = Vec::new();
+    if let (Some(open), Some(close)) = (raw.find('{'), raw.rfind('}')) {
+        if close > open {
+            let prefix = raw[..open]
+                .trim()
+                .trim_start_matches('\\')
+                .trim_end_matches('\\');
+            let inside = &raw[open + 1..close];
+            for item in inside.split(',') {
+                if let Some(reference) = php_class_use_item(Some(prefix), item) {
+                    imports.push(reference);
+                }
+            }
+            return imports;
+        }
     }
-    vec![IndexedImportBinding {
-        local_name: local.to_string(),
-        imported_name: imported.to_string(),
-    }]
+
+    for item in raw.split(',') {
+        if let Some(reference) = php_class_use_item(None, item) {
+            imports.push(reference);
+        }
+    }
+    imports
 }
+
+fn php_class_use_item(
+    prefix: Option<&str>,
+    raw_item: &str,
+) -> Option<(String, IndexedImportBinding)> {
+    let item = raw_item.trim();
+    if item.is_empty() {
+        return None;
+    }
+    let lower = item.to_ascii_lowercase();
+    if lower.starts_with("function ") || lower.starts_with("const ") {
+        return None;
+    }
+
+    let (qualified, alias) = php_split_alias(item);
+    let qualified = qualified.trim().trim_start_matches('\\');
+    if qualified.is_empty() {
+        return None;
+    }
+    let specifier = if let Some(prefix) = prefix.filter(|value| !value.is_empty()) {
+        format!(
+            "{}\\{}",
+            prefix.trim_end_matches('\\'),
+            qualified.trim_start_matches('\\')
+        )
+    } else {
+        qualified.to_string()
+    };
+    let imported = qualified.rsplit('\\').next()?.trim();
+    let local = alias.unwrap_or(imported).trim();
+    if !is_identifier(imported) || !is_identifier(local) {
+        return None;
+    }
+    Some((
+        specifier,
+        IndexedImportBinding {
+            local_name: local.to_string(),
+            imported_name: imported.to_string(),
+        },
+    ))
+}
+
+fn php_split_alias(value: &str) -> (&str, Option<&str>) {
+    let lower = value.to_ascii_lowercase();
+    if let Some(index) = lower.rfind(" as ") {
+        (&value[..index], Some(&value[index + 4..]))
+    } else {
+        (value, None)
+    }
+}
+
 fn javascript_import_bindings(statement: &str) -> Vec<IndexedImportBinding> {
     let trimmed = statement.trim();
     let Some(rest) = trimmed.strip_prefix("import ") else {
@@ -454,4 +525,67 @@ fn push_with_bindings(
         end_line: end.row + 1,
         end_column: end.column,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use tree_sitter::Parser;
+
+    use super::extract_imports;
+
+    #[test]
+    fn expands_grouped_and_multi_php_class_imports() {
+        let source = r#"<?php
+use App\Http\Controllers\{UserController, AdminController as Admin};
+use App\Http\Requests\StoreUserRequest, App\Http\Requests\UpdateUserRequest as UpdateRequest;
+use App\Support\{Thing, function helper, const FLAG};
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let imports = extract_imports("PHP", source, tree.root_node());
+
+        let expected = [
+            (
+                "App\\Http\\Controllers\\UserController",
+                "UserController",
+                "UserController",
+            ),
+            (
+                "App\\Http\\Controllers\\AdminController",
+                "Admin",
+                "AdminController",
+            ),
+            (
+                "App\\Http\\Requests\\StoreUserRequest",
+                "StoreUserRequest",
+                "StoreUserRequest",
+            ),
+            (
+                "App\\Http\\Requests\\UpdateUserRequest",
+                "UpdateRequest",
+                "UpdateUserRequest",
+            ),
+            ("App\\Support\\Thing", "Thing", "Thing"),
+        ];
+
+        for (specifier, local, imported) in expected {
+            let reference = imports
+                .iter()
+                .find(|reference| reference.raw_specifier == specifier)
+                .unwrap_or_else(|| panic!("missing import {specifier}"));
+            assert_eq!(reference.bindings.len(), 1);
+            assert_eq!(reference.bindings[0].local_name, local);
+            assert_eq!(reference.bindings[0].imported_name, imported);
+        }
+
+        assert!(!imports.iter().any(|reference| {
+            reference
+                .bindings
+                .iter()
+                .any(|binding| matches!(binding.local_name.as_str(), "helper" | "FLAG"))
+        }));
+    }
 }

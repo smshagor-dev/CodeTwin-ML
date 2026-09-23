@@ -1812,6 +1812,121 @@ mod tests {
     }
 
     #[test]
+    fn grouped_php_imports_resolve_laravel_controller_and_form_request_aliases() {
+        let repository = tempdir().expect("repository");
+        fs::create_dir_all(repository.path().join("routes")).expect("routes dir");
+        fs::create_dir_all(repository.path().join("app/Http/Controllers"))
+            .expect("controllers dir");
+        fs::create_dir_all(repository.path().join("app/Http/Requests"))
+            .expect("requests dir");
+
+        fs::write(
+            repository.path().join("routes/api.php"),
+            r#"<?php
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\{UserController as Users, AdminController};
+
+Route::post('/users', [Users::class, 'store']);
+"#,
+        )
+        .expect("routes source");
+
+        fs::write(
+            repository.path().join("app/Http/Controllers/UserController.php"),
+            r#"<?php
+namespace App\Http\Controllers;
+
+use App\Http\Requests\{StoreUserRequest as CreateUserRequest, UpdateUserRequest};
+
+class UserController
+{
+    public function store(CreateUserRequest $request)
+    {
+        return response()->json(['ok' => true]);
+    }
+}
+"#,
+        )
+        .expect("controller source");
+
+        fs::write(
+            repository.path().join("app/Http/Controllers/AdminController.php"),
+            "<?php namespace App\Http\Controllers; class AdminController {}",
+        )
+        .expect("admin source");
+
+        fs::write(
+            repository.path().join("app/Http/Requests/StoreUserRequest.php"),
+            r#"<?php
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StoreUserRequest extends FormRequest
+{
+    public function rules(): array
+    {
+        return [
+            'email' => ['required', 'email'],
+        ];
+    }
+}
+"#,
+        )
+        .expect("request source");
+
+        fs::write(
+            repository.path().join("app/Http/Requests/UpdateUserRequest.php"),
+            "<?php namespace App\Http\Requests; class UpdateUserRequest {}",
+        )
+        .expect("unused request source");
+
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(repository.path())
+            .expect("index");
+
+        for raw_specifier in [
+            "App\\Http\\Controllers\\UserController",
+            "App\\Http\\Controllers\\AdminController",
+            "App\\Http\\Requests\\StoreUserRequest",
+            "App\\Http\\Requests\\UpdateUserRequest",
+        ] {
+            let count: i64 = database
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM import_references
+                     WHERE project_id=?1
+                       AND raw_specifier=?2
+                       AND resolution_state='resolved_local'",
+                    rusqlite::params![summary.project_id, raw_specifier],
+                    |row| row.get(0),
+                )
+                .expect("resolved grouped import");
+            assert_eq!(count, 1, "missing resolved grouped import {raw_specifier}");
+        }
+
+        let (handler_name, locations_json): (Option<String>, String) = database
+            .connection()
+            .query_row(
+                "SELECT handler_name, parameter_locations_json
+                 FROM source_routes
+                 WHERE project_id=?1
+                   AND framework='laravel'
+                   AND http_method='POST'
+                   AND path_template='/users'
+                   AND is_active=1",
+                [&summary.project_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("grouped-import route");
+        assert_eq!(handler_name.as_deref(), Some("Users.store"));
+        let locations: BTreeMap<String, String> =
+            serde_json::from_str(&locations_json).expect("locations");
+        assert_eq!(locations.get("email").map(String::as_str), Some("body"));
+    }
+
+    #[test]
     fn laravel_form_request_rules_merge_across_controller_imports() {
         let repository = tempdir().expect("repository");
         fs::create_dir_all(repository.path().join("routes")).expect("routes dir");
