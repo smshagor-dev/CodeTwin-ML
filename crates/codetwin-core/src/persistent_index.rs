@@ -995,7 +995,7 @@ fn resolve_imported_route_handlers(
     drop(import_statement);
 
     let mut route_statement = connection.prepare(
-        "SELECT id, file_id, handler_name, parameter_locations_json, request_content_type
+        "SELECT id, file_id, handler_name, framework, parameter_locations_json, request_content_type
          FROM source_routes
          WHERE project_id=?1 AND is_active=1 AND handler_name IS NOT NULL",
     )?;
@@ -1005,7 +1005,8 @@ fn resolve_imported_route_handlers(
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
-            row.get::<_, Option<String>>(4)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, Option<String>>(5)?,
         ))
     })?;
     let mut routes = Vec::new();
@@ -1014,7 +1015,14 @@ fn resolve_imported_route_handlers(
     }
     drop(route_statement);
 
-    for (route_id, route_file_id, handler_reference, locations_json, current_content_type) in routes {
+    for (
+        route_id,
+        route_file_id,
+        handler_reference,
+        framework,
+        locations_json,
+        current_content_type,
+    ) in routes {
         let (binding_name, member_name) = split_handler_reference(&handler_reference);
         let Some((_, target_file_id, binding)) = bindings.iter().find(|(source, _, binding)| {
             source == &route_file_id && binding.local_name == binding_name
@@ -1040,7 +1048,7 @@ fn resolve_imported_route_handlers(
             names[0].clone()
         };
 
-        let handler = connection
+        let handler_locations_json = connection
             .query_row(
                 "SELECT parameter_locations_json
                  FROM source_handler_inputs
@@ -1050,17 +1058,48 @@ fn resolve_imported_route_handlers(
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
-        let Some(handler_locations_json) = handler else {
-            continue;
+
+        let mut symbol_statement = connection.prepare(
+            "SELECT id, signature
+             FROM symbols
+             WHERE file_id=?1 AND is_active=1 AND name=?2
+             ORDER BY start_line LIMIT 2",
+        )?;
+        let symbol_rows = symbol_statement.query_map(
+            params![target_file_id, target_handler_name],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )?;
+        let symbols = symbol_rows.collect::<Result<Vec<_>, _>>()?;
+        let (handler_symbol_id, handler_signature) = if symbols.len() == 1 {
+            (Some(symbols[0].0.clone()), symbols[0].1.clone())
+        } else {
+            (None, None)
         };
+        drop(symbol_statement);
 
         let mut locations: BTreeMap<String, String> =
             serde_json::from_str(&locations_json).unwrap_or_default();
-        let handler_locations: BTreeMap<String, String> =
-            serde_json::from_str(&handler_locations_json).unwrap_or_default();
-        for (name, location) in handler_locations {
-            locations.entry(name).or_insert(location);
+        if let Some(handler_locations_json) = handler_locations_json {
+            let handler_locations: BTreeMap<String, String> =
+                serde_json::from_str(&handler_locations_json).unwrap_or_default();
+            for (name, location) in handler_locations {
+                locations.entry(name).or_insert(location);
+            }
         }
+
+        if framework == "laravel" {
+            if let Some(signature) = handler_signature.as_deref() {
+                merge_laravel_form_request_inputs(
+                    connection,
+                    &bindings,
+                    target_file_id,
+                    signature,
+                    current_content_type.as_deref(),
+                    &mut locations,
+                )?;
+            }
+        }
+
         let parameter_names: Vec<String> = locations.keys().cloned().collect();
         let inferred_content_type = if locations.values().any(|value| value == "json") {
             Some("application/json".to_string())
@@ -1069,17 +1108,6 @@ fn resolve_imported_route_handlers(
         } else {
             current_content_type.clone()
         };
-
-        let handler_symbol_id: Option<String> = connection
-            .query_row(
-                "SELECT CASE WHEN COUNT(*)=1 THEN MIN(id) ELSE NULL END
-                 FROM symbols
-                 WHERE file_id=?1 AND is_active=1 AND name=?2",
-                params![target_file_id, target_handler_name],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
 
         connection.execute(
             "UPDATE source_routes
@@ -1101,6 +1129,826 @@ fn resolve_imported_route_handlers(
         )?;
     }
     Ok(())
+}
+
+fn merge_laravel_form_request_inputs(
+    connection: &Connection,
+    bindings: &[(String, String, IndexedImportBinding)],
+    controller_file_id: &str,
+    handler_signature: &str,
+    current_content_type: Option<&str>,
+    locations: &mut BTreeMap<String, String>,
+) -> Result<(), IndexServiceError> {
+    let candidate_types = php_parameter_type_names(handler_signature);
+    if candidate_types.is_empty() {
+        return Ok(());
+    }
+
+    let has_json = locations.values().any(|location| location == "json")
+        || current_content_type.is_some_and(|value| value.contains("application/json"));
+    let has_form = locations.values().any(|location| location == "form")
+        || current_content_type.is_some_and(|value| {
+            value.contains("application/x-www-form-urlencoded")
+                || value.contains("multipart/form-data")
+        });
+    let body_location = match (has_json, has_form) {
+        (true, false) => "json",
+        (false, true) => "form",
+        _ => "body",
+    };
+
+    for candidate in candidate_types {
+        let matches: Vec<&(String, String, IndexedImportBinding)> = bindings
+            .iter()
+            .filter(|(source_file_id, _, binding)| {
+                source_file_id == controller_file_id && binding.local_name == candidate
+            })
+            .collect();
+        if matches.len() != 1 {
+            continue;
+        }
+        let (_, request_file_id, binding) = matches[0];
+        let request_locations_json = connection
+            .query_row(
+                "SELECT parameter_locations_json
+                 FROM source_handler_inputs
+                 WHERE file_id=?1 AND handler_name=?2 AND is_active=1
+                 ORDER BY start_line LIMIT 1",
+                params![request_file_id, binding.imported_name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(request_locations_json) = request_locations_json else {
+            continue;
+        };
+        let request_locations: BTreeMap<String, String> =
+            serde_json::from_str(&request_locations_json).unwrap_or_default();
+        for (name, location) in request_locations {
+            if location == "body" {
+                locations
+                    .entry(name)
+                    .or_insert_with(|| body_location.to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn php_parameter_type_names(signature: &str) -> Vec<String> {
+    let Some(open) = signature.find('(') else {
+        return Vec::new();
+    };
+    let Some(close) = signature.rfind(')') else {
+        return Vec::new();
+    };
+    if close <= open {
+        return Vec::new();
+    }
+
+    let mut names = Vec::new();
+    for parameter in signature[open + 1..close].split(',') {
+        let Some(dollar) = parameter.rfind('
+    let trimmed = value.trim();
+    if let Some((binding, member)) = trimmed.split_once('.') {
+        if !binding.is_empty() && !member.is_empty() && !member.contains('.') {
+            return (binding, Some(member));
+        }
+    }
+    (trimmed, None)
+}
+
+fn load_file_identity_map(
+    connection: &Connection,
+    project_id: &str,
+    case_insensitive: bool,
+) -> Result<BTreeMap<String, String>, IndexServiceError> {
+    let mut statement = connection.prepare(
+        "SELECT id, relative_path, relative_path_identity FROM files\
+         WHERE project_id = ?1 AND is_active = 1",
+    )?;
+    let rows = statement.query_map([project_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    let mut files = BTreeMap::new();
+    for row in rows {
+        let (id, path, identity) = row?;
+        let identity = match identity {
+            Some(identity) => identity,
+            None => normalize_relative_path(&path, case_insensitive)
+                .ok_or_else(|| IndexServiceError::UnsafeRelativePath(path.clone()))?,
+        };
+        files.insert(identity, id);
+    }
+    Ok(files)
+}
+
+fn materialize_graph(
+    connection: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> Result<(), rusqlite::Error> {
+    connection.execute(
+        "UPDATE graph_edges SET is_active = 0, updated_at = CURRENT_TIMESTAMP\
+         WHERE project_id = ?1 AND relationship IN (\
+           'PROJECT_CONTAINS_FILE','FILE_DEFINES_SYMBOL','SYMBOL_PARENT_OF_SYMBOL','FILE_IMPORTS_FILE'\
+         )",
+        [project_id],
+    )?;
+    connection.execute(
+        "UPDATE graph_nodes SET is_active = 0, updated_at = CURRENT_TIMESTAMP\
+         WHERE project_id = ?1 AND node_type IN ('FILE','SYMBOL')",
+        [project_id],
+    )?;
+
+    let project_node = graph_node_id(project_id, "PROJECT", project_id);
+    upsert_graph_node(
+        connection,
+        &project_node,
+        project_id,
+        "PROJECT",
+        project_id,
+        project_id,
+        &json!({"project_id": project_id}).to_string(),
+        run_id,
+    )?;
+
+    let mut file_statement = connection.prepare(
+        "SELECT id, relative_path, language FROM files\
+         WHERE project_id = ?1 AND is_active = 1 ORDER BY relative_path",
+    )?;
+    let rows = file_statement.query_map([project_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    let mut files = Vec::new();
+    for row in rows {
+        files.push(row?);
+    }
+    drop(file_statement);
+
+    for (stable_file_id, relative_path, language) in files {
+        let file_node = graph_node_id(project_id, "FILE", &stable_file_id);
+        upsert_graph_node(
+            connection,
+            &file_node,
+            project_id,
+            "FILE",
+            &stable_file_id,
+            &relative_path,
+            &json!({
+                "file_id": stable_file_id,
+                "relative_path": relative_path,
+                "language": language,
+            })
+            .to_string(),
+            run_id,
+        )?;
+        upsert_graph_edge(
+            connection,
+            project_id,
+            &project_node,
+            &file_node,
+            "PROJECT_CONTAINS_FILE",
+            run_id,
+        )?;
+    }
+
+    let mut symbol_statement = connection.prepare(
+        "SELECT id, file_id, name, kind, parent_symbol_id FROM symbols\
+         WHERE project_id = ?1 AND is_active = 1 ORDER BY file_id, start_line, start_column, name",
+    )?;
+    let rows = symbol_statement.query_map([project_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    })?;
+    let mut symbols = Vec::new();
+    for row in rows {
+        symbols.push(row?);
+    }
+    drop(symbol_statement);
+
+    let active_symbol_ids: BTreeSet<String> = symbols.iter().map(|row| row.0.clone()).collect();
+    for (symbol_id, stable_file_id, name, kind, parent_id) in symbols {
+        let symbol_node = graph_node_id(project_id, "SYMBOL", &symbol_id);
+        let file_node = graph_node_id(project_id, "FILE", &stable_file_id);
+        upsert_graph_node(
+            connection,
+            &symbol_node,
+            project_id,
+            "SYMBOL",
+            &symbol_id,
+            &name,
+            &json!({"symbol_id": symbol_id, "file_id": stable_file_id, "kind": kind}).to_string(),
+            run_id,
+        )?;
+        upsert_graph_edge(
+            connection,
+            project_id,
+            &file_node,
+            &symbol_node,
+            "FILE_DEFINES_SYMBOL",
+            run_id,
+        )?;
+        if let Some(parent_id) = parent_id.filter(|id| active_symbol_ids.contains(id)) {
+            let parent_node = graph_node_id(project_id, "SYMBOL", &parent_id);
+            upsert_graph_edge(
+                connection,
+                project_id,
+                &parent_node,
+                &symbol_node,
+                "SYMBOL_PARENT_OF_SYMBOL",
+                run_id,
+            )?;
+        }
+    }
+
+    let mut import_statement = connection.prepare(
+        "SELECT source_file_id, resolved_target_file_id FROM import_references\
+         WHERE project_id = ?1 AND resolution_state = 'resolved_local' AND resolved_target_file_id IS NOT NULL",
+    )?;
+    let rows = import_statement.query_map([project_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut imports = Vec::new();
+    for row in rows {
+        imports.push(row?);
+    }
+    drop(import_statement);
+    for (source_file, target_file) in imports {
+        let source_node = graph_node_id(project_id, "FILE", &source_file);
+        let target_node = graph_node_id(project_id, "FILE", &target_file);
+        upsert_graph_edge(
+            connection,
+            project_id,
+            &source_node,
+            &target_node,
+            "FILE_IMPORTS_FILE",
+            run_id,
+        )?;
+    }
+    Ok(())
+}
+
+fn upsert_graph_node(
+    connection: &Connection,
+    id: &str,
+    project_id: &str,
+    node_type: &str,
+    external_key: &str,
+    label: &str,
+    metadata_json: &str,
+    run_id: &str,
+) -> Result<(), rusqlite::Error> {
+    connection.execute(
+        "INSERT INTO graph_nodes(\
+           id, project_id, node_type, external_key, label, metadata_json, last_index_run_id, created_at, updated_at, is_active\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
+         ON CONFLICT(project_id, node_type, external_key) DO UPDATE SET\
+           label = excluded.label, metadata_json = excluded.metadata_json, last_index_run_id = excluded.last_index_run_id,\
+           updated_at = CURRENT_TIMESTAMP, is_active = 1",
+        params![id, project_id, node_type, external_key, label, metadata_json, run_id],
+    )?;
+    Ok(())
+}
+
+fn upsert_graph_edge(
+    connection: &Connection,
+    project_id: &str,
+    source_node_id: &str,
+    target_node_id: &str,
+    relationship: &str,
+    run_id: &str,
+) -> Result<(), rusqlite::Error> {
+    let id = graph_edge_id(project_id, source_node_id, target_node_id, relationship);
+    connection.execute(
+        "INSERT INTO graph_edges(\
+           id, project_id, source_node_id, target_node_id, relationship, metadata_json, last_index_run_id, created_at, updated_at, is_active\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, '{}', ?6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
+         ON CONFLICT(project_id, source_node_id, target_node_id, relationship) DO UPDATE SET\
+           last_index_run_id = excluded.last_index_run_id, updated_at = CURRENT_TIMESTAMP, is_active = 1",
+        params![id, project_id, source_node_id, target_node_id, relationship, run_id],
+    )?;
+    Ok(())
+}
+
+fn graph_summary(connection: &Connection, project_id: &str) -> Result<GraphSummary, rusqlite::Error> {
+    let node_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM graph_nodes WHERE project_id = ?1 AND is_active = 1",
+        [project_id],
+        |row| row.get(0),
+    )?;
+    let edge_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM graph_edges WHERE project_id = ?1 AND is_active = 1",
+        [project_id],
+        |row| row.get(0),
+    )?;
+    Ok(GraphSummary {
+        node_count: to_usize(node_count),
+        edge_count: to_usize(edge_count),
+    })
+}
+
+fn finish_run(
+    connection: &Connection,
+    run_id: &str,
+    delta: &IndexDelta,
+    duration_ms: u64,
+) -> Result<(), rusqlite::Error> {
+    connection.execute(
+        "UPDATE analysis_runs SET\
+           status = 'completed', finished_at = CURRENT_TIMESTAMP,\
+           files_scanned = ?2, files_added = ?3, files_modified = ?4, files_unchanged = ?5, files_deleted = ?6,\
+           symbols_added = ?7, symbols_updated = ?8, symbols_removed = ?9, parse_errors = ?10, skipped_files = ?11,\
+           duration_ms = ?12 WHERE id = ?1",
+        params![
+            run_id,
+            to_i64(delta.files_scanned),
+            to_i64(delta.files_added),
+            to_i64(delta.files_modified),
+            to_i64(delta.files_unchanged),
+            to_i64(delta.files_deleted),
+            to_i64(delta.symbols_added),
+            to_i64(delta.symbols_updated),
+            to_i64(delta.symbols_removed),
+            to_i64(delta.parse_errors),
+            to_i64(delta.skipped_files),
+            i64::try_from(duration_ms).unwrap_or(i64::MAX),
+        ],
+    )?;
+    Ok(())
+}
+
+fn mark_run_failed(
+    connection: &Connection,
+    run_id: &str,
+    elapsed_ms: u128,
+) -> Result<(), rusqlite::Error> {
+    connection.execute(
+        "UPDATE analysis_runs SET status = 'failed', finished_at = CURRENT_TIMESTAMP, duration_ms = ?2 WHERE id = ?1",
+        params![run_id, i64::try_from(elapsed_ms).unwrap_or(i64::MAX)],
+    )?;
+    Ok(())
+}
+
+fn regular_file_state(root: &Path, relative_path: &str) -> Result<Option<bool>, IndexServiceError> {
+    let normalized = normalize_relative_path(relative_path, false)
+        .ok_or_else(|| IndexServiceError::UnsafeRelativePath(relative_path.to_string()))?;
+    let mut candidate = root.to_path_buf();
+    for segment in normalized.split('/') {
+        candidate.push(segment);
+    }
+    match fs::symlink_metadata(candidate) {
+        Ok(metadata) => Ok(Some(metadata.file_type().is_file())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Some(false)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn read_origin_remote(root: &Path) -> Option<String> {
+    let git_dir = root.join(".git");
+    if !fs::symlink_metadata(&git_dir).ok()?.file_type().is_dir() {
+        return None;
+    }
+    let config_path = git_dir.join("config");
+    if !fs::symlink_metadata(&config_path).ok()?.file_type().is_file() {
+        return None;
+    }
+    let config = fs::read_to_string(config_path).ok()?;
+    let mut in_origin = false;
+    for line in config.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_origin = line.eq_ignore_ascii_case("[remote \"origin\"]");
+            continue;
+        }
+        if in_origin {
+            if let Some((key, value)) = line.split_once('=') {
+                if key.trim().eq_ignore_ascii_case("url") {
+                    let value = value.trim();
+                    if !value.is_empty() {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn new_run_id(project_id: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .to_string();
+    deterministic_id("run", &[project_id, &nanos])
+}
+
+fn parse_state_text(state: ParseState) -> &'static str {
+    match state {
+        ParseState::Parsed => "parsed",
+        ParseState::ParsedWithErrors => "parsed_with_errors",
+    }
+}
+
+fn symbol_range(symbol: &IndexedSymbol) -> (usize, usize, usize, usize) {
+    (
+        symbol.start_line,
+        symbol.start_column,
+        symbol.end_line,
+        symbol.end_column,
+    )
+}
+
+fn to_i64(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn to_usize(value: i64) -> usize {
+    usize::try_from(value).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, fs};
+
+    use tempfile::tempdir;
+
+    use crate::{Database, ImportResolutionState, ProjectQueryService};
+
+    use super::ProjectIndexService;
+
+    #[test]
+    fn reopening_project_reuses_stable_identity_without_running_git() {
+        let repository = tempdir().expect("repository");
+        fs::create_dir(repository.path().join(".git")).expect("git dir");
+        fs::write(
+            repository.path().join(".git/config"),
+            "[remote \"origin\"]\n\turl = https://example.test/repository.git\n",
+        )
+        .expect("git config");
+        let database = Database::open_in_memory().expect("database");
+        let service = ProjectIndexService::new(&database);
+        let first = service.open_project(repository.path()).expect("first open");
+        let second = service.open_project(repository.path()).expect("second open");
+        assert_eq!(first.id, second.id);
+        assert_eq!(first.path_identity, second.path_identity);
+        assert_eq!(first.git_remote.as_deref(), Some("https://example.test/repository.git"));
+        let count: i64 = database
+            .connection()
+            .query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))
+            .expect("project count");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn incremental_lifecycle_materializes_and_cleans_graph() {
+        let repository = tempdir().expect("repository");
+        fs::write(
+            repository.path().join("util.ts"),
+            "export function util() { return 1; }",
+        )
+        .expect("util");
+        fs::write(
+            repository.path().join("main.ts"),
+            "import { util } from './util';\nexport class Service { run() { return util(); } }",
+        )
+        .expect("main");
+        let database = Database::open_in_memory().expect("database");
+        let service = ProjectIndexService::new(&database);
+
+        let first = service.index_project(repository.path()).expect("first index");
+        assert_eq!(first.delta.files_added, 2);
+        assert!(first.delta.symbols_added >= 3);
+        let import_edges: i64 = database
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM graph_edges WHERE is_active = 1 AND relationship = 'FILE_IMPORTS_FILE'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("import edges");
+        let parent_edges: i64 = database
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM graph_edges WHERE is_active = 1 AND relationship = 'SYMBOL_PARENT_OF_SYMBOL'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("parent edges");
+        assert_eq!(import_edges, 1);
+        assert!(parent_edges >= 1);
+
+        let second = service.index_project(repository.path()).expect("second index");
+        assert_eq!(second.delta.files_unchanged, 2);
+        assert_eq!(second.graph_node_count, first.graph_node_count);
+        assert_eq!(second.graph_edge_count, first.graph_edge_count);
+
+        fs::write(
+            repository.path().join("main.ts"),
+            "export class Service { execute() { return 2; } }",
+        )
+        .expect("modify");
+        let third = service.index_project(repository.path()).expect("modified index");
+        assert_eq!(third.delta.files_modified, 1);
+        assert!(third.delta.symbols_added >= 1);
+        assert!(third.delta.symbols_removed >= 1);
+        let import_edges: i64 = database
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM graph_edges WHERE is_active = 1 AND relationship = 'FILE_IMPORTS_FILE'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("cleaned import edges");
+        assert_eq!(import_edges, 0);
+
+        fs::remove_file(repository.path().join("util.ts")).expect("delete util");
+        let fourth = service.index_project(repository.path()).expect("delete index");
+        assert_eq!(fourth.delta.files_deleted, 1);
+        let active_util: i64 = database
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE relative_path = 'util.ts' AND is_active = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("active util");
+        assert_eq!(active_util, 0);
+    }
+
+    #[test]
+    fn symbol_identity_survives_line_movement() {
+        let repository = tempdir().expect("repository");
+        let path = repository.path().join("main.ts");
+        fs::write(&path, "export function stable() { return 1; }\n").expect("source");
+        let database = Database::open_in_memory().expect("database");
+        let service = ProjectIndexService::new(&database);
+        service.index_project(repository.path()).expect("first");
+        let first_id: String = database
+            .connection()
+            .query_row(
+                "SELECT id FROM symbols WHERE name = 'stable' AND is_active = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("first id");
+
+        fs::write(&path, "\n\nexport function stable() { return 1; }\n").expect("move");
+        service.index_project(repository.path()).expect("second");
+        let second_id: String = database
+            .connection()
+            .query_row(
+                "SELECT id FROM symbols WHERE name = 'stable' AND is_active = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("second id");
+        assert_eq!(first_id, second_id);
+    }
+
+    #[test]
+    fn import_states_distinguish_local_external_unresolved_and_unsupported() {
+        let repository = tempdir().expect("repository");
+        fs::write(repository.path().join("local.ts"), "export const x = 1;").expect("local");
+        fs::write(
+            repository.path().join("main.ts"),
+            "import './local'; import 'react'; import './missing';",
+        )
+        .expect("main");
+        fs::write(repository.path().join("main.py"), "import os\n").expect("python");
+        fs::write(repository.path().join("main.rs"), "use crate::local;\n").expect("rust");
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(repository.path())
+            .expect("index");
+        let files = ProjectQueryService::new(&database)
+            .list_files(&summary.project_id, Some("main.ts"), 10)
+            .expect("files");
+        let references = ProjectQueryService::new(&database)
+            .dependencies(&files[0].id, 20)
+            .expect("dependencies");
+        assert!(references.iter().any(|reference| {
+            reference.raw_specifier == "./local"
+                && reference.resolution_state == ImportResolutionState::ResolvedLocal
+        }));
+        assert!(references.iter().any(|reference| {
+            reference.raw_specifier == "react"
+                && reference.resolution_state == ImportResolutionState::External
+        }));
+        assert!(references.iter().any(|reference| {
+            reference.raw_specifier == "./missing"
+                && reference.resolution_state == ImportResolutionState::Unresolved
+        }));
+        let unsupported: i64 = database
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM import_references WHERE resolution_state = 'unsupported'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("unsupported");
+        assert!(unsupported >= 1);
+    }
+
+    #[test]
+    fn laravel_route_resolves_controller_inputs_across_files() {
+        let repository = tempdir().expect("repository");
+        fs::create_dir_all(repository.path().join("routes")).expect("routes dir");
+        fs::create_dir_all(
+            repository
+                .path()
+                .join("app/Http/Controllers"),
+        )
+        .expect("controllers dir");
+        fs::write(
+            repository.path().join("routes/api.php"),
+            r#"<?php
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\UserController;
+
+Route::prefix('api')->group(function () {
+    Route::post('/users', [UserController::class, 'store']);
+});
+"#,
+        )
+        .expect("routes source");
+        fs::write(
+            repository
+                .path()
+                .join("app/Http/Controllers/UserController.php"),
+            r#"<?php
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class UserController
+{
+    public function store(Request $request)
+    {
+        $email = $request->json('email');
+        $source = $request->query('source');
+        $tenant = $request->header('X-Tenant');
+    }
+}
+"#,
+        )
+        .expect("controller source");
+
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(repository.path())
+            .expect("index");
+
+        let resolved_imports: i64 = database
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM import_references
+                 WHERE project_id=?1
+                   AND raw_specifier='App\\Http\\Controllers\\UserController'
+                   AND resolution_state='resolved_local'",
+                [&summary.project_id],
+                |row| row.get(0),
+            )
+            .expect("resolved Laravel controller import");
+        assert_eq!(resolved_imports, 1);
+
+        let (handler_name, handler_file_id, locations_json, content_type): (
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+        ) = database
+            .connection()
+            .query_row(
+                "SELECT handler_name, handler_file_id, parameter_locations_json, request_content_type
+                 FROM source_routes
+                 WHERE project_id=?1
+                   AND framework='laravel'
+                   AND http_method='POST'
+                   AND path_template='/api/users'
+                   AND is_active=1",
+                [&summary.project_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("resolved Laravel source route");
+        assert_eq!(handler_name.as_deref(), Some("UserController.store"));
+        assert!(handler_file_id.is_some());
+        let locations: BTreeMap<String, String> =
+            serde_json::from_str(&locations_json).expect("parameter locations");
+        assert_eq!(locations.get("email").map(String::as_str), Some("json"));
+        assert_eq!(locations.get("source").map(String::as_str), Some("query"));
+        assert_eq!(
+            locations.get("X-Tenant").map(String::as_str),
+            Some("header")
+        );
+        assert_eq!(content_type.as_deref(), Some("application/json"));
+    }
+    #[test]
+    fn parse_errors_are_persisted_in_run_metrics() {
+        let repository = tempdir().expect("repository");
+        fs::write(repository.path().join("broken.ts"), "export function broken(").expect("broken");
+        let database = Database::open_in_memory().expect("database");
+        let summary = ProjectIndexService::new(&database)
+            .index_project(repository.path())
+            .expect("index");
+        assert!(summary.delta.parse_errors >= 1);
+    }
+
+    #[test]
+    fn persistence_failure_rolls_back_repository_state_and_marks_run_failed() {
+        let repository = tempdir().expect("repository");
+        let path = repository.path().join("main.ts");
+        fs::write(&path, "export function before() { return 1; }").expect("source");
+        let database = Database::open_in_memory().expect("database");
+        let service = ProjectIndexService::new(&database);
+        service.index_project(repository.path()).expect("first");
+        let old_hash: String = database
+            .connection()
+            .query_row("SELECT content_hash FROM files WHERE is_active = 1", [], |row| row.get(0))
+            .expect("old hash");
+        database
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER fail_symbol_insert BEFORE INSERT ON symbols BEGIN SELECT RAISE(ABORT, 'forced persistence failure'); END;",
+            )
+            .expect("trigger");
+        fs::write(&path, "export function after() { return 2; }").expect("modify");
+        assert!(service.index_project(repository.path()).is_err());
+        let current_hash: String = database
+            .connection()
+            .query_row("SELECT content_hash FROM files WHERE is_active = 1", [], |row| row.get(0))
+            .expect("current hash");
+        assert_eq!(current_hash, old_hash);
+        let latest_status: String = database
+            .connection()
+            .query_row(
+                "SELECT status FROM analysis_runs ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("status");
+        assert_eq!(latest_status, "failed");
+    }
+}
+) else {
+            continue;
+        };
+        let type_text = parameter[..dollar].trim();
+        for token in type_text
+            .split(|character: char| !(character == '_' || character.is_ascii_alphanumeric()))
+            .filter(|token| is_php_type_identifier(token))
+        {
+            names.push(token.to_string());
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn is_php_type_identifier(value: &str) -> bool {
+    if value.is_empty()
+        || matches!(
+            value,
+            "array"
+                | "bool"
+                | "callable"
+                | "false"
+                | "float"
+                | "int"
+                | "iterable"
+                | "mixed"
+                | "never"
+                | "null"
+                | "object"
+                | "parent"
+                | "self"
+                | "static"
+                | "string"
+                | "true"
+                | "void"
+        )
+    {
+        return false;
+    }
+    let mut characters = value.chars();
+    characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
 }
 
 fn split_handler_reference(value: &str) -> (&str, Option<&str>) {
