@@ -276,26 +276,48 @@ fn path_prefix(path: &str, prefix: &str) -> bool {
 
 fn is_unroutable(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => {
-            ip.is_unspecified()
-                || ip.is_multicast()
-                || ip.is_link_local()
-                || ip == Ipv4Addr::new(169, 254, 169, 254)
-                || ip.octets()[0] == 0
-        }
-        IpAddr::V6(ip) => {
-            ip.is_unspecified()
-                || ip.is_multicast()
-                || ip.is_unicast_link_local()
-        }
+        IpAddr::V4(ip) => is_unroutable_v4(ip),
+        IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map(is_unroutable_v4)
+            .unwrap_or_else(|| {
+                ip.is_unspecified() || ip.is_multicast() || ip.is_unicast_link_local()
+            }),
     }
+}
+
+fn is_unroutable_v4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    ip.is_unspecified()
+        || ip.is_multicast()
+        || ip.is_link_local()
+        || ip == Ipv4Addr::new(169, 254, 169, 254)
+        || octets[0] == 0
+        || octets[0] >= 240
 }
 
 fn is_loopback_or_private(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => ip.is_loopback() || ip.is_private(),
-        IpAddr::V6(ip) => ip.is_loopback() || is_unique_local_v6(ip),
+        IpAddr::V4(ip) => is_private_like_v4(ip),
+        IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map(is_private_like_v4)
+            .unwrap_or_else(|| ip.is_loopback() || is_unique_local_v6(ip)),
     }
+}
+
+fn is_private_like_v4(ip: Ipv4Addr) -> bool {
+    ip.is_loopback() || ip.is_private() || is_shared_v4(ip) || is_benchmark_v4(ip)
+}
+
+fn is_shared_v4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+fn is_benchmark_v4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 198 && matches!(octets[1], 18 | 19)
 }
 
 fn is_unique_local_v6(ip: Ipv6Addr) -> bool {
@@ -304,7 +326,10 @@ fn is_unique_local_v6(ip: Ipv6Addr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_url, ScopePolicy};
+    use super::{
+        is_loopback_or_private, is_unroutable, normalize_url, ScopePolicy,
+    };
+    use std::net::IpAddr;
     use crate::ScopeConfig;
     use url::Url;
 
@@ -351,6 +376,23 @@ mod tests {
         let sibling = Url::parse("http://127.0.0.1:8080/app/users").expect("sibling");
         assert!(alternate_policy.assert_url(&sibling).is_ok());
         assert!(!alternate_policy.credentials_allowed_for(&sibling));
+    }
+
+    #[test]
+    fn mapped_ipv4_and_shared_ranges_follow_private_network_policy() {
+        let mapped_loopback: IpAddr = "::ffff:127.0.0.1".parse().expect("mapped loopback");
+        let mapped_private: IpAddr = "::ffff:10.1.2.3".parse().expect("mapped private");
+        let mapped_public: IpAddr = "::ffff:8.8.8.8".parse().expect("mapped public");
+        let shared: IpAddr = "100.64.0.1".parse().expect("carrier-grade NAT");
+        let benchmark: IpAddr = "198.18.0.1".parse().expect("benchmark");
+        let reserved: IpAddr = "240.0.0.1".parse().expect("reserved");
+
+        assert!(is_loopback_or_private(mapped_loopback));
+        assert!(is_loopback_or_private(mapped_private));
+        assert!(!is_loopback_or_private(mapped_public));
+        assert!(is_loopback_or_private(shared));
+        assert!(is_loopback_or_private(benchmark));
+        assert!(is_unroutable(reserved));
     }
 
     #[test]
