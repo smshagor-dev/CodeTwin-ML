@@ -1719,7 +1719,8 @@ fn rust_struct_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<Stri
         if !raw.contains('{') {
             return;
         }
-        let fields = rust_struct_fields(raw);
+        let rename_all = rust_struct_rename_all(source, node);
+        let fields = rust_struct_fields(raw, rename_all.as_deref());
         if !fields.is_empty() {
             models.insert(name.to_string(), fields);
         }
@@ -1727,7 +1728,7 @@ fn rust_struct_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<Stri
     models
 }
 
-fn rust_struct_fields(raw: &str) -> Vec<String> {
+fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
     let Some(open) = raw.find('{') else {
         return Vec::new();
     };
@@ -1782,7 +1783,9 @@ fn rust_struct_fields(raw: &str) -> Vec<String> {
             continue;
         }
         if !skip_next {
-            let name = pending_rename.take().unwrap_or_else(|| field.to_string());
+            let name = pending_rename
+                .take()
+                .unwrap_or_else(|| rust_apply_rename_all(field, rename_all));
             if !name.is_empty() && name.len() <= 256 {
                 fields.push(name);
             }
@@ -1795,6 +1798,80 @@ fn rust_struct_fields(raw: &str) -> Vec<String> {
     fields.dedup();
     fields.truncate(256);
     fields
+}
+
+fn rust_struct_rename_all(source: &str, node: Node<'_>) -> Option<String> {
+    let row = node.start_position().row;
+    let lines: Vec<&str> = source.lines().collect();
+    let start = row.saturating_sub(6);
+    let mut attributes = Vec::new();
+    for line in lines[start..row].iter().rev() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("#[") {
+            attributes.push(trimmed);
+            continue;
+        }
+        break;
+    }
+    for attribute in attributes {
+        if !attribute.starts_with("#[serde(") {
+            continue;
+        }
+        let marker = "rename_all";
+        let Some(index) = attribute.find(marker) else {
+            continue;
+        };
+        let tail = &attribute[index + marker.len()..];
+        let Some(equals) = tail.find('=') else {
+            continue;
+        };
+        if let Some(value) = first_quoted_string(&tail[equals + 1..]) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn rust_apply_rename_all(field: &str, rename_all: Option<&str>) -> String {
+    let Some(rule) = rename_all else {
+        return field.to_string();
+    };
+    let words: Vec<String> = field
+        .split('_')
+        .filter(|word| !word.is_empty())
+        .map(|word| word.to_ascii_lowercase())
+        .collect();
+    if words.is_empty() {
+        return field.to_string();
+    }
+    let capitalize = |value: &str| {
+        let mut chars = value.chars();
+        match chars.next() {
+            Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+            None => String::new(),
+        }
+    };
+
+    match rule {
+        "lowercase" => words.join(""),
+        "UPPERCASE" => words.join("").to_ascii_uppercase(),
+        "PascalCase" => words.iter().map(|word| capitalize(word)).collect::<String>(),
+        "camelCase" => {
+            let mut output = words[0].clone();
+            for word in words.iter().skip(1) {
+                output.push_str(&capitalize(word));
+            }
+            output
+        }
+        "snake_case" => words.join("_"),
+        "SCREAMING_SNAKE_CASE" => words.join("_").to_ascii_uppercase(),
+        "kebab-case" => words.join("-"),
+        "SCREAMING-KEBAB-CASE" => words.join("-").to_ascii_uppercase(),
+        _ => field.to_string(),
+    }
 }
 
 fn rust_serde_rename(attribute: &str) -> Option<String> {
