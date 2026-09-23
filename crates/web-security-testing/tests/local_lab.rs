@@ -350,12 +350,23 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
                 );
             }
         }
-        "/update" => respond(
-            &mut stream,
-            "200 OK",
-            &[("Content-Type", "text/plain")],
-            "not executed by default",
-        ),
+        "/update" => {
+            if authorization.as_deref() == Some("Bearer expired-test-token") {
+                respond(
+                    &mut stream,
+                    "401 Unauthorized",
+                    &[("Content-Type", "text/plain")],
+                    "expired test authorization",
+                );
+            } else {
+                respond(
+                    &mut stream,
+                    "200 OK",
+                    &[("Content-Type", "text/plain")],
+                    "not executed by default",
+                );
+            }
+        }
         _ => respond(
             &mut stream,
             "404 Not Found",
@@ -594,6 +605,57 @@ fn ordinary_slow_endpoint_does_not_become_timing_confirmation() {
 }
 
 #[test]
+fn targeted_post_retest_rejects_unusable_auth_baseline() {
+    let lab = LocalLab::start();
+    let mut config = lab.config(20);
+    config.scope.allow_non_idempotent_methods = true;
+
+    let auth = AuthContext {
+        cookie_header: None,
+        bearer_token: Some("expired-test-token".into()),
+        custom_headers: Vec::new(),
+    };
+    let outcome = run_targeted_retest(
+        &config,
+        &auth,
+        None,
+        &TargetedRetestRequest {
+            endpoint_url: format!("{}/update", lab.base_url),
+            route_template: None,
+            method: "POST".into(),
+            parameter_names: vec!["display_name".into()],
+            parameter_locations: std::collections::BTreeMap::from([(
+                "display_name".into(),
+                "form".into(),
+            )]),
+            parameter_name: Some("display_name".into()),
+            parameter_location: Some("form".into()),
+            category: "xss".into(),
+        },
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("targeted POST retest");
+
+    assert_eq!(outcome.baseline_status, Some(401));
+    assert_eq!(outcome.requests_performed, 1);
+    assert_eq!(outcome.responses_observed, 1);
+    assert!(!outcome.verification_completed);
+    assert!(outcome
+        .failure_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("authentication/authorization")));
+    assert!(outcome.findings.is_empty());
+
+    let history = lab.requests.lock().expect("requests");
+    let update_requests: Vec<_> = history
+        .iter()
+        .filter(|request| request.target.starts_with("/update"))
+        .collect();
+    assert_eq!(update_requests.len(), 1, "active probes must not run after a rejected baseline");
+    assert_eq!(update_requests[0].method, "POST");
+}
+
+#[test]
 fn cancellation_prevents_requests() {
     let lab = LocalLab::start();
     let cancelled = Arc::new(AtomicBool::new(true));
@@ -752,6 +814,7 @@ fn guided_developer_workflow_runs_end_to_end_on_local_fixtures() {
             &scan.id,
             &WebEndpointInput {
                 url: endpoint.url.clone(),
+                route_template: endpoint.route_template.clone(),
                 method: endpoint.method.clone(),
                 depth: endpoint.depth,
                 source: endpoint.source.clone(),
@@ -905,7 +968,15 @@ fn guided_developer_workflow_runs_end_to_end_on_local_fixtures() {
         Some(&secondary),
         &TargetedRetestRequest {
             endpoint_url: sql.endpoint_url.clone(),
+            route_template: None,
             method: sql.method.clone(),
+            parameter_names: sql.parameter_name.clone().into_iter().collect(),
+            parameter_locations: sql
+                .parameter_name
+                .clone()
+                .map(|name| (name, "query".to_string()))
+                .into_iter()
+                .collect(),
             parameter_name: sql.parameter_name.clone(),
             parameter_location: Some("query".into()),
             category: sql.category.clone(),

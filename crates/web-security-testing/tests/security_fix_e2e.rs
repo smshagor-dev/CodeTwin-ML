@@ -476,6 +476,7 @@ fn persist_outcome(
             &scan.id,
             &WebEndpointInput {
                 url: endpoint.url.clone(),
+                route_template: endpoint.route_template.clone(),
                 method: endpoint.method.clone(),
                 depth: endpoint.depth,
                 source: endpoint.source.clone(),
@@ -632,6 +633,9 @@ fn targeted_retest_and_sync(
         secondary,
         &TargetedRetestRequest {
             endpoint_url: finding.endpoint_url.clone(),
+            route_template: None,
+            parameter_names: Vec::new(),
+            parameter_locations: std::collections::BTreeMap::new(),
             method: finding.method.clone(),
             parameter_name: finding.parameter_name.clone(),
             parameter_location: finding.parameter_name.as_ref().map(|_| "query".into()),
@@ -1059,6 +1063,9 @@ fn unable_to_verify_never_becomes_fixed_when_local_target_is_down() {
         None,
         &TargetedRetestRequest {
             endpoint_url: finding.endpoint_url.clone(),
+            route_template: None,
+            parameter_names: Vec::new(),
+            parameter_locations: std::collections::BTreeMap::new(),
             method: finding.method.clone(),
             parameter_name: finding.parameter_name.clone(),
             parameter_location: Some("query".into()),
@@ -1234,6 +1241,9 @@ fn rollback_restores_exact_source_index_and_current_vulnerable_state() {
         None,
         &TargetedRetestRequest {
             endpoint_url: finding.endpoint_url.clone(),
+            route_template: None,
+            parameter_names: Vec::new(),
+            parameter_locations: std::collections::BTreeMap::new(),
             method: finding.method.clone(),
             parameter_name: finding.parameter_name.clone(),
             parameter_location: Some("query".into()),
@@ -1340,6 +1350,9 @@ fn still_vulnerable_creates_new_immutable_attempt_and_stops_automatic_loop() {
         None,
         &TargetedRetestRequest {
             endpoint_url: finding.endpoint_url.clone(),
+            route_template: None,
+            parameter_names: Vec::new(),
+            parameter_locations: std::collections::BTreeMap::new(),
             method: finding.method.clone(),
             parameter_name: finding.parameter_name.clone(),
             parameter_location: Some("query".into()),
@@ -1541,6 +1554,9 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
         None,
         &TargetedRetestRequest {
             endpoint_url: finding.endpoint_url.clone(),
+            route_template: None,
+            parameter_names: Vec::new(),
+            parameter_locations: std::collections::BTreeMap::new(),
             method: finding.method.clone(),
             parameter_name: finding.parameter_name.clone(),
             parameter_location: Some("query".into()),
@@ -1592,6 +1608,9 @@ fn targeted_retest_transport_scope_and_auth_failures_never_verify() {
 
     let request_for = |endpoint_url: String, category: &str| TargetedRetestRequest {
         endpoint_url,
+        route_template: None,
+        parameter_names: Vec::new(),
+        parameter_locations: std::collections::BTreeMap::new(),
         method: "GET".into(),
         parameter_name: Some("q".into()),
         parameter_location: Some("query".into()),
@@ -1619,6 +1638,9 @@ fn targeted_retest_transport_scope_and_auth_failures_never_verify() {
         None,
         &TargetedRetestRequest {
             endpoint_url: format!("{}/api/object?id=a", lab.base_url),
+            route_template: None,
+            parameter_names: Vec::new(),
+            parameter_locations: std::collections::BTreeMap::new(),
             method: "GET".into(),
             parameter_name: Some("id".into()),
             parameter_location: Some("query".into()),
@@ -1819,6 +1841,9 @@ fn remediation_campaign_collapses_shared_security_header_root_but_retests_every_
             None,
             &TargetedRetestRequest {
                 endpoint_url: endpoint_url.clone(),
+                route_template: None,
+                parameter_names: Vec::new(),
+                parameter_locations: std::collections::BTreeMap::new(),
                 method: "GET".into(),
                 parameter_name: None,
                 parameter_location: None,
@@ -1986,6 +2011,9 @@ fn remediation_campaign_collapses_shared_security_header_root_but_retests_every_
             None,
             &TargetedRetestRequest {
                 endpoint_url: finding.endpoint_url.clone(),
+                route_template: None,
+                parameter_names: Vec::new(),
+                parameter_locations: std::collections::BTreeMap::new(),
                 method: finding.method.clone(),
                 parameter_name: None,
                 parameter_location: None,
@@ -2044,6 +2072,9 @@ fn remediation_campaign_collapses_shared_security_header_root_but_retests_every_
             None,
             &TargetedRetestRequest {
                 endpoint_url: finding.endpoint_url.clone(),
+                route_template: None,
+                parameter_names: Vec::new(),
+                parameter_locations: std::collections::BTreeMap::new(),
                 method: finding.method.clone(),
                 parameter_name: None,
                 parameter_location: None,

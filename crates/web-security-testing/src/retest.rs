@@ -6,7 +6,7 @@ use url::Url;
 
 use crate::{
     active, passive, query_parameters, AuthContext, CheckConfig, EndpointObservation, FindingObservation,
-    RequestBudget, ScanConfig, ScanError, ScopePolicy, ScopedRequester,
+    RequestBudget, RequestError, ScanConfig, ScanError, ScopePolicy, ScopedRequester,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -126,21 +126,58 @@ pub fn run_targeted_retest(
     };
 
     let mut baselines = HashMap::new();
-    let mut baseline_status = None;
     let mut passive_findings = Vec::new();
-    if method == "GET" {
-        if let Ok(response) = requester.get(&url) {
-            baseline_status = Some(response.status);
-            if is_passive_retest_category(&request.category) {
-                passive_findings.extend(
-                    passive::analyze_response(&url, &endpoint, &response, &targeted.checks)
-                        .into_iter()
-                        .filter(|finding| finding.category == request.category),
-                );
-            }
-            baselines.insert(normalized_key(&url), response);
+    let baseline = match active::send_endpoint_baseline(
+        &requester,
+        &endpoint,
+        &url,
+        request.parameter_name.as_deref(),
+    ) {
+        Ok(response) => response,
+        Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
+        Err(error) => {
+            return Ok(TargetedRetestOutcome {
+                requests_performed: budget.used(),
+                responses_observed: budget.responses_observed(),
+                baseline_status: None,
+                verification_completed: false,
+                failure_reason: Some(format!(
+                    "targeted retest baseline request could not be completed safely: {error}"
+                )),
+                findings: Vec::new(),
+            });
         }
+    };
+    let baseline_status = Some(baseline.status);
+    if !(200..400).contains(&baseline.status) {
+        let authentication_rejected = matches!(baseline.status, 401 | 403 | 407);
+        return Ok(TargetedRetestOutcome {
+            requests_performed: budget.used(),
+            responses_observed: budget.responses_observed(),
+            baseline_status,
+            verification_completed: false,
+            failure_reason: Some(if authentication_rejected {
+                format!(
+                    "targeted retest baseline returned HTTP {}; authentication/authorization evidence is insufficient to conclude the vulnerability disappeared",
+                    baseline.status
+                )
+            } else {
+                format!(
+                    "targeted retest baseline did not return a usable success/redirect response (status: {})",
+                    baseline.status
+                )
+            }),
+            findings: Vec::new(),
+        });
     }
+    if is_passive_retest_category(&request.category) {
+        passive_findings.extend(
+            passive::analyze_response(&url, &endpoint, &baseline, &targeted.checks)
+                .into_iter()
+                .filter(|finding| finding.category == request.category),
+        );
+    }
+    baselines.insert(active::baseline_key(&method, &endpoint.url), baseline);
 
     let mut ignored_progress = |_| {};
     let endpoints = [endpoint];
@@ -161,27 +198,10 @@ pub fn run_targeted_retest(
     let responses_observed = budget.responses_observed();
     let minimum_responses = minimum_responses_for(&request.category);
     let identity_missing = request.category == "access_control" && secondary_auth.is_none();
-    let baseline_unusable = method == "GET"
-        && !baseline_status.is_some_and(|status| (200..400).contains(&status));
-    let authentication_rejected = matches!(baseline_status, Some(401 | 403 | 407));
     let verification_completed =
-        !identity_missing
-            && !baseline_unusable
-            && responses_observed >= minimum_responses;
+        !identity_missing && responses_observed >= minimum_responses;
     let failure_reason = if identity_missing {
         Some("targeted authorization verification requires the approved secondary test identity".into())
-    } else if authentication_rejected {
-        Some(format!(
-            "targeted retest baseline returned HTTP {}; authentication/authorization evidence is insufficient to conclude the vulnerability disappeared",
-            baseline_status.unwrap_or_default()
-        ))
-    } else if baseline_unusable {
-        Some(format!(
-            "targeted retest baseline did not return a usable success/redirect response (status: {})",
-            baseline_status
-                .map(|status| status.to_string())
-                .unwrap_or_else(|| "no response".to_string())
-        ))
     } else if verification_completed {
         None
     } else {

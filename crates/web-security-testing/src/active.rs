@@ -52,7 +52,14 @@ pub(crate) fn run_active_checks(
         if !method_probe_allowed(&endpoint.method, config.scope.allow_non_idempotent_methods) {
             continue;
         }
-        let baseline = baselines.get(&normalized_key(&endpoint.url)).cloned();
+        let baseline = baselines
+            .get(&baseline_key(&endpoint.method, &endpoint.url))
+            .or_else(|| {
+                (endpoint.method == "GET")
+                    .then(|| baselines.get(&normalized_key(&endpoint.url)))
+                    .flatten()
+            })
+            .cloned();
         for parameter in &endpoint.parameter_names {
             tasks.push(ProbeTask {
                 endpoint: endpoint.clone(),
@@ -68,7 +75,7 @@ pub(crate) fn run_active_checks(
             return Err(ScanError::Cancelled);
         }
         let mut chunk_results = Vec::new();
-        let chunk_state = thread::scope(|scope| {
+        let chunk_state = thread::scope(|scope| -> Result<bool, ScanError> {
             let mut handles = Vec::new();
             for task in chunk.iter().cloned() {
                 let requester = requester.clone();
@@ -79,16 +86,33 @@ pub(crate) fn run_active_checks(
                     probe_parameter(&policy, &requester, &config, &task, cancelled)
                 }));
             }
+
             let mut cancelled_observed = false;
+            let mut first_error = None;
+            let mut worker_panicked = false;
             for handle in handles {
                 match handle.join() {
                     Ok(Ok(mut observed)) => chunk_results.append(&mut observed),
                     Ok(Err(ScanError::Cancelled)) => cancelled_observed = true,
-                    Ok(Err(_)) | Err(_) => {}
+                    Ok(Err(error)) => {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                    Err(_) => worker_panicked = true,
                 }
             }
-            cancelled_observed
-        });
+
+            if worker_panicked {
+                return Err(ScanError::Discovery(
+                    "active probe worker panicked before producing a result".to_string(),
+                ));
+            }
+            if let Some(error) = first_error {
+                return Err(error);
+            }
+            Ok(cancelled_observed)
+        })?;
         if chunk_state || cancelled.load(Ordering::SeqCst) {
             return Err(ScanError::Cancelled);
         }
@@ -123,7 +147,12 @@ pub(crate) fn run_active_checks(
                     continue;
                 }
                 let Ok(url) = policy.normalize_and_assert(&endpoint.url) else { continue };
-                let Some(primary) = baselines.get(&normalized_key(&endpoint.url)) else { continue };
+                let Some(primary) = baselines
+                    .get(&baseline_key("GET", &endpoint.url))
+                    .or_else(|| baselines.get(&normalized_key(&endpoint.url)))
+                else {
+                    continue;
+                };
                 match secondary_requester.get(&url) {
                     Ok(secondary_response) => {
                         if (200..300).contains(&primary.status)
@@ -621,6 +650,21 @@ fn probe_options(
     Ok(findings)
 }
 
+pub(crate) fn send_endpoint_baseline(
+    requester: &ScopedRequester,
+    endpoint: &EndpointObservation,
+    url: &Url,
+    parameter: Option<&str>,
+) -> Result<ObservedResponse, RequestError> {
+    if let Some(parameter) = parameter.filter(|value| !value.trim().is_empty()) {
+        return send_payload(requester, endpoint, url, parameter, "");
+    }
+
+    let method = Method::from_bytes(endpoint.method.as_bytes())
+        .map_err(|_| RequestError::Http("unsupported HTTP method".to_string()))?;
+    requester.send(method, url, None, &[])
+}
+
 fn send_payload(
     requester: &ScopedRequester,
     endpoint: &EndpointObservation,
@@ -981,6 +1025,14 @@ fn active_header_probe_allowed(name: &str) -> bool {
     )
 }
 
+pub(crate) fn baseline_key(method: &str, raw: &str) -> String {
+    format!(
+        "{} {}",
+        method.trim().to_ascii_uppercase(),
+        normalized_key(raw)
+    )
+}
+
 fn normalized_key(raw: &str) -> String {
     Url::parse(raw)
         .map(|mut url| {
@@ -992,7 +1044,7 @@ fn normalized_key(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_sql_error, materially_different, similar_response};
+    use super::{baseline_key, contains_sql_error, materially_different, similar_response};
     use crate::ObservedResponse;
 
     fn response(status: u16, body: &str) -> ObservedResponse {
@@ -1006,6 +1058,95 @@ mod tests {
             truncated: false,
             redaction_secrets: Vec::new(),
         }
+    }
+
+    #[test]
+    fn active_worker_scope_errors_fail_the_scan() {
+        use std::{
+            collections::{BTreeMap, HashMap},
+            sync::{
+                atomic::AtomicBool,
+                Arc,
+            },
+        };
+
+        let config = crate::ScanConfig {
+            scope: crate::ScopeConfig {
+                target_url: "http://127.0.0.1:9/".into(),
+                allowed_hostnames: vec!["127.0.0.1".into()],
+                allowed_subdomains: Vec::new(),
+                allowed_paths: vec!["/".into()],
+                excluded_paths: Vec::new(),
+                max_crawl_depth: 0,
+                max_requests: 8,
+                concurrency: 1,
+                timeout_ms: 500,
+                response_limit_bytes: 16_384,
+                redirect_limit: 0,
+                retry_limit: 0,
+                active_testing: true,
+                allow_non_idempotent_methods: false,
+                allow_private_networks: true,
+                enable_timing_probes: false,
+                authorization_confirmed: true,
+            },
+            checks: crate::CheckConfig::default(),
+        };
+        let policy = crate::ScopePolicy::new(config.scope.clone()).expect("scope");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let requester = crate::ScopedRequester::new(
+            policy.clone(),
+            crate::AuthContext::default(),
+            crate::RequestBudget::new(8),
+            Arc::clone(&cancelled),
+        );
+        let endpoint = crate::EndpointObservation {
+            url: "http://example.invalid:9/?q=a".into(),
+            route_template: None,
+            method: "GET".into(),
+            depth: 0,
+            source: "fixture".into(),
+            parameter_names: vec!["q".into()],
+            parameter_locations: BTreeMap::from([("q".into(), "query".into())]),
+            response_header_names: Vec::new(),
+            cookie_names: Vec::new(),
+            content_type: None,
+            status_code: None,
+            redirect_to: None,
+        };
+        let endpoints = [endpoint];
+        let baselines = HashMap::new();
+        let mut ignored_progress = |_| {};
+
+        let result = super::run_active_checks(
+            super::ActiveCheckContext {
+                policy: &policy,
+                requester: &requester,
+                secondary_auth: None,
+                config: &config,
+                endpoints: &endpoints,
+                baselines: &baselines,
+                cancelled,
+            },
+            &mut ignored_progress,
+        );
+
+        assert!(
+            matches!(result, Err(crate::ScanError::Scope(_))),
+            "out-of-scope worker errors must fail the scan instead of being swallowed"
+        );
+    }
+
+    #[test]
+    fn baseline_keys_are_method_specific_and_fragment_stable() {
+        assert_eq!(
+            baseline_key("post", "https://example.test/users#details"),
+            "POST https://example.test/users"
+        );
+        assert_ne!(
+            baseline_key("GET", "https://example.test/users"),
+            baseline_key("POST", "https://example.test/users")
+        );
     }
 
     #[test]
