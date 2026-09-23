@@ -19,6 +19,33 @@ use crate::{
     web_security_commands::source_endpoint_seeds_for_project, with_database, AppState,
 };
 
+fn parse_parameter_locations(raw: &str) -> BTreeMap<String, Vec<String>> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return BTreeMap::new();
+    };
+    let Some(object) = value.as_object() else {
+        return BTreeMap::new();
+    };
+    let mut output = BTreeMap::new();
+    for (name, raw_location) in object {
+        let values = output.entry(name.clone()).or_insert_with(Vec::new);
+        match raw_location {
+            serde_json::Value::String(location) => values.push(location.clone()),
+            serde_json::Value::Array(locations) => {
+                values.extend(
+                    locations
+                        .iter()
+                        .filter_map(|value| value.as_str().map(ToString::to_string)),
+                );
+            }
+            _ => {}
+        }
+        values.sort();
+        values.dedup();
+    }
+    output
+}
+
 #[derive(Clone, Deserialize)]
 pub struct GuidedSecurityPrepareRequest {
     pub website_id: Option<String>,
@@ -356,11 +383,12 @@ pub async fn retest_guided_security_finding(
             .unwrap_or_default();
         let endpoint_parameter_locations = endpoint_metadata
             .as_ref()
-            .and_then(|(_, raw, _)| serde_json::from_str::<BTreeMap<String, String>>(raw).ok())
+            .map(|(_, raw, _)| parse_parameter_locations(raw))
             .unwrap_or_default();
-        let parameter_location = parameter_name
-            .as_deref()
-            .and_then(|parameter| endpoint_parameter_locations.get(parameter).cloned());
+        let parameter_location = parameter_name.as_deref().and_then(|parameter| {
+            let values = endpoint_parameter_locations.get(parameter)?;
+            (values.len() == 1).then(|| values[0].clone())
+        });
         let route_template = endpoint_metadata
             .as_ref()
             .and_then(|(_, _, route_template)| route_template.clone());
