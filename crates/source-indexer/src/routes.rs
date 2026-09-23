@@ -4732,6 +4732,46 @@ func fetch(client *Client) {
     }
 
     #[test]
+    fn honors_serde_rename_all_with_field_override_for_rust_extractors() {
+        let source = r#"
+use axum::{routing::post, Json, Router};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateUser {
+    display_name: String,
+    account_id: String,
+    #[serde(rename = "email_address")]
+    email: String,
+}
+
+async fn create(Json(_body): Json<CreateUser>) {}
+
+fn app() -> Router {
+    Router::new().route("/users", post(create))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "axum" && route.http_method == "POST")
+            .expect("axum route");
+        for field in ["displayName", "accountId", "email_address"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert!(!route.parameters.iter().any(|parameter| parameter.name == "display_name"));
+        assert!(!route.parameters.iter().any(|parameter| parameter.name == "account_id"));
+    }
+    #[test]
     fn maps_axum_typed_extractors_and_static_header_keys_to_routes() {
         let source = r#"
 use axum::{
