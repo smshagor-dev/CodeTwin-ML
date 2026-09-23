@@ -3529,8 +3529,16 @@ fn combine_paths(prefix: Option<&str>, path: &str) -> String {
     if prefix.is_empty() {
         return normalize_path(path);
     }
-    if path.is_empty() || path == "/" {
+    if path.is_empty() {
         return normalize_path(prefix);
+    }
+    if path == "/" {
+        let base = normalize_path(prefix);
+        return if base == "/" || base.ends_with('/') {
+            base
+        } else {
+            format!("{base}/")
+        };
     }
     normalize_path(&format!(
         "{}/{}",
@@ -3544,6 +3552,7 @@ fn normalize_path(value: &str) -> String {
     if trimmed.is_empty() {
         return "/".to_string();
     }
+    let preserve_trailing_slash = trimmed.len() > 1 && trimmed.ends_with('/');
     let mut path = if trimmed.starts_with('/') {
         trimmed.to_string()
     } else {
@@ -3554,6 +3563,9 @@ fn normalize_path(value: &str) -> String {
     }
     if path.len() > 1 {
         path = path.trim_end_matches('/').to_string();
+        if preserve_trailing_slash {
+            path.push('/');
+        }
     }
     path
 }
@@ -5321,6 +5333,29 @@ async def create_user(
         assert!(route.parameters.iter().any(|parameter| {
             parameter.name == "session-id" && parameter.location == "cookie"
         }));
+    }
+    #[test]
+    fn preserves_explicit_trailing_slash_in_indexed_routes() {
+        let source = r#"
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/users/{id}/")
+async def user(id: str):
+    return {"id": id}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes("Python", "app.py", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "fastapi" && route.http_method == "GET")
+            .expect("route");
+        assert_eq!(route.path_template, "/users/{id}/");
     }
     #[test]
     fn extracts_fastapi_route_and_pydantic_body_fields() {

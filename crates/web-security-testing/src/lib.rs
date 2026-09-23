@@ -283,6 +283,7 @@ fn normalize_route_template(template: &str) -> Option<String> {
     if trimmed.contains('*') {
         return None;
     }
+    let preserve_trailing_slash = trimmed.len() > 1 && trimmed.ends_with('/');
     let mut segments = Vec::new();
     for segment in trimmed.trim_matches('/').split('/') {
         if segment.is_empty() {
@@ -330,7 +331,11 @@ fn normalize_route_template(template: &str) -> Option<String> {
     Some(if segments.is_empty() {
         "/".to_string()
     } else {
-        format!("/{}", segments.join("/"))
+        let mut path = format!("/{}", segments.join("/"));
+        if preserve_trailing_slash {
+            path.push('/');
+        }
+        path
     })
 }
 
@@ -409,6 +414,7 @@ fn materialize_route_path(
     if template.contains('*') {
         return None;
     }
+    let preserve_trailing_slash = template.len() > 1 && template.ends_with('/');
     let mut segments = Vec::new();
     for segment in template.trim_matches('/').split('/') {
         if segment.is_empty() {
@@ -428,7 +434,11 @@ fn materialize_route_path(
     Some(if segments.is_empty() {
         "/".to_string()
     } else {
-        format!("/{}", segments.join("/"))
+        let mut path = format!("/{}", segments.join("/"));
+        if preserve_trailing_slash {
+            path.push('/');
+        }
+        path
     })
 }
 
@@ -850,6 +860,25 @@ mod source_seed_tests {
         );
     }
 
+    #[test]
+    fn preserves_trailing_slash_when_materializing_live_route_seed() {
+        let locations = BTreeMap::from([("id".to_string(), "path".to_string())]);
+        let seed = source_endpoint_seed(
+            "https://example.test",
+            "GET",
+            "/users/{id}/",
+            &["id".to_string()],
+            &locations,
+            None,
+            "source_route:fastapi:app.py:1",
+        )
+        .expect("seed");
+        assert_eq!(seed.route_template, "/users/{id}/");
+        assert_eq!(
+            seed.discovery_url.as_deref(),
+            Some("https://example.test/users/codetwin-test/")
+        );
+    }
     #[test]
     fn preserves_deployment_base_path_without_double_prefix() {
         let parameters = vec!["id".to_string()];
