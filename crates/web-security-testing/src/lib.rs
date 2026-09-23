@@ -835,6 +835,36 @@ mod source_seed_tests {
     }
 
     #[test]
+    fn source_seed_preserves_same_parameter_name_across_path_and_query() {
+        let names = vec!["id".to_string()];
+        let locations = BTreeMap::from([(
+            "id".to_string(),
+            vec!["path".to_string(), "query".to_string()],
+        )]);
+        let seed = source_endpoint_seed(
+            "https://example.test",
+            "GET",
+            "/api/items/:id",
+            &names,
+            &locations,
+            None,
+            "source_route:express:server.ts:1",
+        )
+        .expect("seed");
+
+        assert_eq!(
+            seed.parameter_locations.get("id"),
+            Some(&vec!["path".to_string(), "query".to_string()])
+        );
+        assert!(seed.url.contains("/api/items/%7Bid%7D"));
+        assert!(seed.url.contains("id=codetwin-test"));
+        assert!(seed
+            .discovery_url
+            .as_deref()
+            .is_some_and(|url| url.contains("/api/items/codetwin-test")));
+    }
+
+    #[test]
     fn materializes_typed_source_routes_with_constraint_compatible_values() {
         let locations = BTreeMap::from([("id".to_string(), vec!["path".to_string()])]);
 
