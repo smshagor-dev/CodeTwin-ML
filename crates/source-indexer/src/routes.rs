@@ -1450,12 +1450,32 @@ fn php_top_level_return_array_keys(method_text: &str) -> Vec<String> {
     let Some(return_index) = method_text.find("return") else {
         return Vec::new();
     };
-    let Some(relative_open) = method_text[return_index..].find('[') else {
+    php_static_short_array_keys(&method_text[return_index + "return".len()..])
+}
+
+fn php_static_short_array_keys_after(value: &str, marker: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut offset = 0usize;
+    while let Some(relative) = value[offset..].find(marker) {
+        let start = offset + relative + marker.len();
+        keys.extend(php_static_short_array_keys(&value[start..]));
+        offset = start;
+        if offset >= value.len() {
+            break;
+        }
+    }
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+fn php_static_short_array_keys(value: &str) -> Vec<String> {
+    let value = value.trim_start();
+    if !value.starts_with('[') {
         return Vec::new();
-    };
-    let open = return_index + relative_open;
-    let bytes = method_text.as_bytes();
-    let mut index = open + 1;
+    }
+    let bytes = value.as_bytes();
+    let mut index = 1usize;
     let mut depth = 1usize;
     let mut keys = Vec::new();
 
@@ -1495,7 +1515,6 @@ fn php_top_level_return_array_keys(method_text: &str) -> Vec<String> {
                 }
                 let end = index;
                 index += 1;
-
                 if depth != 1 {
                     continue;
                 }
@@ -1525,11 +1544,10 @@ fn php_top_level_return_array_keys(method_text: &str) -> Vec<String> {
     keys.dedup();
     keys
 }
-
 fn laravel_request_parameters(method_text: &str) -> Vec<IndexedRouteParameter> {
     let request_variables = laravel_request_variables(method_text);
     let mut parameters = Vec::new();
-    for variable in request_variables {
+    for variable in &request_variables {
         for (method, location) in [
             ("query", "query"),
             ("header", "header"),
@@ -1568,9 +1586,31 @@ fn laravel_request_parameters(method_text: &str) -> Vec<IndexedRouteParameter> {
             }
         }
     }
+
+    let has_json = parameters.iter().any(|parameter| parameter.location == "json");
+    let has_form = parameters.iter().any(|parameter| parameter.location == "form");
+    let validation_location = match (has_json, has_form) {
+        (true, false) => "json",
+        (false, true) => "form",
+        _ => "body",
+    };
+
+    let mut validation_fields = Vec::new();
+    for variable in &request_variables {
+        let marker = format!("${variable}->validate(");
+        validation_fields.extend(php_static_short_array_keys_after(method_text, &marker));
+    }
+    validation_fields.extend(php_static_short_array_keys_after(
+        method_text,
+        "request()->validate(",
+    ));
+    validation_fields.sort();
+    validation_fields.dedup();
+    for name in validation_fields {
+        parameters.push(route_parameter(&name, validation_location));
+    }
     parameters
 }
-
 fn laravel_request_variables(method_text: &str) -> Vec<String> {
     let Some(function_index) = method_text.find("function") else {
         return Vec::new();
@@ -3804,6 +3844,88 @@ class StoreUserRequest extends FormRequest
             .any(|parameter| parameter.name == "nested"));
     }
 
+    #[test]
+    fn extracts_static_laravel_inline_validation_fields_with_safe_location_promotion() {
+        let source = r#"<?php
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class UserController
+{
+    public function ambiguous(Request $request)
+    {
+        $validated = $request->validate([
+            'email' => ['required', 'email'],
+            'profile.name' => ['nullable', 'string'],
+        ]);
+    }
+
+    public function json(Request $request)
+    {
+        $email = $request->json('email');
+        $validated = $request->validate([
+            'email' => ['required', 'email'],
+            'password' => ['required'],
+        ]);
+    }
+
+    public function form(Request $request)
+    {
+        $csrf = $request->post('csrf');
+        $validated = request()->validate([
+            'email' => ['required', 'email'],
+        ]);
+    }
+
+    public function dynamic(Request $request)
+    {
+        $rules = ['secret' => 'required'];
+        $validated = $request->validate($rules);
+    }
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (_routes, _mounts, inputs) =
+            extract_routes("PHP", "app/Http/Controllers/UserController.php", source, tree.root_node());
+
+        let ambiguous = inputs
+            .iter()
+            .find(|input| input.handler_name == "ambiguous")
+            .expect("ambiguous handler");
+        for field in ["email", "profile.name"] {
+            assert!(ambiguous.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "body"
+            }));
+        }
+
+        let json = inputs
+            .iter()
+            .find(|input| input.handler_name == "json")
+            .expect("json handler");
+        assert!(json.parameters.iter().any(|parameter| {
+            parameter.name == "password" && parameter.location == "json"
+        }));
+
+        let form = inputs
+            .iter()
+            .find(|input| input.handler_name == "form")
+            .expect("form handler");
+        assert!(form.parameters.iter().any(|parameter| {
+            parameter.name == "email" && parameter.location == "form"
+        }));
+
+        let dynamic = inputs
+            .iter()
+            .find(|input| input.handler_name == "dynamic");
+        assert!(dynamic.is_none() || !dynamic.unwrap().parameters.iter().any(|parameter| {
+            parameter.name == "secret"
+        }));
+    }
     #[test]
     fn extracts_laravel_controller_request_inputs() {
         let source = r#"<?php
