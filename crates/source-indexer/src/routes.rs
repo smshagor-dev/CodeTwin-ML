@@ -3342,6 +3342,7 @@ fn rust_handlers<'a>(source: &str, root: Node<'a>) -> BTreeMap<String, Node<'a>>
 fn rust_struct_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let mut own_fields = BTreeMap::<String, Vec<String>>::new();
     let mut flatten_types = BTreeMap::<String, Vec<String>>::new();
+    let mut transparent_types = BTreeMap::<String, String>::new();
 
     walk(root, &mut |node| {
         if node.kind() != "struct_item" {
@@ -3357,11 +3358,23 @@ fn rust_struct_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<Stri
         let Some(raw) = text(source, node) else {
             return;
         };
+
+        let row = node.start_position().row;
+        if rust_preceding_serde_has_flag(source, row, "transparent") {
+            let Some(target) = rust_transparent_struct_target(raw) else {
+                return;
+            };
+            own_fields.insert(name.to_string(), Vec::new());
+            flatten_types.insert(name.to_string(), Vec::new());
+            transparent_types.insert(name.to_string(), target);
+            return;
+        }
+
         if !raw.contains('{') {
             return;
         }
 
-        let rename_all = rust_preceding_serde_rename_all(source, node.start_position().row);
+        let rename_all = rust_preceding_serde_rename_all(source, row);
         own_fields.insert(
             name.to_string(),
             rust_struct_fields(raw, rename_all.as_deref()),
@@ -3378,6 +3391,18 @@ fn rust_struct_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<Stri
             if resolved.contains_key(name) {
                 continue;
             }
+
+            if let Some(target) = transparent_types.get(name) {
+                let Some(target_fields) = resolved.get(target).cloned() else {
+                    continue;
+                };
+                if !target_fields.is_empty() {
+                    resolved.insert(name.clone(), target_fields);
+                }
+                changed = true;
+                continue;
+            }
+
             let local_flatten: Vec<&String> = flatten_types
                 .get(name)
                 .into_iter()
@@ -3410,8 +3435,8 @@ fn rust_struct_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<Stri
         }
     }
 
-    // Cycles or unresolved external flatten targets do not erase statically
-    // known own fields. Unknown flatten contents remain omitted.
+    // Cycles or unresolved external flatten/transparent targets do not erase
+    // statically known own fields. Unknown nested contents remain omitted.
     for name in names {
         if resolved.contains_key(&name) {
             continue;
@@ -3426,6 +3451,55 @@ fn rust_struct_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<Stri
     }
 
     resolved
+}
+
+fn rust_transparent_struct_target(raw: &str) -> Option<String> {
+    if let (Some(open), Some(close)) = (raw.find('('), raw.rfind(')')) {
+        if close > open && !raw[..open].contains('{') {
+            let mut inner = raw[open + 1..close].trim().trim_end_matches(',').trim();
+            if inner.starts_with("#[") {
+                return None;
+            }
+            if let Some(rest) = inner.strip_prefix("pub ") {
+                inner = rest.trim();
+            } else if inner.starts_with("pub(") {
+                let close_visibility = inner.find(')')?;
+                inner = inner[close_visibility + 1..].trim();
+            }
+            return rust_simple_type_name(inner);
+        }
+    }
+
+    let open = raw.find('{')?;
+    let close = raw.rfind('}')?;
+    if close <= open {
+        return None;
+    }
+
+    let mut declaration: Option<String> = None;
+    for raw_line in raw[open + 1..close].lines() {
+        let line = raw_line.split("//").next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("#[") {
+            return None;
+        }
+        if declaration.is_some() {
+            return None;
+        }
+        declaration = Some(line.trim_end_matches(',').trim().to_string());
+    }
+
+    let mut declaration = declaration?;
+    if let Some(rest) = declaration.strip_prefix("pub ") {
+        declaration = rest.trim().to_string();
+    } else if declaration.starts_with("pub(") {
+        let close_visibility = declaration.find(')')?;
+        declaration = declaration[close_visibility + 1..].trim().to_string();
+    }
+    let (_, type_name) = declaration.split_once(':')?;
+    rust_simple_type_name(type_name.trim())
 }
 
 fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
@@ -3604,6 +3678,14 @@ fn rust_struct_flatten_types(raw: &str) -> Vec<String> {
     flatten_types.sort();
     flatten_types.dedup();
     flatten_types
+}
+
+fn rust_preceding_serde_has_flag(source: &str, struct_row: usize, flag: &str) -> bool {
+    rust_preceding_attributes(source, struct_row)
+        .into_iter()
+        .any(|attribute| {
+            attribute.starts_with("#[serde(") && rust_serde_has_flag(&attribute, flag)
+        })
 }
 
 fn rust_preceding_serde_rename_all(source: &str, struct_row: usize) -> Option<String> {
@@ -7055,6 +7137,98 @@ fn app() -> Router {
         assert!(!route.parameters.iter().any(|parameter| parameter.name == "display_name"));
         assert!(!route.parameters.iter().any(|parameter| parameter.name == "account_id"));
     }
+    #[test]
+    fn resolves_local_serde_transparent_struct_wrappers_conservatively() {
+        let source = r#"
+use axum::{routing::post, Json, Router};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Payload {
+    email: String,
+    #[serde(rename = "displayName")]
+    display_name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct Wrapped(Payload);
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct DoubleWrapped(Box<Wrapped>);
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct NamedWrapped {
+    value: Payload,
+}
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct ExternalWrapped(ImportedPayload);
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct CycleA(CycleB);
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct CycleB(CycleA);
+
+#[derive(Deserialize)]
+struct PlainTuple(Payload);
+
+async fn wrapped(Json(_body): Json<Wrapped>) {}
+async fn double_wrapped(Json(_body): Json<DoubleWrapped>) {}
+async fn named_wrapped(Json(_body): Json<NamedWrapped>) {}
+async fn external(Json(_body): Json<ExternalWrapped>) {}
+async fn cycle(Json(_body): Json<CycleA>) {}
+async fn plain(Json(_body): Json<PlainTuple>) {}
+
+fn app() -> Router {
+    Router::new()
+        .route("/wrapped", post(wrapped))
+        .route("/double", post(double_wrapped))
+        .route("/named", post(named_wrapped))
+        .route("/external", post(external))
+        .route("/cycle", post(cycle))
+        .route("/plain", post(plain))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+
+        for path in ["/wrapped", "/double", "/named"] {
+            let route = routes
+                .iter()
+                .find(|route| route.http_method == "POST" && route.path_template == path)
+                .expect("transparent route");
+            for field in ["email", "displayName"] {
+                assert!(route.parameters.iter().any(|parameter| {
+                    parameter.name == field && parameter.location == "json"
+                }));
+            }
+            assert!(!route.parameters.iter().any(|parameter| parameter.name == "value"));
+        }
+
+        for path in ["/external", "/cycle", "/plain"] {
+            let route = routes
+                .iter()
+                .find(|route| route.http_method == "POST" && route.path_template == path)
+                .expect("conservative route");
+            assert!(!route.parameters.iter().any(|parameter| {
+                parameter.location == "json"
+                    && matches!(parameter.name.as_str(), "email" | "displayName" | "value")
+            }));
+        }
+    }
+
     #[test]
     fn uses_serde_deserialize_direction_for_request_field_names() {
         let source = r#"
