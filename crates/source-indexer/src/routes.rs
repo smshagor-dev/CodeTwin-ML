@@ -27,10 +27,13 @@ pub fn extract_routes(
         "Python" => {
             let (mut routes, mut mounts) = extract_fastapi_routes(source, root);
             let (flask_routes, flask_mounts, flask_inputs) = extract_flask_routes(source, root);
+            let (django_routes, django_inputs) = extract_django_routes(source, root);
             routes.extend(flask_routes);
             mounts.extend(flask_mounts);
-            routes.extend(extract_django_routes(source, root));
-            (routes, mounts, flask_inputs)
+            routes.extend(django_routes);
+            let mut handler_inputs = flask_inputs;
+            handler_inputs.extend(django_inputs);
+            (routes, mounts, handler_inputs)
         }
         "PHP" => {
             let (routes, mounts, handler_inputs) = extract_laravel_routes(source, root);
