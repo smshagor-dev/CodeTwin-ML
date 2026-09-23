@@ -18,7 +18,6 @@ pub struct TargetedRetestRequest {
     pub method: String,
     #[serde(default)]
     pub parameter_names: Vec<String>,
-    #[serde(default)]
     #[serde(default, deserialize_with = "crate::deserialize_parameter_locations")]
     pub parameter_locations: ParameterLocations,
     pub parameter_name: Option<String>,
