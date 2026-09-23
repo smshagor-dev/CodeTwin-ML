@@ -4402,6 +4402,7 @@ def update_user(user_id):
     #[test]
     fn extracts_only_method_evidenced_django_routes() {
         let source = r#"
+import json
 from django.urls import path
 from django.views.decorators.http import require_GET, require_POST, require_safe, require_http_methods
 
@@ -4426,6 +4427,22 @@ def update(request, id):
     admin = request.headers.get("X-Admin")
     return (email, admin)
 
+@require_POST
+def create_json(request):
+    payload = json.loads(request.body)
+    email = payload.get("email")
+    timezone = payload["timezone"]
+    dynamic = "secret"
+    payload.get(dynamic)
+    return (email, timezone)
+
+@require_POST
+def ambiguous_body(request):
+    payload = json.loads(request.body)
+    email = payload.get("jsonEmail")
+    form_email = request.POST.get("formEmail")
+    return (email, form_email)
+
 def undecorated(request):
     return None
 
@@ -4433,6 +4450,8 @@ urlpatterns = [
     path("users/<int:id>/", user),
     path("health/", health),
     path("users/<int:id>/update/", update),
+    path("json/", create_json),
+    path("ambiguous/", ambiguous_body),
     path("plain/", undecorated),
     path("external/", views.external),
 ]
@@ -4496,12 +4515,55 @@ urlpatterns = [
                 Some("application/x-www-form-urlencoded")
             );
         }
+        let json_route = routes
+            .iter()
+            .find(|route| {
+                route.framework == "django"
+                    && route.http_method == "POST"
+                    && route.path_template == "/json/"
+            })
+            .expect("django JSON route");
+        for field in ["email", "timezone"] {
+            assert!(json_route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert!(!json_route.parameters.iter().any(|parameter| {
+            parameter.name == "secret" && parameter.location == "json"
+        }));
+        assert_eq!(
+            json_route.request_content_type.as_deref(),
+            Some("application/json")
+        );
+
+        let ambiguous = routes
+            .iter()
+            .find(|route| {
+                route.framework == "django"
+                    && route.http_method == "POST"
+                    && route.path_template == "/ambiguous/"
+            })
+            .expect("django ambiguous body route");
+        assert!(!ambiguous.parameters.iter().any(|parameter| {
+            matches!(parameter.location.as_str(), "json" | "form")
+        }));
+        assert!(ambiguous.request_content_type.is_none());
+
         assert!(!routes.iter().any(|route| route.path_template == "/plain/"));
         assert!(!routes.iter().any(|route| route.path_template == "/external/"));
         assert!(handler_inputs.iter().any(|input| {
             input.handler_name == "user"
                 && input.parameters.iter().any(|parameter| {
                     parameter.name == "should_not_probe" && parameter.location == "form"
+                })
+        }));
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "ambiguous_body"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "jsonEmail" && parameter.location == "json"
+                })
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "formEmail" && parameter.location == "form"
                 })
         }));
     }
