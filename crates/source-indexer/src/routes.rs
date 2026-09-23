@@ -3558,7 +3558,9 @@ fn rust_struct_flatten_types(raw: &str) -> Vec<String> {
             attribute.push(' ');
             attribute.push_str(line);
             if line.ends_with(']') {
-                flatten_next = attribute.contains("flatten") && !attribute.contains("skip");
+                flatten_next =
+                    rust_serde_has_flag(attribute, "flatten")
+                        && !rust_serde_has_flag(attribute, "skip");
                 serde_attribute = None;
             }
             continue;
@@ -3566,7 +3568,9 @@ fn rust_struct_flatten_types(raw: &str) -> Vec<String> {
 
         if line.starts_with("#[serde(") {
             if line.ends_with(']') {
-                flatten_next = line.contains("flatten") && !line.contains("skip");
+                flatten_next =
+                    rust_serde_has_flag(line, "flatten")
+                        && !rust_serde_has_flag(line, "skip");
             } else {
                 serde_attribute = Some(line.to_string());
             }
@@ -3746,13 +3750,55 @@ fn rust_apply_field_serde_attribute(
     pending_aliases: &mut Vec<String>,
     skip_next: &mut bool,
 ) {
-    if attribute.contains("skip") || attribute.contains("flatten") {
+    if rust_serde_has_flag(attribute, "skip") || rust_serde_has_flag(attribute, "flatten") {
         *skip_next = true;
     }
     if let Some(rename) = rust_serde_rename(attribute) {
         *pending_rename = Some(rename);
     }
     pending_aliases.extend(rust_serde_aliases(attribute));
+}
+
+fn rust_serde_has_flag(attribute: &str, flag: &str) -> bool {
+    let mut token = String::new();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for character in attribute.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match character {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        if character == '"' {
+            if token == flag {
+                return true;
+            }
+            token.clear();
+            in_string = true;
+            continue;
+        }
+
+        if character == '_' || character.is_ascii_alphanumeric() {
+            token.push(character);
+            continue;
+        }
+
+        if token == flag {
+            return true;
+        }
+        token.clear();
+    }
+
+    token == flag
 }
 
 fn rust_serde_aliases(attribute: &str) -> Vec<String> {
@@ -6927,7 +6973,7 @@ const DYNAMIC_ALIAS: &str = "runtimeAlias";
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateUser {
-    #[serde(alias = "legacyDisplayName")]
+    #[serde(alias = "legacyDisplayName", alias = "skipLegacy", alias = "flattenLegacy")]
     display_name: String,
     #[serde(rename = "emailAddress", alias = "email", alias = "legacy_email")]
     primary_email: String,
@@ -6963,6 +7009,8 @@ fn app() -> Router {
         for field in [
             "displayName",
             "legacyDisplayName",
+            "skipLegacy",
+            "flattenLegacy",
             "emailAddress",
             "email",
             "legacy_email",
