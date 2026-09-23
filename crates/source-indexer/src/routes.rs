@@ -3845,6 +3845,88 @@ class StoreUserRequest extends FormRequest
     }
 
     #[test]
+    fn extracts_static_laravel_inline_validation_fields_with_safe_location_promotion() {
+        let source = r#"<?php
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class UserController
+{
+    public function ambiguous(Request $request)
+    {
+        $validated = $request->validate([
+            'email' => ['required', 'email'],
+            'profile.name' => ['nullable', 'string'],
+        ]);
+    }
+
+    public function json(Request $request)
+    {
+        $email = $request->json('email');
+        $validated = $request->validate([
+            'email' => ['required', 'email'],
+            'password' => ['required'],
+        ]);
+    }
+
+    public function form(Request $request)
+    {
+        $csrf = $request->post('csrf');
+        $validated = request()->validate([
+            'email' => ['required', 'email'],
+        ]);
+    }
+
+    public function dynamic(Request $request)
+    {
+        $rules = ['secret' => 'required'];
+        $validated = $request->validate($rules);
+    }
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (_routes, _mounts, inputs) =
+            extract_routes("PHP", "app/Http/Controllers/UserController.php", source, tree.root_node());
+
+        let ambiguous = inputs
+            .iter()
+            .find(|input| input.handler_name == "ambiguous")
+            .expect("ambiguous handler");
+        for field in ["email", "profile.name"] {
+            assert!(ambiguous.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "body"
+            }));
+        }
+
+        let json = inputs
+            .iter()
+            .find(|input| input.handler_name == "json")
+            .expect("json handler");
+        assert!(json.parameters.iter().any(|parameter| {
+            parameter.name == "password" && parameter.location == "json"
+        }));
+
+        let form = inputs
+            .iter()
+            .find(|input| input.handler_name == "form")
+            .expect("form handler");
+        assert!(form.parameters.iter().any(|parameter| {
+            parameter.name == "email" && parameter.location == "form"
+        }));
+
+        let dynamic = inputs
+            .iter()
+            .find(|input| input.handler_name == "dynamic");
+        assert!(dynamic.is_none() || !dynamic.unwrap().parameters.iter().any(|parameter| {
+            parameter.name == "secret"
+        }));
+    }
+    #[test]
     fn extracts_laravel_controller_request_inputs() {
         let source = r#"<?php
 namespace App\Http\Controllers;
