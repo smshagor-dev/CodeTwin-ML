@@ -4225,6 +4225,71 @@ def update_user(user_id):
         }));
     }
     #[test]
+    fn extracts_only_method_evidenced_django_routes() {
+        let source = r#"
+from django.urls import path
+from django.views.decorators.http import require_GET, require_POST, require_safe, require_http_methods
+
+@require_GET
+def user(request, id):
+    return None
+
+@require_safe
+def health(request):
+    return None
+
+@require_http_methods(["POST", "PATCH"])
+def update(request, id):
+    return None
+
+def undecorated(request):
+    return None
+
+urlpatterns = [
+    path("users/<int:id>/", user),
+    path("health/", health),
+    path("users/<int:id>/update/", update),
+    path("plain/", undecorated),
+    path("external/", views.external),
+]
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes("Python", "urls.py", source, tree.root_node());
+
+        let user = routes
+            .iter()
+            .find(|route| route.framework == "django" && route.http_method == "GET" && route.path_template == "/users/<int:id>/")
+            .expect("django GET route");
+        assert_eq!(user.handler_name.as_deref(), Some("user"));
+        assert!(user.parameters.iter().any(|parameter| {
+            parameter.name == "id" && parameter.location == "path"
+        }));
+
+        assert!(routes.iter().any(|route| {
+            route.framework == "django"
+                && route.http_method == "GET"
+                && route.path_template == "/health/"
+        }));
+        assert!(routes.iter().any(|route| {
+            route.framework == "django"
+                && route.http_method == "HEAD"
+                && route.path_template == "/health/"
+        }));
+        for method in ["POST", "PATCH"] {
+            assert!(routes.iter().any(|route| {
+                route.framework == "django"
+                    && route.http_method == method
+                    && route.path_template == "/users/<int:id>/update/"
+            }));
+        }
+        assert!(!routes.iter().any(|route| route.path_template == "/plain/"));
+        assert!(!routes.iter().any(|route| route.path_template == "/external/"));
+    }
+    #[test]
     fn extracts_flask_routes_blueprints_and_converters() {
         let source = r#"
 from flask import Flask, Blueprint
