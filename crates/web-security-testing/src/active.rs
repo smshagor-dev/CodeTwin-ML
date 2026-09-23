@@ -1061,6 +1061,83 @@ mod tests {
     }
 
     #[test]
+    fn active_worker_scope_errors_fail_the_scan() {
+        use std::{
+            collections::{BTreeMap, HashMap},
+            sync::{
+                atomic::AtomicBool,
+                Arc,
+            },
+        };
+
+        let config = crate::ScanConfig {
+            scope: crate::ScopeConfig {
+                target_url: "http://127.0.0.1:9/".into(),
+                allowed_hostnames: vec!["127.0.0.1".into()],
+                allowed_subdomains: Vec::new(),
+                allowed_paths: vec!["/".into()],
+                excluded_paths: Vec::new(),
+                max_crawl_depth: 0,
+                max_requests: 8,
+                concurrency: 1,
+                timeout_ms: 500,
+                response_limit_bytes: 16_384,
+                redirect_limit: 0,
+                retry_limit: 0,
+                active_testing: true,
+                allow_non_idempotent_methods: false,
+                allow_private_networks: true,
+                enable_timing_probes: false,
+                authorization_confirmed: true,
+            },
+            checks: crate::CheckConfig::default(),
+        };
+        let policy = crate::ScopePolicy::new(config.scope.clone()).expect("scope");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let requester = crate::ScopedRequester::new(
+            policy.clone(),
+            crate::AuthContext::default(),
+            crate::RequestBudget::new(8),
+            Arc::clone(&cancelled),
+        );
+        let endpoint = crate::EndpointObservation {
+            url: "http://example.invalid:9/?q=a".into(),
+            route_template: None,
+            method: "GET".into(),
+            depth: 0,
+            source: "fixture".into(),
+            parameter_names: vec!["q".into()],
+            parameter_locations: BTreeMap::from([("q".into(), "query".into())]),
+            response_header_names: Vec::new(),
+            cookie_names: Vec::new(),
+            content_type: None,
+            status_code: None,
+            redirect_to: None,
+        };
+        let endpoints = [endpoint];
+        let baselines = HashMap::new();
+        let mut ignored_progress = |_| {};
+
+        let result = super::run_active_checks(
+            super::ActiveCheckContext {
+                policy: &policy,
+                requester: &requester,
+                secondary_auth: None,
+                config: &config,
+                endpoints: &endpoints,
+                baselines: &baselines,
+                cancelled,
+            },
+            &mut ignored_progress,
+        );
+
+        assert!(
+            matches!(result, Err(crate::ScanError::Scope(_))),
+            "out-of-scope worker errors must fail the scan instead of being swallowed"
+        );
+    }
+
+    #[test]
     fn baseline_keys_are_method_specific_and_fragment_stable() {
         assert_eq!(
             baseline_key("post", "https://example.test/users#details"),
