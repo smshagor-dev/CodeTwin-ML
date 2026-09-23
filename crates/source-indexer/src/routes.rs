@@ -29,6 +29,7 @@ pub fn extract_routes(
             let (flask_routes, flask_mounts, flask_inputs) = extract_flask_routes(source, root);
             routes.extend(flask_routes);
             mounts.extend(flask_mounts);
+            routes.extend(extract_django_routes(source, root));
             (routes, mounts, flask_inputs)
         }
         "PHP" => {
@@ -953,6 +954,141 @@ fn extract_fastapi_routes(
     });
 
     (routes, mounts)
+}
+
+fn extract_django_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
+    if !source.contains("django.urls") || !source.contains("django.views.decorators.http") {
+        return Vec::new();
+    }
+
+    let handler_methods = django_handler_methods(source, root);
+    if handler_methods.is_empty() {
+        return Vec::new();
+    }
+
+    let mut routes = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "call" {
+            return;
+        }
+        let Some(value) = text(source, node).map(str::trim) else {
+            return;
+        };
+        let Some(call_tail) = value.strip_prefix("path(") else {
+            return;
+        };
+        let Some(route_literal) = first_quoted_string(call_tail) else {
+            return;
+        };
+        let Some(handler_name) = django_path_handler_name(call_tail) else {
+            return;
+        };
+        let Some(methods) = handler_methods.get(&handler_name) else {
+            return;
+        };
+
+        let full_path = normalize_path(&route_literal);
+        let mut parameters = path_parameters(&full_path);
+        normalize_parameters(&mut parameters);
+        let start = node.start_position();
+        let end = node.end_position();
+        for method in methods {
+            routes.push(IndexedRoute {
+                framework: "django".to_string(),
+                router_name: "urlpatterns".to_string(),
+                http_method: method.clone(),
+                path_template: full_path.clone(),
+                handler_name: Some(handler_name.clone()),
+                parameters: parameters.clone(),
+                request_content_type: None,
+                start_line: start.row + 1,
+                end_line: end.row + 1,
+            });
+        }
+    });
+    routes
+}
+
+fn django_handler_methods(
+    source: &str,
+    root: Node<'_>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut output = BTreeMap::new();
+    walk(root, &mut |node| {
+        if node.kind() != "decorated_definition" {
+            return;
+        }
+        let Some(function) = named_children(node)
+            .into_iter()
+            .find(|child| child.kind() == "function_definition")
+        else {
+            return;
+        };
+        let Some(name) = function
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(str::trim)
+        else {
+            return;
+        };
+        if !is_identifier(name) {
+            return;
+        }
+
+        let mut methods = Vec::new();
+        for decorator in named_children(node)
+            .into_iter()
+            .filter(|child| child.kind() == "decorator")
+        {
+            let Some(raw) = text(source, decorator).map(str::trim) else {
+                continue;
+            };
+            let normalized = raw.trim_start_matches('@').trim();
+            if normalized.ends_with("require_GET") {
+                methods.push("GET".to_string());
+            } else if normalized.ends_with("require_POST") {
+                methods.push("POST".to_string());
+            } else if normalized.ends_with("require_safe") {
+                methods.extend(["GET".to_string(), "HEAD".to_string()]);
+            } else if normalized.contains("require_http_methods(") {
+                for method in quoted_strings(normalized) {
+                    let upper = method.to_ascii_uppercase();
+                    if HTTP_METHODS
+                        .iter()
+                        .any(|known| known.eq_ignore_ascii_case(&upper))
+                    {
+                        methods.push(upper);
+                    }
+                }
+            }
+        }
+        methods.sort();
+        methods.dedup();
+        if !methods.is_empty() {
+            output.insert(name.to_string(), methods);
+        }
+    });
+    output
+}
+
+fn django_path_handler_name(call_tail: &str) -> Option<String> {
+    let (quote_index, quote) = call_tail
+        .char_indices()
+        .find(|(_, character)| matches!(character, '"' | '\''))?;
+    let after_open = &call_tail[quote_index + quote.len_utf8()..];
+    let close_relative = after_open.find(quote)?;
+    let after_literal = &after_open[close_relative + quote.len_utf8()..];
+    let after_comma = after_literal.trim_start().strip_prefix(',')?.trim_start();
+    let candidate = after_comma
+        .split([',', ')'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    if is_identifier(candidate) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
 }
 
 fn extract_flask_routes(
