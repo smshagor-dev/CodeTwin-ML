@@ -107,20 +107,53 @@ pub fn start_web_security_scan(
     })?;
 
     if let Some(session_id) = request.guided_session_id.as_deref() {
-        with_database(&state, |database| {
+        if let Err(error) = with_database(&state, |database| {
             GuidedSecurityStore::new(database)
                 .link_scan(session_id, &scan.id)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
-        })?;
+        }) {
+            let message = format!("guided security scan link failed: {error}");
+            let _ = with_database(&state, |database| {
+                AuthorizedWebSecurityStore::new(database)
+                    .fail_scan(&scan.id, &message)
+                    .map_err(|store_error| store_error.to_string())?;
+                let _ = GuidedSecurityStore::new(database).update_from_scan(
+                    session_id,
+                    "failed",
+                    "failed",
+                    Some(&message),
+                );
+                Ok(())
+            });
+            return Err(message);
+        }
     }
 
     let cancelled = Arc::new(AtomicBool::new(false));
     {
-        let mut registry = state
-            .web_security_cancellations
-            .lock()
-            .map_err(|_| "web security cancellation registry lock is poisoned".to_string())?;
+        let mut registry = match state.web_security_cancellations.lock() {
+            Ok(registry) => registry,
+            Err(_) => {
+                let message =
+                    "web security cancellation registry lock is poisoned".to_string();
+                let _ = with_database(&state, |database| {
+                    AuthorizedWebSecurityStore::new(database)
+                        .fail_scan(&scan.id, &message)
+                        .map_err(|store_error| store_error.to_string())?;
+                    if let Some(session_id) = request.guided_session_id.as_deref() {
+                        let _ = GuidedSecurityStore::new(database).update_from_scan(
+                            session_id,
+                            "failed",
+                            "failed",
+                            Some(&message),
+                        );
+                    }
+                    Ok(())
+                });
+                return Err(message);
+            }
+        };
         registry.insert(scan.id.clone(), Arc::clone(&cancelled));
     }
 
