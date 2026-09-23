@@ -3240,7 +3240,9 @@ fn rust_handlers<'a>(source: &str, root: Node<'a>) -> BTreeMap<String, Node<'a>>
 }
 
 fn rust_struct_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
-    let mut models = BTreeMap::new();
+    let mut own_fields = BTreeMap::<String, Vec<String>>::new();
+    let mut flatten_types = BTreeMap::<String, Vec<String>>::new();
+
     walk(root, &mut |node| {
         if node.kind() != "struct_item" {
             return;
@@ -3258,13 +3260,72 @@ fn rust_struct_models(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<Stri
         if !raw.contains('{') {
             return;
         }
+
         let rename_all = rust_preceding_serde_rename_all(source, node.start_position().row);
-        let fields = rust_struct_fields(raw, rename_all.as_deref());
-        if !fields.is_empty() {
-            models.insert(name.to_string(), fields);
-        }
+        own_fields.insert(
+            name.to_string(),
+            rust_struct_fields(raw, rename_all.as_deref()),
+        );
+        flatten_types.insert(name.to_string(), rust_struct_flatten_types(raw));
     });
-    models
+
+    let names: Vec<String> = own_fields.keys().cloned().collect();
+    let mut resolved = BTreeMap::<String, Vec<String>>::new();
+
+    for _ in 0..names.len().max(1) {
+        let mut changed = false;
+        for name in &names {
+            if resolved.contains_key(name) {
+                continue;
+            }
+            let local_flatten: Vec<&String> = flatten_types
+                .get(name)
+                .into_iter()
+                .flatten()
+                .filter(|target| own_fields.contains_key(*target))
+                .collect();
+            if !local_flatten
+                .iter()
+                .all(|target| resolved.contains_key(*target))
+            {
+                continue;
+            }
+
+            let mut fields = own_fields.get(name).cloned().unwrap_or_default();
+            for target in local_flatten {
+                if let Some(target_fields) = resolved.get(target) {
+                    fields.extend(target_fields.iter().cloned());
+                }
+            }
+            fields.sort();
+            fields.dedup();
+            fields.truncate(256);
+            if !fields.is_empty() {
+                resolved.insert(name.clone(), fields);
+            }
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Cycles or unresolved external flatten targets do not erase statically
+    // known own fields. Unknown flatten contents remain omitted.
+    for name in names {
+        if resolved.contains_key(&name) {
+            continue;
+        }
+        let mut fields = own_fields.remove(&name).unwrap_or_default();
+        fields.sort();
+        fields.dedup();
+        fields.truncate(256);
+        if !fields.is_empty() {
+            resolved.insert(name, fields);
+        }
+    }
+
+    resolved
 }
 
 fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
@@ -3350,6 +3411,75 @@ fn rust_struct_fields(raw: &str, rename_all: Option<&str>) -> Vec<String> {
     fields.dedup();
     fields.truncate(256);
     fields
+}
+
+fn rust_struct_flatten_types(raw: &str) -> Vec<String> {
+    let Some(open) = raw.find('{') else {
+        return Vec::new();
+    };
+    let Some(close) = raw.rfind('}') else {
+        return Vec::new();
+    };
+    if close <= open {
+        return Vec::new();
+    }
+
+    let mut flatten_types = Vec::new();
+    let mut flatten_next = false;
+    let mut serde_attribute: Option<String> = None;
+
+    for raw_line in raw[open + 1..close].lines() {
+        let line = raw_line.split("//").next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(attribute) = serde_attribute.as_mut() {
+            attribute.push(' ');
+            attribute.push_str(line);
+            if line.ends_with(']') {
+                flatten_next = attribute.contains("flatten") && !attribute.contains("skip");
+                serde_attribute = None;
+            }
+            continue;
+        }
+
+        if line.starts_with("#[serde(") {
+            if line.ends_with(']') {
+                flatten_next = line.contains("flatten") && !line.contains("skip");
+            } else {
+                serde_attribute = Some(line.to_string());
+            }
+            continue;
+        }
+        if line.starts_with("#[") {
+            continue;
+        }
+
+        let mut declaration = line.trim_end_matches(',').trim();
+        if let Some(rest) = declaration.strip_prefix("pub ") {
+            declaration = rest.trim();
+        } else if declaration.starts_with("pub(") {
+            let Some(close_visibility) = declaration.find(')') else {
+                flatten_next = false;
+                continue;
+            };
+            declaration = declaration[close_visibility + 1..].trim();
+        }
+
+        if flatten_next {
+            if let Some((_, type_name)) = declaration.split_once(':') {
+                if let Some(type_name) = rust_simple_type_name(type_name.trim()) {
+                    flatten_types.push(type_name);
+                }
+            }
+        }
+        flatten_next = false;
+    }
+
+    flatten_types.sort();
+    flatten_types.dedup();
+    flatten_types
 }
 
 fn rust_preceding_serde_rename_all(source: &str, struct_row: usize) -> Option<String> {
@@ -6302,14 +6432,107 @@ fn app() -> Router {
             .find(|route| route.framework == "axum" && route.http_method == "POST")
             .expect("axum route");
 
-        for field in ["displayName", "emailAddress"] {
+        for field in ["displayName", "emailAddress", "trace_id"] {
             assert!(route.parameters.iter().any(|parameter| {
                 parameter.name == field && parameter.location == "json"
             }));
         }
-        for excluded in ["display_name", "email_address", "internalNote", "metadata", "trace_id"] {
+        for excluded in ["display_name", "email_address", "internalNote", "metadata"] {
             assert!(!route.parameters.iter().any(|parameter| parameter.name == excluded));
         }
+    }
+
+    #[test]
+    fn serde_flatten_merges_local_fields_and_preserves_unknown_or_cyclic_own_fields() {
+        let source = r#"
+use axum::{routing::{post, put, patch}, Json, Router};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct Audit {
+    #[serde(rename = "traceId")]
+    trace_id: String,
+    actor: String,
+}
+
+#[derive(Deserialize)]
+struct CreateUser {
+    email: String,
+    #[serde(flatten)]
+    audit: Audit,
+}
+
+#[derive(Deserialize)]
+struct ExternalWrap {
+    own: String,
+    #[serde(flatten)]
+    external: ImportedPayload,
+}
+
+#[derive(Deserialize)]
+struct CycleA {
+    a: String,
+    #[serde(flatten)]
+    b: CycleB,
+}
+
+#[derive(Deserialize)]
+struct CycleB {
+    b: String,
+    #[serde(flatten)]
+    a: CycleA,
+}
+
+async fn create(Json(_body): Json<CreateUser>) {}
+async fn update(Json(_body): Json<ExternalWrap>) {}
+async fn patch(Json(_body): Json<CycleA>) {}
+
+fn app() -> Router {
+    Router::new()
+        .route("/users", post(create))
+        .route("/users/{id}", put(update).patch(patch))
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) =
+            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+
+        let create = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/users")
+            .expect("create route");
+        for field in ["email", "traceId", "actor"] {
+            assert!(create.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert!(!create.parameters.iter().any(|parameter| parameter.name == "audit"));
+
+        let update = routes
+            .iter()
+            .find(|route| route.http_method == "PUT" && route.path_template == "/users/{id}")
+            .expect("update route");
+        assert!(update.parameters.iter().any(|parameter| {
+            parameter.name == "own" && parameter.location == "json"
+        }));
+        for unknown in ["external", "traceId", "actor"] {
+            assert!(!update.parameters.iter().any(|parameter| parameter.name == unknown));
+        }
+
+        let patch = routes
+            .iter()
+            .find(|route| route.http_method == "PATCH" && route.path_template == "/users/{id}")
+            .expect("patch route");
+        assert!(patch.parameters.iter().any(|parameter| {
+            parameter.name == "a" && parameter.location == "json"
+        }));
+        assert!(!patch.parameters.iter().any(|parameter| {
+            parameter.name == "b" && parameter.location == "json"
+        }));
     }
 
     #[test]
