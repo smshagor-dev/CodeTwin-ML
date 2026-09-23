@@ -1071,6 +1071,7 @@ fn extract_fastapi_routes(
     root: Node<'_>,
 ) -> (Vec<IndexedRoute>, Vec<IndexedRouteMount>) {
     let model_fields = pydantic_model_fields(source, root);
+    let local_aliases = pydantic_local_alias_constants(source, root);
     let (router_prefixes, mounts) = fastapi_router_prefixes(source, root);
     let mut routes = Vec::new();
 
@@ -1108,6 +1109,7 @@ fn extract_fastapi_routes(
                 function,
                 &full_path,
                 &model_fields,
+                &local_aliases,
             ));
             normalize_parameters(&mut parameters);
             let request_content_type = if parameters.iter().any(|value| value.location == "json") {
@@ -3761,6 +3763,34 @@ fn keyword_direct_python_bool(value: &str, keyword: &str) -> Option<bool> {
     }
 }
 
+fn static_validation_aliases(
+    value: &str,
+    local_aliases: &BTreeMap<String, Vec<String>>,
+) -> Option<Vec<String>> {
+    let tail = keyword_value_tail(value, "validation_alias")?;
+    if let Some(alias) = keyword_direct_string(value, "validation_alias") {
+        return Some(vec![alias]);
+    }
+    if tail.trim_start().starts_with("AliasChoices(") {
+        return Some(pydantic_static_alias_choices(tail).unwrap_or_default());
+    }
+    if tail.trim_start().starts_with("AliasPath(") {
+        return Some(
+            pydantic_static_single_alias_path(tail)
+                .into_iter()
+                .collect(),
+        );
+    }
+    if let Some(identifier) = keyword_direct_identifier(value, "validation_alias") {
+        if let Some(aliases) = local_aliases.get(&identifier) {
+            return Some(aliases.clone());
+        }
+    }
+    // An explicit but non-static validation_alias is authoritative. Do not
+    // fall back to alias/generator/field-name guesses.
+    Some(Vec::new())
+}
+
 fn pydantic_field_input_aliases(
     line: &str,
     local_aliases: &BTreeMap<String, Vec<String>>,
@@ -3769,28 +3799,8 @@ fn pydantic_field_input_aliases(
         return None;
     }
 
-    if let Some(tail) = keyword_value_tail(line, "validation_alias") {
-        if let Some(alias) = keyword_direct_string(line, "validation_alias") {
-            return Some(vec![alias]);
-        }
-        if tail.trim_start().starts_with("AliasChoices(") {
-            return Some(pydantic_static_alias_choices(tail).unwrap_or_default());
-        }
-        if tail.trim_start().starts_with("AliasPath(") {
-            return Some(
-                pydantic_static_single_alias_path(tail)
-                    .into_iter()
-                    .collect(),
-            );
-        }
-        if let Some(identifier) = keyword_direct_identifier(line, "validation_alias") {
-            if let Some(aliases) = local_aliases.get(&identifier) {
-                return Some(aliases.clone());
-            }
-        }
-        // An explicit but non-static validation_alias is authoritative. Do not
-        // fall back to alias/generator/field-name guesses.
-        return Some(Vec::new());
+    if let Some(aliases) = static_validation_aliases(line, local_aliases) {
+        return Some(aliases);
     }
 
     if keyword_value_tail(line, "alias").is_some() {
@@ -4121,6 +4131,7 @@ fn fastapi_function_parameters(
     function: Node<'_>,
     path: &str,
     model_fields: &BTreeMap<String, Vec<String>>,
+    local_aliases: &BTreeMap<String, Vec<String>>,
 ) -> Vec<IndexedRouteParameter> {
     let Some(parameters_node) = function.child_by_field_name("parameters") else {
         return Vec::new();
@@ -4155,6 +4166,13 @@ fn fastapi_function_parameters(
         .into_iter()
         .find(|(marker, _)| raw.contains(marker));
         if let Some((marker, location)) = explicit {
+            if let Some(aliases) = static_validation_aliases(raw, local_aliases) {
+                for alias in aliases {
+                    output.push(route_parameter(&alias, location));
+                }
+                continue;
+            }
+
             let alias = keyword_direct_string(raw, "alias");
             let external_name = if let Some(alias) = alias {
                 alias
