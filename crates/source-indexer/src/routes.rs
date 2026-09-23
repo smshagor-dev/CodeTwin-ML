@@ -3773,6 +3773,13 @@ fn pydantic_field_input_aliases(line: &str) -> Option<Vec<String>> {
         if tail.trim_start().starts_with("AliasChoices(") {
             return Some(pydantic_static_alias_choices(tail).unwrap_or_default());
         }
+        if tail.trim_start().starts_with("AliasPath(") {
+            return Some(
+                pydantic_static_single_alias_path(tail)
+                    .into_iter()
+                    .collect(),
+            );
+        }
         // An explicit but non-static validation_alias is authoritative. Do not
         // fall back to alias/generator/field-name guesses.
         return Some(Vec::new());
@@ -3787,6 +3794,29 @@ fn pydantic_field_input_aliases(line: &str) -> Option<Vec<String>> {
     }
 
     None
+}
+
+fn pydantic_static_single_alias_path(value: &str) -> Option<String> {
+    let input = value.trim_start().strip_prefix("AliasPath(")?.trim_start();
+    let quote = input.chars().next()?;
+    if !matches!(quote, '"' | '\'') {
+        return None;
+    }
+    let rest = &input[quote.len_utf8()..];
+    let end = rest.find(quote)?;
+    let alias = &rest[..end];
+    if alias.is_empty() || alias.len() > 256 || alias.contains('\\') {
+        return None;
+    }
+
+    let mut remaining = rest[end + quote.len_utf8()..].trim_start();
+    if let Some(tail) = remaining.strip_prefix(',') {
+        remaining = tail.trim_start();
+    }
+    if !remaining.starts_with(')') {
+        return None;
+    }
+    Some(alias.to_string())
 }
 
 fn pydantic_static_alias_choices(value: &str) -> Option<Vec<String>> {
@@ -6556,7 +6586,7 @@ async def create_user(payload: CreateUser):
     fn maps_fastapi_parameter_and_pydantic_input_aliases() {
         let source = r#"
 from fastapi import FastAPI, Query, Header, Cookie
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, AliasPath, BaseModel, Field
 
 app = FastAPI()
 ALIASES = ("legacy", "current")
@@ -6566,6 +6596,8 @@ class CreateUser(BaseModel):
     account_id: str = Field(alias="legacyAccount", validation_alias="accountId")
     ignored_choice: str = Field(validation_alias=AliasChoices("first", "second"))
     dynamic_choice: str = Field(validation_alias=AliasChoices(*ALIASES))
+    single_path: str = Field(validation_alias=AliasPath("singleKey"))
+    nested_path: str = Field(validation_alias=AliasPath("user", "email"))
 
 @app.post("/users")
 async def create_user(
@@ -6594,12 +6626,12 @@ async def create_user(
                 parameter.name == field && parameter.location == "json"
             }));
         }
-        for field in ["first", "second"] {
+        for field in ["first", "second", "singleKey"] {
             assert!(route.parameters.iter().any(|parameter| {
                 parameter.name == field && parameter.location == "json"
             }));
         }
-        for field in ["ignored_choice", "dynamic_choice"] {
+        for field in ["ignored_choice", "dynamic_choice", "single_path", "nested_path", "user", "email"] {
             assert!(!route.parameters.iter().any(|parameter| parameter.name == field));
         }
         assert!(route.parameters.iter().any(|parameter| {
