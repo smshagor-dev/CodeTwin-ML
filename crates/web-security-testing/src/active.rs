@@ -1010,24 +1010,27 @@ mod tests {
 
     #[test]
     fn ambiguous_body_location_does_not_build_a_probe_body() {
-        let endpoint = EndpointObservation {
-            method: "POST".to_string(),
+        use std::collections::BTreeMap;
+
+        let endpoint = crate::EndpointObservation {
             url: "https://example.test/users".to_string(),
+            route_template: None,
+            method: "POST".to_string(),
+            depth: 0,
             source: "source_route:laravel:routes/api.php:1".to_string(),
             parameter_names: vec!["email".to_string()],
             parameter_locations: BTreeMap::from([(
                 "email".to_string(),
                 "body".to_string(),
             )]),
+            response_header_names: vec![],
+            cookie_names: vec![],
             content_type: None,
-            route_template: None,
-            source_route_id: None,
-            source_file: None,
-            source_framework: None,
-            source_handler: None,
+            status_code: None,
+            redirect_to: None,
         };
-        let error = contextual_request_body(&endpoint, "email", "body", "probe");
-        assert!(error.is_none());
+        let body = super::contextual_request_body(&endpoint, "email", "body", "probe");
+        assert!(body.is_none());
     }
 
     #[test]
