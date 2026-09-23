@@ -3003,7 +3003,7 @@ fn contains_method_call(value: &str, method: &str) -> bool {
 fn keyword_direct_string(value: &str, keyword: &str) -> Option<String> {
     let tail = keyword_value_tail(value, keyword)?;
     let first = tail.chars().next()?;
-    if !matches!(first, '"' | ''') {
+    if !matches!(first, '"' | '\'') {
         return None;
     }
     let rest = &tail[first.len_utf8()..];
