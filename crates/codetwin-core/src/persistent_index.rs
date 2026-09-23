@@ -1709,7 +1709,42 @@ mod tests {
 
     use crate::{Database, ImportResolutionState, ProjectQueryService};
 
-    use super::ProjectIndexService;
+    use super::{load_composer_psr4_roots, ProjectIndexService};
+
+    #[test]
+    fn loads_bounded_composer_psr4_roots_from_autoload_sections() {
+        let repository = tempdir().expect("repository");
+        fs::write(
+            repository.path().join("composer.json"),
+            r#"{
+  "autoload": {
+    "psr-4": {
+      "Domain\\": ["missing-root/", "src/Domain/"]
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Spec\\": "tests/Spec/"
+    }
+  }
+}"#,
+        )
+        .expect("composer");
+
+        let roots = load_composer_psr4_roots(repository.path());
+        assert!(roots.iter().any(|root| {
+            root.namespace_prefix == "Domain\\"
+                && root.directory == "src/Domain"
+        }));
+        assert!(roots.iter().any(|root| {
+            root.namespace_prefix == "Domain\\"
+                && root.directory == "missing-root"
+        }));
+        assert!(roots.iter().any(|root| {
+            root.namespace_prefix == "Spec\\"
+                && root.directory == "tests/Spec"
+        }));
+    }
 
     #[test]
     fn reopening_project_reuses_stable_identity_without_running_git() {
