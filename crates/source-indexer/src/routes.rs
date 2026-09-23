@@ -4401,6 +4401,104 @@ export async function GET() {
         }));
     }
     #[test]
+    fn maps_explicit_typescript_json_body_models_without_guessing_complex_types() {
+        let source = r#"
+interface CreateUser {
+  email: string;
+  displayName?: string;
+  "x-client-id": string;
+}
+
+type UpdateUser = {
+  timezone: string;
+  locale?: string;
+};
+
+type Ambiguous = { email: string } | { phone: string };
+
+interface ExtendedUser extends CreateUser {
+  admin: boolean;
+}
+
+export async function POST(request: Request) {
+  const payload: CreateUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function PUT(request: Request) {
+  const payload: UpdateUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function PATCH(request: Request) {
+  const payload: Ambiguous = await request.json();
+  return Response.json(payload);
+}
+
+export async function DELETE(request: Request) {
+  const payload: ExtendedUser = await request.json();
+  return Response.json(payload);
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, handler_inputs) = extract_routes(
+            "TypeScript",
+            "src/app/users/route.ts",
+            source,
+            tree.root_node(),
+        );
+
+        let post = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "POST")
+            .expect("POST route");
+        for field in ["email", "displayName", "x-client-id"] {
+            assert!(post.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        assert_eq!(post.request_content_type.as_deref(), Some("application/json"));
+
+        let put = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PUT")
+            .expect("PUT route");
+        for field in ["timezone", "locale"] {
+            assert!(put.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+
+        let patch = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PATCH")
+            .expect("PATCH route");
+        assert!(!patch.parameters.iter().any(|parameter| {
+            matches!(parameter.name.as_str(), "email" | "phone") && parameter.location == "json"
+        }));
+
+        let delete = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "DELETE")
+            .expect("DELETE route");
+        assert!(!delete.parameters.iter().any(|parameter| {
+            matches!(parameter.name.as_str(), "email" | "displayName" | "admin")
+                && parameter.location == "json"
+        }));
+
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "POST"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "x-client-id" && parameter.location == "json"
+                })
+        }));
+    }
+
+    #[test]
     fn maps_nextjs_request_inputs_to_source_routes() {
         let source = r#"
 import { NextRequest } from "next/server";
