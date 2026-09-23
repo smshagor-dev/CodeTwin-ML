@@ -536,9 +536,9 @@ mod tests {
     #[test]
     fn expands_grouped_and_multi_php_class_imports() {
         let source = r#"<?php
-use App\\Http\\Controllers\\{UserController, AdminController as Admin};
-use App\\Http\\Requests\\StoreUserRequest, App\\Http\\Requests\\UpdateUserRequest as UpdateRequest;
-use App\\Support\\{Thing, function helper, const FLAG};
+use App\Http\Controllers\{UserController, AdminController as Admin};
+use App\Http\Requests\StoreUserRequest, App\Http\Requests\UpdateUserRequest as UpdateRequest;
+use App\Support\{Thing, function helper, const FLAG};
 "#;
         let mut parser = Parser::new();
         parser
@@ -549,26 +549,26 @@ use App\\Support\\{Thing, function helper, const FLAG};
 
         let expected = [
             (
-                "App\\\\Http\\\\Controllers\\\\UserController",
+                "App\\Http\\Controllers\\UserController",
                 "UserController",
                 "UserController",
             ),
             (
-                "App\\\\Http\\\\Controllers\\\\AdminController",
+                "App\\Http\\Controllers\\AdminController",
                 "Admin",
                 "AdminController",
             ),
             (
-                "App\\\\Http\\\\Requests\\\\StoreUserRequest",
+                "App\\Http\\Requests\\StoreUserRequest",
                 "StoreUserRequest",
                 "StoreUserRequest",
             ),
             (
-                "App\\\\Http\\\\Requests\\\\UpdateUserRequest",
+                "App\\Http\\Requests\\UpdateUserRequest",
                 "UpdateRequest",
                 "UpdateUserRequest",
             ),
-            ("App\\\\Support\\\\Thing", "Thing", "Thing"),
+            ("App\\Support\\Thing", "Thing", "Thing"),
         ];
 
         for (specifier, local, imported) in expected {
