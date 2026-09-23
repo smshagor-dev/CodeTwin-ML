@@ -959,15 +959,23 @@ fn extract_fastapi_routes(
     (routes, mounts)
 }
 
-fn extract_django_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
+fn extract_django_routes(
+    source: &str,
+    root: Node<'_>,
+) -> (Vec<IndexedRoute>, Vec<IndexedHandlerInput>) {
     if !source.contains("django.urls") || !source.contains("django.views.decorators.http") {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
     let handler_methods = django_handler_methods(source, root);
     if handler_methods.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
+    let handler_inputs = django_handler_inputs(source, root, &handler_methods);
+    let handler_parameters: BTreeMap<String, Vec<IndexedRouteParameter>> = handler_inputs
+        .iter()
+        .map(|input| (input.handler_name.clone(), input.parameters.clone()))
+        .collect();
 
     let mut routes = Vec::new();
     walk(root, &mut |node| {
@@ -991,11 +999,27 @@ fn extract_django_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
         };
 
         let full_path = normalize_path(&route_literal);
-        let mut parameters = path_parameters(&full_path);
-        normalize_parameters(&mut parameters);
+        let base_parameters = path_parameters(&full_path);
         let start = node.start_position();
         let end = node.end_position();
         for method in methods {
+            let mut parameters = base_parameters.clone();
+            if let Some(handler) = handler_parameters.get(&handler_name) {
+                parameters.extend(
+                    handler
+                        .iter()
+                        .filter(|parameter| {
+                            parameter.location != "form"
+                                || !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS")
+                        })
+                        .cloned(),
+                );
+            }
+            normalize_parameters(&mut parameters);
+            let request_content_type = parameters
+                .iter()
+                .any(|parameter| parameter.location == "form")
+                .then(|| "application/x-www-form-urlencoded".to_string());
             routes.push(IndexedRoute {
                 framework: "django".to_string(),
                 router_name: "urlpatterns".to_string(),
@@ -1003,14 +1027,143 @@ fn extract_django_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
                 http_method: method.clone(),
                 path_template: full_path.clone(),
                 handler_name: Some(handler_name.clone()),
-                parameters: parameters.clone(),
-                request_content_type: None,
+                parameters,
+                request_content_type,
                 start_line: start.row + 1,
                 end_line: end.row + 1,
             });
         }
     });
-    routes
+    (routes, handler_inputs)
+}
+
+fn django_handler_inputs(
+    source: &str,
+    root: Node<'_>,
+    handler_methods: &BTreeMap<String, Vec<String>>,
+) -> Vec<IndexedHandlerInput> {
+    let mut output = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "decorated_definition" {
+            return;
+        }
+        let Some(function) = named_children(node)
+            .into_iter()
+            .find(|child| child.kind() == "function_definition")
+        else {
+            return;
+        };
+        let Some(name) = function
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(str::trim)
+        else {
+            return;
+        };
+        if !handler_methods.contains_key(name) {
+            return;
+        }
+        let mut parameters = django_handler_parameters(source, function);
+        normalize_parameters(&mut parameters);
+        if parameters.is_empty() {
+            return;
+        }
+        let start = function.start_position();
+        let end = function.end_position();
+        output.push(IndexedHandlerInput {
+            handler_name: name.to_string(),
+            parameters,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    });
+    output
+}
+
+fn django_handler_parameters(source: &str, function: Node<'_>) -> Vec<IndexedRouteParameter> {
+    let Some(function_text) = text(source, function) else {
+        return Vec::new();
+    };
+    let Some(request_name) = request_parameter_name(source, function) else {
+        return Vec::new();
+    };
+
+    let mut parameters = Vec::new();
+    for (collection, location) in [
+        (format!("{request_name}.GET"), "query"),
+        (format!("{request_name}.POST"), "form"),
+        (format!("{request_name}.headers"), "header"),
+        (format!("{request_name}.COOKIES"), "cookie"),
+    ] {
+        for method in ["get", "getlist"] {
+            let marker = format!("{collection}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, location));
+                }
+            }
+        }
+        let marker = format!("{collection}[");
+        for name in marker_quoted_subscripts(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, location));
+            }
+        }
+    }
+
+    let mut aliases = BTreeMap::<String, String>::new();
+    walk(function, &mut |node| {
+        if node.kind() != "assignment" {
+            return;
+        }
+        let Some(left) = node.child_by_field_name("left") else {
+            return;
+        };
+        let Some(right) = node.child_by_field_name("right") else {
+            return;
+        };
+        let Some(name) = text(source, left).map(str::trim) else {
+            return;
+        };
+        if !is_identifier(name) {
+            return;
+        }
+        let Some(value) = text(source, right).map(str::trim) else {
+            return;
+        };
+        let location = if value == format!("{request_name}.GET") {
+            Some("query")
+        } else if value == format!("{request_name}.POST") {
+            Some("form")
+        } else if value == format!("{request_name}.headers") {
+            Some("header")
+        } else if value == format!("{request_name}.COOKIES") {
+            Some("cookie")
+        } else {
+            None
+        };
+        if let Some(location) = location {
+            aliases.insert(name.to_string(), location.to_string());
+        }
+    });
+
+    for (alias, location) in aliases {
+        for method in ["get", "getlist"] {
+            let marker = format!("{alias}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, &location));
+                }
+            }
+        }
+        let marker = format!("{alias}[");
+        for name in marker_quoted_subscripts(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, &location));
+            }
+        }
+    }
+    parameters
 }
 
 fn django_handler_methods(
