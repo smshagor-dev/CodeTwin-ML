@@ -393,6 +393,15 @@ mod tests {
         assert!(is_loopback_or_private(shared));
         assert!(is_loopback_or_private(benchmark));
         assert!(is_unroutable(reserved));
+
+        let mut restricted = config();
+        restricted.allow_private_networks = false;
+        let policy = ScopePolicy::new(restricted).expect("restricted policy");
+        assert!(policy.assert_ip(mapped_loopback, "mapped.test").is_err());
+        assert!(policy.assert_ip(mapped_private, "mapped.test").is_err());
+        assert!(policy.assert_ip(shared, "shared.test").is_err());
+        assert!(policy.assert_ip(benchmark, "benchmark.test").is_err());
+        assert!(policy.assert_ip(mapped_public, "public.test").is_ok());
     }
 
     #[test]
