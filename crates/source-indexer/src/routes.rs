@@ -27,10 +27,13 @@ pub fn extract_routes(
         "Python" => {
             let (mut routes, mut mounts) = extract_fastapi_routes(source, root);
             let (flask_routes, flask_mounts, flask_inputs) = extract_flask_routes(source, root);
+            let (django_routes, django_inputs) = extract_django_routes(source, root);
             routes.extend(flask_routes);
             mounts.extend(flask_mounts);
-            routes.extend(extract_django_routes(source, root));
-            (routes, mounts, flask_inputs)
+            routes.extend(django_routes);
+            let mut handler_inputs = flask_inputs;
+            handler_inputs.extend(django_inputs);
+            (routes, mounts, handler_inputs)
         }
         "PHP" => {
             let (routes, mounts, handler_inputs) = extract_laravel_routes(source, root);
@@ -956,15 +959,23 @@ fn extract_fastapi_routes(
     (routes, mounts)
 }
 
-fn extract_django_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
+fn extract_django_routes(
+    source: &str,
+    root: Node<'_>,
+) -> (Vec<IndexedRoute>, Vec<IndexedHandlerInput>) {
     if !source.contains("django.urls") || !source.contains("django.views.decorators.http") {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
     let handler_methods = django_handler_methods(source, root);
     if handler_methods.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
+    let handler_inputs = django_handler_inputs(source, root, &handler_methods);
+    let handler_parameters: BTreeMap<String, Vec<IndexedRouteParameter>> = handler_inputs
+        .iter()
+        .map(|input| (input.handler_name.clone(), input.parameters.clone()))
+        .collect();
 
     let mut routes = Vec::new();
     walk(root, &mut |node| {
@@ -988,11 +999,27 @@ fn extract_django_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
         };
 
         let full_path = normalize_path(&route_literal);
-        let mut parameters = path_parameters(&full_path);
-        normalize_parameters(&mut parameters);
+        let base_parameters = path_parameters(&full_path);
         let start = node.start_position();
         let end = node.end_position();
         for method in methods {
+            let mut parameters = base_parameters.clone();
+            if let Some(handler) = handler_parameters.get(&handler_name) {
+                parameters.extend(
+                    handler
+                        .iter()
+                        .filter(|parameter| {
+                            parameter.location != "form"
+                                || !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS")
+                        })
+                        .cloned(),
+                );
+            }
+            normalize_parameters(&mut parameters);
+            let request_content_type = parameters
+                .iter()
+                .any(|parameter| parameter.location == "form")
+                .then(|| "application/x-www-form-urlencoded".to_string());
             routes.push(IndexedRoute {
                 framework: "django".to_string(),
                 router_name: "urlpatterns".to_string(),
@@ -1000,14 +1027,143 @@ fn extract_django_routes(source: &str, root: Node<'_>) -> Vec<IndexedRoute> {
                 http_method: method.clone(),
                 path_template: full_path.clone(),
                 handler_name: Some(handler_name.clone()),
-                parameters: parameters.clone(),
-                request_content_type: None,
+                parameters,
+                request_content_type,
                 start_line: start.row + 1,
                 end_line: end.row + 1,
             });
         }
     });
-    routes
+    (routes, handler_inputs)
+}
+
+fn django_handler_inputs(
+    source: &str,
+    root: Node<'_>,
+    handler_methods: &BTreeMap<String, Vec<String>>,
+) -> Vec<IndexedHandlerInput> {
+    let mut output = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "decorated_definition" {
+            return;
+        }
+        let Some(function) = named_children(node)
+            .into_iter()
+            .find(|child| child.kind() == "function_definition")
+        else {
+            return;
+        };
+        let Some(name) = function
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(str::trim)
+        else {
+            return;
+        };
+        if !handler_methods.contains_key(name) {
+            return;
+        }
+        let mut parameters = django_handler_parameters(source, function);
+        normalize_parameters(&mut parameters);
+        if parameters.is_empty() {
+            return;
+        }
+        let start = function.start_position();
+        let end = function.end_position();
+        output.push(IndexedHandlerInput {
+            handler_name: name.to_string(),
+            parameters,
+            start_line: start.row + 1,
+            end_line: end.row + 1,
+        });
+    });
+    output
+}
+
+fn django_handler_parameters(source: &str, function: Node<'_>) -> Vec<IndexedRouteParameter> {
+    let Some(function_text) = text(source, function) else {
+        return Vec::new();
+    };
+    let Some(request_name) = request_parameter_name(source, function) else {
+        return Vec::new();
+    };
+
+    let mut parameters = Vec::new();
+    for (collection, location) in [
+        (format!("{request_name}.GET"), "query"),
+        (format!("{request_name}.POST"), "form"),
+        (format!("{request_name}.headers"), "header"),
+        (format!("{request_name}.COOKIES"), "cookie"),
+    ] {
+        for method in ["get", "getlist"] {
+            let marker = format!("{collection}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, location));
+                }
+            }
+        }
+        let marker = format!("{collection}[");
+        for name in marker_quoted_subscripts(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, location));
+            }
+        }
+    }
+
+    let mut aliases = BTreeMap::<String, String>::new();
+    walk(function, &mut |node| {
+        if node.kind() != "assignment" {
+            return;
+        }
+        let Some(left) = node.child_by_field_name("left") else {
+            return;
+        };
+        let Some(right) = node.child_by_field_name("right") else {
+            return;
+        };
+        let Some(name) = text(source, left).map(str::trim) else {
+            return;
+        };
+        if !is_identifier(name) {
+            return;
+        }
+        let Some(value) = text(source, right).map(str::trim) else {
+            return;
+        };
+        let location = if value == format!("{request_name}.GET") {
+            Some("query")
+        } else if value == format!("{request_name}.POST") {
+            Some("form")
+        } else if value == format!("{request_name}.headers") {
+            Some("header")
+        } else if value == format!("{request_name}.COOKIES") {
+            Some("cookie")
+        } else {
+            None
+        };
+        if let Some(location) = location {
+            aliases.insert(name.to_string(), location.to_string());
+        }
+    });
+
+    for (alias, location) in aliases {
+        for method in ["get", "getlist"] {
+            let marker = format!("{alias}.{method}(");
+            for name in marker_quoted_arguments(function_text, &marker) {
+                if !name.is_empty() && name.len() <= 256 {
+                    parameters.push(route_parameter(&name, &location));
+                }
+            }
+        }
+        let marker = format!("{alias}[");
+        for name in marker_quoted_subscripts(function_text, &marker) {
+            if !name.is_empty() && name.len() <= 256 {
+                parameters.push(route_parameter(&name, &location));
+            }
+        }
+    }
+    parameters
 }
 
 fn django_handler_methods(
@@ -4232,7 +4388,13 @@ from django.views.decorators.http import require_GET, require_POST, require_safe
 
 @require_GET
 def user(request, id):
-    return None
+    q = request.GET.get("q")
+    headers = request.headers
+    tenant = headers["X-Tenant"]
+    session = request.COOKIES.get("session")
+    form = request.POST
+    ignored = form.get("should_not_probe")
+    return (q, tenant, session, ignored)
 
 @require_safe
 def health(request):
@@ -4240,7 +4402,10 @@ def health(request):
 
 @require_http_methods(["POST", "PATCH"])
 def update(request, id):
-    return None
+    form = request.POST
+    email = form.get("email")
+    admin = request.headers.get("X-Admin")
+    return (email, admin)
 
 def undecorated(request):
     return None
@@ -4258,7 +4423,8 @@ urlpatterns = [
             .set_language(&tree_sitter_python::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) = extract_routes("Python", "urls.py", source, tree.root_node());
+        let (routes, _, handler_inputs) =
+            extract_routes("Python", "urls.py", source, tree.root_node());
 
         let user = routes
             .iter()
@@ -4267,6 +4433,18 @@ urlpatterns = [
         assert_eq!(user.handler_name.as_deref(), Some("user"));
         assert!(user.parameters.iter().any(|parameter| {
             parameter.name == "id" && parameter.location == "path"
+        }));
+        assert!(user.parameters.iter().any(|parameter| {
+            parameter.name == "q" && parameter.location == "query"
+        }));
+        assert!(user.parameters.iter().any(|parameter| {
+            parameter.name == "X-Tenant" && parameter.location == "header"
+        }));
+        assert!(user.parameters.iter().any(|parameter| {
+            parameter.name == "session" && parameter.location == "cookie"
+        }));
+        assert!(!user.parameters.iter().any(|parameter| {
+            parameter.name == "should_not_probe" && parameter.location == "form"
         }));
 
         assert!(routes.iter().any(|route| {
@@ -4280,14 +4458,33 @@ urlpatterns = [
                 && route.path_template == "/health/"
         }));
         for method in ["POST", "PATCH"] {
-            assert!(routes.iter().any(|route| {
-                route.framework == "django"
-                    && route.http_method == method
-                    && route.path_template == "/users/<int:id>/update/"
+            let route = routes
+                .iter()
+                .find(|route| {
+                    route.framework == "django"
+                        && route.http_method == method
+                        && route.path_template == "/users/<int:id>/update/"
+                })
+                .expect("django write route");
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == "email" && parameter.location == "form"
             }));
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == "X-Admin" && parameter.location == "header"
+            }));
+            assert_eq!(
+                route.request_content_type.as_deref(),
+                Some("application/x-www-form-urlencoded")
+            );
         }
         assert!(!routes.iter().any(|route| route.path_template == "/plain/"));
         assert!(!routes.iter().any(|route| route.path_template == "/external/"));
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "user"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "should_not_probe" && parameter.location == "form"
+                })
+        }));
     }
     #[test]
     fn extracts_flask_routes_blueprints_and_converters() {
