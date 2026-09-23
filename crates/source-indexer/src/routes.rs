@@ -6067,6 +6067,127 @@ Route::post('/login', [AuthController::class, 'login']);
     }
 
     #[test]
+    fn promotes_only_local_untagged_go_embedded_json_struct_fields() {
+        let source = r#"
+package main
+
+import "github.com/gin-gonic/gin"
+
+type Audit struct {
+    TraceID string `json:"traceId"`
+    Actor string `json:"actor"`
+}
+
+type Profile struct {
+    DisplayName string `json:"displayName"`
+}
+
+type CreateUser struct {
+    Email string `json:"email"`
+    Audit
+    *Profile
+}
+
+type TaggedEmbed struct {
+    Own string `json:"own"`
+    Audit `json:"audit"`
+}
+
+type UnknownEmbed struct {
+    Own string `json:"own"`
+    ImportedPayload
+}
+
+type CycleA struct {
+    A string `json:"a"`
+    CycleB
+}
+
+type CycleB struct {
+    B string `json:"b"`
+    CycleA
+}
+
+func create(c *gin.Context) {
+    var payload CreateUser
+    _ = c.ShouldBindJSON(&payload)
+}
+
+func tagged(c *gin.Context) {
+    var payload TaggedEmbed
+    _ = c.ShouldBindJSON(&payload)
+}
+
+func unknown(c *gin.Context) {
+    var payload UnknownEmbed
+    _ = c.ShouldBindJSON(&payload)
+}
+
+func cyclic(c *gin.Context) {
+    var payload CycleA
+    _ = c.ShouldBindJSON(&payload)
+}
+
+func routes(r *gin.Engine) {
+    r.POST("/users", create)
+    r.PUT("/tagged", tagged)
+    r.PATCH("/unknown", unknown)
+    r.POST("/cycle", cyclic)
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_go::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes("Go", "main.go", source, tree.root_node());
+
+        let create = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/users")
+            .expect("create route");
+        for field in ["email", "traceId", "actor", "displayName"] {
+            assert!(create.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        for wrapper in ["Audit", "Profile"] {
+            assert!(!create.parameters.iter().any(|parameter| parameter.name == wrapper));
+        }
+
+        let tagged = routes
+            .iter()
+            .find(|route| route.http_method == "PUT" && route.path_template == "/tagged")
+            .expect("tagged route");
+        assert!(tagged.parameters.iter().any(|parameter| {
+            parameter.name == "own" && parameter.location == "json"
+        }));
+        for excluded in ["audit", "traceId", "actor"] {
+            assert!(!tagged.parameters.iter().any(|parameter| parameter.name == excluded));
+        }
+
+        let unknown = routes
+            .iter()
+            .find(|route| route.http_method == "PATCH" && route.path_template == "/unknown")
+            .expect("unknown route");
+        assert!(unknown.parameters.iter().any(|parameter| {
+            parameter.name == "own" && parameter.location == "json"
+        }));
+        assert!(!unknown.parameters.iter().any(|parameter| parameter.name == "ImportedPayload"));
+
+        let cycle = routes
+            .iter()
+            .find(|route| route.http_method == "POST" && route.path_template == "/cycle")
+            .expect("cycle route");
+        assert!(cycle.parameters.iter().any(|parameter| {
+            parameter.name == "a" && parameter.location == "json"
+        }));
+        assert!(!cycle.parameters.iter().any(|parameter| {
+            parameter.name == "b" && parameter.location == "json"
+        }));
+    }
+
+    #[test]
     fn maps_go_json_struct_fields_from_explicit_body_binding() {
         let source = r#"
 package main
