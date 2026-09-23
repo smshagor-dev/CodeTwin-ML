@@ -5294,6 +5294,79 @@ func routes(e *echo.Echo) {
         assert!(!route.parameters.iter().any(|parameter| parameter.location == "json"));
     }
     #[test]
+    fn maps_gin_typed_binding_struct_tags() {
+        let source = r#"
+package main
+
+import "github.com/gin-gonic/gin"
+
+type ListQuery struct {
+    Search string `form:"q"`
+    Page int `form:"page"`
+    Ignored string `form:"-"`
+}
+
+type TenantHeader struct {
+    Tenant string `header:"X-Tenant"`
+}
+
+type UserURI struct {
+    UserID string `uri:"id"`
+}
+
+type Ambiguous struct {
+    Email string `form:"email" json:"email"`
+}
+
+func show(c *gin.Context) {
+    var query ListQuery
+    var headers TenantHeader
+    var uri UserURI
+    var ambiguous Ambiguous
+    _ = c.ShouldBindQuery(&query)
+    _ = c.ShouldBindHeader(&headers)
+    _ = c.ShouldBindUri(&uri)
+    _ = c.ShouldBind(&ambiguous)
+}
+
+func routes(r *gin.Engine) {
+    r.GET("/users/:id", show)
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_go::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, handler_inputs) =
+            extract_routes("Go", "main.go", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "gin" && route.http_method == "GET")
+            .expect("gin route");
+
+        for field in ["q", "page"] {
+            assert!(route.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "query"
+            }));
+        }
+        assert!(route.parameters.iter().any(|parameter| {
+            parameter.name == "X-Tenant" && parameter.location == "header"
+        }));
+        assert!(route.parameters.iter().any(|parameter| {
+            parameter.name == "id" && parameter.location == "path"
+        }));
+        assert!(!route.parameters.iter().any(|parameter| parameter.name == "Ignored"));
+        assert!(!route.parameters.iter().any(|parameter| parameter.name == "email"));
+
+        assert!(handler_inputs.iter().any(|input| {
+            input.handler_name == "show"
+                && input.parameters.iter().any(|parameter| {
+                    parameter.name == "X-Tenant" && parameter.location == "header"
+                })
+        }));
+    }
+    #[test]
     fn maps_gin_handler_inputs_back_to_source_route() {
         let source = r#"
 package main
