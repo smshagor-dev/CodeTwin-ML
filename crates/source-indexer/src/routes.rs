@@ -3761,12 +3761,71 @@ fn keyword_direct_python_bool(value: &str, keyword: &str) -> Option<bool> {
     }
 }
 
-fn pydantic_field_input_alias(line: &str) -> Option<String> {
+fn pydantic_field_input_aliases(line: &str) -> Option<Vec<String>> {
     if !line.contains("Field(") {
         return None;
     }
-    keyword_direct_string(line, "validation_alias")
-        .or_else(|| keyword_direct_string(line, "alias"))
+
+    if let Some(tail) = keyword_value_tail(line, "validation_alias") {
+        if let Some(alias) = keyword_direct_string(line, "validation_alias") {
+            return Some(vec![alias]);
+        }
+        if tail.trim_start().starts_with("AliasChoices(") {
+            return Some(pydantic_static_alias_choices(tail).unwrap_or_default());
+        }
+        // An explicit but non-static validation_alias is authoritative. Do not
+        // fall back to alias/generator/field-name guesses.
+        return Some(Vec::new());
+    }
+
+    if keyword_value_tail(line, "alias").is_some() {
+        return Some(
+            keyword_direct_string(line, "alias")
+                .into_iter()
+                .collect(),
+        );
+    }
+
+    None
+}
+
+fn pydantic_static_alias_choices(value: &str) -> Option<Vec<String>> {
+    let mut input = value.trim_start().strip_prefix("AliasChoices(")?;
+    let mut aliases = Vec::new();
+
+    loop {
+        input = input.trim_start();
+        if input.starts_with(')') {
+            return (!aliases.is_empty()).then_some(aliases);
+        }
+
+        let quote = input.chars().next()?;
+        if !matches!(quote, '"' | '\'') {
+            return None;
+        }
+        let rest = &input[quote.len_utf8()..];
+        let end = rest.find(quote)?;
+        let alias = &rest[..end];
+        if alias.is_empty() || alias.len() > 256 || alias.contains('\\') {
+            return None;
+        }
+        aliases.push(alias.to_string());
+        if aliases.len() > 32 {
+            return None;
+        }
+
+        input = rest[end + quote.len_utf8()..].trim_start();
+        if let Some(tail) = input.strip_prefix(',') {
+            input = tail;
+            continue;
+        }
+        if input.starts_with(')') {
+            aliases.sort();
+            aliases.dedup();
+            return (!aliases.is_empty()).then_some(aliases);
+        }
+        return None;
+    }
 }
 
 fn keyword_direct_identifier(value: &str, keyword: &str) -> Option<String> {
@@ -3859,15 +3918,17 @@ fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<S
             };
             let candidate = candidate.trim();
             if is_identifier(candidate) && !candidate.starts_with('_') {
-                fields.push(
-                    pydantic_field_input_alias(trimmed)
-                        .or_else(|| {
-                            alias_generator.as_deref().and_then(|generator| {
+                match pydantic_field_input_aliases(trimmed) {
+                    Some(aliases) => fields.extend(aliases),
+                    None => fields.push(
+                        alias_generator
+                            .as_deref()
+                            .and_then(|generator| {
                                 pydantic_apply_alias_generator(candidate, generator)
                             })
-                        })
-                        .unwrap_or_else(|| candidate.to_string()),
-                );
+                            .unwrap_or_else(|| candidate.to_string()),
+                    ),
+                }
             }
         }
         fields.sort();
