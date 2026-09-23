@@ -2044,9 +2044,18 @@ app.post("/api/login/:tenant", (req, res) => {
             .find(|route| route.path_template == "/api/login/:tenant")
             .expect("login route");
         assert_eq!(route.http_method, "POST");
-        assert!(route.parameter_locations.get("tenant").is_some_and(|value| value == "path"));
-        assert!(route.parameter_locations.get("email").is_some_and(|value| value == "json"));
-        assert!(route.parameter_locations.get("password").is_some_and(|value| value == "json"));
+        assert!(route
+            .parameter_locations
+            .get("tenant")
+            .is_some_and(|values| values.iter().any(|value| value == "path")));
+        assert!(route
+            .parameter_locations
+            .get("email")
+            .is_some_and(|values| values.iter().any(|value| value == "json")));
+        assert!(route
+            .parameter_locations
+            .get("password")
+            .is_some_and(|values| values.iter().any(|value| value == "json")));
 
         let correlated = store
             .correlate_source_for_request(
@@ -2078,9 +2087,9 @@ app.post("/api/login/:tenant", (req, res) => {
                         "password".to_string(),
                     ],
                     parameter_locations: std::collections::BTreeMap::from([
-                        ("tenant".to_string(), "path".to_string()),
-                        ("email".to_string(), "json".to_string()),
-                        ("password".to_string(), "json".to_string()),
+                        ("tenant".to_string(), vec!["path".to_string()]),
+                        ("email".to_string(), vec!["json".to_string()]),
+                        ("password".to_string(), vec!["json".to_string()]),
                     ]),
                     response_header_names: Vec::new(),
                     cookie_names: Vec::new(),
@@ -2227,9 +2236,18 @@ export function login(req, res) {
         assert!(route.relative_path.ends_with("auth.js"));
         assert!(route.handler_relative_path.as_deref().is_some_and(|path| path.ends_with("controllers.js")));
         assert_eq!(route.handler_symbol_name.as_deref(), Some("login"));
-        assert_eq!(route.parameter_locations.get("tenant").map(String::as_str), Some("path"));
-        assert_eq!(route.parameter_locations.get("email").map(String::as_str), Some("json"));
-        assert_eq!(route.parameter_locations.get("password").map(String::as_str), Some("json"));
+        assert!(route
+            .parameter_locations
+            .get("tenant")
+            .is_some_and(|values| values.iter().any(|value| value == "path")));
+        assert!(route
+            .parameter_locations
+            .get("email")
+            .is_some_and(|values| values.iter().any(|value| value == "json")));
+        assert!(route
+            .parameter_locations
+            .get("password")
+            .is_some_and(|values| values.iter().any(|value| value == "json")));
 
         let correlated = store
             .correlate_source_for_request(
