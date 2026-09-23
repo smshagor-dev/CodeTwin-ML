@@ -3765,15 +3765,33 @@ fn rust_generic_models(value: &str, marker: &str) -> Vec<String> {
 }
 
 fn rust_simple_type_name(value: &str) -> Option<String> {
+    rust_simple_type_name_inner(value, 0)
+}
+
+fn rust_simple_type_name_inner(value: &str, depth: usize) -> Option<String> {
+    if depth > 4 {
+        return None;
+    }
     let value = value
         .trim()
         .trim_start_matches('&')
         .trim_start_matches("mut ")
         .trim();
-    if value.is_empty()
-        || value
-            .chars()
-            .any(|character| matches!(character, '<' | '>' | '(' | ')' | '[' | ']' | ',' | ';'))
+    if value.is_empty() {
+        return None;
+    }
+
+    if let Some((wrapper, inner)) = rust_single_generic_type(value) {
+        let wrapper = wrapper.rsplit("::").next().unwrap_or(wrapper).trim();
+        if matches!(wrapper, "Option" | "Box") {
+            return rust_simple_type_name_inner(inner, depth + 1);
+        }
+        return None;
+    }
+
+    if value
+        .chars()
+        .any(|character| matches!(character, '<' | '>' | '(' | ')' | '[' | ']' | ',' | ';'))
         || value.chars().any(char::is_whitespace)
     {
         return None;
@@ -3784,6 +3802,37 @@ fn rust_simple_type_name(value: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn rust_single_generic_type(value: &str) -> Option<(&str, &str)> {
+    let open = value.find('<')?;
+    if !value.ends_with('>') {
+        return None;
+    }
+    let wrapper = value[..open].trim();
+    if wrapper.is_empty() {
+        return None;
+    }
+
+    let inner = &value[open + 1..value.len() - 1];
+    let mut depth = 0usize;
+    for character in inner.chars() {
+        match character {
+            '<' => depth += 1,
+            '>' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => return None,
+            _ => {}
+        }
+    }
+    if depth != 0 || inner.trim().is_empty() {
+        return None;
+    }
+    Some((wrapper, inner.trim()))
 }
 
 fn rust_header_map_bindings(parameter_text: &str) -> Vec<String> {
