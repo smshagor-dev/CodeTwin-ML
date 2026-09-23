@@ -6,18 +6,21 @@ use std::{
 };
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::json;
+use serde_json::{json, Value};
 use source_indexer::{IndexResult, IndexedFile, IndexedImportBinding, IndexedSymbol, ParseState};
 use thiserror::Error;
 
 use crate::{
     deterministic_id, file_id, graph_edge_id, graph_node_id, is_windows_path_identity,
-    normalize_path_identity, normalize_relative_path, project_id, resolve_import,
+    normalize_path_identity, normalize_relative_path, project_id, resolve_import_with_php_psr4,
+    PhpPsr4Root,
     symbol_fingerprint, AnalysisStatus, Database, GraphSummary, ImportResolutionState, IndexDelta,
     IndexSummary, ProjectRecord,
 };
 
 const DEFAULT_CONFIG_JSON: &str = "{}";
+const MAX_COMPOSER_JSON_BYTES: u64 = 1024 * 1024;
+const MAX_COMPOSER_PSR4_ROOTS: usize = 256;
 
 #[derive(Debug, Error)]
 pub enum IndexServiceError {
@@ -918,6 +921,7 @@ fn resolve_all_imports(
     case_insensitive: bool,
 ) -> Result<(), IndexServiceError> {
     let file_map = load_file_identity_map(connection, &project.id, case_insensitive)?;
+    let php_psr4_roots = load_composer_psr4_roots(Path::new(&project.root_path));
     let mut statement = connection.prepare(
         "SELECT i.id, f.relative_path, COALESCE(f.language, ''), i.raw_specifier\
          FROM import_references i JOIN files f ON f.id = i.source_file_id\
@@ -938,12 +942,13 @@ fn resolve_all_imports(
     drop(statement);
 
     for (id, source_path, language, raw_specifier) in updates {
-        let resolved = resolve_import(
+        let resolved = resolve_import_with_php_psr4(
             &source_path,
             &language,
             &raw_specifier,
             &file_map,
             case_insensitive,
+            &php_psr4_roots,
         );
         connection.execute(
             "UPDATE import_references SET resolution_state = ?2, resolved_target_file_id = ?3, updated_at = CURRENT_TIMESTAMP\
@@ -952,6 +957,74 @@ fn resolve_all_imports(
         )?;
     }
     Ok(())
+}
+
+fn load_composer_psr4_roots(root: &Path) -> Vec<PhpPsr4Root> {
+    let path = root.join("composer.json");
+    let Ok(metadata) = fs::symlink_metadata(&path) else {
+        return Vec::new();
+    };
+    if !metadata.file_type().is_file() || metadata.len() > MAX_COMPOSER_JSON_BYTES {
+        return Vec::new();
+    }
+    let Ok(source) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(document) = serde_json::from_str::<Value>(&source) else {
+        return Vec::new();
+    };
+
+    let mut roots = Vec::new();
+    for section in ["autoload", "autoload-dev"] {
+        let Some(psr4) = document
+            .get(section)
+            .and_then(|value| value.get("psr-4"))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        for (prefix, value) in psr4 {
+            let prefix = prefix.trim().trim_start_matches('\\').trim();
+            if prefix.is_empty() || prefix.len() > 512 {
+                continue;
+            }
+            let directories: Vec<&str> = match value {
+                Value::String(directory) => vec![directory.as_str()],
+                Value::Array(values) => values.iter().filter_map(Value::as_str).collect(),
+                _ => Vec::new(),
+            };
+            for directory in directories {
+                let normalized_directory = directory.replace('\\', "/");
+                let normalized_directory = normalized_directory.trim().trim_matches('/');
+                if normalized_directory.is_empty() || normalized_directory.len() > 1024 {
+                    continue;
+                }
+                let Some(directory) = normalize_relative_path(normalized_directory, false) else {
+                    continue;
+                };
+                roots.push(PhpPsr4Root {
+                    namespace_prefix: prefix.to_string(),
+                    directory,
+                });
+                if roots.len() >= MAX_COMPOSER_PSR4_ROOTS {
+                    break;
+                }
+            }
+            if roots.len() >= MAX_COMPOSER_PSR4_ROOTS {
+                break;
+            }
+        }
+        if roots.len() >= MAX_COMPOSER_PSR4_ROOTS {
+            break;
+        }
+    }
+
+    roots.sort_by(|left, right| {
+        (&left.namespace_prefix, &left.directory)
+            .cmp(&(&right.namespace_prefix, &right.directory))
+    });
+    roots.dedup();
+    roots
 }
 
 fn resolve_imported_route_handlers(
@@ -1636,7 +1709,42 @@ mod tests {
 
     use crate::{Database, ImportResolutionState, ProjectQueryService};
 
-    use super::ProjectIndexService;
+    use super::{load_composer_psr4_roots, ProjectIndexService};
+
+    #[test]
+    fn loads_bounded_composer_psr4_roots_from_autoload_sections() {
+        let repository = tempdir().expect("repository");
+        fs::write(
+            repository.path().join("composer.json"),
+            r#"{
+  "autoload": {
+    "psr-4": {
+      "Domain\\": ["missing-root/", "src/Domain/"]
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Spec\\": "tests/Spec/"
+    }
+  }
+}"#,
+        )
+        .expect("composer");
+
+        let roots = load_composer_psr4_roots(repository.path());
+        assert!(roots.iter().any(|root| {
+            root.namespace_prefix == "Domain\\"
+                && root.directory == "src/Domain"
+        }));
+        assert!(roots.iter().any(|root| {
+            root.namespace_prefix == "Domain\\"
+                && root.directory == "missing-root"
+        }));
+        assert!(roots.iter().any(|root| {
+            root.namespace_prefix == "Spec\\"
+                && root.directory == "tests/Spec"
+        }));
+    }
 
     #[test]
     fn reopening_project_reuses_stable_identity_without_running_git() {

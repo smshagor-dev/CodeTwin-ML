@@ -10,12 +10,36 @@ pub struct ResolvedImport {
     pub target_file_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhpPsr4Root {
+    pub namespace_prefix: String,
+    pub directory: String,
+}
+
 pub fn resolve_import(
     source_relative_path: &str,
     source_language: &str,
     raw_specifier: &str,
     files_by_identity: &BTreeMap<String, String>,
     case_insensitive: bool,
+) -> ResolvedImport {
+    resolve_import_with_php_psr4(
+        source_relative_path,
+        source_language,
+        raw_specifier,
+        files_by_identity,
+        case_insensitive,
+        &[],
+    )
+}
+
+pub fn resolve_import_with_php_psr4(
+    source_relative_path: &str,
+    source_language: &str,
+    raw_specifier: &str,
+    files_by_identity: &BTreeMap<String, String>,
+    case_insensitive: bool,
+    php_psr4_roots: &[PhpPsr4Root],
 ) -> ResolvedImport {
     let specifier = raw_specifier.trim();
 
@@ -51,7 +75,7 @@ pub fn resolve_import(
             python_resolution_candidates(&base)
         }
         "PHP" => {
-            let candidates = php_resolution_candidates(specifier);
+            let candidates = php_resolution_candidates(specifier, php_psr4_roots);
             if candidates.is_empty() {
                 return ResolvedImport {
                     state: ImportResolutionState::External,
@@ -118,7 +142,10 @@ fn javascript_resolution_candidates(base: &str) -> Vec<String> {
     candidates
 }
 
-fn php_resolution_candidates(specifier: &str) -> Vec<String> {
+fn php_resolution_candidates(
+    specifier: &str,
+    php_psr4_roots: &[PhpPsr4Root],
+) -> Vec<String> {
     let raw = specifier
         .split_once(" as ")
         .map(|(qualified, _)| qualified)
@@ -128,22 +155,50 @@ fn php_resolution_candidates(specifier: &str) -> Vec<String> {
     if raw.is_empty() || raw.contains('{') || raw.contains('}') || raw.contains(',') {
         return Vec::new();
     }
+
+    let mut candidates = Vec::new();
+    for root in php_psr4_roots {
+        let prefix = root
+            .namespace_prefix
+            .trim()
+            .trim_start_matches('\\')
+            .trim_end_matches('\\');
+        if prefix.is_empty() {
+            continue;
+        }
+        let Some(rest) = raw
+            .strip_prefix(prefix)
+            .and_then(|tail| tail.strip_prefix('\\'))
+        else {
+            continue;
+        };
+        let directory = root.directory.replace('\\', "/");
+        let directory = directory.trim().trim_matches('/');
+        if directory.is_empty() {
+            continue;
+        }
+        let relative = rest.replace('\\', "/");
+        if relative.is_empty() {
+            continue;
+        }
+        candidates.push(format!("{directory}/{relative}.php"));
+    }
+
     let namespace_path = raw.replace('\\', "/");
     if namespace_path.is_empty() {
         return Vec::new();
     }
-
-    let mut candidates = vec![format!("{namespace_path}.php")];
+    candidates.push(format!("{namespace_path}.php"));
     if let Some(rest) = namespace_path.strip_prefix("App/") {
         candidates.push(format!("app/{rest}.php"));
     }
     if let Some(rest) = namespace_path.strip_prefix("Tests/") {
         candidates.push(format!("tests/{rest}.php"));
     }
-    candidates.sort();
     candidates.dedup();
     candidates
 }
+
 fn python_relative_import_base(
     source_relative_path: &str,
     specifier: &str,
@@ -193,7 +248,7 @@ mod tests {
 
     use crate::ImportResolutionState;
 
-    use super::resolve_import;
+    use super::{resolve_import, resolve_import_with_php_psr4, PhpPsr4Root};
 
     fn files(paths: &[&str]) -> BTreeMap<String, String> {
         paths
@@ -297,6 +352,55 @@ mod tests {
         assert_eq!(test.state, ImportResolutionState::ResolvedLocal);
         assert_eq!(test.target_file_id.as_deref(), Some("user-test"));
     }
+    #[test]
+    fn resolves_custom_composer_psr4_roots_without_breaking_default_php_fallbacks() {
+        let available = BTreeMap::from([
+            (
+                "src/Domain/Users/Http/UserController.php".to_string(),
+                "domain-user-controller".to_string(),
+            ),
+            (
+                "packages/acme/src/Service.php".to_string(),
+                "acme-service".to_string(),
+            ),
+        ]);
+        let roots = vec![
+            PhpPsr4Root {
+                namespace_prefix: r"Domain\".to_string(),
+                directory: "src/Domain/".to_string(),
+            },
+            PhpPsr4Root {
+                namespace_prefix: r"Acme\Package\".to_string(),
+                directory: "packages/acme/src".to_string(),
+            },
+        ];
+
+        let domain = resolve_import_with_php_psr4(
+            "routes/api.php",
+            "PHP",
+            r"Domain\Users\Http\UserController",
+            &available,
+            false,
+            &roots,
+        );
+        assert_eq!(domain.state, ImportResolutionState::ResolvedLocal);
+        assert_eq!(
+            domain.target_file_id.as_deref(),
+            Some("domain-user-controller")
+        );
+
+        let package = resolve_import_with_php_psr4(
+            "routes/api.php",
+            "PHP",
+            r"Acme\Package\Service",
+            &available,
+            false,
+            &roots,
+        );
+        assert_eq!(package.state, ImportResolutionState::ResolvedLocal);
+        assert_eq!(package.target_file_id.as_deref(), Some("acme-service"));
+    }
+
     #[test]
     fn distinguishes_external_unresolved_and_unsupported() {
         let available = BTreeMap::new();
