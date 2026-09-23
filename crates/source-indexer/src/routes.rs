@@ -337,6 +337,7 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
     let Some(function_text) = text(source, handler) else {
         return parameters;
     };
+    let type_models = typescript_object_models(source, handler);
     if source.contains("next/headers") {
         parameters.extend(nextjs_server_context_parameters(source, handler, function_text));
     }
@@ -391,6 +392,15 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
         if value.contains(&json_marker) {
             if name_node.kind() == "identifier" && is_identifier(name_text) {
                 json_variables.push(name_text.to_string());
+                if let Some(model) =
+                    typescript_declared_variable_model(source, node, name_text)
+                {
+                    if let Some(fields) = type_models.get(&model) {
+                        for field in fields {
+                            parameters.push(route_parameter(field, "json"));
+                        }
+                    }
+                }
             } else {
                 for field in javascript_object_pattern_fields(name_text) {
                     parameters.push(route_parameter(&field, "json"));
@@ -492,6 +502,98 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
         }
     }
     parameters
+}
+
+fn typescript_object_models(
+    source: &str,
+    handler: Node<'_>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut root = handler;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+
+    let mut models = BTreeMap::new();
+    walk(root, &mut |node| {
+        if !matches!(node.kind(), "interface_declaration" | "type_alias_declaration") {
+            return;
+        }
+        let Some(name) = node
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(str::trim)
+        else {
+            return;
+        };
+        if !is_identifier(name) {
+            return;
+        }
+        let Some(raw) = text(source, node).map(str::trim) else {
+            return;
+        };
+
+        if node.kind() == "interface_declaration" {
+            let header = raw.split('{').next().unwrap_or(raw);
+            if header.contains(" extends ") {
+                return;
+            }
+        } else {
+            let Some((_, type_value)) = raw.split_once('=') else {
+                return;
+            };
+            let type_value = type_value.trim().trim_end_matches(';').trim();
+            if !(type_value.starts_with('{') && type_value.ends_with('}')) {
+                return;
+            }
+        }
+
+        let mut fields = Vec::new();
+        walk(node, &mut |child| {
+            if child.kind() != "property_signature" {
+                return;
+            }
+            let Some(name_node) = child.child_by_field_name("name") else {
+                return;
+            };
+            let Some(raw_name) = text(source, name_node).map(str::trim) else {
+                return;
+            };
+            let field = strip_quotes(raw_name).unwrap_or_else(|| raw_name.to_string());
+            if !field.is_empty()
+                && field.len() <= 256
+                && (is_identifier(&field)
+                    || raw_name.starts_with('"')
+                    || raw_name.starts_with('''))
+            {
+                fields.push(field);
+            }
+        });
+        fields.sort();
+        fields.dedup();
+        fields.truncate(256);
+        if !fields.is_empty() {
+            models.insert(name.to_string(), fields);
+        }
+    });
+    models
+}
+
+fn typescript_declared_variable_model(
+    source: &str,
+    declarator: Node<'_>,
+    variable_name: &str,
+) -> Option<String> {
+    let raw = text(source, declarator)?.trim();
+    let (left, _) = raw.split_once('=')?;
+    let (binding, type_name) = left.split_once(':')?;
+    if binding.trim() != variable_name {
+        return None;
+    }
+    let type_name = type_name.trim();
+    if !is_identifier(type_name) {
+        return None;
+    }
+    Some(type_name.to_string())
 }
 
 fn nextjs_server_context_parameters(
