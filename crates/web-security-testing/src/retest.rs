@@ -6,7 +6,7 @@ use url::Url;
 
 use crate::{
     active, passive, query_parameters, AuthContext, CheckConfig, EndpointObservation, FindingObservation,
-    RequestBudget, ScanConfig, ScanError, ScopePolicy, ScopedRequester,
+    RequestBudget, RequestError, ScanConfig, ScanError, ScopePolicy, ScopedRequester,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -126,21 +126,37 @@ pub fn run_targeted_retest(
     };
 
     let mut baselines = HashMap::new();
-    let mut baseline_status = None;
     let mut passive_findings = Vec::new();
-    if method == "GET" {
-        if let Ok(response) = requester.get(&url) {
-            baseline_status = Some(response.status);
-            if is_passive_retest_category(&request.category) {
-                passive_findings.extend(
-                    passive::analyze_response(&url, &endpoint, &response, &targeted.checks)
-                        .into_iter()
-                        .filter(|finding| finding.category == request.category),
-                );
-            }
-            baselines.insert(normalized_key(&url), response);
+    let baseline = match active::send_endpoint_baseline(
+        &requester,
+        &endpoint,
+        &url,
+        request.parameter_name.as_deref(),
+    ) {
+        Ok(response) => response,
+        Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
+        Err(error) => {
+            return Ok(TargetedRetestOutcome {
+                requests_performed: budget.used(),
+                responses_observed: budget.responses_observed(),
+                baseline_status: None,
+                verification_completed: false,
+                failure_reason: Some(format!(
+                    "targeted retest baseline request could not be completed safely: {error}"
+                )),
+                findings: Vec::new(),
+            });
         }
+    };
+    let baseline_status = Some(baseline.status);
+    if is_passive_retest_category(&request.category) {
+        passive_findings.extend(
+            passive::analyze_response(&url, &endpoint, &baseline, &targeted.checks)
+                .into_iter()
+                .filter(|finding| finding.category == request.category),
+        );
     }
+    baselines.insert(active::baseline_key(&method, &endpoint.url), baseline);
 
     let mut ignored_progress = |_| {};
     let endpoints = [endpoint];
@@ -161,8 +177,8 @@ pub fn run_targeted_retest(
     let responses_observed = budget.responses_observed();
     let minimum_responses = minimum_responses_for(&request.category);
     let identity_missing = request.category == "access_control" && secondary_auth.is_none();
-    let baseline_unusable = method == "GET"
-        && !baseline_status.is_some_and(|status| (200..400).contains(&status));
+    let baseline_unusable =
+        !baseline_status.is_some_and(|status| (200..400).contains(&status));
     let authentication_rejected = matches!(baseline_status, Some(401 | 403 | 407));
     let verification_completed =
         !identity_missing
