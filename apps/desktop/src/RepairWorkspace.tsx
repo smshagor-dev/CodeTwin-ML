@@ -198,7 +198,6 @@ export function RepairWorkspace() {
       if (!refreshed) {
         setSelectedVerification(null);
         setVerificationItems([]);
-        setApplicationHistory([]);
       }
     }
   }
