@@ -23,7 +23,7 @@ use codetwin_core::{
     GraphNeighborhood, GuidedSecurityStore,
     GraphSummary, ImpactAnalysisService, ImpactReport, ImportReferenceRecord, IndexRunRecord,
     IndexSummary, LanguageServerConfig, LanguageServerConfigService, LanguageServerKind,
-    ProjectIndexService, ProjectQueryService, QualityFindingRecord, QualityRuleRecord,
+    ProjectIndexService, ProjectQueryService, QualityFindingRecord, QualityRuleRecord, RepairApplicationService,
     QualityRunRecord, QualityRunSummary, ReferenceRefreshSummary, SecurityFindingRecord,
     SecurityRuleRecord, SecurityRunRecord, SecurityRunSummary, SemanticEnrichmentRequest,
     SemanticEnrichmentService, SemanticImportResolutionRecord, SemanticQueryService,
@@ -597,6 +597,10 @@ fn main() {
             std::fs::create_dir_all(&app_data_dir)?;
             let database_path = app_data_dir.join("codetwin.sqlite3");
             let database = Database::open(&database_path)?;
+            let repair_backup_root = app_data_dir.join("repair-backups");
+            RepairApplicationService::new(&database)
+                .recover_interrupted_applications(&repair_backup_root)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
             AuthorizedWebSecurityStore::new(&database)
                 .recover_interrupted_scans()
                 .map_err(|error| std::io::Error::other(error.to_string()))?;

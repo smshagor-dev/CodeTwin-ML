@@ -89,6 +89,20 @@ type RepairVerificationItemRecord = {
   observed_hash: string | null;
 };
 
+type RepairApplicationRunRecord = {
+  id: string;
+  repair_id: string;
+  project_id: string;
+  status: string;
+  changes_total: number;
+  changes_applied: number;
+  rollback_performed: boolean;
+  backup_dir_name: string;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+};
+
 const MAX_PROPOSED_BYTES = 1_048_576;
 
 function buildPatchPreview(before: string, after: string, maxOutputLines = 320): string {
@@ -134,6 +148,8 @@ export function RepairWorkspace() {
   const [selectedVerification, setSelectedVerification] = useState<RepairVerificationRunRecord | null>(null);
   const [verificationItems, setVerificationItems] = useState<RepairVerificationItemRecord[]>([]);
 
+  const [applicationHistory, setApplicationHistory] = useState<RepairApplicationRunRecord[]>([]);
+
   const [title, setTitle] = useState("");
   const [rationale, setRationale] = useState("");
   const [findingId, setFindingId] = useState("");
@@ -163,17 +179,20 @@ export function RepairWorkspace() {
         setVerificationHistory([]);
         setSelectedVerification(null);
         setVerificationItems([]);
+        setApplicationHistory([]);
       }
     }
   }
 
   async function loadPlanDetails(repairId: string) {
-    const [nextChanges, nextHistory] = await Promise.all([
+    const [nextChanges, nextHistory, nextApplications] = await Promise.all([
       invoke<RepairChangeRecord[]>("list_repair_changes", { repairId, limit: 500 }),
       invoke<RepairVerificationRunRecord[]>("repair_verification_history", { repairId, limit: 100 }),
+      invoke<RepairApplicationRunRecord[]>("repair_application_history", { repairId, limit: 100 }),
     ]);
     setChanges(nextChanges);
     setVerificationHistory(nextHistory);
+    setApplicationHistory(nextApplications);
     if (selectedVerification) {
       const refreshed = nextHistory.find((run) => run.id === selectedVerification.id);
       if (!refreshed) {
@@ -196,6 +215,7 @@ export function RepairWorkspace() {
       setVerificationHistory([]);
       setSelectedVerification(null);
       setVerificationItems([]);
+      setApplicationHistory([]);
       setSource(null);
       setProposedContent("");
       await loadProjectData(index.project_id);
@@ -247,6 +267,7 @@ export function RepairWorkspace() {
       setVerificationHistory([]);
       setSelectedVerification(null);
       setVerificationItems([]);
+      setApplicationHistory([]);
       await loadProjectData(projectId);
       setSelectedPlan(plan);
       setNotice("Draft repair plan created. Add at least one full-file replacement before approval.");
@@ -322,7 +343,7 @@ export function RepairWorkspace() {
       if (projectId) await loadProjectData(projectId);
       setSelectedPlan(plan);
       await loadPlanDetails(plan.id);
-      setNotice("Plan approved after base-hash recheck. Apply the proposed files externally, then re-index before verification.");
+      setNotice("Plan approved after base-hash recheck. Use Apply approved repair to perform the hash-verified in-product application, then re-index before verification.");
     } catch (value) {
       setError(String(value));
     } finally {
@@ -349,6 +370,48 @@ export function RepairWorkspace() {
     }
   }
 
+  async function applyPlan() {
+    if (!selectedPlan || selectedPlan.status !== "approved") return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const run = await invoke<RepairApplicationRunRecord>("apply_repair_plan", { repairId: selectedPlan.id });
+      if (projectId) await loadProjectData(projectId);
+      await loadPlanDetails(selectedPlan.id);
+      if (run.status === "applied") {
+        setNotice("Approved repair applied with hash-verified backups. Re-index the repository before verification.");
+      } else {
+        setError(run.error_message ?? `Repair application ended with status ${run.status}.`);
+      }
+    } catch (value) {
+      setError(String(value));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rollbackApplication(runId: string) {
+    if (!selectedPlan) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const run = await invoke<RepairApplicationRunRecord>("rollback_repair_application", { runId });
+      if (projectId) await loadProjectData(projectId);
+      await loadPlanDetails(selectedPlan.id);
+      if (run.status === "rolled_back") {
+        setNotice("Repair rollback restored the verified backup bytes. Re-index before approving or verifying another repair state.");
+      } else {
+        setError(run.error_message ?? `Repair rollback ended with status ${run.status}.`);
+      }
+    } catch (value) {
+      setError(String(value));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function verifyPlan() {
     if (!selectedPlan) return;
     setBusy(true);
@@ -368,7 +431,7 @@ export function RepairWorkspace() {
       await loadPlanDetails(selectedPlan.id);
       setSelectedVerification(run);
       setVerificationItems(items);
-      setNotice(`Verification recorded: ${run.status}. Verification only observes the re-indexed state; it does not apply files.`);
+      setNotice(`Verification recorded: ${run.status}. Verification compares the re-indexed repository with the approved proposal hashes.`);
     } catch (value) {
       setError(String(value));
     } finally {
@@ -421,7 +484,7 @@ export function RepairWorkspace() {
         <div>
           <p className="eyebrow">HASH-VERIFIED REPAIR LAB</p>
           <h1>Verified Repair</h1>
-          <p>Create reviewable full-file replacement proposals pinned to indexed hashes. CodeTwin does not apply repository changes or execute project commands in this workflow.</p>
+          <p>Create reviewable full-file replacement proposals pinned to indexed hashes, apply them through the hash-verified Apply & Rollback lifecycle, and verify the re-indexed result. Repair application never executes project commands.</p>
         </div>
       </header>
 
@@ -434,7 +497,7 @@ export function RepairWorkspace() {
             <h2>Project state</h2>
             <p>Indexing establishes the source hashes used as repair preconditions and later verification evidence.</p>
           </div>
-          {projectId && <button onClick={() => void reindexProject()} disabled={busy}>Re-index after external apply</button>}
+          {projectId && <button onClick={() => void reindexProject()} disabled={busy}>Re-index repository state</button>}
         </div>
         <div className="row">
           <input aria-label="Repository path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="C:\\work\\project or /home/user/project" />
@@ -511,10 +574,12 @@ export function RepairWorkspace() {
                     {selectedPlan.finding_id && <p className="mono">Finding {selectedPlan.finding_id}</p>}
                     <div className="repair-actions">
                       <button onClick={() => void approvePlan()} disabled={busy || !editable || changes.length === 0}>Approve with base-hash check</button>
+                      {selectedPlan.status === "approved" && <button onClick={() => void applyPlan()} disabled={busy}>Apply approved repair</button>}
                       <button className="secondary" onClick={() => void rejectPlan()} disabled={busy || !["draft", "approved", "applied"].includes(selectedPlan.status)}>Reject</button>
                       <button onClick={() => void verifyPlan()} disabled={busy || !verifiable}>Verify re-indexed state</button>
                     </div>
-                    {verifiable && <p className="warning banner">CodeTwin will not apply these files. Apply approved replacements using your normal trusted workflow, then click “Re-index after external apply” before verification.</p>}
+                    {selectedPlan.status === "approved" && <p className="warning banner">Apply performs a base-hash recheck, writes verified backups, and swaps only the approved full-file replacements. Re-index after application before verification.</p>}
+                    {selectedPlan.status === "applied" && <p className="warning banner">Repository bytes were applied by CodeTwin. Re-index before verification; use the application history below to roll back to verified backups if needed.</p>}
                   </>
                 ) : <p className="empty">No plan selected.</p>}
               </section>
@@ -572,6 +637,22 @@ export function RepairWorkspace() {
                     </article>
                   ))}
                   {!changes.length && <p className="empty">No replacements have been proposed.</p>}
+                </div>
+              </section>
+
+              <section className="panel compact">
+                <h2>Apply & rollback history</h2>
+                <div className="result-list repair-scroll-list">
+                  {applicationHistory.map((run) => (
+                    <article key={run.id} className="result-item static-item">
+                      <strong>{run.status}</strong>
+                      <span>{run.changes_applied} / {run.changes_total} applied{run.rollback_performed ? " · rollback performed" : ""}</span>
+                      <small>{run.created_at}{run.completed_at ? ` → ${run.completed_at}` : ""}</small>
+                      {run.error_message && <small>{run.error_message}</small>}
+                      {run.status === "applied" && <button className="secondary" onClick={() => void rollbackApplication(run.id)} disabled={busy}>Rollback verified backup</button>}
+                    </article>
+                  ))}
+                  {!applicationHistory.length && <p className="empty">No application runs yet.</p>}
                 </div>
               </section>
 

@@ -164,6 +164,127 @@ fn rollback_refuses_to_overwrite_a_post_apply_manual_edit() {
 }
 
 #[test]
+fn interrupted_application_recovers_exact_proposed_bytes_from_verified_backup() {
+    let fixture = fixture();
+    let target = fixture.repository.path().join("src/main.rs");
+    let service = RepairApplicationService::new(&fixture.db);
+    let applied = service
+        .apply_plan(&fixture.repair_id, fixture.backups.path())
+        .expect("apply");
+    assert_eq!(fs::read(&target).expect("applied bytes"), b"new\n");
+
+    fixture
+        .db
+        .connection()
+        .execute(
+            "UPDATE repair_application_runs
+             SET status='running', completed_at=NULL, error_message=NULL
+             WHERE id=?1",
+            [&applied.id],
+        )
+        .expect("simulate interrupted run");
+    fixture
+        .db
+        .connection()
+        .execute(
+            "UPDATE repair_plans SET status='approved' WHERE id=?1",
+            [&fixture.repair_id],
+        )
+        .expect("simulate pre-finalized plan");
+
+    assert_eq!(
+        service
+            .recover_interrupted_applications(fixture.backups.path())
+            .expect("recover"),
+        1
+    );
+    assert_eq!(
+        fs::read(&target).expect("restored bytes"),
+        b"old\n",
+        "verified backup must restore the approved base bytes"
+    );
+
+    let recovered = service
+        .get_run(&applied.id)
+        .expect("run lookup")
+        .expect("run");
+    assert_eq!(recovered.status, "failed");
+    assert_eq!(recovered.changes_applied, 0);
+    assert!(recovered.rollback_performed);
+    assert!(recovered
+        .error_message
+        .as_deref()
+        .is_some_and(|message| message.contains("restored every affected path")));
+
+    let items = service
+        .application_items(&applied.id, 10)
+        .expect("items");
+    assert_eq!(items[0].state, "rolled_back");
+    let plan = VerifiedRepairService::new(&fixture.db)
+        .get_plan(&fixture.repair_id)
+        .expect("plan query")
+        .expect("plan");
+    assert_eq!(plan.status, "draft");
+}
+
+#[test]
+fn interrupted_application_never_overwrites_unknown_manual_edits() {
+    let fixture = fixture();
+    let target = fixture.repository.path().join("src/main.rs");
+    let service = RepairApplicationService::new(&fixture.db);
+    let applied = service
+        .apply_plan(&fixture.repair_id, fixture.backups.path())
+        .expect("apply");
+
+    fixture
+        .db
+        .connection()
+        .execute(
+            "UPDATE repair_application_runs
+             SET status='running', completed_at=NULL, error_message=NULL
+             WHERE id=?1",
+            [&applied.id],
+        )
+        .expect("simulate interrupted run");
+    fixture
+        .db
+        .connection()
+        .execute(
+            "UPDATE repair_plans SET status='approved' WHERE id=?1",
+            [&fixture.repair_id],
+        )
+        .expect("simulate pre-finalized plan");
+    fs::write(&target, b"manual-after-crash\n").expect("manual edit");
+
+    assert_eq!(
+        service
+            .recover_interrupted_applications(fixture.backups.path())
+            .expect("recover"),
+        1
+    );
+    assert_eq!(
+        fs::read(&target).expect("manual bytes preserved"),
+        b"manual-after-crash\n"
+    );
+
+    let recovered = service
+        .get_run(&applied.id)
+        .expect("run lookup")
+        .expect("run");
+    assert_eq!(recovered.status, "rollback_failed");
+    assert!(!recovered.rollback_performed);
+    assert!(recovered
+        .error_message
+        .as_deref()
+        .is_some_and(|message| message.contains("left it untouched")));
+    let plan = VerifiedRepairService::new(&fixture.db)
+        .get_plan(&fixture.repair_id)
+        .expect("plan query")
+        .expect("plan");
+    assert_eq!(plan.status, "superseded");
+}
+
+#[test]
 fn application_history_is_repair_scoped_and_bounded() {
     let fixture = fixture();
     let service = RepairApplicationService::new(&fixture.db);

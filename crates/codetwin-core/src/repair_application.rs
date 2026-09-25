@@ -214,6 +214,224 @@ impl<'a> RepairApplicationService<'a> {
             .ok_or_else(|| RepairApplicationError::ApplicationNotFound(run_id))
     }
 
+    pub fn recover_interrupted_applications(
+        &self,
+        backup_root: impl AsRef<Path>,
+    ) -> Result<usize, RepairApplicationError> {
+        let backup_root = ensure_backup_root(backup_root.as_ref())?;
+        let mut statement = self.database.connection().prepare(
+            "SELECT id, repair_id, project_id, status, changes_total, changes_applied, rollback_performed, backup_dir_name, error_message, created_at, completed_at\
+             FROM repair_application_runs WHERE status='running' ORDER BY created_at, id",
+        )?;
+        let rows = statement.query_map([], map_application_run)?;
+        let runs = rows.collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        for run in &runs {
+            self.recover_interrupted_run(run, &backup_root)?;
+        }
+        Ok(runs.len())
+    }
+
+    fn recover_interrupted_run(
+        &self,
+        run: &RepairApplicationRunRecord,
+        backup_root: &Path,
+    ) -> Result<(), RepairApplicationError> {
+        let root = self.project_root(&run.project_id)?;
+        let backup_dir = backup_root.join(&run.backup_dir_name);
+        let items = self.application_items(&run.id, MAX_APPLICATION_FILES + 1)?;
+        if items.len() > MAX_APPLICATION_FILES {
+            self.set_plan_status(&run.repair_id, "superseded")?;
+            self.finish_run(
+                &run.id,
+                "rollback_failed",
+                run.changes_applied,
+                false,
+                Some("Interrupted repair application exceeds the recovery item limit; no repository bytes were changed during startup recovery."),
+            )?;
+            return Ok(());
+        }
+        if items.is_empty() {
+            let _ = fs::remove_dir_all(&backup_dir);
+            self.set_plan_status(&run.repair_id, "draft")?;
+            self.finish_run(
+                &run.id,
+                "failed",
+                0,
+                false,
+                Some("Recovered interrupted repair application before any durable file item state was recorded. Fresh indexing and approval are required before another apply."),
+            )?;
+            return Ok(());
+        }
+
+        let mut rollback_performed = false;
+        let mut unresolved = Vec::new();
+        let mut exact_proposed_remaining = 0usize;
+
+        for item in &items {
+            let relative = match safe_relative_path(&item.relative_path) {
+                Ok(relative) => relative,
+                Err(error) => {
+                    unresolved.push(error.to_string());
+                    continue;
+                }
+            };
+            let target = root.join(&relative);
+            let parent = match target.parent() {
+                Some(parent) => parent,
+                None => {
+                    unresolved.push(format!(
+                        "{}: target has no parent directory",
+                        item.relative_path
+                    ));
+                    continue;
+                }
+            };
+            let parent_canonical = match fs::canonicalize(parent) {
+                Ok(value) if value.starts_with(&root) => value,
+                Ok(_) => {
+                    unresolved.push(format!(
+                        "{}: target parent escaped the project root",
+                        item.relative_path
+                    ));
+                    continue;
+                }
+                Err(error) => {
+                    unresolved.push(format!("{}: {error}", item.relative_path));
+                    continue;
+                }
+            };
+            let target = parent_canonical.join(
+                relative
+                    .file_name()
+                    .ok_or_else(|| RepairApplicationError::UnsafePath(item.relative_path.clone()))?,
+            );
+            let token = safe_token(&format!("{}:{}", run.id, item.change_id));
+            let stage_path = parent_canonical.join(format!(".codetwin-{token}.new"));
+            let sidecar_path = parent_canonical.join(format!(".codetwin-{token}.old"));
+
+            match safe_work_file_hash(&stage_path) {
+                Ok(Some(stage_hash)) if stage_hash == item.proposed_content_hash => {
+                    if let Err(error) = fs::remove_file(&stage_path) {
+                        unresolved.push(format!("{}: {error}", item.relative_path));
+                        continue;
+                    }
+                }
+                Ok(Some(_)) => {
+                    unresolved.push(format!(
+                        "{}: interrupted stage file no longer matches the proposed content hash",
+                        item.relative_path
+                    ));
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    unresolved.push(format!("{}: {error}", item.relative_path));
+                    continue;
+                }
+            }
+
+            let sidecar_hash = match safe_work_file_hash(&sidecar_path) {
+                Ok(value) => value,
+                Err(error) => {
+                    unresolved.push(format!("{}: {error}", item.relative_path));
+                    continue;
+                }
+            };
+            if let Some(hash) = sidecar_hash.as_deref() {
+                if hash != item.base_content_hash {
+                    unresolved.push(format!(
+                        "{}: interrupted sidecar no longer matches the approved base hash",
+                        item.relative_path
+                    ));
+                    continue;
+                }
+            }
+
+            let target_hash = match safe_target_hash(&target) {
+                Ok(value) => value,
+                Err(error) => {
+                    unresolved.push(format!("{}: {error}", item.relative_path));
+                    continue;
+                }
+            };
+
+            match target_hash.as_deref() {
+                Some(hash) if hash == item.base_content_hash => {
+                    if sidecar_hash.is_some() {
+                        fs::remove_file(&sidecar_path)?;
+                    }
+                    self.set_item_state(&run.id, &item.change_id, "rolled_back")?;
+                }
+                Some(hash) if hash == item.proposed_content_hash => {
+                    exact_proposed_remaining += 1;
+                    let backup_path = backup_dir.join(&item.backup_file_name);
+                    match restore_verified_backup(
+                        &target,
+                        &backup_path,
+                        &item.base_content_hash,
+                        &format!("{}:{}", run.id, item.change_id),
+                    ) {
+                        Ok(()) => {
+                            if sidecar_hash.is_some() {
+                                fs::remove_file(&sidecar_path)?;
+                            }
+                            self.set_item_state(&run.id, &item.change_id, "rolled_back")?;
+                            rollback_performed = true;
+                            exact_proposed_remaining = exact_proposed_remaining.saturating_sub(1);
+                        }
+                        Err(error) => {
+                            unresolved.push(format!("{}: {error}", item.relative_path));
+                        }
+                    }
+                }
+                Some(_) => {
+                    unresolved.push(format!(
+                        "{}: repository file changed to bytes that match neither the approved base nor proposed repair; startup recovery left it untouched",
+                        item.relative_path
+                    ));
+                }
+                None => {
+                    if sidecar_hash.as_deref() == Some(item.base_content_hash.as_str()) {
+                        fs::rename(&sidecar_path, &target)?;
+                        self.set_item_state(&run.id, &item.change_id, "rolled_back")?;
+                        rollback_performed = true;
+                    } else {
+                        unresolved.push(format!(
+                            "{}: repository target is missing and no verified base sidecar is available; startup recovery left the path untouched",
+                            item.relative_path
+                        ));
+                    }
+                }
+            }
+        }
+
+        if unresolved.is_empty() {
+            self.set_plan_status(&run.repair_id, "draft")?;
+            self.finish_run(
+                &run.id,
+                "failed",
+                0,
+                rollback_performed,
+                Some("Recovered an interrupted repair application and restored every affected path to its approved base bytes. Fresh indexing and approval are required before another apply."),
+            )?;
+        } else {
+            self.set_plan_status(&run.repair_id, "superseded")?;
+            self.finish_run(
+                &run.id,
+                "rollback_failed",
+                exact_proposed_remaining,
+                rollback_performed,
+                Some(&format!(
+                    "Interrupted repair application requires manual recovery: {}",
+                    unresolved.join("; ")
+                )),
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn rollback_application(
         &self,
         run_id: &str,
@@ -613,6 +831,103 @@ struct PreparedRollback {
 struct SwapRecovery {
     restored_indices: Vec<usize>,
     failed_indices: Vec<usize>,
+}
+
+fn safe_work_file_hash(path: &Path) -> Result<Option<String>, RepairApplicationError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(RepairApplicationError::UnsafePath(path.display().to_string()));
+            }
+            if metadata.len() > MAX_APPLICATION_FILE_BYTES {
+                return Err(RepairApplicationError::OversizedTarget(
+                    path.display().to_string(),
+                ));
+            }
+            Ok(Some(sha256_hex(&fs::read(path)?)))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn safe_target_hash(path: &Path) -> Result<Option<String>, RepairApplicationError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(RepairApplicationError::UnsafeTarget(
+                    path.display().to_string(),
+                ));
+            }
+            if metadata.len() > MAX_APPLICATION_FILE_BYTES {
+                return Err(RepairApplicationError::OversizedTarget(
+                    path.display().to_string(),
+                ));
+            }
+            Ok(Some(sha256_hex(&fs::read(path)?)))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn restore_verified_backup(
+    target: &Path,
+    backup_path: &Path,
+    expected_base_hash: &str,
+    token: &str,
+) -> Result<(), RepairApplicationError> {
+    let target_meta = fs::symlink_metadata(target)?;
+    if target_meta.file_type().is_symlink() || !target_meta.is_file() {
+        return Err(RepairApplicationError::UnsafeTarget(
+            target.display().to_string(),
+        ));
+    }
+    let backup_meta = fs::symlink_metadata(backup_path)
+        .map_err(|_| RepairApplicationError::CorruptBackup(target.display().to_string()))?;
+    if backup_meta.file_type().is_symlink() || !backup_meta.is_file() {
+        return Err(RepairApplicationError::CorruptBackup(
+            target.display().to_string(),
+        ));
+    }
+    let backup = fs::read(backup_path)?;
+    if sha256_hex(&backup) != expected_base_hash {
+        return Err(RepairApplicationError::CorruptBackup(
+            target.display().to_string(),
+        ));
+    }
+
+    let parent = target
+        .parent()
+        .ok_or_else(|| RepairApplicationError::UnsafePath(target.display().to_string()))?;
+    let token = safe_token(&format!("recovery:{token}"));
+    let stage_path = parent.join(format!(".codetwin-{token}.restore"));
+    let applied_sidecar = parent.join(format!(".codetwin-{token}.applied"));
+    if stage_path.exists() || applied_sidecar.exists() {
+        return Err(RepairApplicationError::UnsafePath(
+            target.display().to_string(),
+        ));
+    }
+    write_new_file(&stage_path, &backup, target_meta.permissions())?;
+    fs::rename(target, &applied_sidecar)?;
+    match fs::rename(&stage_path, target) {
+        Ok(()) => {
+            if sha256_hex(&fs::read(target)?) != expected_base_hash {
+                let _ = fs::remove_file(target);
+                let _ = fs::rename(&applied_sidecar, target);
+                return Err(RepairApplicationError::CorruptBackup(
+                    target.display().to_string(),
+                ));
+            }
+            fs::remove_file(&applied_sidecar)?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = fs::rename(&applied_sidecar, target);
+            let _ = fs::remove_file(&stage_path);
+            Err(error.into())
+        }
+    }
 }
 
 fn stage_apply_files(items: &[PreparedApply]) -> Result<(), RepairApplicationError> {
