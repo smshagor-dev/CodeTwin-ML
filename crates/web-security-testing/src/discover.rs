@@ -237,6 +237,9 @@ pub fn crawl_with_seeds(
                             if !form.hidden_values.is_empty() {
                                 let key = endpoint_request_key(&form_endpoint.method, &form_endpoint.url);
                                 let context = request_seeds.entry(key).or_default();
+                                for name in &form.hidden_names {
+                                    context.protected_parameters.push(name.clone());
+                                }
                                 for (name, value) in &form.hidden_values {
                                     context
                                         .values
@@ -245,6 +248,8 @@ pub fn crawl_with_seeds(
                                         context.redaction_secrets.push(value.clone());
                                     }
                                 }
+                                context.protected_parameters.sort();
+                                context.protected_parameters.dedup();
                                 context.redaction_secrets.sort();
                                 context.redaction_secrets.dedup();
                             }
