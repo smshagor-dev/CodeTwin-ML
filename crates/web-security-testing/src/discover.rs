@@ -533,6 +533,15 @@ fn extract_forms(base: &Url, html: &str) -> Vec<FormObservation> {
     let mut forms = Vec::new();
     while let Some(relative) = lower[cursor..].find("<form") {
         let start = cursor + relative;
+        let after_name = start + "<form".len();
+        if lower
+            .as_bytes()
+            .get(after_name)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(*byte, b'>' | b'/'))
+        {
+            cursor = after_name;
+            continue;
+        }
         let Some(tag_end_relative) = lower[start..].find('>') else { break };
         let tag_end = start + tag_end_relative + 1;
         let Some(close_relative) = lower[tag_end..].find("</form>") else { break };
@@ -594,6 +603,15 @@ fn tags<'a>(html: &'a str, name: &str) -> Vec<&'a str> {
     let mut output = Vec::new();
     while let Some(relative) = lower[cursor..].find(&needle) {
         let start = cursor + relative;
+        let after_name = start + needle.len();
+        if lower
+            .as_bytes()
+            .get(after_name)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(*byte, b'>' | b'/'))
+        {
+            cursor = after_name;
+            continue;
+        }
         let Some(end_relative) = lower[start..].find('>') else { break };
         let end = start + end_relative + 1;
         output.push(&html[start..end]);
@@ -1044,6 +1062,10 @@ mod tests {
         assert!(
             attribute_from_tag(r#"<input data-name="wrong" value="x">"#, "name").is_none(),
             "data-name must not be mistaken for name"
+        );
+        assert!(
+            extract_forms(&base, r#"<formality action="/wrong"></formality>"#).is_empty(),
+            "tag-name prefixes must not be treated as form elements"
         );
     }
 
