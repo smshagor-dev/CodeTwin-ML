@@ -70,6 +70,13 @@ pub(crate) fn run_active_checks(
             .cloned()
             .unwrap_or_default();
         for parameter in &endpoint.parameter_names {
+            if request_seed
+                .protected_parameters
+                .iter()
+                .any(|protected| protected == parameter)
+            {
+                continue;
+            }
             tasks.push(ProbeTask {
                 endpoint: endpoint.clone(),
                 baseline: baseline.clone(),
