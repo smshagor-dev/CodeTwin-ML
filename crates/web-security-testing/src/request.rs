@@ -257,7 +257,7 @@ impl ScopedRequester {
             redact_url(url)
         )))
     }
-
+}
 
 fn build_request(
     client: &Client,
