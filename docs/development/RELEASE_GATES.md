@@ -27,7 +27,9 @@ An applied repair is not a verified repair. Verification requires a fresh reposi
 
 ## QA execution boundary
 
-QA execution remains disabled until its documented filesystem, network, desktop/window-station, runtime provenance, and adversarial Windows validation requirements are satisfied. Planning or containment scaffolding is not an execution result.
+The Windows QA backend may expose execution only when the runtime reports the complete strict capability floor: detached hash-bound project mirror, approved copied runtime/toolchain surface, zero-capability LPAC identity, Job Object/process limits, bounded handles/output, and the required network/desktop isolation checks. Unsupported platforms remain planning-only and there is no weaker fallback.
+
+Implementation availability is not release validation. A production release that claims Windows QA execution must still run the `windows-qa` job on a real allocated Windows runner and preserve the resulting logs/evidence; `runner_id=0` or zero executed steps is an infrastructure failure, not a pass.
 
 ## Merge discipline
 
