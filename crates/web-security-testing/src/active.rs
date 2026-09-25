@@ -11,10 +11,11 @@ use reqwest::Method;
 use url::Url;
 
 use crate::{
-    body_hash, fingerprint, operator::check_applicable, parameter_has_location,
-    payload_policy::validate_active_payload, response_evidence, response_header,
-    single_parameter_location, AuthContext, EndpointObservation, FindingObservation,
-    ObservedResponse, RequestError, ScanConfig, ScanError, ScopePolicy, ScopedRequester,
+    body_hash, endpoint_request_key, fingerprint, operator::check_applicable,
+    parameter_has_location, payload_policy::validate_active_payload, response_evidence,
+    response_header, single_parameter_location, AuthContext, EndpointObservation,
+    FindingObservation, ObservedResponse, RequestError, RequestSeedContext, ScanConfig,
+    ScanError, ScopePolicy, ScopedRequester,
 };
 
 pub(crate) struct ActiveCheckContext<'a> {
@@ -24,6 +25,7 @@ pub(crate) struct ActiveCheckContext<'a> {
     pub config: &'a ScanConfig,
     pub endpoints: &'a [EndpointObservation],
     pub baselines: &'a HashMap<String, ObservedResponse>,
+    pub request_seeds: &'a HashMap<String, RequestSeedContext>,
     pub cancelled: Arc<AtomicBool>,
 }
 
@@ -32,6 +34,7 @@ struct ProbeTask {
     endpoint: EndpointObservation,
     baseline: Option<ObservedResponse>,
     parameter: String,
+    request_seed: RequestSeedContext,
 }
 
 pub(crate) fn run_active_checks(
@@ -45,6 +48,7 @@ pub(crate) fn run_active_checks(
         config,
         endpoints,
         baselines,
+        request_seeds,
         cancelled,
     } = context;
     let mut findings = Vec::new();
@@ -61,11 +65,16 @@ pub(crate) fn run_active_checks(
                     .flatten()
             })
             .cloned();
+        let request_seed = request_seeds
+            .get(&endpoint_request_key(&endpoint.method, &endpoint.url))
+            .cloned()
+            .unwrap_or_default();
         for parameter in &endpoint.parameter_names {
             tasks.push(ProbeTask {
                 endpoint: endpoint.clone(),
                 baseline: baseline.clone(),
                 parameter: parameter.clone(),
+                request_seed: request_seed.clone(),
             });
         }
     }
@@ -207,7 +216,7 @@ fn probe_parameter(
     let endpoint_url = policy.normalize_and_assert(&task.endpoint.url)?;
     let baseline = match task.baseline.clone() {
         Some(value) => value,
-        None => match send_payload(requester, &task.endpoint, &endpoint_url, &task.parameter, "") {
+        None => match send_task_payload(requester, task, &endpoint_url, "") {
             Ok(value) => value,
             Err(RequestError::BudgetExhausted) => return Ok(Vec::new()),
             Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
@@ -261,7 +270,7 @@ fn probe_sqli(
     baseline: &ObservedResponse,
 ) -> Result<Vec<FindingObservation>, ScanError> {
     let mut findings = Vec::new();
-    let quote = match send_payload(requester, &task.endpoint, url, &task.parameter, "'") {
+    let quote = match send_task_payload(requester, task, url, "'") {
         Ok(value) => value,
         Err(RequestError::BudgetExhausted) => return Ok(findings),
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
@@ -291,13 +300,13 @@ fn probe_sqli(
 
     let true_payload = "' OR '1'='1' -- ";
     let false_payload = "' AND '1'='2' -- ";
-    let true_response = match send_payload(requester, &task.endpoint, url, &task.parameter, true_payload) {
+    let true_response = match send_task_payload(requester, task, url, true_payload) {
         Ok(value) => value,
         Err(RequestError::BudgetExhausted) => return Ok(findings),
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
         Err(_) => return Ok(findings),
     };
-    let false_response = match send_payload(requester, &task.endpoint, url, &task.parameter, false_payload) {
+    let false_response = match send_task_payload(requester, task, url, false_payload) {
         Ok(value) => value,
         Err(RequestError::BudgetExhausted) => return Ok(findings),
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
@@ -311,8 +320,8 @@ fn probe_sqli(
             response_evidence("boolean false probe", &task.endpoint.method, url, &false_response),
         ];
         if let (Ok(true_repeat), Ok(false_repeat)) = (
-            send_payload(requester, &task.endpoint, url, &task.parameter, true_payload),
-            send_payload(requester, &task.endpoint, url, &task.parameter, false_payload),
+            send_task_payload(requester, task, url, true_payload),
+            send_task_payload(requester, task, url, false_payload),
         ) {
             if similar_response(baseline, &true_repeat)
                 && materially_different(baseline, &false_repeat)
@@ -354,7 +363,7 @@ fn probe_xss(
     marker: &str,
 ) -> Result<Option<FindingObservation>, ScanError> {
     let payload = format!("<codetwin-xss-{marker}>");
-    let response = match send_payload(requester, &task.endpoint, url, &task.parameter, &payload) {
+    let response = match send_task_payload(requester, task, url, &payload) {
         Ok(value) => value,
         Err(RequestError::BudgetExhausted) => return Ok(None),
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
@@ -400,7 +409,7 @@ fn probe_open_redirect(
     marker: &str,
 ) -> Result<Option<FindingObservation>, ScanError> {
     let destination = format!("https://example.invalid/codetwin-{marker}");
-    let response = match send_payload(requester, &task.endpoint, url, &task.parameter, &destination) {
+    let response = match send_task_payload(requester, task, url, &destination) {
         Ok(value) => value,
         Err(RequestError::BudgetExhausted) => return Ok(None),
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
@@ -437,7 +446,7 @@ fn probe_path_traversal(
     marker: &str,
 ) -> Result<Option<FindingObservation>, ScanError> {
     let payload = format!("../../../../codetwin-nonexistent-{marker}.txt");
-    let response = match send_payload(requester, &task.endpoint, url, &task.parameter, &payload) {
+    let response = match send_task_payload(requester, task, url, &payload) {
         Ok(value) => value,
         Err(RequestError::BudgetExhausted) => return Ok(None),
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
@@ -477,7 +486,7 @@ fn probe_ssrf_indicator(
     marker: &str,
 ) -> Result<Option<FindingObservation>, ScanError> {
     let payload = format!("http://192.0.2.1/codetwin-{marker}");
-    let response = match send_payload(requester, &task.endpoint, url, &task.parameter, &payload) {
+    let response = match send_task_payload(requester, task, url, &payload) {
         Ok(value) => value,
         Err(RequestError::BudgetExhausted) => return Ok(None),
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
@@ -516,7 +525,7 @@ fn probe_template_indicator(
     marker: &str,
 ) -> Result<Option<FindingObservation>, ScanError> {
     let payload = format!("codetwin-{marker}-{{{{7*7}}}}");
-    let response = match send_payload(requester, &task.endpoint, url, &task.parameter, &payload) {
+    let response = match send_task_payload(requester, task, url, &payload) {
         Ok(value) => value,
         Err(RequestError::BudgetExhausted) => return Ok(None),
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
@@ -555,7 +564,7 @@ fn probe_input_validation(
     marker: &str,
 ) -> Result<Option<FindingObservation>, ScanError> {
     let payload = format!("CODETWIN_INVALID_{marker}_%00_[]{{}}");
-    let response = match send_payload(requester, &task.endpoint, url, &task.parameter, &payload) {
+    let response = match send_task_payload(requester, task, url, &payload) {
         Ok(value) => value,
         Err(RequestError::BudgetExhausted) => return Ok(None),
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
@@ -666,12 +675,46 @@ pub(crate) fn send_endpoint_baseline(
     requester.send(method, url, None, &[])
 }
 
+fn send_task_payload(
+    requester: &ScopedRequester,
+    task: &ProbeTask,
+    base: &Url,
+    payload: &str,
+) -> Result<ObservedResponse, RequestError> {
+    send_payload_with_seed(
+        requester,
+        &task.endpoint,
+        base,
+        &task.parameter,
+        payload,
+        &task.request_seed,
+    )
+}
+
 fn send_payload(
     requester: &ScopedRequester,
     endpoint: &EndpointObservation,
     base: &Url,
     parameter: &str,
     payload: &str,
+) -> Result<ObservedResponse, RequestError> {
+    send_payload_with_seed(
+        requester,
+        endpoint,
+        base,
+        parameter,
+        payload,
+        &RequestSeedContext::default(),
+    )
+}
+
+fn send_payload_with_seed(
+    requester: &ScopedRequester,
+    endpoint: &EndpointObservation,
+    base: &Url,
+    parameter: &str,
+    payload: &str,
+    request_seed: &RequestSeedContext,
 ) -> Result<ObservedResponse, RequestError> {
     validate_active_payload(payload)
         .map_err(|reason| RequestError::PayloadRejected(reason.to_string()))?;
@@ -712,24 +755,42 @@ fn send_payload(
         replace_query_parameter(&mut url, parameter, payload);
     }
 
-    let body = contextual_request_body(endpoint, parameter, location, payload);
+    let body = contextual_request_body_with_seed(
+        endpoint,
+        parameter,
+        location,
+        payload,
+        &request_seed.values,
+    );
     match (body.as_ref(), location) {
-        (Some((body, content_type)), "header") => requester.send(
+        (Some((body, content_type)), "header") => requester.send_with_redaction_secrets(
             method,
             &url,
             Some(body.as_str()),
             &[("Content-Type", *content_type), (parameter, payload)],
+            &request_seed.redaction_secrets,
         ),
-        (None, "header") => requester.send(method, &url, None, &[(parameter, payload)]),
-        (Some((body, content_type)), _) => {
-            requester.send(
-                method,
-                &url,
-                Some(body.as_str()),
-                &[("Content-Type", *content_type)],
-            )
-        }
-        (None, _) => requester.send(method, &url, None, &[]),
+        (None, "header") => requester.send_with_redaction_secrets(
+            method,
+            &url,
+            None,
+            &[(parameter, payload)],
+            &request_seed.redaction_secrets,
+        ),
+        (Some((body, content_type)), _) => requester.send_with_redaction_secrets(
+            method,
+            &url,
+            Some(body.as_str()),
+            &[("Content-Type", *content_type)],
+            &request_seed.redaction_secrets,
+        ),
+        (None, _) => requester.send_with_redaction_secrets(
+            method,
+            &url,
+            None,
+            &[],
+            &request_seed.redaction_secrets,
+        ),
     }
 }
 
@@ -787,6 +848,22 @@ fn contextual_request_body(
     target_location: &str,
     payload: &str,
 ) -> Option<(String, &'static str)> {
+    contextual_request_body_with_seed(
+        endpoint,
+        target_parameter,
+        target_location,
+        payload,
+        &crate::RequestSeedValues::new(),
+    )
+}
+
+fn contextual_request_body_with_seed(
+    endpoint: &EndpointObservation,
+    target_parameter: &str,
+    target_location: &str,
+    payload: &str,
+    request_seed: &crate::RequestSeedValues,
+) -> Option<(String, &'static str)> {
     if matches!(endpoint.method.as_str(), "GET" | "HEAD") {
         return None;
     }
@@ -816,11 +893,21 @@ fn contextual_request_body(
         let mut object = serde_json::Map::new();
         for name in json_parameters {
             let value = if target_location == "json" && name == target_parameter {
-                payload
+                if payload.is_empty() {
+                    request_seed
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::Value::String(String::new()))
+                } else {
+                    serde_json::Value::String(payload.to_string())
+                }
             } else {
-                "codetwin-test"
+                request_seed
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::String("codetwin-test".to_string()))
             };
-            object.insert(name.to_string(), serde_json::Value::String(value.to_string()));
+            object.insert(name.to_string(), value);
         }
         return Some((
             serde_json::Value::Object(object).to_string(),
@@ -831,10 +918,15 @@ fn contextual_request_body(
     if !form_parameters.is_empty() {
         let mut serializer = url::form_urlencoded::Serializer::new(String::new());
         for name in form_parameters {
+            let seeded = request_seed.get(name).and_then(seed_form_value);
             let value = if target_location == "form" && name == target_parameter {
-                payload
+                if payload.is_empty() {
+                    seeded.as_deref().unwrap_or("")
+                } else {
+                    payload
+                }
             } else {
-                "codetwin-test"
+                seeded.as_deref().unwrap_or("codetwin-test")
             };
             serializer.append_pair(name, value);
         }
@@ -845,6 +937,16 @@ fn contextual_request_body(
     }
 
     None
+}
+
+fn seed_form_value(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Bool(value) => Some(value.to_string()),
+        serde_json::Value::Number(value) => Some(value.to_string()),
+        serde_json::Value::Null => Some(String::new()),
+        _ => None,
+    }
 }
 
 fn replace_path_parameter(base: &Url, parameter: &str, payload: &str) -> Option<Url> {
@@ -1040,11 +1142,7 @@ fn active_header_probe_allowed(name: &str) -> bool {
 }
 
 pub(crate) fn baseline_key(method: &str, raw: &str) -> String {
-    format!(
-        "{} {}",
-        method.trim().to_ascii_uppercase(),
-        normalized_key(raw)
-    )
+    endpoint_request_key(method, raw)
 }
 
 fn normalized_key(raw: &str) -> String {
