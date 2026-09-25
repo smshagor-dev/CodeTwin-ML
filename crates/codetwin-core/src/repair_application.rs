@@ -311,19 +311,34 @@ impl<'a> RepairApplicationService<'a> {
             let stage_path = parent_canonical.join(format!(".codetwin-{token}.new"));
             let sidecar_path = parent_canonical.join(format!(".codetwin-{token}.old"));
 
-            if let Some(stage_hash) = safe_work_file_hash(&stage_path)? {
-                if stage_hash == item.proposed_content_hash {
-                    fs::remove_file(&stage_path)?;
-                } else {
+            match safe_work_file_hash(&stage_path) {
+                Ok(Some(stage_hash)) if stage_hash == item.proposed_content_hash => {
+                    if let Err(error) = fs::remove_file(&stage_path) {
+                        unresolved.push(format!("{}: {error}", item.relative_path));
+                        continue;
+                    }
+                }
+                Ok(Some(_)) => {
                     unresolved.push(format!(
                         "{}: interrupted stage file no longer matches the proposed content hash",
                         item.relative_path
                     ));
                     continue;
                 }
+                Ok(None) => {}
+                Err(error) => {
+                    unresolved.push(format!("{}: {error}", item.relative_path));
+                    continue;
+                }
             }
 
-            let sidecar_hash = safe_work_file_hash(&sidecar_path)?;
+            let sidecar_hash = match safe_work_file_hash(&sidecar_path) {
+                Ok(value) => value,
+                Err(error) => {
+                    unresolved.push(format!("{}: {error}", item.relative_path));
+                    continue;
+                }
+            };
             if let Some(hash) = sidecar_hash.as_deref() {
                 if hash != item.base_content_hash {
                     unresolved.push(format!(
