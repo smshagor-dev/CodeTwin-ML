@@ -196,6 +196,7 @@ pub fn run_targeted_retest(
 
     let mut ignored_progress = |_| {};
     let endpoints = [endpoint];
+    let request_seeds = HashMap::new();
     let mut findings = active::run_active_checks(
         active::ActiveCheckContext {
             policy: &policy,
@@ -204,6 +205,7 @@ pub fn run_targeted_retest(
             config: &targeted,
             endpoints: &endpoints,
             baselines: &baselines,
+            request_seeds: &request_seeds,
             cancelled,
         },
         &mut ignored_progress,

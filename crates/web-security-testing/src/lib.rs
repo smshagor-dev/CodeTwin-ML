@@ -31,6 +31,25 @@ pub use scope::{normalize_url, ScopeError, ScopePolicy};
 
 pub type ParameterLocations = BTreeMap<String, Vec<String>>;
 
+pub(crate) type RequestSeedValues = BTreeMap<String, serde_json::Value>;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RequestSeedContext {
+    pub values: RequestSeedValues,
+    pub redaction_secrets: Vec<String>,
+    pub protected_parameters: Vec<String>,
+}
+
+pub(crate) fn endpoint_request_key(method: &str, raw: &str) -> String {
+    let normalized = url::Url::parse(raw)
+        .map(|mut url| {
+            url.set_fragment(None);
+            url.to_string()
+        })
+        .unwrap_or_else(|_| raw.to_string());
+    format!("{} {normalized}", method.trim().to_ascii_uppercase())
+}
+
 pub fn insert_parameter_location(
     locations: &mut ParameterLocations,
     name: impl Into<String>,
@@ -694,6 +713,7 @@ pub fn run_authorized_scan_with_seeds(
                 config,
                 endpoints: &discovery.endpoints,
                 baselines: &discovery.responses,
+                request_seeds: &discovery.request_seeds,
                 cancelled: Arc::clone(&cancelled),
             },
             &mut active_progress,

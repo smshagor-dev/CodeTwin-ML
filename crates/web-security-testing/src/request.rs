@@ -164,13 +164,33 @@ impl ScopedRequester {
         body: Option<&str>,
         extra_headers: &[(&str, &str)],
     ) -> Result<ObservedResponse, RequestError> {
+        self.send_with_redaction_secrets(method, url, body, extra_headers, &[])
+    }
+
+    pub(crate) fn send_with_redaction_secrets(
+        &self,
+        method: Method,
+        url: &Url,
+        body: Option<&str>,
+        extra_headers: &[(&str, &str)],
+        additional_redaction_secrets: &[String],
+    ) -> Result<ObservedResponse, RequestError> {
         self.policy.assert_url(url)?;
         let attach_credentials = self.policy.credentials_allowed_for(url);
-        let redaction_secrets = if attach_credentials {
+        let mut redaction_secrets = if attach_credentials {
             self.auth.redaction_values()
         } else {
             Vec::new()
         };
+        redaction_secrets.extend(
+            additional_redaction_secrets
+                .iter()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        );
+        redaction_secrets.sort();
+        redaction_secrets.dedup();
         let custom_headers = if attach_credentials {
             parse_headers(&self.auth.custom_headers)?
         } else {
@@ -237,7 +257,7 @@ impl ScopedRequester {
             redact_url(url)
         )))
     }
-
+}
 
 fn build_request(
     client: &Client,
