@@ -6,6 +6,7 @@ use std::{
     fmt::Write as _,
     fs,
     path::Path,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 
@@ -31,6 +32,8 @@ pub enum IndexError {
     NotDirectory(String),
     #[error("source index resource limit exceeded: {0}")]
     ResourceLimit(String),
+    #[error("source index cancelled")]
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,10 +199,32 @@ pub fn index_project(
     index_project_with_limits(root.as_ref(), known_hashes, IndexLimits::default())
 }
 
+pub fn index_project_with_cancel(
+    root: impl AsRef<Path>,
+    known_hashes: &BTreeMap<String, String>,
+    cancelled: &AtomicBool,
+) -> Result<IndexResult, IndexError> {
+    index_project_with_limits_and_cancel(
+        root.as_ref(),
+        known_hashes,
+        IndexLimits::default(),
+        Some(cancelled),
+    )
+}
+
 fn index_project_with_limits(
     root: &Path,
     known_hashes: &BTreeMap<String, String>,
     limits: IndexLimits,
+) -> Result<IndexResult, IndexError> {
+    index_project_with_limits_and_cancel(root, known_hashes, limits, None)
+}
+
+fn index_project_with_limits_and_cancel(
+    root: &Path,
+    known_hashes: &BTreeMap<String, String>,
+    limits: IndexLimits,
+    cancelled: Option<&AtomicBool>,
 ) -> Result<IndexResult, IndexError> {
     if !root.exists() {
         return Err(IndexError::MissingRoot(root.display().to_string()));
@@ -218,6 +243,9 @@ fn index_project_with_limits(
         .filter_entry(|entry| !should_prune(entry));
 
     for entry in walker.filter_map(Result::ok) {
+        if cancelled.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            return Err(IndexError::Cancelled);
+        }
         if started.elapsed() > limits.max_elapsed {
             return Err(IndexError::ResourceLimit(format!(
                 "elapsed_time_ms>{}",
@@ -587,13 +615,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::Path, time::Duration};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::Path,
+        sync::atomic::AtomicBool,
+        time::Duration,
+    };
 
     use tempfile::tempdir;
 
     use super::{
-        index_project, index_project_with_limits, language_spec, parse_source, sha256_hex,
-        IndexError, IndexLimits, IndexedFile, ParseState,
+        index_project, index_project_with_cancel, index_project_with_limits, language_spec,
+        parse_source, sha256_hex, IndexError, IndexLimits, IndexedFile, ParseState,
     };
 
     fn parse_fixture(path: &str, source: &str) -> IndexedFile {
@@ -800,6 +834,17 @@ export const exportedArrow = async () => 3;
 
         assert!(matches!(error, IndexError::ResourceLimit(_)));
         assert!(error.to_string().contains("elapsed_time_ms"));
+    }
+
+    #[test]
+    fn explicit_cancellation_fails_closed_before_partial_result() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.js"), "function a() { return 1; }").expect("a");
+        let cancelled = AtomicBool::new(true);
+
+        let error = index_project_with_cancel(dir.path(), &BTreeMap::new(), &cancelled)
+            .expect_err("cancelled index must not return a partial result");
+        assert!(matches!(error, IndexError::Cancelled));
     }
 
     #[test]
