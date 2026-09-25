@@ -107,6 +107,8 @@ use workspace_commands::{
 struct AppState {
     database: Mutex<Database>,
     database_path: PathBuf,
+    index_cancelled: Arc<AtomicBool>,
+    index_running: Arc<AtomicBool>,
     semantic_cancelled: Arc<AtomicBool>,
     semantic_running: Arc<AtomicBool>,
     quality_running: Arc<AtomicBool>,
@@ -133,11 +135,26 @@ fn discover_project(path: String) -> Result<ProjectProfile, String> {
 
 #[tauri::command]
 fn index_project(path: String, state: tauri::State<'_, AppState>) -> Result<IndexSummary, String> {
-    with_database(&state, |database| {
+    if state.index_running.swap(true, Ordering::SeqCst) {
+        return Err("project indexing is already running".to_string());
+    }
+    state.index_cancelled.store(false, Ordering::SeqCst);
+    let result = with_database(&state, |database| {
         ProjectIndexService::new(database)
-            .index_project(path)
+            .index_project_with_cancel(path, state.index_cancelled.as_ref())
             .map_err(|error| error.to_string())
-    })
+    });
+    state.index_running.store(false, Ordering::SeqCst);
+    result
+}
+
+#[tauri::command]
+fn cancel_project_index(state: tauri::State<'_, AppState>) -> bool {
+    let running = state.index_running.load(Ordering::SeqCst);
+    if running {
+        state.index_cancelled.store(true, Ordering::SeqCst);
+    }
+    running
 }
 
 #[tauri::command]
@@ -610,6 +627,8 @@ fn main() {
             app.manage(AppState {
                 database: Mutex::new(database),
                 database_path,
+                index_cancelled: Arc::new(AtomicBool::new(false)),
+                index_running: Arc::new(AtomicBool::new(false)),
                 semantic_cancelled: Arc::new(AtomicBool::new(false)),
                 semantic_running: Arc::new(AtomicBool::new(false)),
                 quality_running: Arc::new(AtomicBool::new(false)),
@@ -622,6 +641,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             discover_project,
             index_project,
+            cancel_project_index,
             list_project_files,
             get_file,
             list_file_symbols,

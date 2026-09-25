@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -119,8 +120,24 @@ impl<'a> ProjectIndexService<'a> {
     }
 
     pub fn index_project(&self, root: impl AsRef<Path>) -> Result<IndexSummary, IndexServiceError> {
+        self.index_project_internal(root.as_ref(), None)
+    }
+
+    pub fn index_project_with_cancel(
+        &self,
+        root: impl AsRef<Path>,
+        cancelled: &AtomicBool,
+    ) -> Result<IndexSummary, IndexServiceError> {
+        self.index_project_internal(root.as_ref(), Some(cancelled))
+    }
+
+    fn index_project_internal(
+        &self,
+        root: &Path,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<IndexSummary, IndexServiceError> {
         let started = Instant::now();
-        let project = self.open_project(root.as_ref())?;
+        let project = self.open_project(root)?;
         let root = PathBuf::from(&project.root_path);
         let config_fingerprint = deterministic_id("config", &[DEFAULT_CONFIG_JSON]);
         let analysis_fingerprint = deterministic_id(
@@ -152,7 +169,15 @@ impl<'a> ProjectIndexService<'a> {
             ],
         )?;
 
-        let result = match source_indexer::index_project(&root, &known_hashes) {
+        let index_result = match cancelled {
+            Some(cancelled) => source_indexer::index_project_with_cancel(
+                &root,
+                &known_hashes,
+                cancelled,
+            ),
+            None => source_indexer::index_project(&root, &known_hashes),
+        };
+        let result = match index_result {
             Ok(result) => result,
             Err(error) => {
                 let _ = mark_run_failed(
