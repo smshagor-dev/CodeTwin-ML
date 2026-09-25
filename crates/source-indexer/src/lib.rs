@@ -15,6 +15,8 @@ use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator};
 use walkdir::{DirEntry, WalkDir};
 
 const MAX_SOURCE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_PROJECT_SOURCE_FILES: usize = 20_000;
+const MAX_PROJECT_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const TYPESCRIPT_DEFINITIONS_QUERY: &str = include_str!("../queries/typescript.scm");
 pub const INDEXER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const QUERY_VERSION: &str = "definitions-v2-imports-v3-routes-v44-handlers-v34";
@@ -25,6 +27,8 @@ pub enum IndexError {
     MissingRoot(String),
     #[error("project root is not a directory: {0}")]
     NotDirectory(String),
+    #[error("source index resource limit exceeded: {0}")]
+    ResourceLimit(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,11 +168,35 @@ struct LanguageSpec {
     definitions_query: &'static str,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct IndexLimits {
+    max_file_bytes: u64,
+    max_source_files: usize,
+    max_total_source_bytes: u64,
+}
+
+impl Default for IndexLimits {
+    fn default() -> Self {
+        Self {
+            max_file_bytes: MAX_SOURCE_BYTES,
+            max_source_files: MAX_PROJECT_SOURCE_FILES,
+            max_total_source_bytes: MAX_PROJECT_SOURCE_BYTES,
+        }
+    }
+}
+
 pub fn index_project(
     root: impl AsRef<Path>,
     known_hashes: &BTreeMap<String, String>,
 ) -> Result<IndexResult, IndexError> {
-    let root = root.as_ref();
+    index_project_with_limits(root.as_ref(), known_hashes, IndexLimits::default())
+}
+
+fn index_project_with_limits(
+    root: &Path,
+    known_hashes: &BTreeMap<String, String>,
+    limits: IndexLimits,
+) -> Result<IndexResult, IndexError> {
     if !root.exists() {
         return Err(IndexError::MissingRoot(root.display().to_string()));
     }
@@ -177,6 +205,8 @@ pub fn index_project(
     }
 
     let mut result = IndexResult::default();
+    let mut source_files_seen = 0usize;
+    let mut source_bytes_seen = 0u64;
     let walker = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -190,6 +220,14 @@ pub fn index_project(
         let Some(spec) = language_spec(path) else {
             continue;
         };
+        source_files_seen = source_files_seen.saturating_add(1);
+        if source_files_seen > limits.max_source_files {
+            return Err(IndexError::ResourceLimit(format!(
+                "source_file_count>{}; last_path={}",
+                limits.max_source_files,
+                normalized_relative_path(root, path)
+            )));
+        }
         let relative_path = normalized_relative_path(root, path);
         let metadata = match entry.metadata() {
             Ok(metadata) => metadata,
@@ -201,12 +239,21 @@ pub fn index_project(
                 continue;
             }
         };
-        if metadata.len() > MAX_SOURCE_BYTES {
+        if metadata.len() > limits.max_file_bytes {
             result.skipped_files.push(SkippedFile {
                 relative_path,
                 reason: format!("source_too_large:{}", metadata.len()),
             });
             continue;
+        }
+        source_bytes_seen = source_bytes_seen
+            .checked_add(metadata.len())
+            .ok_or_else(|| IndexError::ResourceLimit("source_byte_counter_overflow".to_string()))?;
+        if source_bytes_seen > limits.max_total_source_bytes {
+            return Err(IndexError::ResourceLimit(format!(
+                "total_source_bytes>{}; last_path={relative_path}",
+                limits.max_total_source_bytes
+            )));
         }
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
@@ -533,7 +580,10 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{index_project, language_spec, parse_source, sha256_hex, IndexedFile, ParseState};
+    use super::{
+        index_project, index_project_with_limits, language_spec, parse_source, sha256_hex,
+        IndexError, IndexLimits, IndexedFile, ParseState,
+    };
 
     fn parse_fixture(path: &str, source: &str) -> IndexedFile {
         let spec = language_spec(Path::new(path)).expect("language spec");
@@ -674,6 +724,48 @@ export const exportedArrow = async () => 3;
         let second = index_project(dir.path(), &known).expect("second index");
         assert!(second.indexed_files.is_empty());
         assert_eq!(second.unchanged_files, vec!["sample.ts"]);
+    }
+
+    #[test]
+    fn project_source_file_budget_fails_closed_without_partial_result() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.js"), "function a() { return 1; }").expect("a");
+        fs::write(dir.path().join("b.js"), "function b() { return 2; }").expect("b");
+
+        let error = index_project_with_limits(
+            dir.path(),
+            &BTreeMap::new(),
+            IndexLimits {
+                max_file_bytes: 1_024,
+                max_source_files: 1,
+                max_total_source_bytes: 4_096,
+            },
+        )
+        .expect_err("file-count limit must fail the whole index");
+
+        assert!(matches!(error, IndexError::ResourceLimit(_)));
+        assert!(error.to_string().contains("source_file_count"));
+    }
+
+    #[test]
+    fn project_source_byte_budget_fails_closed_without_partial_result() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.js"), "function a() { return 1; }").expect("a");
+        fs::write(dir.path().join("b.js"), "function b() { return 2; }").expect("b");
+
+        let error = index_project_with_limits(
+            dir.path(),
+            &BTreeMap::new(),
+            IndexLimits {
+                max_file_bytes: 1_024,
+                max_source_files: 10,
+                max_total_source_bytes: 30,
+            },
+        )
+        .expect_err("byte limit must fail the whole index");
+
+        assert!(matches!(error, IndexError::ResourceLimit(_)));
+        assert!(error.to_string().contains("total_source_bytes"));
     }
 
     #[test]
