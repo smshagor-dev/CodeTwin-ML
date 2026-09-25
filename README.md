@@ -377,7 +377,7 @@ flowchart LR
 | --- | --- |
 | Tauri 2 + React/TypeScript desktop workspace | Implemented |
 | Dashboard, Projects, Websites, Code Analysis, Security, Testing workspaces | Implemented |
-| SQLite WAL + numbered migrations | Implemented; migrations 0001–0022 registered |
+| SQLite WAL + numbered migrations | Implemented; migrations 0001–0023 registered |
 | Project stack discovery | Implemented |
 | Tree-sitter source indexing | Implemented baseline |
 | Persistent incremental file/symbol index | Implemented |
@@ -393,7 +393,7 @@ flowchart LR
 | Authorized scope-bounded web security | Implemented |
 | Guided Developer Security Test | Implemented |
 | Application map + risk-aware test plan + explicit approval | Implemented |
-| Source-aware route extraction and source → live endpoint mapping | Implemented baseline for Express and FastAPI |
+| Source-aware route extraction and source → live endpoint mapping | Implemented baseline for Express, Next.js App Router, FastAPI/Pydantic, Flask, Django, Laravel, Go Gin/Echo/Chi/net/http, and Rust Axum/Actix/Rocket |
 | Cross-file router mount resolution and field-aware live seeding | Implemented baseline |
 | Finding/source correlation, scorecard, risk graph, targeted retest, scan comparison | Implemented |
 | Guided Security Fix & Verify | Implemented baseline |
@@ -416,6 +416,8 @@ flowchart LR
 ## Evidence model
 
 CodeTwin distinguishes:
+
+Web-security evidence persists bounded metadata and hashes. Response body excerpts are retained only for textual/JSON/XML/form content types and pass through credential/token and direct-PII redaction; binary or unknown content types retain only hash/size/header metadata.
 
 - **deterministic finding** — analyzer-backed evidence from a defined rule;
 - **runtime web finding** — evidence observed during an explicitly authorized scoped scan;
