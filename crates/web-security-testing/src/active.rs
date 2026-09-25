@@ -1381,6 +1381,92 @@ mod tests {
     }
 
     #[test]
+    fn runtime_json_seeds_preserve_simple_schema_types() {
+        use std::collections::BTreeMap;
+
+        let endpoint = crate::EndpointObservation {
+            url: "http://localhost:3000/api/items".into(),
+            route_template: None,
+            method: "POST".into(),
+            depth: 0,
+            source: "openapi".into(),
+            parameter_names: vec!["count".into(), "enabled".into(), "name".into()],
+            parameter_locations: BTreeMap::from([
+                ("count".into(), vec!["json".into()]),
+                ("enabled".into(), vec!["json".into()]),
+                ("name".into(), vec!["json".into()]),
+            ]),
+            response_header_names: vec![],
+            cookie_names: vec![],
+            content_type: Some("application/json".into()),
+            status_code: None,
+            redirect_to: None,
+        };
+        let seeds = crate::RequestSeedValues::from([
+            ("count".into(), serde_json::json!(1)),
+            ("enabled".into(), serde_json::json!(true)),
+            ("name".into(), serde_json::json!("baseline-name")),
+        ]);
+
+        let (body, content_type) = super::contextual_request_body_with_seed(
+            &endpoint,
+            "name",
+            "json",
+            "",
+            &seeds,
+        )
+        .expect("json body");
+        assert_eq!(content_type, "application/json");
+        let value: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(value["count"], serde_json::json!(1));
+        assert_eq!(value["enabled"], serde_json::json!(true));
+        assert_eq!(value["name"], serde_json::json!("baseline-name"));
+    }
+
+    #[test]
+    fn runtime_form_seed_preserves_hidden_csrf_value() {
+        use std::collections::BTreeMap;
+
+        let endpoint = crate::EndpointObservation {
+            url: "http://localhost:3000/update".into(),
+            route_template: None,
+            method: "POST".into(),
+            depth: 0,
+            source: "form".into(),
+            parameter_names: vec!["csrf_token".into(), "display_name".into()],
+            parameter_locations: BTreeMap::from([
+                ("csrf_token".into(), vec!["form".into()]),
+                ("display_name".into(), vec!["form".into()]),
+            ]),
+            response_header_names: vec![],
+            cookie_names: vec![],
+            content_type: Some("application/x-www-form-urlencoded".into()),
+            status_code: None,
+            redirect_to: None,
+        };
+        let seeds = crate::RequestSeedValues::from([(
+            "csrf_token".into(),
+            serde_json::json!("csrf-secret-123"),
+        )]);
+
+        let (body, content_type) = super::contextual_request_body_with_seed(
+            &endpoint,
+            "display_name",
+            "form",
+            "probe",
+            &seeds,
+        )
+        .expect("form body");
+        assert_eq!(content_type, "application/x-www-form-urlencoded");
+        let pairs: std::collections::BTreeMap<_, _> =
+            url::form_urlencoded::parse(body.as_bytes())
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+        assert_eq!(pairs.get("csrf_token").map(String::as_str), Some("csrf-secret-123"));
+        assert_eq!(pairs.get("display_name").map(String::as_str), Some("probe"));
+    }
+
+    #[test]
     fn boolean_differential_requires_material_difference() {
         let base = response(200, "search result id=123 count=45");
         let similar = response(200, "search   result id=987 count=12");
