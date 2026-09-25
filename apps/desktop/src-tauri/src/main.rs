@@ -11,7 +11,7 @@ mod web_security_commands;
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -30,7 +30,7 @@ use codetwin_core::{
     SemanticReferenceRecord, SemanticRelationDirection, SemanticRelationRecord,
     SemanticResolutionSummary, SemanticRunRecord, SemanticRunSummary, SemanticSymbolResolver,
     SemanticSymbolStateRecord, SourceFileRecord, SymbolRecord, SymbolReferenceObservationRecord,
-    SymbolReferenceService, SymbolSearchQuery,
+    SymbolReferenceService, SymbolSearchQuery, WorkspaceService,
 };
 use database_commands::{
     database_history, list_database_artifacts, list_database_evidence, list_database_findings,
@@ -606,7 +606,60 @@ fn list_security_rules(
     with_database(&state, |database| Ok(CodeSecurityService::new(database).rules()))
 }
 
+fn release_smoke_request() -> Option<(PathBuf, PathBuf)> {
+    let mut args = std::env::args_os().skip(1);
+    let first = args.next()?;
+    if first != "--release-smoke" {
+        return None;
+    }
+    let fixture = PathBuf::from(args.next()?);
+    let mut data_dir = std::env::temp_dir().join("codetwin-release-smoke");
+    while let Some(arg) = args.next() {
+        if arg == "--data-dir" {
+            data_dir = PathBuf::from(args.next()?);
+        }
+    }
+    Some((fixture, data_dir))
+}
+
+fn run_release_smoke(fixture: &Path, data_dir: &Path) -> Result<serde_json::Value, String> {
+    std::fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
+    let database_path = data_dir.join("codetwin.sqlite3");
+    let database = Database::open(&database_path).map_err(|error| error.to_string())?;
+    let indexed = ProjectIndexService::new(&database)
+        .index_project(fixture)
+        .map_err(|error| error.to_string())?;
+    let workspace = WorkspaceService::new(&database);
+    let summary = workspace.summary().map_err(|error| error.to_string())?;
+    let preferences = workspace.preferences().map_err(|error| error.to_string())?;
+
+    if summary.project_count == 0 || indexed.delta.files_scanned == 0 {
+        return Err("release smoke did not persist an indexed fixture project".to_string());
+    }
+    Ok(serde_json::json!({
+        "ok": true,
+        "database_path": database_path,
+        "project_count": summary.project_count,
+        "files_scanned": indexed.delta.files_scanned,
+        "files_added": indexed.delta.files_added,
+        "dashboard_preferences_loaded": !preferences.theme.is_empty(),
+    }))
+}
+
 fn main() {
+    if let Some((fixture, data_dir)) = release_smoke_request() {
+        match run_release_smoke(&fixture, &data_dir) {
+            Ok(result) => {
+                println!("{}", result);
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("release smoke failed: {error}");
+                std::process::exit(2);
+            }
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
