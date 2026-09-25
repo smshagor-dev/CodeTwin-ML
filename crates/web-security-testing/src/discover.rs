@@ -885,7 +885,8 @@ mod tests {
     use url::Url;
 
     use super::{
-        add_endpoint, attribute_from_tag, extract_forms, extract_links, merge_source_seed,
+        add_endpoint, attribute_from_tag, bounded_schema_seed, extract_forms, extract_links,
+        merge_source_seed,
     };
     use crate::{
         EndpointObservation, ParameterLocations, SourceEndpointSeed,
@@ -1013,8 +1014,8 @@ mod tests {
     fn extracts_links_and_forms_without_executing_html() {
         let base = Url::parse("http://localhost:8080/app/").expect("base");
         let html = r#"<a href="/app/users?id=1">Users</a>
-            <form action="/app/search" method="post">
-              <input type="hidden" name="csrf_token">
+            <form data-action="/wrong" action="/app/search" method="post">
+              <input type="hidden" data-name="wrong" name="csrf_token" value="csrf-secret-123">
               <input name="q">
             </form>"#;
         let links = extract_links(&base, html);
@@ -1022,8 +1023,43 @@ mod tests {
         let forms = extract_forms(&base, html);
         assert_eq!(forms.len(), 1);
         assert_eq!(forms[0].method, "POST");
+        assert_eq!(forms[0].action.path(), "/app/search");
         assert_eq!(forms[0].parameters, vec!["csrf_token", "q"]);
         assert_eq!(forms[0].hidden_names, vec!["csrf_token"]);
+        assert_eq!(
+            forms[0].hidden_values.get("csrf_token").map(String::as_str),
+            Some("csrf-secret-123")
+        );
         assert_eq!(attribute_from_tag(r#"<a href="/x">"#, "href").as_deref(), Some("/x"));
+        assert_eq!(
+            attribute_from_tag(r#"<form data-action="/wrong" action="/right">"#, "action")
+                .as_deref(),
+            Some("/right")
+        );
+        assert!(
+            attribute_from_tag(r#"<input data-name="wrong" value="x">"#, "name").is_none(),
+            "data-name must not be mistaken for name"
+        );
+    }
+
+    #[test]
+    fn openapi_scalar_seed_values_preserve_simple_json_types() {
+        assert_eq!(
+            bounded_schema_seed(&serde_json::json!({"type":"integer"})),
+            Some(serde_json::json!(1))
+        );
+        assert_eq!(
+            bounded_schema_seed(&serde_json::json!({"type":"boolean"})),
+            Some(serde_json::json!(true))
+        );
+        assert_eq!(
+            bounded_schema_seed(&serde_json::json!({"type":"string","format":"email"})),
+            Some(serde_json::json!("codetwin@example.invalid"))
+        );
+        assert_eq!(
+            bounded_schema_seed(&serde_json::json!({"type":"object"})),
+            None,
+            "complex request shapes must remain fail-closed instead of being guessed"
+        );
     }
 }
