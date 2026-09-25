@@ -1228,6 +1228,7 @@ mod tests {
         };
         let endpoints = [endpoint];
         let baselines = HashMap::new();
+        let request_seeds = HashMap::new();
         let mut ignored_progress = |_| {};
 
         let result = super::run_active_checks(
@@ -1238,6 +1239,7 @@ mod tests {
                 config: &config,
                 endpoints: &endpoints,
                 baselines: &baselines,
+                request_seeds: &request_seeds,
                 cancelled,
             },
             &mut ignored_progress,
