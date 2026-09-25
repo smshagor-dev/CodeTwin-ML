@@ -122,7 +122,7 @@ class RealOnnxRuntimeSmokeTests(unittest.TestCase):
 
             model_root = root / "models"
             installed = install_model(package, model_root=model_root)
-            self.assertEqual(installed["integrity_verified"], True)
+            self.assertTrue(installed["integrity_verified"])
 
             result = run_inference(
                 "security_analysis",
