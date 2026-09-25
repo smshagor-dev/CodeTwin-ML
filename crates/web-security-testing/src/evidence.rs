@@ -7,7 +7,8 @@ use crate::{EvidenceObservation, ObservedResponse};
 const SENSITIVE_KEYS: &[&str] = &[
     "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key",
     "api-key", "apikey", "password", "passwd", "secret", "token", "access_token",
-    "refresh_token", "session", "sessionid",
+    "refresh_token", "session", "sessionid", "email", "phone", "telephone", "ssn",
+    "social_security", "date_of_birth", "dob",
 ];
 
 pub fn redact_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
@@ -70,13 +71,29 @@ pub fn response_evidence(
             "body_sha256": body_hash(&response.body),
             "body_bytes": response.body.len(),
             "headers": redact_headers(&response.headers),
-            "body_excerpt": redact_body_with_secrets(
-                &response.body,
-                &response.redaction_secrets,
-            ),
+            "body_excerpt": evidence_body_excerpt(response),
             "truncated": response.truncated,
         }),
     }
+}
+
+fn evidence_body_excerpt(response: &ObservedResponse) -> Option<String> {
+    let content_type = response
+        .content_type
+        .as_deref()?
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let textual = content_type.starts_with("text/")
+        || content_type.contains("json")
+        || content_type.contains("xml")
+        || content_type.contains("javascript")
+        || content_type == "application/x-www-form-urlencoded";
+    textual.then(|| {
+        redact_body_with_secrets(&response.body, &response.redaction_secrets)
+    })
 }
 
 pub fn redact_body_with_secrets(body: &[u8], secrets: &[String]) -> String {
@@ -250,7 +267,11 @@ fn truncate(value: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_body, redact_body_with_secrets, redact_headers};
+    use super::{
+        redact_body, redact_body_with_secrets, redact_headers, response_evidence,
+    };
+    use crate::ObservedResponse;
+    use url::Url;
 
     #[test]
     fn redacts_secrets_from_headers_and_json() {
@@ -284,5 +305,41 @@ mod tests {
         assert!(!echoed.contains("raw-primary-secret"));
         assert!(!echoed.contains("custom-secret"));
         assert!(echoed.matches("<redacted>").count() >= 2);
+    }
+
+    #[test]
+    fn omits_binary_body_excerpts_and_redacts_direct_pii_fields() {
+        let url = Url::parse("https://example.test/profile").expect("url");
+        let binary = ObservedResponse {
+            status: 200,
+            headers: vec![("Content-Type".into(), "image/png".into())],
+            content_type: Some("image/png".into()),
+            location: None,
+            body: vec![0, 1, 2, 3, 4],
+            elapsed_ms: 5,
+            truncated: false,
+            redaction_secrets: Vec::new(),
+        };
+        let binary_evidence = response_evidence("binary", "GET", &url, &binary);
+        assert!(binary_evidence.response_metadata["body_excerpt"].is_null());
+        assert!(binary_evidence.response_metadata["body_sha256"].is_string());
+
+        let json = ObservedResponse {
+            status: 200,
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            content_type: Some("application/json".into()),
+            location: None,
+            body: br#"{"email":"user@example.test","phone":"+15551234567","ok":true}"#.to_vec(),
+            elapsed_ms: 7,
+            truncated: false,
+            redaction_secrets: Vec::new(),
+        };
+        let json_evidence = response_evidence("json", "GET", &url, &json);
+        let excerpt = json_evidence.response_metadata["body_excerpt"]
+            .as_str()
+            .expect("text excerpt");
+        assert!(!excerpt.contains("user@example.test"));
+        assert!(!excerpt.contains("+15551234567"));
+        assert!(excerpt.contains("<redacted>"));
     }
 }
