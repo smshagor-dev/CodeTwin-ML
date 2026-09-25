@@ -574,7 +574,7 @@ CodeTwin does not currently claim:
 - unrestricted autonomous remediation;
 - automatic Git/PR/CI remediation;
 - guaranteed exploitability proof;
-- crash-proof filesystem transactions.
+- universally crash-proof filesystem transactions across arbitrary filesystems or hardware failures. Repair Apply & Rollback does perform startup reconciliation: exact proposed bytes are restored from verified backups, exact base bytes are accepted as recovered, and unknown/manual bytes are left untouched and surfaced as rollback-failed recovery state.
 
 Capabilities are promoted only when implementation, persistence semantics, safety boundaries, and executable validation support the claim.
 
