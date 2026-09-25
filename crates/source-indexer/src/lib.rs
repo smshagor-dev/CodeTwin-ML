@@ -6,6 +6,7 @@ use std::{
     fmt::Write as _,
     fs,
     path::Path,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,7 @@ use walkdir::{DirEntry, WalkDir};
 const MAX_SOURCE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_PROJECT_SOURCE_FILES: usize = 20_000;
 const MAX_PROJECT_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_PROJECT_INDEX_ELAPSED: Duration = Duration::from_secs(120);
 const TYPESCRIPT_DEFINITIONS_QUERY: &str = include_str!("../queries/typescript.scm");
 pub const INDEXER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const QUERY_VERSION: &str = "definitions-v2-imports-v3-routes-v44-handlers-v34";
@@ -173,6 +175,7 @@ struct IndexLimits {
     max_file_bytes: u64,
     max_source_files: usize,
     max_total_source_bytes: u64,
+    max_elapsed: Duration,
 }
 
 impl Default for IndexLimits {
@@ -181,6 +184,7 @@ impl Default for IndexLimits {
             max_file_bytes: MAX_SOURCE_BYTES,
             max_source_files: MAX_PROJECT_SOURCE_FILES,
             max_total_source_bytes: MAX_PROJECT_SOURCE_BYTES,
+            max_elapsed: MAX_PROJECT_INDEX_ELAPSED,
         }
     }
 }
@@ -207,12 +211,19 @@ fn index_project_with_limits(
     let mut result = IndexResult::default();
     let mut source_files_seen = 0usize;
     let mut source_bytes_seen = 0u64;
+    let started = Instant::now();
     let walker = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
         .filter_entry(|entry| !should_prune(entry));
 
     for entry in walker.filter_map(Result::ok) {
+        if started.elapsed() > limits.max_elapsed {
+            return Err(IndexError::ResourceLimit(format!(
+                "elapsed_time_ms>{}",
+                limits.max_elapsed.as_millis()
+            )));
+        }
         if !entry.file_type().is_file() {
             continue;
         }
@@ -576,7 +587,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::Path};
+    use std::{collections::BTreeMap, fs, path::Path, time::Duration};
 
     use tempfile::tempdir;
 
@@ -739,6 +750,7 @@ export const exportedArrow = async () => 3;
                 max_file_bytes: 1_024,
                 max_source_files: 1,
                 max_total_source_bytes: 4_096,
+                max_elapsed: Duration::from_secs(5),
             },
         )
         .expect_err("file-count limit must fail the whole index");
@@ -760,12 +772,34 @@ export const exportedArrow = async () => 3;
                 max_file_bytes: 1_024,
                 max_source_files: 10,
                 max_total_source_bytes: 30,
+                max_elapsed: Duration::from_secs(5),
             },
         )
         .expect_err("byte limit must fail the whole index");
 
         assert!(matches!(error, IndexError::ResourceLimit(_)));
         assert!(error.to_string().contains("total_source_bytes"));
+    }
+
+    #[test]
+    fn project_elapsed_budget_fails_closed_without_partial_result() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(dir.path().join("a.js"), "function a() { return 1; }").expect("a");
+
+        let error = index_project_with_limits(
+            dir.path(),
+            &BTreeMap::new(),
+            IndexLimits {
+                max_file_bytes: 1_024,
+                max_source_files: 10,
+                max_total_source_bytes: 4_096,
+                max_elapsed: Duration::ZERO,
+            },
+        )
+        .expect_err("elapsed-time limit must fail the whole index");
+
+        assert!(matches!(error, IndexError::ResourceLimit(_)));
+        assert!(error.to_string().contains("elapsed_time_ms"));
     }
 
     #[test]
