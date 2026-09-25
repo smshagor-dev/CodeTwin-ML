@@ -1,16 +1,31 @@
 !macro NSIS_HOOK_POSTINSTALL
+  ReadEnvStr $R1 "CODETWIN_DATASET_INSTALL_MODE"
+  StrCmp $R1 "skip" codetwin_dataset_skipped
+  StrCmp $R1 "smoke-retry-cancel" codetwin_dataset_terms_accepted
+
   MessageBox MB_YESNO|MB_ICONINFORMATION \
     "CodeTwin ML can install the optional OpenMindAI Dataset package during setup.$\r$\n$\r$\nTwo CodeXGLUE datasets use the C-UDA and are limited to computational use. Upstream attribution and redistribution terms remain applicable. SWE-bench tasks can contain third-party repository material under upstream terms.$\r$\n$\r$\nC-UDA terms: https://spdx.org/licenses/C-UDA-1.0.html$\r$\n$\r$\nSelect Yes to accept the dataset terms and download all four OpenMindAI Dataset packages. Select No to finish installing CodeTwin ML without datasets; dataset-backed ML features will remain unavailable until the package is installed later." \
     IDYES codetwin_dataset_terms_accepted \
     IDNO codetwin_dataset_skipped
 
 codetwin_dataset_terms_accepted:
+  StrCpy $R2 "0"
 codetwin_dataset_retry:
+  IntOp $R2 $R2 + 1
   DetailPrint "Downloading and verifying OpenMindAI Dataset packages..."
+  StrCmp $R1 "smoke-retry-cancel" codetwin_dataset_smoke_failure
   nsExec::ExecToLog 'powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\install-openmindai-datasets.ps1" -InstallRoot "$LOCALAPPDATA\CodeTwinML\datasets" -ReleaseTag "openmindai-datasets-v1.0.0" -AcceptDatasetTerms'
   Pop $R0
   StrCmp $R0 "0" codetwin_dataset_complete
+  Goto codetwin_dataset_failure
 
+codetwin_dataset_smoke_failure:
+  DetailPrint "Release smoke: simulating optional dataset download failure."
+codetwin_dataset_failure:
+  StrCmp $R1 "smoke-retry-cancel" 0 codetwin_dataset_interactive_failure
+  StrCmp $R2 "1" codetwin_dataset_retry codetwin_dataset_skipped
+
+codetwin_dataset_interactive_failure:
   MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION \
     "OpenMindAI Dataset download or integrity verification failed.$\r$\n$\r$\nChoose Retry to try again. Choose Cancel to finish installing the base CodeTwin ML application without datasets. Dataset-backed ML features will remain unavailable until a verified dataset package is installed." \
     IDRETRY codetwin_dataset_retry \
