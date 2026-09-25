@@ -37,6 +37,7 @@ pub(crate) type RequestSeedValues = BTreeMap<String, serde_json::Value>;
 pub(crate) struct RequestSeedContext {
     pub values: RequestSeedValues,
     pub redaction_secrets: Vec<String>,
+    pub protected_parameters: Vec<String>,
 }
 
 pub(crate) fn endpoint_request_key(method: &str, raw: &str) -> String {
