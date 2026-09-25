@@ -14,7 +14,7 @@ use crate::{
     RequestSeedContext, ScanConfig, ScanError, ScopePolicy, ScopedRequester, SourceEndpointSeed,
 };
 
-pub struct DiscoveryResult {
+pub(crate) struct DiscoveryResult {
     pub endpoints: Vec<EndpointObservation>,
     pub findings: Vec<FindingObservation>,
     pub responses: HashMap<String, ObservedResponse>,
@@ -234,7 +234,7 @@ pub fn crawl_with_seeds(
                                 &form.hidden_names,
                                 &config.checks,
                             ));
-                            if !form.hidden_values.is_empty() {
+                            if !form.hidden_names.is_empty() || !form.hidden_values.is_empty() {
                                 let key = endpoint_request_key(&form_endpoint.method, &form_endpoint.url);
                                 let context = request_seeds.entry(key).or_default();
                                 for name in &form.hidden_names {
