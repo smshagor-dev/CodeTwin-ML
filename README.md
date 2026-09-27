@@ -17,6 +17,7 @@ CodeTwin can:
 - build a bounded Project → File → Symbol Software Digital Twin graph;
 - inspect dependencies, dependents, symbols, references, and reverse impact;
 - run deterministic code-quality, AppSec, database, and runtime-configuration analysis;
+- scan the repository for leaked secrets (values are never stored) and audit lockfile dependencies against OSV vulnerability advisories, offline or with explicit consent online;
 - discover test frameworks and test/config artifacts without executing untrusted repository code;
 - run authorization-gated, scope-bounded web application security testing;
 - prepare a guided developer security plan before active testing begins;
@@ -384,7 +385,7 @@ flowchart LR
 | --- | --- |
 | Tauri 2 + React/TypeScript desktop workspace | Implemented |
 | Dashboard, Projects, Websites, Code Analysis, Security, Testing workspaces | Implemented |
-| SQLite WAL + numbered migrations | Implemented; migrations 0001–0024 registered |
+| SQLite WAL + numbered migrations | Implemented; migrations 0001–0025 registered |
 | Project stack discovery | Implemented |
 | Tree-sitter source indexing | Implemented baseline |
 | Persistent incremental file/symbol index | Implemented |
@@ -406,6 +407,8 @@ flowchart LR
 | Guided Security Fix & Verify | Implemented baseline |
 | Guided Security Remediation Campaigns | Implemented baseline |
 | Hash-guarded Apply & Rollback | Implemented baseline |
+| Secret scanning (redacted, lifecycle-tracked) | Implemented for the working tree; git history is not scanned |
+| Dependency vulnerability audit (OSV) | Implemented for npm/yarn/pnpm/bun, Cargo, PyPI (uv/poetry/Pipfile/requirements), Go, Composer and RubyGems lockfiles; offline OSV directory or consented OSV.dev lookup |
 | Deterministic database artifact analysis | Implemented baseline |
 | Deterministic runtime configuration analysis | Implemented baseline |
 | Passive QA/test discovery | Implemented |
@@ -542,6 +545,7 @@ Key documents:
 - docs/architecture/DIGITAL_TWIN.md
 - docs/architecture/IMPACT_ANALYSIS.md
 - docs/architecture/SYMBOL_REFERENCE_EVIDENCE.md
+- docs/architecture/SUPPLY_CHAIN_SCANNING.md
 - docs/architecture/SEMANTIC_SYMBOL_RESOLUTION.md
 - docs/architecture/LSP_SEMANTIC_ENRICHMENT.md
 - docs/architecture/CODE_QUALITY_ANALYSIS.md
@@ -583,7 +587,8 @@ CodeTwin does not currently claim:
 
 - a complete interprocedural call graph;
 - full control-flow/data-flow/taint proof across every supported language;
-- dependency-CVE completeness;
+- dependency-CVE completeness beyond the supported lockfiles (no Maven/Gradle, NuGet, Swift or Dart yet; unpinned requirements cannot be matched);
+- secrets in git history (only the working tree is scanned);
 - live database state or query-plan telemetry;
 - live container/process tracing;
 - production incident correlation;

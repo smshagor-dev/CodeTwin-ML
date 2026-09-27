@@ -30,6 +30,10 @@ Project discovery, Tree-sitter indexing, deterministic quality/security/database
 
 SQLite foreign keys are enabled and schema changes are controlled through numbered migrations. Dashboard evidence-loading failures are surfaced as unavailable rather than silently converted into zero findings.
 
+## Secret scanning and dependency audit controls
+
+Secret scanning reads project files but never persists or returns a matched value: findings hold a redacted preview and a project-salted SHA-256 fingerprint. Dependency auditing parses lockfiles as data and never runs a package manager. Its only network path is the optional OSV.dev lookup, which is disabled until the user consents in the UI and sends only package ecosystem, name and version to `https://api.osv.dev`; advisory IDs are validated before being used in a request URL and responses are size-bounded. The offline mode reads a user-chosen directory of OSV JSON and uses no network. Advisory text from OSV is treated as data and rendered as text.
+
 ## Semantic and ML controls
 
 Language-server enrichment is an explicit trusted workflow and does not auto-discover an executable from the analyzed repository.
