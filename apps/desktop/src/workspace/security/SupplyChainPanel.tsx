@@ -8,12 +8,14 @@ import type {
   DependencyFindingRecord,
   DependencyRecord,
   SecretFindingRecord,
+  SecretHistoryFindingRecord,
+  SecretHistoryRunRecord,
   SecretScanRunRecord,
 } from "../types";
 import { EmptyState, Panel, ProjectSelect, StatusBadge, formatDate, shortPath } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
 
-type Busy = "secrets" | "dependencies" | null;
+type Busy = "secrets" | "history" | "dependencies" | null;
 
 export function SupplyChainPanel() {
   const { projects, activeProjectId, setActiveProjectId, setToast } = useWorkspace();
@@ -22,6 +24,9 @@ export function SupplyChainPanel() {
 
   const [secrets, setSecrets] = useState<SecretFindingRecord[]>([]);
   const [secretRuns, setSecretRuns] = useState<SecretScanRunRecord[]>([]);
+  const [historyFindings, setHistoryFindings] = useState<SecretHistoryFindingRecord[]>([]);
+  const [historyRuns, setHistoryRuns] = useState<SecretHistoryRunRecord[]>([]);
+  const [maxCommits, setMaxCommits] = useState(10000);
 
   const [dependencyFindings, setDependencyFindings] = useState<DependencyFindingRecord[]>([]);
   const [inventory, setInventory] = useState<DependencyRecord[]>([]);
@@ -33,18 +38,22 @@ export function SupplyChainPanel() {
   async function load(projectId: string) {
     const filter = status === "all" ? null : status;
     try {
-      const [nextSecrets, nextSecretRuns, nextFindings, nextInventory, nextAuditRuns] = await Promise.all([
+      const [nextSecrets, nextSecretRuns, nextFindings, nextInventory, nextAuditRuns, nextHistory, nextHistoryRuns] = await Promise.all([
         workspaceApi.secretFindings(projectId, filter),
         workspaceApi.secretScanHistory(projectId),
         workspaceApi.dependencyFindings(projectId, filter),
         workspaceApi.dependencyInventory(projectId),
         workspaceApi.dependencyAuditHistory(projectId),
+        workspaceApi.secretHistoryFindings(projectId, filter),
+        workspaceApi.secretHistoryRuns(projectId),
       ]);
       setSecrets(nextSecrets);
       setSecretRuns(nextSecretRuns);
       setDependencyFindings(nextFindings);
       setInventory(nextInventory);
       setAuditRuns(nextAuditRuns);
+      setHistoryFindings(nextHistory);
+      setHistoryRuns(nextHistoryRuns);
     } catch (error) {
       setToast({ tone: "error", message: "Could not load supply-chain evidence: " + String(error) });
     }
@@ -57,6 +66,8 @@ export function SupplyChainPanel() {
       setDependencyFindings([]);
       setInventory([]);
       setAuditRuns([]);
+      setHistoryFindings([]);
+      setHistoryRuns([]);
       return;
     }
     void load(activeProjectId);
@@ -75,6 +86,26 @@ export function SupplyChainPanel() {
       await load(activeProjectId);
     } catch (error) {
       setToast({ tone: "error", message: "Secret scan failed: " + String(error) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runHistoryScan() {
+    if (!activeProjectId) return;
+    setBusy("history");
+    try {
+      const summary = await workspaceApi.runSecretHistoryScan(activeProjectId, maxCommits);
+      setToast({
+        tone: summary.observations ? "info" : "success",
+        message:
+          `History scan: ${summary.commits_scanned} commit(s), ${summary.observations} leaked value(s), ${summary.still_in_working_tree} still in the current files.` +
+          (summary.commit_limit_reached ? " The commit limit was reached, so older history was not scanned and nothing was marked resolved." : "") +
+          (summary.shallow_clone ? " This is a shallow clone: commits before its cut-off are not on disk and were not scanned." : ""),
+      });
+      await load(activeProjectId);
+    } catch (error) {
+      setToast({ tone: "error", message: "History scan failed: " + String(error) });
     } finally {
       setBusy(null);
     }
@@ -158,9 +189,9 @@ export function SupplyChainPanel() {
       </div>
 
       <section className="ws-analysis-metrics">
-        <div><span className="ws-critical"><Icon name="warning"/></span><strong>{count(secrets, "critical") + count(dependencyFindings, "critical")}</strong><small>Critical</small></div>
-        <div><span className="ws-high"><Icon name="security"/></span><strong>{count(secrets, "high") + count(dependencyFindings, "high")}</strong><small>High</small></div>
-        <div><span><Icon name="security"/></span><strong>{secrets.length}</strong><small>Secrets</small></div>
+        <div><span className="ws-critical"><Icon name="warning"/></span><strong>{count(secrets, "critical") + count(historyFindings, "critical") + count(dependencyFindings, "critical")}</strong><small>Critical</small></div>
+        <div><span className="ws-high"><Icon name="security"/></span><strong>{count(secrets, "high") + count(historyFindings, "high") + count(dependencyFindings, "high")}</strong><small>High</small></div>
+        <div><span><Icon name="security"/></span><strong>{secrets.length}/{historyFindings.length}</strong><small>Secrets now / in history</small></div>
         <div><span><Icon name="activity"/></span><strong>{vulnerablePackages}/{inventory.length}</strong><small>Vulnerable packages</small></div>
       </section>
 
@@ -295,6 +326,71 @@ export function SupplyChainPanel() {
           </div>
         </Panel>
       </div>
+
+      <Panel
+        title="Secrets in git history"
+        className="ws-history-secrets"
+        action={
+          <div className="ws-history-actions">
+            <label className="ws-benchmark-limit">
+              Commits
+              <input
+                type="number"
+                min={1}
+                max={200000}
+                value={maxCommits}
+                onChange={(event) => setMaxCommits(Math.max(1, Math.min(200000, Number(event.target.value) || 1)))}
+              />
+            </label>
+            <button className="ws-button ws-button-primary" onClick={() => void runHistoryScan()} disabled={!activeProjectId || busy !== null}>
+              <Icon name="scan"/>
+              {busy === "history" ? "Scanning history…" : "Scan git history"}
+            </button>
+          </div>
+        }
+      >
+        <p className="ws-inline-empty">
+          Checks every line added across all branches and tags. A secret deleted in a later commit can still be read from any clone, so it
+          still has to be rotated. Git runs read-only with the repository's diff, textconv and pager programs disabled.
+        </p>
+        <div className="ws-finding-list">
+          {historyFindings.map((finding) => (
+            <article key={finding.id}>
+              <StatusBadge status={finding.severity}/>
+              <div>
+                <strong>{finding.title}</strong>
+                <p>
+                  <code>{shortPath(finding.relative_path)}{finding.line ? `:${finding.line}` : ""}</code> · <code>{finding.redacted}</code> ·
+                  {" "}commit <code>{finding.introduced_commit.slice(0, 10)}</code> ({formatDate(finding.introduced_at)})
+                  {finding.commit_count > 1 ? ` · in ${finding.commit_count} commits` : ""}
+                </p>
+                <small>
+                  {finding.still_in_working_tree ? "Still in the current files. " : "Removed from the current files, still in history. "}
+                  {finding.remediation}
+                </small>
+              </div>
+              <StatusBadge status={finding.still_in_working_tree ? "present" : "history_only"}/>
+            </article>
+          ))}
+          {!historyFindings.length && <p className="ws-inline-empty">No secrets found in git history in this view.</p>}
+        </div>
+        <div className="ws-history-list">
+          {historyRuns.slice(0, 5).map((run) => (
+            <div key={run.run_id}>
+              <StatusBadge status={run.status}/>
+              <p>
+                <strong>{run.commits_scanned} commits scanned</strong>
+                <small>
+                  {run.observations} leaked · {run.still_in_working_tree} still present · {run.findings_opened} new · {run.findings_resolved} resolved
+                  {run.commit_limit_reached ? " · commit limit reached" : ""}
+                  {run.shallow_clone ? " · shallow clone" : ""}
+                </small>
+              </p>
+              <time>{formatDate(run.finished_at ?? run.started_at)}</time>
+            </div>
+          ))}
+        </div>
+      </Panel>
     </div>
   );
 }

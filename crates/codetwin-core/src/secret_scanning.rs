@@ -506,7 +506,7 @@ fn existing_findings(
 
 /// Project-salted digest so the same secret yields different fingerprints per project
 /// and a fingerprint cannot be matched against a global list of leaked values.
-fn salted_digest(project_id: &str, value: &str) -> String {
+pub(crate) fn salted_digest(project_id: &str, value: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"codetwin-secret\0");
     digest.update(project_id.as_bytes());
@@ -522,27 +522,33 @@ fn salted_digest(project_id: &str, value: &str) -> String {
 fn should_skip(entry: &DirEntry) -> bool {
     entry.depth() > 0
         && entry.file_type().is_dir()
-        && matches!(
-            entry.file_name().to_str(),
-            Some(
-                ".git"
-                    | "node_modules"
-                    | "target"
-                    | ".venv"
-                    | "venv"
-                    | "dist"
-                    | "build"
-                    | "coverage"
-                    | ".next"
-                    | ".turbo"
-                    | ".cache"
-                    | "vendor"
-                    | "__pycache__"
-            )
-        )
+        && entry.file_name().to_str().is_some_and(is_skipped_dir)
 }
 
-fn project_root(connection: &Connection, project_id: &str) -> Result<PathBuf, SecretScanError> {
+/// Directories neither secret scan descends into: VCS metadata, dependencies, build output.
+pub(crate) fn is_skipped_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "node_modules"
+            | "target"
+            | ".venv"
+            | "venv"
+            | "dist"
+            | "build"
+            | "coverage"
+            | ".next"
+            | ".turbo"
+            | ".cache"
+            | "vendor"
+            | "__pycache__"
+    )
+}
+
+pub(crate) fn project_root(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<PathBuf, SecretScanError> {
     connection
         .query_row(
             "SELECT root_path FROM projects WHERE id = ?1",
@@ -554,7 +560,7 @@ fn project_root(connection: &Connection, project_id: &str) -> Result<PathBuf, Se
         .ok_or_else(|| SecretScanError::ProjectNotFound(project_id.to_string()))
 }
 
-fn finish_run(
+pub(crate) fn finish_run(
     connection: &Connection,
     run_id: &str,
     status: AnalysisStatus,

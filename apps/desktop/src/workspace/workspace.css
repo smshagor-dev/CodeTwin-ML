@@ -2027,3 +2027,5 @@ html[data-theme="dark"] .ws-security-fix-warning {
 .ws-benchmark-export { display: flex; gap: 6px; }
 .ws-link-button { background: none; border: 0; padding: 0; color: inherit; text-align: left; cursor: pointer; }
 .ws-link-button:hover strong { text-decoration: underline; }
+.ws-history-secrets { margin-top: 16px; }
+.ws-history-actions { display: flex; align-items: center; gap: 10px; }

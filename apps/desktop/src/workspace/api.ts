@@ -146,6 +146,15 @@ export const workspaceApi = {
   secretScanHistory(projectId: string, limit = 20) {
     return invoke<import("./types").SecretScanRunRecord[]>("secret_scan_history", { projectId, limit });
   },
+  runSecretHistoryScan(projectId: string, maxCommits: number) {
+    return invoke<import("./types").SecretHistorySummary>("run_secret_history_scan", { projectId, maxCommits });
+  },
+  secretHistoryFindings(projectId: string, status: string | null, limit = 500) {
+    return invoke<import("./types").SecretHistoryFindingRecord[]>("list_secret_history_findings", { projectId, status, limit });
+  },
+  secretHistoryRuns(projectId: string, limit = 20) {
+    return invoke<import("./types").SecretHistoryRunRecord[]>("secret_history_runs", { projectId, limit });
+  },
   runDependencyAudit(
     projectId: string,
     mode: import("./types").AdvisoryMode,
