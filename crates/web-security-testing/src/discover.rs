@@ -704,6 +704,9 @@ fn attribute_from_tag(tag: &str, name: &str) -> Option<String> {
     None
 }
 
+const MAX_OPENAPI_REF_DEPTH: usize = 8;
+const MAX_OPENAPI_SCHEMA_FIELDS: usize = 256;
+
 fn discover_openapi(
     policy: &ScopePolicy,
     base: &Url,
@@ -713,49 +716,86 @@ fn discover_openapi(
     keys: &mut HashMap<String, usize>,
     request_seeds: &mut HashMap<String, RequestSeedContext>,
 ) {
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else { return };
-    if value.get("openapi").is_none() && value.get("swagger").is_none() {
+    let Ok(document) = serde_json::from_slice::<serde_json::Value>(body) else { return };
+    if document.get("openapi").is_none() && document.get("swagger").is_none() {
         return;
     }
-    let Some(paths) = value.get("paths").and_then(|value| value.as_object()) else { return };
-    for (path, path_item) in paths.iter().take(500) {
-        let Ok(url) = base.join(path) else { continue };
-        if policy.assert_url(&url).is_err() {
+    let Some(paths) = document.get("paths").and_then(|value| value.as_object()) else {
+        return;
+    };
+
+    for (path, raw_path_item) in paths.iter().take(500) {
+        let Some(path_item) = resolve_local_openapi_ref(&document, raw_path_item, 0) else {
             continue;
-        }
-        let Some(methods) = path_item.as_object() else { continue };
-        for (method, operation) in methods {
+        };
+        let Some(methods) = path_item.as_object() else {
+            continue;
+        };
+
+        for (method, raw_operation) in methods {
             let method_upper = method.to_ascii_uppercase();
-            if !matches!(method_upper.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "HEAD") {
+            if !matches!(
+                method_upper.as_str(),
+                "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "HEAD"
+            ) {
                 continue;
             }
+            let Some(operation) = resolve_local_openapi_ref(&document, raw_operation, 0) else {
+                continue;
+            };
+            let server_base = openapi_operation_base(
+                policy,
+                base,
+                &document,
+                path_item,
+                operation,
+            );
+            let Some(url) = server_base
+                .as_ref()
+                .and_then(|server| join_openapi_path(server, path))
+                .and_then(|url| policy.normalize_and_assert(url.as_str()).ok())
+            else {
+                continue;
+            };
 
             let mut parameter_locations = ParameterLocations::new();
-            collect_parameter_array(path_item.get("parameters"), &mut parameter_locations);
-            collect_parameter_array(operation.get("parameters"), &mut parameter_locations);
+            collect_parameter_array(
+                &document,
+                path_item.get("parameters"),
+                &mut parameter_locations,
+            );
+            collect_parameter_array(
+                &document,
+                operation.get("parameters"),
+                &mut parameter_locations,
+            );
             let mut seed_context = RequestSeedContext::default();
             let request_content_type = collect_request_body_parameters(
+                &document,
                 operation,
                 &mut parameter_locations,
                 &mut seed_context,
             );
 
-            let mut parameter_names: Vec<String> = parameter_locations.keys().cloned().collect();
+            let mut parameter_names: Vec<String> =
+                parameter_locations.keys().cloned().collect();
             parameter_names.sort();
             let endpoint = EndpointObservation {
-                    url: url.to_string(),
-                    route_template: None,
-                    method: method_upper,
-                    depth: depth + 1,
-                    source: "openapi".to_string(),
-                    parameter_names,
-                    parameter_locations,
-                    response_header_names: Vec::new(),
-                    cookie_names: Vec::new(),
-                    content_type: request_content_type,
-                    status_code: None,
-                    redirect_to: None,
-                };
+                url: url.to_string(),
+                route_template: path
+                    .contains('{')
+                    .then(|| url.to_string()),
+                method: method_upper,
+                depth: depth + 1,
+                source: "openapi".to_string(),
+                parameter_names,
+                parameter_locations,
+                response_header_names: Vec::new(),
+                cookie_names: Vec::new(),
+                content_type: request_content_type,
+                status_code: None,
+                redirect_to: None,
+            };
             if !seed_context.values.is_empty() {
                 request_seeds.insert(
                     endpoint_request_key(&endpoint.method, &endpoint.url),
@@ -767,18 +807,133 @@ fn discover_openapi(
     }
 }
 
+fn resolve_local_openapi_ref<'a>(
+    document: &'a serde_json::Value,
+    value: &'a serde_json::Value,
+    depth: usize,
+) -> Option<&'a serde_json::Value> {
+    if depth > MAX_OPENAPI_REF_DEPTH {
+        return None;
+    }
+    let Some(reference) = value.get("$ref").and_then(|value| value.as_str()) else {
+        return Some(value);
+    };
+    if reference.len() > 512 || !reference.starts_with("#/") {
+        return None;
+    }
+    let pointer = reference.strip_prefix('#')?;
+    let target = document.pointer(pointer)?;
+    resolve_local_openapi_ref(document, target, depth + 1)
+}
+
+fn openapi_operation_base(
+    policy: &ScopePolicy,
+    document_url: &Url,
+    document: &serde_json::Value,
+    path_item: &serde_json::Value,
+    operation: &serde_json::Value,
+) -> Option<Url> {
+    for servers in [
+        operation.get("servers"),
+        path_item.get("servers"),
+        document.get("servers"),
+    ] {
+        let Some(servers) = servers.and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for server in servers.iter().take(16) {
+            let Some(raw) = expand_openapi_server_url(server) else {
+                continue;
+            };
+            let Ok(candidate) = resolve_url(document_url, &raw) else {
+                continue;
+            };
+            if let Ok(authorized) = policy.normalize_and_assert(candidate.as_str()) {
+                return Some(authorized);
+            }
+        }
+    }
+
+    let mut fallback = document_url.clone();
+    fallback.set_path("/");
+    fallback.set_query(None);
+    fallback.set_fragment(None);
+    policy.normalize_and_assert(fallback.as_str()).ok()
+}
+
+fn expand_openapi_server_url(server: &serde_json::Value) -> Option<String> {
+    let raw = server.get("url")?.as_str()?.trim();
+    if raw.is_empty() || raw.len() > 2_048 {
+        return None;
+    }
+    let mut expanded = raw.to_string();
+    if let Some(variables) = server.get("variables").and_then(|value| value.as_object()) {
+        for (name, definition) in variables.iter().take(64) {
+            let placeholder = format!("{{{name}}}");
+            if !expanded.contains(&placeholder) {
+                continue;
+            }
+            let default = definition
+                .get("default")
+                .and_then(bounded_scalar_value)
+                .and_then(|value| seed_to_form_value(value))?;
+            if default.len() > 256 {
+                return None;
+            }
+            expanded = expanded.replace(&placeholder, &default);
+        }
+    }
+    if expanded.contains('{') || expanded.contains('}') {
+        return None;
+    }
+    Some(expanded)
+}
+
+fn join_openapi_path(server: &Url, path: &str) -> Option<Url> {
+    if path.len() > 2_048 {
+        return None;
+    }
+    let mut url = server.clone();
+    url.set_query(None);
+    url.set_fragment(None);
+    let prefix = url.path().trim_end_matches('/');
+    let suffix = path.trim_start_matches('/');
+    let joined = if prefix.is_empty() || prefix == "/" {
+        format!("/{suffix}")
+    } else if suffix.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}/{suffix}")
+    };
+    url.set_path(&joined);
+    Some(url)
+}
+
 fn collect_parameter_array(
+    document: &serde_json::Value,
     value: Option<&serde_json::Value>,
     output: &mut ParameterLocations,
 ) {
-    let Some(values) = value.and_then(|value| value.as_array()) else { return };
-    for parameter in values.iter().take(256) {
-        let Some(name) = parameter.get("name").and_then(|value| value.as_str()) else { continue };
-        let location = parameter
+    let Some(values) = value.and_then(|value| value.as_array()) else {
+        return;
+    };
+    for raw_parameter in values.iter().take(MAX_OPENAPI_SCHEMA_FIELDS) {
+        let Some(parameter) = resolve_local_openapi_ref(document, raw_parameter, 0) else {
+            continue;
+        };
+        let Some(name) = parameter.get("name").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if name.is_empty() || name.len() > 256 {
+            continue;
+        }
+        let Some(location) = parameter
             .get("in")
             .and_then(|value| value.as_str())
-            .unwrap_or("query")
-            .to_ascii_lowercase();
+            .map(str::to_ascii_lowercase)
+        else {
+            continue;
+        };
         if matches!(location.as_str(), "query" | "path" | "header" | "cookie") {
             insert_parameter_location(output, name.to_string(), location);
         }
@@ -786,13 +941,16 @@ fn collect_parameter_array(
 }
 
 fn collect_request_body_parameters(
+    document: &serde_json::Value,
     operation: &serde_json::Value,
     output: &mut ParameterLocations,
     seeds: &mut RequestSeedContext,
 ) -> Option<String> {
-    let content = operation
+    let request_body = operation
         .get("requestBody")
-        .and_then(|value| value.get("content"))
+        .and_then(|value| resolve_local_openapi_ref(document, value, 0))?;
+    let content = request_body
+        .get("content")
         .and_then(|value| value.as_object())?;
 
     for (content_type, location) in [
@@ -800,19 +958,62 @@ fn collect_request_body_parameters(
         ("application/x-www-form-urlencoded", "form"),
         ("multipart/form-data", "form"),
     ] {
-        let Some(media) = content.get(content_type) else { continue };
-        if let Some(properties) = media
+        let Some(media) = content.get(content_type) else {
+            continue;
+        };
+        let Some(schema) = media
             .get("schema")
-            .and_then(|value| value.get("properties"))
-            .and_then(|value| value.as_object())
-        {
-            for (name, schema) in properties.iter().take(256) {
-                insert_parameter_location(output, name.clone(), location);
+            .and_then(|value| resolve_local_openapi_ref(document, value, 0))
+        else {
+            return Some(content_type.to_string());
+        };
+        let mut remaining = MAX_OPENAPI_SCHEMA_FIELDS;
+        collect_openapi_schema_fields(
+            document,
+            schema,
+            location,
+            output,
+            seeds,
+            &mut remaining,
+            0,
+        );
+        return Some(content_type.to_string());
+    }
+    None
+}
+
+fn collect_openapi_schema_fields(
+    document: &serde_json::Value,
+    raw_schema: &serde_json::Value,
+    location: &str,
+    output: &mut ParameterLocations,
+    seeds: &mut RequestSeedContext,
+    remaining: &mut usize,
+    depth: usize,
+) {
+    if depth > MAX_OPENAPI_REF_DEPTH || *remaining == 0 {
+        return;
+    }
+    let Some(schema) = resolve_local_openapi_ref(document, raw_schema, depth) else {
+        return;
+    };
+
+    if let Some(properties) = schema.get("properties").and_then(|value| value.as_object()) {
+        for (name, property_schema) in properties {
+            if *remaining == 0 {
+                break;
+            }
+            if name.is_empty() || name.len() > 256 {
+                continue;
+            }
+            *remaining -= 1;
+            insert_parameter_location(output, name.clone(), location);
+            if let Some(seed) =
+                bounded_schema_seed_from_document(document, property_schema, depth + 1)
+            {
                 if location == "json" {
-                    if let Some(seed) = bounded_schema_seed(schema) {
-                        seeds.values.entry(name.clone()).or_insert(seed);
-                    }
-                } else if let Some(seed) = bounded_schema_seed(schema).and_then(seed_to_form_value) {
+                    seeds.values.entry(name.clone()).or_insert(seed);
+                } else if let Some(seed) = seed_to_form_value(seed) {
                     seeds
                         .values
                         .entry(name.clone())
@@ -820,9 +1021,47 @@ fn collect_request_body_parameters(
                 }
             }
         }
-        return Some(content_type.to_string());
     }
-    None
+
+    if let Some(all_of) = schema.get("allOf").and_then(|value| value.as_array()) {
+        for component in all_of.iter().take(16) {
+            collect_openapi_schema_fields(
+                document,
+                component,
+                location,
+                output,
+                seeds,
+                remaining,
+                depth + 1,
+            );
+            if *remaining == 0 {
+                break;
+            }
+        }
+    }
+}
+
+fn bounded_schema_seed_from_document(
+    document: &serde_json::Value,
+    raw_schema: &serde_json::Value,
+    depth: usize,
+) -> Option<serde_json::Value> {
+    if depth > MAX_OPENAPI_REF_DEPTH {
+        return None;
+    }
+    let schema = resolve_local_openapi_ref(document, raw_schema, depth)?;
+    if let Some(seed) = bounded_schema_seed(schema) {
+        return Some(seed);
+    }
+    schema
+        .get("allOf")
+        .and_then(|value| value.as_array())
+        .and_then(|values| {
+            values
+                .iter()
+                .take(16)
+                .find_map(|value| bounded_schema_seed_from_document(document, value, depth + 1))
+        })
 }
 
 fn bounded_schema_seed(schema: &serde_json::Value) -> Option<serde_json::Value> {
@@ -908,8 +1147,8 @@ mod tests {
     use url::Url;
 
     use super::{
-        add_endpoint, attribute_from_tag, bounded_schema_seed, extract_forms, extract_links,
-        merge_source_seed,
+        add_endpoint, attribute_from_tag, bounded_schema_seed, discover_openapi,
+        expand_openapi_server_url, extract_forms, extract_links, merge_source_seed,
     };
     use crate::{
         EndpointObservation, ParameterLocations, SourceEndpointSeed,
@@ -1066,6 +1305,143 @@ mod tests {
         assert!(
             extract_forms(&base, r#"<formality action="/wrong"></formality>"#).is_empty(),
             "tag-name prefixes must not be treated as form elements"
+        );
+    }
+
+    #[test]
+    fn openapi_local_refs_all_of_and_server_defaults_are_resolved_boundedly() {
+        use std::collections::HashMap;
+        let config = crate::ScopeConfig {
+            target_url: "http://127.0.0.1:8080/openapi.json".into(),
+            allowed_hostnames: vec!["127.0.0.1".into()],
+            allowed_subdomains: Vec::new(),
+            allowed_paths: vec!["/".into()],
+            excluded_paths: Vec::new(),
+            max_crawl_depth: 1,
+            max_requests: 8,
+            concurrency: 1,
+            timeout_ms: 500,
+            response_limit_bytes: 16_384,
+            redirect_limit: 0,
+            retry_limit: 0,
+            active_testing: false,
+            allow_non_idempotent_methods: false,
+            allow_private_networks: true,
+            enable_timing_probes: false,
+            authorization_confirmed: true,
+        };
+        let policy = crate::ScopePolicy::new(config).expect("scope");
+        let base = Url::parse("http://127.0.0.1:8080/openapi.json").expect("base");
+        let document = serde_json::json!({
+            "openapi": "3.0.3",
+            "servers": [{
+                "url": "/api/{version}",
+                "variables": { "version": { "default": "v1" } }
+            }],
+            "components": {
+                "parameters": {
+                    "Trace": { "name": "trace", "in": "query", "schema": { "type": "string" } }
+                },
+                "requestBodies": {
+                    "CreateUser": {
+                        "content": {
+                            "application/json": {
+                                "schema": { "$ref": "#/components/schemas/CreateUser" }
+                            }
+                        }
+                    }
+                },
+                "schemas": {
+                    "BaseUser": {
+                        "type": "object",
+                        "properties": {
+                            "email": { "type": "string", "format": "email" }
+                        }
+                    },
+                    "CreateUser": {
+                        "allOf": [
+                            { "$ref": "#/components/schemas/BaseUser" },
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "enabled": { "type": "boolean" },
+                                    "count": { "type": "integer", "default": 2 }
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            "paths": {
+                "/users/{id}": {
+                    "parameters": [
+                        { "name": "id", "in": "path", "required": true }
+                    ],
+                    "post": {
+                        "parameters": [
+                            { "$ref": "#/components/parameters/Trace" }
+                        ],
+                        "requestBody": { "$ref": "#/components/requestBodies/CreateUser" }
+                    }
+                }
+            }
+        });
+        let mut endpoints = Vec::new();
+        let mut keys = HashMap::new();
+        let mut request_seeds = HashMap::new();
+
+        discover_openapi(
+            &policy,
+            &base,
+            document.to_string().as_bytes(),
+            0,
+            &mut endpoints,
+            &mut keys,
+            &mut request_seeds,
+        );
+
+        assert_eq!(endpoints.len(), 1);
+        let endpoint = &endpoints[0];
+        assert!(endpoint.url.contains("/api/v1/users/"));
+        assert_eq!(
+            endpoint.parameter_locations.get("id"),
+            Some(&vec!["path".to_string()])
+        );
+        assert_eq!(
+            endpoint.parameter_locations.get("trace"),
+            Some(&vec!["query".to_string()])
+        );
+        for field in ["email", "enabled", "count"] {
+            assert_eq!(
+                endpoint.parameter_locations.get(field),
+                Some(&vec!["json".to_string()])
+            );
+        }
+        let seeds = request_seeds
+            .get(&crate::endpoint_request_key(&endpoint.method, &endpoint.url))
+            .expect("request seeds");
+        assert_eq!(
+            seeds.values.get("email"),
+            Some(&serde_json::json!("codetwin@example.invalid"))
+        );
+        assert_eq!(seeds.values.get("enabled"), Some(&serde_json::json!(true)));
+        assert_eq!(seeds.values.get("count"), Some(&serde_json::json!(2)));
+    }
+
+    #[test]
+    fn openapi_external_refs_and_unresolved_server_variables_fail_closed() {
+        let external = serde_json::json!({ "$ref": "https://example.invalid/schema.json" });
+        assert!(
+            super::resolve_local_openapi_ref(&external, &external, 0).is_none(),
+            "remote references must never be fetched or trusted"
+        );
+        assert!(
+            expand_openapi_server_url(&serde_json::json!({
+                "url": "/api/{tenant}",
+                "variables": { "tenant": {} }
+            }))
+            .is_none(),
+            "server variables without bounded defaults must be ignored"
         );
     }
 
