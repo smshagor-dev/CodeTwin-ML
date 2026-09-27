@@ -110,6 +110,40 @@ class DatasetTests(unittest.TestCase):
         )["datasets"][0]
         self.assertTrue(status["ready"])
 
+    def test_cache_without_catalog_hash_or_provenance_is_not_trusted(self) -> None:
+        data = json.loads(self.catalog.read_text(encoding="utf-8"))
+        file_spec = data["datasets"][0]["files"][0]
+        file_spec["size_bytes"] = None
+        file_spec["sha256"] = None
+        self.catalog.write_text(json.dumps(data), encoding="utf-8")
+
+        target = self.cache / "fixture" / "abc123" / "data" / "train.parquet"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(self.payload)
+
+        first = prefetch_dataset(
+            "fixture",
+            accepted_licenses=["fixture-license"],
+            catalog_path=self.catalog,
+            cache_root=self.cache,
+            opener=self.opener,
+        )
+        self.assertEqual(first["downloaded_files"], 1)
+        self.assertEqual(first["reused_files"], 0)
+
+        def must_not_download(*args, **kwargs):
+            raise AssertionError("provenance-backed cache hit attempted a network download")
+
+        second = prefetch_dataset(
+            "fixture",
+            accepted_licenses=["fixture-license"],
+            catalog_path=self.catalog,
+            cache_root=self.cache,
+            opener=must_not_download,
+        )
+        self.assertEqual(second["downloaded_files"], 0)
+        self.assertEqual(second["reused_files"], 1)
+
     def test_required_license_must_be_explicitly_accepted(self) -> None:
         with self.assertRaises(DatasetLicenseError):
             prefetch_dataset(
