@@ -295,3 +295,98 @@ fn start_mock_osv() -> String {
     });
     base_url
 }
+
+#[test]
+fn offline_audit_covers_maven_gradle_and_nuget() {
+    let project = tempdir().expect("project");
+    let root = project.path();
+    fs::create_dir_all(root.join("api")).expect("api");
+    fs::create_dir_all(root.join("web")).expect("web");
+    fs::write(
+        root.join("api/pom.xml"),
+        "<project><groupId>com.acme</groupId><artifactId>api</artifactId><version>1.0.0</version>\n\
+         <properties><log4j.version>2.14.1</log4j.version></properties>\n\
+         <dependencies>\n\
+         <dependency><groupId>org.apache.logging.log4j</groupId><artifactId>log4j-core</artifactId><version>${log4j.version}</version></dependency>\n\
+         <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId></dependency>\n\
+         </dependencies></project>\n",
+    )
+    .expect("pom");
+    fs::write(
+        root.join("gradle.lockfile"),
+        "com.google.guava:guava:31.1-jre=compileClasspath,runtimeClasspath\n\
+         org.apache.logging.log4j:log4j-core:2.17.1=runtimeClasspath\n",
+    )
+    .expect("gradle");
+    fs::write(
+        root.join("web/Web.csproj"),
+        "<Project Sdk=\"Microsoft.NET.Sdk.Web\"><ItemGroup>\n\
+         <PackageReference Include=\"Newtonsoft.Json\" Version=\"12.0.1\" />\n\
+         </ItemGroup></Project>\n",
+    )
+    .expect("csproj");
+
+    let osv = tempdir().expect("osv");
+    fs::write(
+        osv.path().join("GHSA-jfh8-c2jp-5v3q.json"),
+        json!({
+            "id": "GHSA-jfh8-c2jp-5v3q", "aliases": ["CVE-2021-44228"],
+            "summary": "Remote code injection in Log4j",
+            "database_specific": {"severity": "CRITICAL"},
+            "affected": [{"package": {"ecosystem": "Maven", "name": "org.apache.logging.log4j:log4j-core"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "2.0-beta9"}, {"fixed": "2.15.0"}]}]}]
+        })
+        .to_string(),
+    )
+    .expect("log4j record");
+    fs::write(
+        osv.path().join("GHSA-5crp-9r3c-p9vr.json"),
+        json!({
+            "id": "GHSA-5crp-9r3c-p9vr", "aliases": ["CVE-2024-21907"],
+            "summary": "Improper handling of exceptional conditions in Newtonsoft.Json",
+            "database_specific": {"severity": "HIGH"},
+            "affected": [{"package": {"ecosystem": "NuGet", "name": "Newtonsoft.Json"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "13.0.1"}]}]}]
+        })
+        .to_string(),
+    )
+    .expect("newtonsoft record");
+
+    let database = Database::open_in_memory().expect("database");
+    let index = ProjectIndexService::new(&database)
+        .index_project(root)
+        .expect("index");
+    let service = DependencyAuditService::new(&database);
+    let summary = service
+        .audit_project(
+            &index.project_id,
+            &AdvisorySource::OfflineDirectory {
+                path: osv.path().to_path_buf(),
+            },
+        )
+        .expect("audit");
+    assert_eq!(summary.manifests, 3, "{summary:?}");
+    assert_eq!(summary.packages, 4, "{summary:?}");
+    assert_eq!(summary.unpinned_requirements, 1);
+    assert_eq!(summary.vulnerable_packages, 2, "{summary:?}");
+
+    let findings = service
+        .list_findings(&index.project_id, Some("open"), 100)
+        .expect("findings");
+    let log4j = findings
+        .iter()
+        .find(|finding| finding.package == "org.apache.logging.log4j:log4j-core")
+        .expect("log4j finding");
+    assert_eq!(log4j.version, "2.14.1");
+    assert_eq!(log4j.display_id, "CVE-2021-44228");
+    assert_eq!(log4j.severity, "critical");
+    assert_eq!(log4j.manifest_path, "api/pom.xml");
+    assert_eq!(log4j.line, Some(4));
+    let newtonsoft = findings
+        .iter()
+        .find(|finding| finding.ecosystem == "NuGet")
+        .expect("nuget finding");
+    assert_eq!(newtonsoft.fixed_versions, vec!["13.0.1"]);
+    // The patched 2.17.1 in the Gradle lockfile is not reported.
+    assert!(findings.iter().all(|finding| finding.version != "2.17.1"));
+}

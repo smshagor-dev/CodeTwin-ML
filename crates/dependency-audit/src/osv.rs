@@ -314,8 +314,14 @@ fn split_version(version: &str) -> (Vec<u64>, Option<String>) {
         }
     }
     let pre = rest.trim_start_matches(['-', '.', '_']);
-    // PEP 440 post-releases sort after the release, not before.
-    if pre.is_empty() || pre.starts_with("post") {
+    let lower = pre.to_ascii_lowercase();
+    // PEP 440 post-releases sort after the release, not before. Maven's `Final`, `GA` and
+    // `RELEASE` qualifiers name the release itself, and `SP` service packs come after it.
+    if pre.is_empty()
+        || lower.starts_with("post")
+        || matches!(lower.as_str(), "final" | "ga" | "release")
+        || lower.starts_with("sp")
+    {
         (release, None)
     } else {
         (release, Some(pre.to_ascii_lowercase()))
@@ -585,6 +591,84 @@ mod tests {
             }],
             "references": [{"type": "ADVISORY", "url": "https://nvd.nist.gov/vuln/detail/CVE-2021-23337"}]
         })
+    }
+
+    #[test]
+    fn maven_and_nuget_records_match_offline() {
+        let log4shell = json!({
+            "id": "GHSA-jfh8-c2jp-5v3q",
+            "aliases": ["CVE-2021-44228"],
+            "affected": [{
+                "package": {"ecosystem": "Maven", "name": "org.apache.logging.log4j:log4j-core"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "2.0-beta9"}, {"fixed": "2.15.0"}]}]
+            }]
+        });
+        let log4j = |version: &str| {
+            dep(
+                Ecosystem::Maven,
+                "org.apache.logging.log4j:log4j-core",
+                version,
+            )
+        };
+        assert_eq!(
+            affects(&log4shell, &log4j("2.14.1")),
+            Some(MatchBasis::Range)
+        );
+        assert_eq!(affects(&log4shell, &log4j("2.15.0")), None);
+        assert_eq!(affects(&log4shell, &log4j("1.2.17")), None);
+
+        let spring = json!({
+            "id": "GHSA-36p3-wjmg-h94x",
+            "affected": [{
+                "package": {"ecosystem": "Maven", "name": "org.springframework:spring-beans"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "5.3.0"}, {"fixed": "5.3.18"}]}]
+            }]
+        });
+        let beans = |version: &str| {
+            dep(
+                Ecosystem::Maven,
+                "org.springframework:spring-beans",
+                version,
+            )
+        };
+        assert_eq!(
+            affects(&spring, &beans("5.3.17.RELEASE")),
+            Some(MatchBasis::Range)
+        );
+        // 5.3.18.RELEASE is the fixed release itself, not a pre-release of it.
+        assert_eq!(affects(&spring, &beans("5.3.18.RELEASE")), None);
+
+        let nuget = json!({
+            "id": "GHSA-5crp-9r3c-p9vr",
+            "affected": [{
+                "package": {"ecosystem": "NuGet", "name": "Newtonsoft.Json"},
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "13.0.1"}]}]
+            }]
+        });
+        // NuGet ids are case-insensitive.
+        assert_eq!(
+            affects(&nuget, &dep(Ecosystem::NuGet, "newtonsoft.json", "12.0.1")),
+            Some(MatchBasis::Range)
+        );
+        assert_eq!(
+            affects(&nuget, &dep(Ecosystem::NuGet, "Newtonsoft.Json", "13.0.1")),
+            None
+        );
+    }
+
+    #[test]
+    fn maven_release_qualifiers() {
+        assert_eq!(
+            compare_versions("5.3.18.RELEASE", "5.3.18"),
+            Ordering::Equal
+        );
+        assert_eq!(compare_versions("4.1.0.Final", "4.1.0"), Ordering::Equal);
+        assert_eq!(compare_versions("2.0-beta9", "2.0"), Ordering::Less);
+        assert_eq!(
+            compare_versions("5.3.18.RELEASE", "5.3.17.RELEASE"),
+            Ordering::Greater
+        );
+        assert_eq!(compare_versions("2.13.4.2", "2.13.4"), Ordering::Greater);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Dependency inventory from lockfiles and OSV-based vulnerability matching.
 
+pub mod jvm_dotnet;
 pub mod manifest;
 pub mod osv;
 

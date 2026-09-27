@@ -14,6 +14,8 @@ pub enum Ecosystem {
     Go,
     Packagist,
     RubyGems,
+    Maven,
+    NuGet,
 }
 
 impl Ecosystem {
@@ -26,6 +28,8 @@ impl Ecosystem {
             Self::Go => "Go",
             Self::Packagist => "Packagist",
             Self::RubyGems => "RubyGems",
+            Self::Maven => "Maven",
+            Self::NuGet => "NuGet",
         }
     }
 
@@ -37,6 +41,8 @@ impl Ecosystem {
             Self::Go,
             Self::Packagist,
             Self::RubyGems,
+            Self::Maven,
+            Self::NuGet,
         ]
         .into_iter()
         .find(|ecosystem| ecosystem.osv_name() == value)
@@ -61,7 +67,8 @@ impl Ecosystem {
                 }
                 output
             }
-            Self::Packagist => name.to_ascii_lowercase(),
+            // NuGet package ids are case-insensitive.
+            Self::Packagist | Self::NuGet => name.to_ascii_lowercase(),
             _ => name.to_string(),
         }
     }
@@ -81,6 +88,10 @@ pub enum ManifestKind {
     GoMod,
     ComposerLock,
     GemfileLock,
+    GradleLockfile,
+    MavenPom,
+    NuGetLock,
+    MsBuildProject,
 }
 
 impl ManifestKind {
@@ -96,6 +107,8 @@ impl ManifestKind {
             Self::GoMod => Ecosystem::Go,
             Self::ComposerLock => Ecosystem::Packagist,
             Self::GemfileLock => Ecosystem::RubyGems,
+            Self::GradleLockfile | Self::MavenPom => Ecosystem::Maven,
+            Self::NuGetLock | Self::MsBuildProject => Ecosystem::NuGet,
         }
     }
 }
@@ -115,6 +128,16 @@ pub fn manifest_kind(file_name: &str) -> Option<ManifestKind> {
         "go.mod" => ManifestKind::GoMod,
         "composer.lock" => ManifestKind::ComposerLock,
         "gemfile.lock" => ManifestKind::GemfileLock,
+        "pom.xml" => ManifestKind::MavenPom,
+        "packages.lock.json" => ManifestKind::NuGetLock,
+        "directory.packages.props" => ManifestKind::MsBuildProject,
+        _ if lower.ends_with(".lockfile") => ManifestKind::GradleLockfile,
+        _ if [".csproj", ".fsproj", ".vbproj"]
+            .iter()
+            .any(|extension| lower.ends_with(extension)) =>
+        {
+            ManifestKind::MsBuildProject
+        }
         _ if lower.starts_with("requirements") && lower.ends_with(".txt") => {
             ManifestKind::Requirements
         }
@@ -159,6 +182,10 @@ pub fn parse_manifest(kind: ManifestKind, text: &str) -> Result<ParsedManifest, 
         ManifestKind::GoMod => parse_go_mod(text),
         ManifestKind::ComposerLock => parse_composer_lock(text)?,
         ManifestKind::GemfileLock => parse_gemfile_lock(text),
+        ManifestKind::GradleLockfile => crate::jvm_dotnet::parse_gradle_lockfile(text),
+        ManifestKind::MavenPom => crate::jvm_dotnet::parse_pom(text)?,
+        ManifestKind::NuGetLock => crate::jvm_dotnet::parse_packages_lock(text)?,
+        ManifestKind::MsBuildProject => crate::jvm_dotnet::parse_msbuild(text)?,
     };
     for dependency in &mut parsed.dependencies {
         if dependency.line.is_none() {
@@ -608,6 +635,25 @@ mod tests {
             .iter()
             .map(|d| (d.name.clone(), d.version.clone(), d.is_dev))
             .collect()
+    }
+
+    #[test]
+    fn recognizes_jvm_and_dotnet_manifests() {
+        for (name, kind) in [
+            ("pom.xml", ManifestKind::MavenPom),
+            ("gradle.lockfile", ManifestKind::GradleLockfile),
+            ("buildscript-gradle.lockfile", ManifestKind::GradleLockfile),
+            ("compileClasspath.lockfile", ManifestKind::GradleLockfile),
+            ("packages.lock.json", ManifestKind::NuGetLock),
+            ("App.csproj", ManifestKind::MsBuildProject),
+            ("Lib.fsproj", ManifestKind::MsBuildProject),
+            ("Directory.Packages.props", ManifestKind::MsBuildProject),
+        ] {
+            assert_eq!(manifest_kind(name), Some(kind), "{name}");
+        }
+        assert_eq!(manifest_kind("build.gradle"), None);
+        assert_eq!(ManifestKind::MavenPom.ecosystem().osv_name(), "Maven");
+        assert_eq!(Ecosystem::from_osv_name("NuGet"), Some(Ecosystem::NuGet));
     }
 
     #[test]
