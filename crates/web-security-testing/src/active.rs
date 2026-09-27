@@ -1252,6 +1252,7 @@ fn normalized_key(raw: &str) -> String {
 mod tests {
     use super::{baseline_key, contains_sql_error, materially_different, similar_response};
     use crate::ObservedResponse;
+    use url::Url;
 
     fn response(status: u16, body: &str) -> ObservedResponse {
         ObservedResponse {
