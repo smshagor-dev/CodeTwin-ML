@@ -1,4 +1,9 @@
 !macro NSIS_HOOK_POSTINSTALL
+  ; Silent installs are used by clean-machine release smoke tests and enterprise
+  ; deployment. They must never prompt for or implicitly accept optional
+  ; third-party dataset terms.
+  IfSilent codetwin_dataset_skipped 0
+
   MessageBox MB_YESNO|MB_ICONINFORMATION \
     "CodeTwin ML can install the optional OpenMindAI Dataset package during setup.$\r$\n$\r$\nTwo CodeXGLUE datasets use the C-UDA and are limited to computational use. Upstream attribution and redistribution terms remain applicable. SWE-bench tasks can contain third-party repository material under upstream terms.$\r$\n$\r$\nC-UDA terms: https://spdx.org/licenses/C-UDA-1.0.html$\r$\n$\r$\nSelect Yes to accept the dataset terms and download all four OpenMindAI Dataset packages. Select No to finish installing CodeTwin ML without datasets; dataset-backed ML features will remain unavailable until the package is installed later." \
     IDYES codetwin_dataset_terms_accepted \

@@ -48,8 +48,17 @@ class OpenMindAIDatasetReleaseTests(unittest.TestCase):
         self.assertIn("AcceptDatasetTerms", script)
         self.assertIn("Get-FileHash -Algorithm SHA256", script)
         self.assertIn("openmindai-datasets-v1.0.0", script)
-        self.assertIn("MB_YESNO", hook)
         self.assertIn("NSIS_HOOK_POSTINSTALL", hook)
+        self.assertIn("IfSilent codetwin_dataset_skipped 0", hook)
+        self.assertLess(
+            hook.index("IfSilent codetwin_dataset_skipped 0"),
+            hook.index("MB_YESNO"),
+            "silent base installs must skip the dataset terms prompt before any acceptance UI",
+        )
+        self.assertIn("MB_YESNO", hook)
+        self.assertIn("MB_RETRYCANCEL", hook)
+        self.assertIn("IDRETRY codetwin_dataset_retry", hook)
+        self.assertIn("IDCANCEL codetwin_dataset_skipped", hook)
         self.assertIn("openmindai-datasets-v1.0.0", hook)
 
 
