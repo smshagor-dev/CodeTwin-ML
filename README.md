@@ -413,7 +413,8 @@ flowchart LR
 | Deterministic runtime configuration analysis | Implemented baseline |
 | Passive QA/test discovery | Implemented |
 | Sandboxed QA/test execution | Implemented on Windows through explicit plan/approval + zero-capability LPAC; planning-only on unsupported platforms |
-| OpenMindAI Dataset catalog/installer path | Implemented foundation |
+| OpenMindAI Dataset catalog/installer path | Implemented: Windows setup hook and a cross-platform installer script, both SHA-256 verified |
+| Dataset benchmarks (analyzers scored against pinned Hugging Face datasets, HTML/Markdown/JSON reports) | Implemented for vulnerability detection, fix pairs and secret-scanner noise; offline, integrity-checked |
 | Local ML model package registry | Implemented foundation |
 | Local ONNX classification inference | Implemented bounded compatible adapter |
 | Local GGUF generative code inference | Implemented through integrity-checked packages + separately SHA-256-pinned llama.cpp runtime; output is review-only and never auto-executed as a web payload |
@@ -589,6 +590,9 @@ CodeTwin does not currently claim:
 - full control-flow/data-flow/taint proof across every supported language;
 - dependency-CVE completeness beyond the supported lockfiles (no Maven/Gradle, NuGet, Swift or Dart yet; unpinned requirements cannot be matched);
 - secrets in git history (only the working tree is scanned);
+- benchmark scores as absolute detection rates: public vulnerability labels are noisy and samples are often
+  fragments, so dataset benchmarks are a regression signal between versions. Java, C#, Ruby and other
+  languages without a security-analyzer grammar are read but not scored;
 - live database state or query-plan telemetry;
 - live container/process tracing;
 - production incident correlation;

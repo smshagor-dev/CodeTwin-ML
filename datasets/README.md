@@ -41,6 +41,22 @@ The Windows NSIS installer follows an online-bootstrap pattern similar to a brow
 
 The Windows target directory is `%LOCALAPPDATA%\CodeTwinML\datasets`. Setup retries transient network failures and does not silently report success with a partial dataset installation.
 
+## macOS and Linux installation
+
+Tauri's macOS and Linux bundles have no interactive post-install step, so the same pack is installed with the bundled script (also at `scripts/install_openmindai_datasets.py`):
+
+```bash
+python3 install_openmindai_datasets.py --accept-dataset-terms
+```
+
+It performs the same manifest, size, SHA-256, staging and all-or-nothing replacement steps as the Windows hook, adds a check that no archive member escapes the install directory, and installs into `~/Library/Application Support/CodeTwinML/datasets` (macOS) or `$XDG_DATA_HOME/CodeTwinML/datasets` (Linux, default `~/.local/share`). Without `--accept-dataset-terms` it prints the terms and exits.
+
+## Benchmarks and reports
+
+Installed datasets power **Security → Dataset Benchmarks** in the desktop app and the `codetwin-dataset-bench` CLI. Each run verifies the files against the catalog pins, scores the security analyzer and secret scanner, and writes HTML, Markdown and JSON reports. See `docs/architecture/DATASET_BENCHMARKS.md`.
+
+To add another Hugging Face dataset, pin it with `scripts/pin_hf_dataset.py` and follow the steps in that document.
+
 ## Licensing and attribution
 
 The two CodeXGLUE datasets are distributed under C-UDA. Their use is limited to computational use, and redistribution must preserve upstream attribution and bind downstream recipients to the C-UDA terms. The installer therefore requires explicit dataset-terms acceptance before it downloads the release pack.

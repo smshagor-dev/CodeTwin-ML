@@ -23,9 +23,10 @@ cargo run --release -q -p codetwin-core --example e2e_smoke -- .
 
 step "Python lint / types / tests"
 python -m ruff check services/ml/codetwin_ml services/ml/tests \
-  services/security/codetwin_security services/security/tests
+  services/security/codetwin_security services/security/tests scripts
 MYPYPATH=services/ml:services/security python -m mypy \
   services/ml/codetwin_ml services/security/codetwin_security
+python -m mypy scripts/install_openmindai_datasets.py scripts/pin_hf_dataset.py
 python -m unittest discover -s services/ml/tests
 python -m unittest discover -s services/security/tests
 python -m compileall -q services/ml/codetwin_ml services/security/codetwin_security
