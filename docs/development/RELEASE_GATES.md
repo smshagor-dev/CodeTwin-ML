@@ -21,6 +21,8 @@ Release candidates should commit the package-manager lockfiles required for dete
 
 The base desktop application must remain installable without the optional OpenMindAI Dataset package. Dataset-backed features may only claim readiness after the release manifest and all referenced assets have been built from their pinned upstream revisions and their sizes and SHA-256 hashes have been verified.
 
+The OpenMindAI Dataset release workflow is manual and immutable. Release packaging requires every source dataset to use a full 40-hex pinned revision and every packaged source file to have a positive expected byte size and 64-hex SHA-256 in the catalog before any network download begins. Existing dataset tags or GitHub Release assets are never moved, clobbered, or overwritten. A cached source file without either catalog hash evidence or a previously recorded provenance hash is not trusted for reuse.
+
 ## Desktop release workflow
 
 The dedicated Windows release workflow is `.github/workflows/desktop-release.yml`. It is intentionally fail-closed:
