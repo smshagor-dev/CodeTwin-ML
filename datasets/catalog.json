@@ -35,7 +35,15 @@
           "size_bytes": 2227970,
           "sha256": "259c944eb4f8689e83895de476a00fe4cadf4839636769e725d3744fc36cfcd5"
         }
-      ]
+      ],
+      "benchmark": {
+        "task": "vulnerability_detection",
+        "default_language": "C",
+        "columns": {
+          "code": "func",
+          "label": "target"
+        }
+      }
     },
     {
       "id": "code_x_glue_code_refinement",
@@ -83,7 +91,15 @@
           "size_bytes": 588578,
           "sha256": "be9b78909122cc07a9b31b55c999fe8b8346b1bd775e726b0cbb044f9d1ebc90"
         }
-      ]
+      ],
+      "benchmark": {
+        "task": "repair_pairs",
+        "default_language": "Java",
+        "columns": {
+          "before": "buggy",
+          "after": "fixed"
+        }
+      }
     },
     {
       "id": "swe_bench_verified",
@@ -107,7 +123,16 @@
           "size_bytes": 2096679,
           "sha256": "a45b1fe4e2f0c8390b2b2938ac83e92ed5979000856808f3679c07812e9e6dcd"
         }
-      ]
+      ],
+      "benchmark": {
+        "task": "secret_probe",
+        "columns": {
+          "text": [
+            "patch",
+            "test_patch"
+          ]
+        }
+      }
     },
     {
       "id": "code_security_vulnerability",
@@ -140,7 +165,10 @@
           "size_bytes": 13223285,
           "sha256": "f16650e9ccfa2aeb2858136b055d899d4059b435b88a76c16573fb88f175fae4"
         }
-      ]
+      ],
+      "benchmark": {
+        "task": "vulnerability_detection"
+      }
     }
   ],
   "routes": {

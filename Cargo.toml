@@ -4,6 +4,7 @@ members = [
   "apps/desktop/src-tauri",
   "crates/codetwin-core",
   "crates/database-analyzer",
+  "crates/dataset-benchmark",
   "crates/dependency-audit",
   "crates/lsp-enrichment",
   "crates/project-discovery",
