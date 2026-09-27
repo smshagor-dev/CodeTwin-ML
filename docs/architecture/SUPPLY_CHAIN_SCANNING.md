@@ -118,3 +118,28 @@ one exists. Severity comes from the advisory's `database_specific.severity`, oth
 its CVSS v3 vector (computed with the CVSS 3.1 base-score formula), otherwise `medium`.
 Evidence records the fixed versions, references, CVSS score, match basis and whether the
 package is a development dependency.
+
+## SBOM export
+
+Service: `SbomService::export_cyclonedx`; desktop: **Export SBOM** on the dependency panel.
+
+Writes a CycloneDX 1.5 JSON document from the project's active dependency inventory. It
+doesn't re-scan or fetch anything:
+
+- One `library` component per ecosystem, name and version, with a
+  [package URL](https://github.com/package-url/purl-spec) (`pkg:npm`, `pkg:cargo`, `pkg:pypi`,
+  `pkg:golang`, `pkg:composer`, `pkg:gem`, `pkg:maven`, `pkg:nuget`) as its `bom-ref`, `group`
+  where the ecosystem has one (npm scope, Maven group, Go module path, Composer vendor), `scope`
+  `optional` when every declaring manifest marks it as a development dependency, and
+  `codetwin:manifest` properties naming each declaring manifest.
+- One `vulnerabilities` entry per open dependency advisory: the CVE id when there is one (other
+  aliases under `references`), the OSV source link, severity and CVSS v3 score, CWE numbers,
+  advisory links, a fix recommendation, and `affects` pointing at the component `bom-ref`s.
+- A metadata note that packages with unpinned versions aren't listed.
+
+Exports were checked against the official CycloneDX 1.5 JSON schema (strict mode,
+`cyclonedx-python-lib`) for a fixture with Maven, Gradle and NuGet advisories, and for the
+inventories of Vite (1,304 npm components, including scoped names), eShop (55 NuGet) and
+CodeTwin itself (646 Cargo, npm and PyPI).
+
+There is no `dependencies` graph section: lockfile edges aren't recorded yet.

@@ -136,6 +136,21 @@ export function SupplyChainPanel() {
     }
   }
 
+  async function exportSbom() {
+    if (!activeProjectId) return;
+    const path = await workspaceApi.chooseSbomPath().catch(() => null);
+    if (!path) return;
+    try {
+      const result = await workspaceApi.exportDependencySbom(activeProjectId, path);
+      setToast({
+        tone: "success",
+        message: `SBOM saved: ${result.components} components, ${result.vulnerabilities} open vulnerabilities → ${result.path}`,
+      });
+    } catch (error) {
+      setToast({ tone: "error", message: "SBOM export failed: " + String(error) });
+    }
+  }
+
   async function chooseDirectory() {
     const selected = await workspaceApi.pickAdvisoryDirectory().catch(() => null);
     if (selected) setOfflineDirectory(selected);
@@ -228,10 +243,20 @@ export function SupplyChainPanel() {
         <Panel
           title="Vulnerable dependencies"
           action={
-            <button className="ws-button ws-button-primary" onClick={() => void runDependencyAudit()} disabled={!canAudit}>
-              <Icon name="scan"/>
-              {busy === "dependencies" ? "Auditing…" : "Audit dependencies"}
-            </button>
+            <div className="ws-sbom-actions">
+              <button
+                className="ws-button ws-button-secondary"
+                onClick={() => void exportSbom()}
+                disabled={!inventory.length || busy !== null}
+                title="CycloneDX 1.5 JSON of the last dependency inventory"
+              >
+                Export SBOM
+              </button>
+              <button className="ws-button ws-button-primary" onClick={() => void runDependencyAudit()} disabled={!canAudit}>
+                <Icon name="scan"/>
+                {busy === "dependencies" ? "Auditing…" : "Audit dependencies"}
+              </button>
+            </div>
           }
         >
           <div className="ws-advisory-source" role="radiogroup" aria-label="Advisory source">

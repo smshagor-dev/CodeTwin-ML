@@ -16,6 +16,7 @@ pub mod repair_application;
 pub mod repair_workflow;
 pub mod repair_workspace;
 pub mod runtime_analysis;
+pub mod sbom;
 pub mod secret_history;
 pub mod secret_scanning;
 pub mod security_analysis;
@@ -97,6 +98,7 @@ pub use runtime_analysis::{
     RuntimeAnalysisError, RuntimeArtifactRecord, RuntimeFindingRecord, RuntimeReliabilityService,
     RuntimeRuleRecord, RuntimeRunRecord, RuntimeRunSummary,
 };
+pub use sbom::{purl, SbomError, SbomExport, SbomService};
 pub use secret_history::{
     SecretHistoryError, SecretHistoryFindingRecord, SecretHistoryRunRecord, SecretHistoryService,
     SecretHistorySummary, DEFAULT_MAX_COMMITS,

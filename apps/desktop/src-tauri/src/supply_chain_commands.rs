@@ -5,10 +5,11 @@ use std::{
 
 use codetwin_core::{
     AdvisorySource, Database, DependencyAuditRunRecord, DependencyAuditService,
-    DependencyAuditSummary, DependencyFindingRecord, DependencyRecord, SecretFindingRecord,
-    SecretHistoryFindingRecord, SecretHistoryRunRecord, SecretHistoryService, SecretHistorySummary,
-    SecretScanRunRecord, SecretScanSummary, SecretScanningService,
+    DependencyAuditSummary, DependencyFindingRecord, DependencyRecord, SbomService,
+    SecretFindingRecord, SecretHistoryFindingRecord, SecretHistoryRunRecord, SecretHistoryService,
+    SecretHistorySummary, SecretScanRunRecord, SecretScanSummary, SecretScanningService,
 };
+use serde::Serialize;
 use tauri::Manager;
 
 static SECRET_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -195,4 +196,41 @@ pub fn dependency_audit_history(
     DependencyAuditService::new(&database)
         .history(&project_id, limit)
         .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Serialize)]
+pub struct SbomExportResult {
+    pub path: String,
+    pub components: usize,
+    pub vulnerabilities: usize,
+}
+
+/// Writes a CycloneDX 1.5 JSON SBOM of the project's last dependency inventory to `path`.
+#[tauri::command]
+pub fn export_dependency_sbom(
+    project_id: String,
+    path: String,
+    app: tauri::AppHandle,
+) -> Result<SbomExportResult, String> {
+    let destination = PathBuf::from(path);
+    if !destination
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("json"))
+    {
+        return Err("SBOM path must end in .json".to_string());
+    }
+    if !destination.parent().is_some_and(|parent| parent.is_dir()) {
+        return Err("SBOM destination directory does not exist".to_string());
+    }
+    let database = open_database(&app)?;
+    let export = SbomService::new(&database)
+        .export_cyclonedx(&project_id)
+        .map_err(|error| error.to_string())?;
+    std::fs::write(&destination, &export.json).map_err(|error| error.to_string())?;
+    Ok(SbomExportResult {
+        path: destination.to_string_lossy().to_string(),
+        components: export.components,
+        vulnerabilities: export.vulnerabilities,
+    })
 }
