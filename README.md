@@ -208,7 +208,14 @@ For an eligible web-security finding, CodeTwin can:
 
 2. **Correlate root cause**
    - inspect bounded source candidates;
-   - record confidence and reasoning;
+   - rank them by evidence, strongest first: a declared route matching the finding's method
+     and path; a handler whose signature declares the tested parameter; a handler named
+     exactly method + route segment (`getRender` for `GET /render`); then file-name and
+     route-segment heuristics. Configuration findings (headers, CORS, cookies) prefer an
+     in-project configuration file;
+   - record confidence and the reasons behind it;
+   - generate a patch automatically only at 0.82+ confidence with a bounded transformation;
+     otherwise the fix stays guided or manual;
    - avoid pretending a source location is proven when evidence is insufficient.
 
 3. **Build a fix strategy**
@@ -377,14 +384,14 @@ flowchart LR
 | --- | --- |
 | Tauri 2 + React/TypeScript desktop workspace | Implemented |
 | Dashboard, Projects, Websites, Code Analysis, Security, Testing workspaces | Implemented |
-| SQLite WAL + numbered migrations | Implemented; migrations 0001–0023 registered |
+| SQLite WAL + numbered migrations | Implemented; migrations 0001–0024 registered |
 | Project stack discovery | Implemented |
 | Tree-sitter source indexing | Implemented baseline |
 | Persistent incremental file/symbol index | Implemented |
 | Static import observations + deterministic local resolution | Implemented baseline |
 | Project/File/Symbol Digital Twin graph | Implemented baseline |
 | Dependency, dependent, graph-neighborhood and reverse-impact queries | Implemented baseline |
-| Source-backed symbol reference observations | Implemented baseline |
+| Source-backed symbol reference observations | Implemented baseline for TypeScript/JavaScript; other indexed languages record no reference observations |
 | Conservative same-file semantic resolution | Implemented baseline |
 | Explicit LSP semantic enrichment | Implemented baseline for configured TypeScript/JavaScript, Pyright, and Rust Analyzer servers |
 | Deterministic code-quality findings | Implemented baseline |
@@ -477,8 +484,10 @@ CodeTwin-ML/
 
 ### Install JavaScript dependencies
 
+`package-lock.json` and `Cargo.lock` are committed; install exactly what is locked:
+
 ~~~bash
-npm install
+npm ci
 ~~~
 
 ### Frontend development
@@ -488,6 +497,10 @@ npm run dev
 ~~~
 
 ### Build and validation
+
+`scripts/check-all.sh` runs every CI gate locally (Rust fmt/clippy/tests, the end-to-end
+smoke, Python lint/types/tests, frontend typecheck/tests/build). Set `SKIP_DESKTOP=1` on
+machines without the Tauri/WebKitGTK prerequisites. The individual commands are:
 
 ~~~bash
 npm run typecheck
@@ -501,6 +514,9 @@ cargo test --workspace
 python -m unittest discover -s services/ml/tests -v
 python -m unittest discover -s services/security/tests -v
 python -m compileall -q services/ml/codetwin_ml services/security/codetwin_security
+
+# index a repository and run every deterministic analyzer against it
+cargo run --release -p codetwin-core --example e2e_smoke -- <path-to-repo>
 ~~~
 
 A CI job is only meaningful when it actually receives a runner and executes its steps. An empty or unallocated workflow is infrastructure failure, not validation success.
@@ -576,6 +592,9 @@ CodeTwin does not currently claim:
 - unrestricted autonomous remediation;
 - automatic Git/PR/CI remediation;
 - guaranteed exploitability proof;
+- symbol reference observations outside TypeScript/JavaScript;
+- router prefixes applied through helper-function calls (for example a Gin group passed to
+  `addUserRoutes(v1)` in another function); such routes are indexed without that prefix;
 - universally crash-proof filesystem transactions across arbitrary filesystems or hardware failures. Repair Apply & Rollback does perform startup reconciliation: exact proposed bytes are restored from verified backups, exact base bytes are accepted as recovered, and unknown/manual bytes are left untouched and surfaced as rollback-failed recovery state.
 
 Capabilities are promoted only when implementation, persistence semantics, safety boundaries, and executable validation support the claim.
