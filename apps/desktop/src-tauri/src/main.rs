@@ -23,7 +23,7 @@ use codetwin_core::{
     GraphNeighborhood, GuidedSecurityStore,
     GraphSummary, ImpactAnalysisService, ImpactReport, ImportReferenceRecord, IndexRunRecord,
     IndexSummary, LanguageServerConfig, LanguageServerConfigService, LanguageServerKind,
-    ProjectIndexService, ProjectQueryService, QualityFindingRecord, QualityRuleRecord, RepairApplicationService,
+    ProjectIndexService, ProjectQueryService, QualityFindingRecord, QualityRuleRecord, RepairApplicationService, WorkspaceService,
     QualityRunRecord, QualityRunSummary, ReferenceRefreshSummary, SecurityFindingRecord,
     SecurityRuleRecord, SecurityRunRecord, SecurityRunSummary, SemanticEnrichmentRequest,
     SemanticEnrichmentService, SemanticImportResolutionRecord, SemanticQueryService,
@@ -606,7 +606,99 @@ fn list_security_rules(
     with_database(&state, |database| Ok(CodeSecurityService::new(database).rules()))
 }
 
+fn release_smoke_request() -> Result<Option<(PathBuf, PathBuf)>, String> {
+    let mut args = std::env::args_os().skip(1);
+    let Some(mode) = args.next() else {
+        return Ok(None);
+    };
+    if mode != "--release-smoke" {
+        return Ok(None);
+    }
+    let fixture = args
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| "--release-smoke requires a fixture repository path".to_string())?;
+    let database = args
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| "--release-smoke requires a SQLite database path".to_string())?;
+    if args.next().is_some() {
+        return Err("--release-smoke accepts exactly two positional arguments".to_string());
+    }
+    Ok(Some((fixture, database)))
+}
+
+fn run_release_smoke(fixture: &std::path::Path, database_path: &std::path::Path) -> Result<(), String> {
+    let fixture = std::fs::canonicalize(fixture)
+        .map_err(|error| format!("release smoke fixture could not be opened: {error}"))?;
+    let fixture_metadata = std::fs::symlink_metadata(&fixture)
+        .map_err(|error| format!("release smoke fixture metadata failed: {error}"))?;
+    if fixture_metadata.file_type().is_symlink() || !fixture_metadata.is_dir() {
+        return Err("release smoke fixture must be a real directory".to_string());
+    }
+
+    let parent = database_path
+        .parent()
+        .ok_or_else(|| "release smoke database path has no parent directory".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("release smoke database directory failed: {error}"))?;
+    if database_path.exists() {
+        std::fs::remove_file(database_path)
+            .map_err(|error| format!("release smoke database cleanup failed: {error}"))?;
+    }
+
+    let database =
+        Database::open(database_path).map_err(|error| format!("SQLite startup failed: {error}"))?;
+    let index = ProjectIndexService::new(&database)
+        .index_project(&fixture)
+        .map_err(|error| format!("fixture indexing failed: {error}"))?;
+    let files = ProjectQueryService::new(&database)
+        .list_files(&index.project_id, None, 500)
+        .map_err(|error| format!("indexed file query failed: {error}"))?;
+    if files.is_empty() {
+        return Err("release smoke indexed zero fixture files".to_string());
+    }
+    let graph = ProjectQueryService::new(&database)
+        .graph_summary(&index.project_id)
+        .map_err(|error| format!("dashboard graph query failed: {error}"))?;
+    let workspace = WorkspaceService::new(&database)
+        .summary()
+        .map_err(|error| format!("dashboard workspace summary failed: {error}"))?;
+    if workspace.project_count == 0 {
+        return Err("dashboard workspace summary did not expose the indexed project".to_string());
+    }
+
+    println!(
+        "{}",
+        serde_json::json!({
+            "status": "ok",
+            "project_id": index.project_id,
+            "files": files.len(),
+            "graph_nodes": graph.node_count,
+            "graph_edges": graph.edge_count,
+            "workspace_projects": workspace.project_count,
+            "database": database_path,
+        })
+    );
+    Ok(())
+}
+
 fn main() {
+    match release_smoke_request() {
+        Ok(Some((fixture, database_path))) => {
+            if let Err(error) = run_release_smoke(&fixture, &database_path) {
+                eprintln!("CodeTwin ML release smoke failed: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("CodeTwin ML release smoke arguments are invalid: {error}");
+            std::process::exit(2);
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
