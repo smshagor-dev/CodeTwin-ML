@@ -34,3 +34,4 @@ datasets/raw/
 logs/
 *.log
 *.tsbuildinfo
+apps/desktop/src-tauri/gen/

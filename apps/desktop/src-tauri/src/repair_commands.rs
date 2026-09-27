@@ -441,7 +441,9 @@ mod security_fix_boundary_tests {
                  ) VALUES (
                     'attempt-boundary','finding-boundary','project-boundary',
                     'repair-security',1,'AUTO_FIX_CANDIDATE','sql_injection',
-                    'prepared','[]','{}','{}'
+                    'prepared','[]',
+                    '{\"category\":\"sql_injection\",\"change_summary\":\"fixture\",\"rationale\":\"fixture\",\"likely_files\":[],\"expected_behavior\":\"fixture\",\"compatibility_risks\":[],\"prohibited_shortcuts\":[],\"regression_test_suggestion\":\"fixture\"}',
+                    '{\"targeted\":[],\"full_suite_optional\":false,\"qa_execution_available\":false,\"qa_execution_reason\":\"fixture\",\"security_retest\":\"fixture\",\"regression_test_proposal\":\"fixture\",\"regression_generation_status\":\"fixture\",\"regression_generation_reason\":\"fixture\"}'
                  );",
             )
             .expect("boundary fixture");
@@ -455,7 +457,7 @@ mod security_fix_boundary_tests {
             let error =
                 reject_generic_security_fix_plan_mutation(&database, "repair-security", action)
                     .expect_err("security-linked generic mutation must be blocked");
-            assert!(error.contains("Guided Security Fix & Verify"));
+            assert!(error.contains("Guided Security Fix & Verify"), "{error}");
         }
     }
 

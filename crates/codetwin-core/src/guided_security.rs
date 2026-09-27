@@ -769,7 +769,7 @@ impl<'a> GuidedSecurityStore<'a> {
         let method = finding.method.to_ascii_lowercase();
 
         let mut statement = self.database.connection().prepare(
-            "SELECT f.id, f.relative_path, f.language, s.id, s.name, s.qualified_name
+            "SELECT f.id, f.relative_path, f.language, s.id, s.name, s.qualified_name, s.signature
              FROM files f
              LEFT JOIN symbols s ON s.file_id=f.id AND s.is_active=1
              WHERE f.project_id=?1 AND f.is_active=1
@@ -784,6 +784,7 @@ impl<'a> GuidedSecurityStore<'a> {
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })?;
 
@@ -799,7 +800,15 @@ impl<'a> GuidedSecurityStore<'a> {
 
         let mut best: HashMap<(String, Option<String>), Ranked> = HashMap::new();
         for row in rows {
-            let (file_id, relative_path, language, symbol_id, symbol_name, qualified_name) = row?;
+            let (
+                file_id,
+                relative_path,
+                language,
+                symbol_id,
+                symbol_name,
+                qualified_name,
+                signature,
+            ) = row?;
             let path_lower = relative_path.to_ascii_lowercase();
             let symbol_lower = symbol_name.clone().unwrap_or_default().to_ascii_lowercase();
             let qualified_lower = qualified_name.unwrap_or_default().to_ascii_lowercase();
@@ -823,6 +832,15 @@ impl<'a> GuidedSecurityStore<'a> {
                 reasons.push(format!("matches parent route segment '{parent}'"));
             }
             if !parameter.is_empty()
+                && signature
+                    .as_deref()
+                    .is_some_and(|signature| signature_declares_parameter(signature, &parameter))
+            {
+                score += 0.16;
+                reasons.push(format!(
+                    "handler signature declares parameter '{parameter}'"
+                ));
+            } else if !parameter.is_empty()
                 && (symbol_lower.contains(&parameter) || qualified_lower.contains(&parameter))
             {
                 score += 0.16;
@@ -842,6 +860,19 @@ impl<'a> GuidedSecurityStore<'a> {
             {
                 score += 0.06;
                 reasons.push(format!("symbol naming is compatible with HTTP {method}"));
+            }
+            // `getRender` for GET /render is the conventional handler name; a symbol that
+            // merely contains the segment (`getRenderAmbiguous`) is weaker evidence.
+            let compact_terminal: String =
+                terminal.chars().filter(|c| c.is_alphanumeric()).collect();
+            if !method.is_empty()
+                && !compact_terminal.is_empty()
+                && symbol_lower == format!("{method}{compact_terminal}")
+            {
+                score += 0.04;
+                reasons.push(format!(
+                    "symbol name exactly matches HTTP {method} + route segment '{terminal}'"
+                ));
             }
             if language.as_deref().is_some() {
                 score += 0.02;
@@ -863,6 +894,46 @@ impl<'a> GuidedSecurityStore<'a> {
                 Some(existing) if existing.score >= ranked.score => {}
                 _ => {
                     best.insert(key, ranked);
+                }
+            }
+        }
+
+        // A declared route matching the finding's method and path is much stronger
+        // evidence than file-name heuristics; the route correlator scores it directly.
+        let route = crate::AuthorizedWebSecurityStore::new(self.database)
+            .correlate_source_for_request(
+                Some(project_id),
+                &finding.endpoint_url,
+                Some(&finding.method),
+                finding.parameter_name.as_deref(),
+            )
+            .map_err(|error| GuidedSecurityError::State(error.to_string()))?;
+        if let Some(route) = route.filter(|route| route.confidence >= ROUTE_EVIDENCE_FLOOR) {
+            let score = route.confidence.min(0.97);
+            let reason = format!(
+                "declared {} route matches {}",
+                finding.method.to_ascii_uppercase(),
+                url.path()
+            );
+            let key = (route.file_id.clone(), route.symbol_id.clone());
+            match best.get_mut(&key) {
+                Some(existing) if existing.score < score => {
+                    existing.score = score;
+                    existing.reasons.insert(0, reason);
+                }
+                Some(_) => {}
+                None => {
+                    best.insert(
+                        key,
+                        Ranked {
+                            file_id: route.file_id,
+                            relative_path: route.relative_path,
+                            symbol_id: route.symbol_id,
+                            symbol_name: route.symbol_name,
+                            score,
+                            reasons: vec![reason],
+                        },
+                    );
                 }
             }
         }
@@ -1641,6 +1712,25 @@ impl<'a> GuidedSecurityStore<'a> {
     fn random_id(&self, prefix: &str) -> Result<String, GuidedSecurityError> {
         random_id_from_connection(self.database.connection(), prefix)
     }
+}
+
+/// Route correlation below this is the file-name heuristic fallback, not route evidence.
+const ROUTE_EVIDENCE_FLOOR: f64 = 0.9;
+
+/// True when `parameter` is a whole identifier inside the signature's parameter list,
+/// e.g. `q` in `function getSearch(q: string)` but not in `(query: string)`.
+fn signature_declares_parameter(signature: &str, parameter: &str) -> bool {
+    let (Some(open), Some(close)) = (signature.find('('), signature.rfind(')')) else {
+        return false;
+    };
+    if close <= open {
+        return false;
+    }
+    signature[open + 1..close]
+        .split(|character: char| {
+            !(character == '_' || character == '$' || character.is_alphanumeric())
+        })
+        .any(|token| token.eq_ignore_ascii_case(parameter))
 }
 
 #[derive(Debug)]

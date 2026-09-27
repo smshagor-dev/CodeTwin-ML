@@ -27,12 +27,17 @@ const MIGRATION_0020: &str = include_str!("../migrations/0020_security_fix_verif
 const MIGRATION_0021: &str = include_str!("../migrations/0021_security_remediation_campaigns.sql");
 const MIGRATION_0022: &str = include_str!("../migrations/0022_source_route_mapping.sql");
 const MIGRATION_0023: &str = include_str!("../migrations/0023_route_prefix_semantics.sql");
+const MIGRATION_0024: &str = include_str!("../migrations/0024_campaign_regression_transitions.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 }
+
+/// Indexing reuses a few dozen statements per file; with rusqlite's default of 16
+/// they evicted each other and SQL preparation dominated indexing time.
+const STATEMENT_CACHE_CAPACITY: usize = 128;
 
 pub struct Database {
     connection: Connection,
@@ -41,6 +46,7 @@ pub struct Database {
 impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
         let connection = Connection::open(path)?;
+        connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let database = Self { connection };
@@ -50,6 +56,7 @@ impl Database {
 
     pub fn open_in_memory() -> Result<Self, DatabaseError> {
         let connection = Connection::open_in_memory()?;
+        connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let database = Self { connection };
         database.migrate()?;
@@ -87,6 +94,7 @@ impl Database {
         self.apply_migration(21, MIGRATION_0021)?;
         self.apply_migration(22, MIGRATION_0022)?;
         self.apply_migration(23, MIGRATION_0023)?;
+        self.apply_migration(24, MIGRATION_0024)?;
         Ok(())
     }
 
@@ -143,8 +151,10 @@ mod tests {
                 row.get(0)
             })
             .expect("query migrations");
-        assert_eq!(count, 23);
-        for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23] {
+        assert_eq!(count, 24);
+        for version in [
+            10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        ] {
             let applied: i64 = db
                 .connection()
                 .query_row(

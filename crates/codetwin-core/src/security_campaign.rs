@@ -1807,7 +1807,22 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 } else {
                     false
                 };
+            // A passing retest recorded after this fix was applied is evidence that the
+            // dependent's outcome relies on the applied code, even while the campaign
+            // still shows it BLOCKED on the unverified prerequisite.
+            let dependent_retested_after_apply: bool = self.database.connection().query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM guided_security_retests r
+                    WHERE r.finding_id=?1 AND r.status='retest_passed'
+                      AND r.created_at >= (
+                        SELECT created_at FROM repair_application_runs WHERE id=?2
+                      )
+                 )",
+                params![dependent.finding_id, attempt.application_run_id],
+                |row| row.get(0),
+            )?;
             if dependent_applied
+                || dependent_retested_after_apply
                 || matches!(
                     dependent.status.as_str(),
                     "VERIFIED"

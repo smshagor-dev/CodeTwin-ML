@@ -611,7 +611,7 @@ fn release_smoke_request() -> Result<Option<(PathBuf, PathBuf)>, String> {
     let Some(mode) = args.next() else {
         return Ok(None);
     };
-    if mode != std::ffi::OsString::from("--release-smoke") {
+    if mode != "--release-smoke" {
         return Ok(None);
     }
     let fixture = args

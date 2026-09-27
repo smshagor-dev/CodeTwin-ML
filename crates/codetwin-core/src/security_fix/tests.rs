@@ -198,7 +198,10 @@ fn source_change_after_approval_is_rejected() {
     let error = service
         .assert_application_allowed(&prepared.attempt.id)
         .expect_err("stale approval");
-    assert!(matches!(error, SecurityFixError::StaleApproval));
+    assert!(
+        matches!(error, SecurityFixError::StaleApproval),
+        "{error:?}"
+    );
 }
 
 #[test]

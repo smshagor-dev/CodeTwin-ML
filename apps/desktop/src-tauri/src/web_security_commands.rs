@@ -434,7 +434,7 @@ fn run_scan_background(
                     }
                     Ok(())
                 }
-                Err(error) if cancelled.load(Ordering::SeqCst) => {
+                Err(_) if cancelled.load(Ordering::SeqCst) => {
                     mark_scan_cancelled(&store, &guided, guided_session_id.as_deref(), scan_id)?;
                     Ok(())
                 }
