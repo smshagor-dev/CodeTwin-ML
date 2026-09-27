@@ -94,7 +94,7 @@ def _run_isolated_worker(
             ),
             "check": False,
         }
-        if os.name == "nt":
+        if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         try:
@@ -140,12 +140,16 @@ def _run_isolated_worker(
             raise InferenceRuntimeError("isolated inference worker result is invalid")
         return result
     if response.get("ok") is False:
-        error = response.get("error")
-        if isinstance(error, dict):
-            code = error.get("code") if isinstance(error.get("code"), str) else "worker_error"
+        worker_error = response.get("error")
+        if isinstance(worker_error, dict):
+            code = (
+                worker_error.get("code")
+                if isinstance(worker_error.get("code"), str)
+                else "worker_error"
+            )
             message = (
-                error.get("message")
-                if isinstance(error.get("message"), str)
+                worker_error.get("message")
+                if isinstance(worker_error.get("message"), str)
                 else "isolated inference failed"
             )
             raise InferenceRuntimeError(f"{code}: {message}")

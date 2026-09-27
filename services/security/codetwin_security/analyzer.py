@@ -101,7 +101,10 @@ RULES: tuple[Rule, ...] = (
         "A03:2021 Injection",
         "Request-controlled value appears in a database query sink",
         "Bind the value as a query parameter and validate its expected type before use.",
-        _compile(r"(?:execute|executemany|query|raw|mysqli_query|->query)\s*\([^\n;]*(?:" + REQUEST_INPUT + r")"),
+        _compile(
+            r"(?:execute|executemany|query|raw|\$queryRawUnsafe|\$executeRawUnsafe|mysqli_query|->query)"
+            r"\s*\([^\n;]*(?:" + REQUEST_INPUT + r")"
+        ),
         frozenset({".py", ".js", ".jsx", ".ts", ".tsx", ".php"}),
         False,
     ),

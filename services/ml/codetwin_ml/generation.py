@@ -5,7 +5,9 @@ import hashlib
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
+from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from typing import Any
 
@@ -85,8 +87,8 @@ def _assert_identity_unchanged(
 
 
 @contextmanager
-def _windows_share_deny_write_delete(path: pathlib.Path):
-    if os.name != "nt":
+def _windows_share_deny_write_delete(path: pathlib.Path) -> Iterator[None]:
+    if sys.platform != "win32":
         yield
         return
 
@@ -296,7 +298,7 @@ def run_generation(
                     "timeout": GENERATION_TIMEOUT_SECONDS,
                     "check": False,
                 }
-                if os.name == "nt":
+                if sys.platform == "win32":
                     kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
                 try:

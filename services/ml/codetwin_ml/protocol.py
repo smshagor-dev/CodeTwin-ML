@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, overload
 
 from codetwin_ml.datasets import (
     DatasetError,
@@ -60,6 +60,14 @@ def _ok(request: Request, result: Any) -> dict[str, Any]:
 
 def _error(request: Request, code: str, message: str) -> dict[str, Any]:
     return {"id": request.request_id, "ok": False, "error": {"code": code, "message": message}}
+
+
+@overload
+def _string_param(request: Request, key: str, *, required: Literal[True]) -> str: ...
+
+
+@overload
+def _string_param(request: Request, key: str, *, required: bool = False) -> str | None: ...
 
 
 def _string_param(request: Request, key: str, *, required: bool = False) -> str | None:
@@ -153,16 +161,22 @@ def handle_request(request: Request) -> dict[str, Any]:
             return _ok(request, dataset_status(dataset_id))
         if request.method == "datasets.prefetch":
             accepted = _accepted_licenses(request)
-            action = _string_param(request, "action")
+            prefetch_action_name = _string_param(request, "action")
             dataset_id = _string_param(request, "dataset_id")
             all_requested = request.params.get("all", False)
             if not isinstance(all_requested, bool):
                 raise ProtocolError("all must be a boolean")
-            selected = int(action is not None) + int(dataset_id is not None) + int(all_requested)
+            selected = (
+                int(prefetch_action_name is not None)
+                + int(dataset_id is not None)
+                + int(all_requested)
+            )
             if selected != 1:
                 raise ProtocolError("datasets.prefetch requires exactly one of action, dataset_id, or all=true")
-            if action is not None:
-                return _ok(request, prefetch_action(action, accepted_licenses=accepted))
+            if prefetch_action_name is not None:
+                return _ok(
+                    request, prefetch_action(prefetch_action_name, accepted_licenses=accepted)
+                )
             if dataset_id is not None:
                 return _ok(request, prefetch_dataset(dataset_id, accepted_licenses=accepted))
             return _ok(request, prefetch_all(accepted_licenses=accepted))
