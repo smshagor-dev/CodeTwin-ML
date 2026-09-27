@@ -952,17 +952,19 @@ fn discover_openapi(
             };
 
             let mut parameter_locations = ParameterLocations::new();
+            let mut seed_context = RequestSeedContext::default();
             collect_parameter_array(
                 &document,
                 path_item.get("parameters"),
                 &mut parameter_locations,
+                &mut seed_context,
             );
             collect_parameter_array(
                 &document,
                 operation.get("parameters"),
                 &mut parameter_locations,
+                &mut seed_context,
             );
-            let mut seed_context = RequestSeedContext::default();
             let request_content_type = collect_request_body_parameters(
                 &document,
                 operation,
@@ -1106,6 +1108,7 @@ fn collect_parameter_array(
     document: &serde_json::Value,
     value: Option<&serde_json::Value>,
     output: &mut ParameterLocations,
+    seeds: &mut RequestSeedContext,
 ) {
     let Some(values) = value.and_then(|value| value.as_array()) else {
         return;
@@ -1128,7 +1131,22 @@ fn collect_parameter_array(
             continue;
         };
         if matches!(location.as_str(), "query" | "path" | "header" | "cookie") {
-            insert_parameter_location(output, name.to_string(), location);
+            insert_parameter_location(output, name.to_string(), location.clone());
+            if location == "path" {
+                let seed = parameter
+                    .get("example")
+                    .and_then(bounded_scalar_value)
+                    .or_else(|| {
+                        parameter
+                            .get("schema")
+                            .and_then(|schema| {
+                                bounded_schema_seed_from_document(document, schema, 0)
+                            })
+                    });
+                if let Some(seed) = seed {
+                    seeds.values.entry(name.to_string()).or_insert(seed);
+                }
+            }
         }
     }
 }
@@ -1688,6 +1706,10 @@ mod tests {
         let seeds = request_seeds
             .get(&crate::endpoint_request_key(&endpoint.method, &endpoint.url))
             .expect("request seeds");
+        assert_eq!(
+            seeds.values.get("id"),
+            Some(&serde_json::json!("codetwin-test"))
+        );
         assert_eq!(
             seeds.values.get("email"),
             Some(&serde_json::json!("codetwin@example.invalid"))
