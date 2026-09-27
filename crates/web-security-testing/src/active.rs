@@ -842,22 +842,7 @@ fn send_payload_with_seed(
 
     let method = Method::from_bytes(endpoint.method.as_bytes())
         .map_err(|_| RequestError::Http("unsupported HTTP method".to_string()))?;
-    let mut url = if location == "path" && !payload.is_empty() {
-        let template_base = endpoint
-            .route_template
-            .as_deref()
-            .and_then(|value| Url::parse(value).ok())
-            .unwrap_or_else(|| base.clone());
-        replace_path_parameter(&template_base, parameter, payload).ok_or_else(|| {
-            RequestError::Http("path parameter placeholder was not found".to_string())
-        })?
-    } else {
-        base.clone()
-    };
-
-    if location == "query" {
-        replace_query_parameter(&mut url, parameter, payload);
-    }
+    let url = request_url_with_seed(endpoint, base, parameter, location, payload, request_seed)?;
 
     let body = contextual_request_body_with_seed(
         endpoint,
@@ -867,20 +852,29 @@ fn send_payload_with_seed(
         &request_seed.values,
     );
     match (body.as_ref(), location) {
-        (Some((body, content_type)), "header") => requester.send_with_redaction_secrets(
-            method,
-            &url,
-            Some(body.as_str()),
-            &[("Content-Type", *content_type), (parameter, payload)],
-            &request_seed.redaction_secrets,
-        ),
-        (None, "header") => requester.send_with_redaction_secrets(
-            method,
-            &url,
-            None,
-            &[(parameter, payload)],
-            &request_seed.redaction_secrets,
-        ),
+        (Some((body, content_type)), "header") => {
+            let header_value = seeded_transport_value(request_seed, parameter, payload);
+            requester.send_with_redaction_secrets(
+                method,
+                &url,
+                Some(body.as_str()),
+                &[
+                    ("Content-Type", *content_type),
+                    (parameter, header_value.as_str()),
+                ],
+                &request_seed.redaction_secrets,
+            )
+        }
+        (None, "header") => {
+            let header_value = seeded_transport_value(request_seed, parameter, payload);
+            requester.send_with_redaction_secrets(
+                method,
+                &url,
+                None,
+                &[(parameter, header_value.as_str())],
+                &request_seed.redaction_secrets,
+            )
+        }
         (Some((body, content_type)), _) => requester.send_with_redaction_secrets(
             method,
             &url,
@@ -896,6 +890,96 @@ fn send_payload_with_seed(
             &request_seed.redaction_secrets,
         ),
     }
+}
+
+fn request_url_with_seed(
+    endpoint: &EndpointObservation,
+    base: &Url,
+    target_parameter: &str,
+    target_location: &str,
+    payload: &str,
+    request_seed: &RequestSeedContext,
+) -> Result<Url, RequestError> {
+    let mut url = if target_location == "path" && !payload.is_empty() {
+        endpoint
+            .route_template
+            .as_deref()
+            .and_then(|value| Url::parse(value).ok())
+            .unwrap_or_else(|| base.clone())
+    } else {
+        base.clone()
+    };
+
+    if target_location == "path" && !payload.is_empty() {
+        url = replace_path_parameter(&url, target_parameter, payload).ok_or_else(|| {
+            RequestError::Http("path parameter placeholder was not found".to_string())
+        })?;
+    }
+
+    for name in endpoint
+        .parameter_names
+        .iter()
+        .filter(|name| parameter_has_location(&endpoint.parameter_locations, name, "path"))
+    {
+        if !has_path_parameter_placeholder(&url, name) {
+            continue;
+        }
+        let value = request_seed
+            .values
+            .get(name)
+            .and_then(seed_form_value)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                RequestError::Http(format!(
+                    "path parameter {name} requires a bounded runtime seed before the request can be sent"
+                ))
+            })?;
+        url = replace_path_parameter(&url, name, &value).ok_or_else(|| {
+            RequestError::Http(format!(
+                "path parameter placeholder for {name} could not be materialized"
+            ))
+        })?;
+    }
+
+    for (name, value) in &request_seed.values {
+        if parameter_has_location(&endpoint.parameter_locations, name, "query") {
+            if let Some(value) = seed_form_value(value) {
+                replace_query_parameter(&mut url, name, &value);
+            }
+        }
+    }
+    if target_location == "query" {
+        let value = seeded_transport_value(request_seed, target_parameter, payload);
+        replace_query_parameter(&mut url, target_parameter, &value);
+    }
+
+    Ok(url)
+}
+
+fn seeded_transport_value(
+    request_seed: &RequestSeedContext,
+    parameter: &str,
+    payload: &str,
+) -> String {
+    if !payload.is_empty() {
+        return payload.to_string();
+    }
+    request_seed
+        .values
+        .get(parameter)
+        .and_then(seed_form_value)
+        .unwrap_or_default()
+}
+
+fn has_path_parameter_placeholder(url: &Url, parameter: &str) -> bool {
+    let raw = url.as_str();
+    [
+        format!("{{{parameter}}}"),
+        format!("%7B{parameter}%7D"),
+        format!("%7b{parameter}%7d"),
+    ]
+    .iter()
+    .any(|placeholder| raw.contains(placeholder))
 }
 
 fn proven_parameter_location<'a>(
@@ -1272,6 +1356,7 @@ fn normalized_key(raw: &str) -> String {
 mod tests {
     use super::{baseline_key, contains_sql_error, materially_different, similar_response};
     use crate::ObservedResponse;
+    use url::Url;
 
     fn response(status: u16, body: &str) -> ObservedResponse {
         ObservedResponse {
@@ -1488,6 +1573,102 @@ mod tests {
         );
         assert!(value.get("tenant").is_none());
         assert!(value.get("next").is_none());
+    }
+
+    #[test]
+    fn runtime_query_seeds_preserve_non_target_form_defaults() {
+        use std::collections::BTreeMap;
+
+        let endpoint = crate::EndpointObservation {
+            url: "http://localhost:3000/search".into(),
+            route_template: None,
+            method: "GET".into(),
+            depth: 0,
+            source: "form".into(),
+            parameter_names: vec!["csrf_token".into(), "q".into()],
+            parameter_locations: BTreeMap::from([
+                ("csrf_token".into(), vec!["query".into()]),
+                ("q".into(), vec!["query".into()]),
+            ]),
+            response_header_names: vec![],
+            cookie_names: vec![],
+            content_type: None,
+            status_code: None,
+            redirect_to: None,
+        };
+        let seed = crate::RequestSeedContext {
+            values: crate::RequestSeedValues::from([
+                ("csrf_token".into(), serde_json::json!("runtime-token")),
+                ("q".into(), serde_json::json!("default-query")),
+            ]),
+            redaction_secrets: vec!["runtime-token".into()],
+            protected_parameters: vec!["csrf_token".into()],
+        };
+        let base = Url::parse(&endpoint.url).expect("url");
+
+        let baseline = super::request_url_with_seed(&endpoint, &base, "q", "query", "", &seed)
+            .expect("seeded baseline");
+        let baseline_pairs: BTreeMap<_, _> = baseline
+            .query_pairs()
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect();
+        assert_eq!(
+            baseline_pairs.get("csrf_token").map(String::as_str),
+            Some("runtime-token")
+        );
+        assert_eq!(
+            baseline_pairs.get("q").map(String::as_str),
+            Some("default-query")
+        );
+
+        let probe = super::request_url_with_seed(&endpoint, &base, "q", "query", "probe", &seed)
+            .expect("seeded probe");
+        let probe_pairs: BTreeMap<_, _> = probe
+            .query_pairs()
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect();
+        assert_eq!(
+            probe_pairs.get("csrf_token").map(String::as_str),
+            Some("runtime-token")
+        );
+        assert_eq!(probe_pairs.get("q").map(String::as_str), Some("probe"));
+    }
+
+    #[test]
+    fn runtime_path_seeds_materialize_other_openapi_path_parameters() {
+        use std::collections::BTreeMap;
+
+        let endpoint = crate::EndpointObservation {
+            url: "http://localhost:3000/orgs/%7Borg%7D/users/%7Bid%7D".into(),
+            route_template: Some("http://localhost:3000/orgs/%7Borg%7D/users/%7Bid%7D".into()),
+            method: "GET".into(),
+            depth: 0,
+            source: "openapi".into(),
+            parameter_names: vec!["org".into(), "id".into()],
+            parameter_locations: BTreeMap::from([
+                ("org".into(), vec!["path".into()]),
+                ("id".into(), vec!["path".into()]),
+            ]),
+            response_header_names: vec![],
+            cookie_names: vec![],
+            content_type: None,
+            status_code: None,
+            redirect_to: None,
+        };
+        let seed = crate::RequestSeedContext {
+            values: crate::RequestSeedValues::from([
+                ("org".into(), serde_json::json!("acme")),
+                ("id".into(), serde_json::json!(1)),
+            ]),
+            redaction_secrets: vec![],
+            protected_parameters: vec![],
+        };
+        let base = Url::parse(&endpoint.url).expect("url");
+
+        let url = super::request_url_with_seed(&endpoint, &base, "id", "path", "2", &seed)
+            .expect("materialized URL");
+        assert!(url.path().contains("/orgs/acme/users/2"));
+        assert!(!url.as_str().contains("%7B"));
     }
 
     #[test]

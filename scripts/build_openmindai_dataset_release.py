@@ -32,10 +32,101 @@ def load_release_config(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if value.get("schema_version") != 1:
         raise ValueError("unsupported OpenMindAI dataset release schema")
+
+    release_tag = value.get("release_tag")
+    manifest_asset = value.get("manifest_asset")
+    if (
+        not isinstance(release_tag, str)
+        or not release_tag.startswith("openmindai-datasets-v")
+        or not isinstance(manifest_asset, str)
+        or not manifest_asset.startswith("openmindai-dataset-manifest-v")
+        or not manifest_asset.endswith(".json")
+        or Path(manifest_asset).name != manifest_asset
+        or "/" in manifest_asset
+        or "\\" in manifest_asset
+    ):
+        raise ValueError("invalid OpenMindAI dataset release identity")
+
     assets = value.get("assets")
     if not isinstance(assets, list) or not assets:
         raise ValueError("release config must contain assets")
+
+    dataset_ids: set[str] = set()
+    asset_names: set[str] = set()
+    for asset in assets:
+        if not isinstance(asset, dict):
+            raise ValueError("release assets must be objects")
+        dataset_id = asset.get("dataset_id")
+        display_name = asset.get("display_name")
+        asset_name = asset.get("asset_name")
+        if (
+            not isinstance(dataset_id, str)
+            or not dataset_id
+            or dataset_id in dataset_ids
+            or not isinstance(display_name, str)
+            or not display_name.startswith("OpenMindAI Dataset")
+            or not isinstance(asset_name, str)
+            or not asset_name.startswith("openmindai-dataset-")
+            or not asset_name.endswith(".zip")
+            or Path(asset_name).name != asset_name
+            or "/" in asset_name
+            or "\\" in asset_name
+            or asset_name in asset_names
+        ):
+            raise ValueError(f"invalid OpenMindAI dataset release asset: {dataset_id!r}")
+        dataset_ids.add(dataset_id)
+        asset_names.add(asset_name)
     return value
+
+
+def validate_release_source_integrity(
+    catalog: dict[str, Any],
+    release: dict[str, Any],
+) -> None:
+    catalog_by_id = {item["id"]: item for item in catalog["datasets"]}
+    gaps: list[str] = []
+
+    for asset in release["assets"]:
+        dataset_id = asset["dataset_id"]
+        spec = catalog_by_id.get(dataset_id)
+        if spec is None:
+            gaps.append(f"{dataset_id}: missing catalog entry")
+            continue
+
+        revision = spec.get("revision")
+        if (
+            not isinstance(revision, str)
+            or len(revision) != 40
+            or any(character not in "0123456789abcdefABCDEF" for character in revision)
+        ):
+            gaps.append(f"{dataset_id}: source revision must be a full 40-hex commit id")
+
+        files = spec.get("files")
+        if not isinstance(files, list) or not files:
+            gaps.append(f"{dataset_id}: source file list is empty")
+            continue
+
+        for file_spec in files:
+            relative_path = file_spec.get("path", "<unknown>")
+            size_bytes = file_spec.get("size_bytes")
+            expected_hash = file_spec.get("sha256")
+            if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes <= 0:
+                gaps.append(f"{dataset_id}/{relative_path}: missing positive size_bytes")
+            if (
+                not isinstance(expected_hash, str)
+                or len(expected_hash) != 64
+                or any(character not in "0123456789abcdefABCDEF" for character in expected_hash)
+            ):
+                gaps.append(f"{dataset_id}/{relative_path}: missing 64-hex sha256")
+
+    if gaps:
+        preview = "; ".join(gaps[:16])
+        if len(gaps) > 16:
+            preview += f"; ... and {len(gaps) - 16} more"
+        raise ValueError(
+            "release source integrity metadata is incomplete; resolve pinned upstream "
+            f"metadata before packaging: {preview}"
+        )
 
 
 def write_notice(dataset_root: Path, spec: dict[str, Any], display_name: str) -> None:
@@ -80,6 +171,7 @@ def archive_tree(source_root: Path, archive: Path) -> None:
 def build(output_dir: Path, release_config_path: Path) -> dict[str, Any]:
     release = load_release_config(release_config_path)
     catalog = load_catalog(ROOT / "datasets" / "catalog.json")
+    validate_release_source_integrity(catalog, release)
     catalog_by_id = {item["id"]: item for item in catalog["datasets"]}
     output_dir.mkdir(parents=True, exist_ok=True)
 

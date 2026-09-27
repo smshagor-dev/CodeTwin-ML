@@ -43,11 +43,19 @@ pub fn redact_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
 }
 
 pub fn redact_url(url: &Url) -> String {
+    redact_url_with_secrets(url, &[])
+}
+
+pub fn redact_url_with_secrets(url: &Url, secrets: &[String]) -> String {
     let mut safe = url.clone();
     let pairs: Vec<(String, String)> = safe
         .query_pairs()
         .map(|(name, value)| {
-            let value = if is_sensitive_name(&name) {
+            let value = if is_sensitive_name(&name)
+                || secrets.iter().any(|secret| {
+                    let secret = secret.trim();
+                    !secret.is_empty() && value.as_ref() == secret
+                }) {
                 "<redacted>".to_string()
             } else {
                 truncate(&value, 256)
@@ -71,16 +79,15 @@ pub fn response_evidence(
     url: &Url,
     response: &ObservedResponse,
 ) -> EvidenceObservation {
+    let safe_url = redact_url_with_secrets(url, &response.redaction_secrets);
     EvidenceObservation {
         summary: format!(
             "{label}: {method} {} -> HTTP {} in {} ms",
-            redact_url(url),
-            response.status,
-            response.elapsed_ms
+            safe_url, response.status, response.elapsed_ms
         ),
         request_metadata: serde_json::json!({
             "method": method,
-            "url": redact_url(url),
+            "url": safe_url,
         }),
         response_metadata: serde_json::json!({
             "status": response.status,
@@ -293,7 +300,10 @@ fn truncate(value: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_body, redact_body_with_secrets, redact_headers, response_evidence};
+    use super::{
+        redact_body, redact_body_with_secrets, redact_headers, redact_url_with_secrets,
+        response_evidence,
+    };
     use crate::ObservedResponse;
     use url::Url;
 
@@ -332,6 +342,37 @@ mod tests {
         assert!(!echoed.contains("raw-primary-secret"));
         assert!(!echoed.contains("custom-secret"));
         assert!(echoed.matches("<redacted>").count() >= 2);
+    }
+
+    #[test]
+    fn runtime_request_seed_values_are_redacted_from_query_evidence() {
+        let url =
+            Url::parse("https://example.test/search?q=Alice&csrf_token=runtime-token&mode=safe")
+                .expect("url");
+        let safe =
+            redact_url_with_secrets(&url, &["Alice".to_string(), "runtime-token".to_string()]);
+        assert!(!safe.contains("Alice"));
+        assert!(!safe.contains("runtime-token"));
+        assert!(safe.contains("q=%3Credacted%3E"));
+        assert!(safe.contains("csrf_token=%3Credacted%3E"));
+        assert!(safe.contains("mode=safe"));
+
+        let response = ObservedResponse {
+            status: 200,
+            headers: vec![],
+            content_type: Some("text/plain".into()),
+            location: None,
+            body: b"ok".to_vec(),
+            elapsed_ms: 1,
+            truncated: false,
+            redaction_secrets: vec!["Alice".into(), "runtime-token".into()],
+        };
+        let evidence = response_evidence("seeded", "GET", &url, &response);
+        let request_url = evidence.request_metadata["url"]
+            .as_str()
+            .expect("request URL");
+        assert!(!request_url.contains("Alice"));
+        assert!(!request_url.contains("runtime-token"));
     }
 
     #[test]

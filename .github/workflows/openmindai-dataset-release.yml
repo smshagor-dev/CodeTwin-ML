@@ -2,26 +2,27 @@ name: OpenMindAI Dataset Release
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - datasets/catalog.json
-      - datasets/openmindai-release.json
-      - scripts/build_openmindai_dataset_release.py
-      - services/ml/codetwin_ml/datasets.py
-      - .github/workflows/openmindai-dataset-release.yml
+    inputs:
+      publish:
+        description: "Publish the immutable OpenMindAI Dataset v1.0.0 release after validation"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: openmindai-dataset-release-v1
   cancel-in-progress: false
 
+env:
+  DATASET_RELEASE_TAG: openmindai-datasets-v1.0.0
+
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -29,43 +30,104 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Validate dataset release unit tests
+        env:
+          PYTHONPATH: services/ml
+        run: |
+          python -m unittest discover -s services/ml/tests -p "test_datasets.py" -v
+          python -m unittest discover -s services/ml/tests -p "test_openmindai_release.py" -v
+
       - name: Build OpenMindAI Dataset assets
         env:
           PYTHONPATH: services/ml
         run: python scripts/build_openmindai_dataset_release.py --output dist/openmindai-datasets
 
-      - name: Validate generated manifest
+      - name: Validate generated manifest and checksums
         run: |
           python - <<'PY'
+          import hashlib
           import json
           from pathlib import Path
-          manifest = json.loads(Path('dist/openmindai-datasets/openmindai-dataset-manifest-v1.0.0.json').read_text())
-          assert manifest['schema_version'] == 1
-          assert manifest['brand'] == 'OpenMindAI Dataset'
-          assert len(manifest['assets']) == 4
-          for asset in manifest['assets']:
-              path = Path('dist/openmindai-datasets') / asset['asset_name']
-              assert path.is_file() and path.stat().st_size == asset['size_bytes']
-          PY
 
-      - name: Create or update GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: openmindai-datasets-v1.0.0
+          root = Path("dist/openmindai-datasets")
+          manifest_path = root / "openmindai-dataset-manifest-v1.0.0.json"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          assert manifest["schema_version"] == 1
+          assert manifest["brand"] == "OpenMindAI Dataset"
+          assert manifest["release_tag"] == "openmindai-datasets-v1.0.0"
+          assert len(manifest["assets"]) == 4
+
+          for asset in manifest["assets"]:
+              path = root / asset["asset_name"]
+              assert path.is_file()
+              assert path.stat().st_size == asset["size_bytes"]
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              assert digest == asset["sha256"]
+              assert len(asset["source_revision"]) == 40
+
+          checksum_lines = (
+              root / "openmindai-dataset-SHA256SUMS.txt"
+          ).read_text(encoding="utf-8").splitlines()
+          expected_names = {
+              manifest_path.name,
+              *[asset["asset_name"] for asset in manifest["assets"]],
+          }
+          observed_names = {line.split("  ", 1)[1] for line in checksum_lines if "  " in line}
+          assert observed_names == expected_names
+          PY
+          cd dist/openmindai-datasets
+          sha256sum -c openmindai-dataset-SHA256SUMS.txt
+
+      - name: Upload validated dataset release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmindai-dataset-v1.0.0
+          path: |
+            dist/openmindai-datasets/*.zip
+            dist/openmindai-datasets/openmindai-dataset-manifest-v1.0.0.json
+            dist/openmindai-datasets/openmindai-dataset-SHA256SUMS.txt
+            dist/openmindai-datasets/RELEASE_NOTES.md
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    if: ${{ inputs.publish == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: openmindai-dataset-v1.0.0
+          path: dist/openmindai-datasets
+
+      - name: Reverify downloaded release candidate
+        working-directory: dist/openmindai-datasets
+        run: sha256sum -c openmindai-dataset-SHA256SUMS.txt
+
+      - name: Refuse tag or release overwrite
+        shell: bash
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/openmindai-datasets/*.zip \
-              dist/openmindai-datasets/openmindai-dataset-manifest-v1.0.0.json \
-              dist/openmindai-datasets/openmindai-dataset-SHA256SUMS.txt --clobber
-            gh release edit "$TAG" \
-              --title "OpenMindAI Dataset v1.0.0" \
-              --notes-file dist/openmindai-datasets/RELEASE_NOTES.md
-          else
-            gh release create "$TAG" \
-              dist/openmindai-datasets/*.zip \
-              dist/openmindai-datasets/openmindai-dataset-manifest-v1.0.0.json \
-              dist/openmindai-datasets/openmindai-dataset-SHA256SUMS.txt \
-              --target "${GITHUB_SHA}" \
-              --title "OpenMindAI Dataset v1.0.0" \
-              --notes-file dist/openmindai-datasets/RELEASE_NOTES.md
+          set -euo pipefail
+          if git rev-parse --verify "refs/tags/${DATASET_RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "::error::dataset release tag already exists; immutable dataset releases are never moved"
+            exit 1
           fi
+          if gh release view "${DATASET_RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "::error::dataset GitHub Release already exists; assets are never overwritten"
+            exit 1
+          fi
+
+      - name: Publish immutable OpenMindAI Dataset release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${DATASET_RELEASE_TAG}"             dist/openmindai-datasets/*.zip             dist/openmindai-datasets/openmindai-dataset-manifest-v1.0.0.json             dist/openmindai-datasets/openmindai-dataset-SHA256SUMS.txt             --target "${GITHUB_SHA}"             --title "OpenMindAI Dataset v1.0.0"             --notes-file dist/openmindai-datasets/RELEASE_NOTES.md
