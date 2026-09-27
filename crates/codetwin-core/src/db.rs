@@ -29,6 +29,7 @@ const MIGRATION_0022: &str = include_str!("../migrations/0022_source_route_mappi
 const MIGRATION_0023: &str = include_str!("../migrations/0023_route_prefix_semantics.sql");
 const MIGRATION_0024: &str = include_str!("../migrations/0024_campaign_regression_transitions.sql");
 const MIGRATION_0025: &str = include_str!("../migrations/0025_supply_chain_scanning.sql");
+const MIGRATION_0026: &str = include_str!("../migrations/0026_secret_history_scanning.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -97,6 +98,7 @@ impl Database {
         self.apply_migration(23, MIGRATION_0023)?;
         self.apply_migration(24, MIGRATION_0024)?;
         self.apply_migration(25, MIGRATION_0025)?;
+        self.apply_migration(26, MIGRATION_0026)?;
         Ok(())
     }
 
@@ -137,12 +139,13 @@ mod tests {
                               'security_remediation_campaigns','security_remediation_campaign_findings',
                               'security_remediation_campaign_relationships','security_remediation_campaign_events',
                               'source_routes','source_handler_inputs','source_route_mounts','web_source_endpoint_links',
-                              'secret_scan_run_metrics','dependency_inventory','osv_advisories','dependency_audit_run_metrics')",
+                              'secret_scan_run_metrics','dependency_inventory','osv_advisories','dependency_audit_run_metrics',
+                              'secret_history_run_metrics')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 58);
+        assert_eq!(count, 59);
     }
 
     #[test]
@@ -154,9 +157,9 @@ mod tests {
                 row.get(0)
             })
             .expect("query migrations");
-        assert_eq!(count, 25);
+        assert_eq!(count, 26);
         for version in [
-            10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+            10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
         ] {
             let applied: i64 = db
                 .connection()

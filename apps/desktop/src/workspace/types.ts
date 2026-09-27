@@ -1333,3 +1333,60 @@ export type BenchmarkRunSummary = {
 };
 
 export type BenchmarkReportFormat = "html" | "markdown" | "json";
+
+export type SecretHistorySummary = {
+  project_id: string;
+  run_id: string;
+  status: string;
+  coverage_complete: boolean;
+  commits_scanned: number;
+  commit_limit_reached: boolean;
+  shallow_clone: boolean;
+  file_changes_scanned: number;
+  file_changes_skipped: number;
+  observations: number;
+  still_in_working_tree: number;
+  findings_opened: number;
+  findings_refreshed: number;
+  findings_resolved: number;
+  duration_ms: number;
+};
+
+export type SecretHistoryFindingRecord = {
+  id: string;
+  rule_id: string;
+  severity: string;
+  confidence: number;
+  title: string;
+  description: string;
+  relative_path: string;
+  line: number | null;
+  redacted: string;
+  introduced_commit: string;
+  introduced_at: string;
+  commit_count: number;
+  paths: string[];
+  still_in_working_tree: boolean;
+  in_test_path: boolean;
+  remediation: string;
+  status: string;
+  first_seen: string;
+  last_seen: string;
+  resolved_at: string | null;
+};
+
+export type SecretHistoryRunRecord = {
+  run_id: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  coverage_complete: boolean;
+  commits_scanned: number;
+  commit_limit_reached: boolean;
+  shallow_clone: boolean;
+  observations: number;
+  still_in_working_tree: number;
+  findings_opened: number;
+  findings_resolved: number;
+};

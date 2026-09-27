@@ -10,8 +10,8 @@ use std::{path::PathBuf, time::Instant};
 use codetwin_core::{
     AdvisorySource, AuthorizedWebSecurityStore, CodeQualityService, CodeSecurityService, Database,
     DatabaseAnalysisService, DependencyAuditService, ImpactAnalysisService, ProjectIndexService,
-    ProjectQueryService, QaDiscoveryService, RuntimeReliabilityService, SecretScanningService,
-    SymbolReferenceService,
+    ProjectQueryService, QaDiscoveryService, RuntimeReliabilityService, SecretHistoryService,
+    SecretScanningService, SymbolReferenceService,
 };
 
 fn stage<T: std::fmt::Debug, E: std::fmt::Display>(
@@ -92,6 +92,19 @@ fn main() {
                 )
             })
     });
+    if repo.join(".git").exists() {
+        stage(&mut failures, "secret history scan", || {
+            SecretHistoryService::new(&database)
+                .scan_project(&project_id, 2_000)
+                .map(|summary| {
+                    (
+                        summary.commits_scanned,
+                        summary.observations,
+                        summary.coverage_complete,
+                    )
+                })
+        });
+    }
     // Offline mode with an empty advisory directory: exercises lockfile inventory
     // without network access.
     let advisories = std::env::temp_dir().join("codetwin-e2e-empty-osv");
