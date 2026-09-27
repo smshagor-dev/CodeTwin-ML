@@ -5467,7 +5467,7 @@ fn text<'a>(source: &'a str, node: Node<'_>) -> Option<&'a str> {
 mod tests {
     use tree_sitter::Parser;
 
-    use super::extract_routes;
+    use super::{extract_routes, typescript_object_models};
 
     #[test]
     fn nextjs_function_body_does_not_create_fake_exported_methods() {
