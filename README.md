@@ -408,7 +408,7 @@ flowchart LR
 | Guided Security Remediation Campaigns | Implemented baseline |
 | Hash-guarded Apply & Rollback | Implemented baseline |
 | Secret scanning (redacted, lifecycle-tracked) | Implemented for the working tree; git history is not scanned |
-| Dependency vulnerability audit (OSV) | Implemented for npm/yarn/pnpm/bun, Cargo, PyPI (uv/poetry/Pipfile/requirements), Go, Composer and RubyGems lockfiles; offline OSV directory or consented OSV.dev lookup |
+| Dependency vulnerability audit (OSV) | Implemented for npm/yarn/pnpm/bun, Cargo, PyPI (uv/poetry/Pipfile/requirements), Go, Composer, RubyGems, Maven/Gradle and NuGet manifests; offline OSV directory or consented OSV.dev lookup |
 | Deterministic database artifact analysis | Implemented baseline |
 | Deterministic runtime configuration analysis | Implemented baseline |
 | Passive QA/test discovery | Implemented |
@@ -588,7 +588,7 @@ CodeTwin does not currently claim:
 
 - a complete interprocedural call graph;
 - full control-flow/data-flow/taint proof across every supported language;
-- dependency-CVE completeness beyond the supported lockfiles (no Maven/Gradle, NuGet, Swift or Dart yet; unpinned requirements cannot be matched);
+- dependency-CVE completeness beyond the supported manifests (no Swift or Dart yet; unpinned requirements, and Maven versions inherited from a parent POM or BOM, cannot be matched);
 - secrets in git history (only the working tree is scanned);
 - benchmark scores as absolute detection rates: public vulnerability labels are noisy and samples are often
   fragments, so dataset benchmarks are a regression signal between versions. Java, C#, Ruby and other

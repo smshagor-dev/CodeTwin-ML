@@ -252,7 +252,7 @@ export function SupplyChainPanel() {
               <p className="ws-inline-empty">
                 {inventory.length
                   ? `No vulnerable dependencies in this view (${inventory.length} packages inventoried).`
-                  : "Run an audit to inventory lockfiles (npm, yarn, Cargo, PyPI, Go, Composer, RubyGems)."}
+                  : "Run an audit to inventory lockfiles (npm, yarn, pnpm, bun, Cargo, PyPI, Go, Composer, RubyGems, Maven, Gradle, NuGet)."}
               </p>
             )}
           </div>

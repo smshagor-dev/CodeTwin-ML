@@ -49,12 +49,22 @@ Only exact, resolved versions are audited. Supported lockfiles:
 | Go | `go.mod` |
 | Packagist | `composer.lock` |
 | RubyGems | `Gemfile.lock` |
+| Maven | `gradle.lockfile`, `gradle/dependency-locks/*.lockfile`, `pom.xml` (direct and managed dependencies with literal or same-file `${property}` versions) |
+| NuGet | `packages.lock.json`, `*.csproj`/`*.fsproj`/`*.vbproj` `PackageReference`, `Directory.Packages.props` `PackageVersion` |
 
 Unpinned requirements (`flask>=2`) are counted and shown, not guessed. Local path, git and
 workspace packages are excluded because they are not published versions. A manifest that
 cannot be parsed makes the run's coverage incomplete, so no finding is resolved on that run.
 
-Not supported yet: Maven/Gradle, NuGet, Swift, Dart/pub, Bun's binary `bun.lockb`.
+`pom.xml` and MSBuild project files list direct dependencies only, and a POM that inherits
+versions from a parent or imported BOM (typical for Spring Boot) leaves those dependencies
+unpinned; the audit counts them rather than guessing. For full Java coverage enable Gradle
+dependency locking (`gradle dependencies --write-locks`); for .NET enable
+`RestorePackagesWithLockFile`. Maven version ranges, `SNAPSHOT` versions and NuGet floating
+versions (`6.*`) are counted as unpinned. XML manifests containing a DTD or entity declarations
+are rejected. Maven's `Final`, `GA` and `RELEASE` qualifiers compare equal to the plain release.
+
+Not supported yet: Swift, Dart/pub, Bun's binary `bun.lockb`.
 
 ### Advisory sources
 
