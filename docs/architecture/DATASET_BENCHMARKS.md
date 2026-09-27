@@ -37,7 +37,7 @@ Each catalog entry carries a `benchmark` profile:
 | --- | --- | --- |
 | Defect Detection (Devign, C) | `vulnerability_detection` | Confusion matrix, precision, recall, F1, per-rule precision, secret-scanner hits |
 | Security Vulnerability (multi-language, CWE labels) | `vulnerability_detection` | The same, plus per-language and per-CWE recall, including whether the analyzer reported the same CWE |
-| Code Refinement (Java buggy → fixed) | `repair_pairs` | Whether findings on the buggy side disappear after the fix and whether the fix introduces new ones |
+| Code Refinement (Java buggy → fixed) | `repair_pairs` | Whether findings on the buggy side disappear after the fix and whether the fix introduces new ones (CodeXGLUE abstracts identifiers, so few security rules apply) |
 | SWE-bench Verified (real patches) | `secret_probe` | Secret-scanner hits per 1,000 patches; on public patches these are almost all false positives |
 
 A sample counts as flagged when the security analyzer reports any observation. Every report
@@ -46,8 +46,8 @@ baseline.
 
 Samples are taken at an even stride across the split, up to the sample limit (default 2,000,
 maximum 200,000). Samples over 256 KiB, unlabeled rows and languages the analyzer has no grammar
-for are counted and skipped, never guessed. Java is read but not scored today, so the Code
-Refinement pairs report that explicitly.
+for are counted and skipped, never guessed. Java is supported, so the Code Refinement
+(buggy → fixed Java) pairs are scored.
 
 Column names are taken from the profile when given (Devign: `func`, `target`) and otherwise
 matched against common Hugging Face names (`code`/`func`/`source`, `label`/`target`/`is_vulnerable`,
