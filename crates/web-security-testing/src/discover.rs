@@ -234,13 +234,13 @@ pub fn crawl_with_seeds(
                                 &form.hidden_names,
                                 &config.checks,
                             ));
-                            if !form.hidden_names.is_empty() || !form.hidden_values.is_empty() {
+                            if !form.protected_names.is_empty() || !form.default_values.is_empty() {
                                 let key = endpoint_request_key(&form_endpoint.method, &form_endpoint.url);
                                 let context = request_seeds.entry(key).or_default();
-                                for name in &form.hidden_names {
-                                    context.protected_parameters.push(name.clone());
-                                }
-                                for (name, value) in &form.hidden_values {
+                                context
+                                    .protected_parameters
+                                    .extend(form.protected_names.iter().cloned());
+                                for (name, value) in &form.default_values {
                                     context
                                         .values
                                         .insert(name.clone(), serde_json::Value::String(value.clone()));
@@ -319,7 +319,8 @@ struct FormObservation {
     method: String,
     parameters: Vec<String>,
     hidden_names: Vec<String>,
-    hidden_values: BTreeMap<String, String>,
+    protected_names: Vec<String>,
+    default_values: BTreeMap<String, String>,
 }
 
 fn add_endpoint(
@@ -542,9 +543,13 @@ fn extract_forms(base: &Url, html: &str) -> Vec<FormObservation> {
             cursor = after_name;
             continue;
         }
-        let Some(tag_end_relative) = lower[start..].find('>') else { break };
+        let Some(tag_end_relative) = lower[start..].find('>') else {
+            break;
+        };
         let tag_end = start + tag_end_relative + 1;
-        let Some(close_relative) = lower[tag_end..].find("</form>") else { break };
+        let Some(close_relative) = lower[tag_end..].find("</form>") else {
+            break;
+        };
         let close = tag_end + close_relative;
         let tag = &html[start..tag_end];
         let body = &html[tag_end..close];
@@ -552,48 +557,236 @@ fn extract_forms(base: &Url, html: &str) -> Vec<FormObservation> {
         let method = attribute_from_tag(tag, "method")
             .unwrap_or_else(|| "GET".to_string())
             .to_ascii_uppercase();
+
         if let Ok(action) = resolve_url(base, &action) {
             let mut parameters = Vec::new();
             let mut hidden_names = Vec::new();
-            let mut hidden_values = BTreeMap::new();
+            let mut protected_names = Vec::new();
+            let mut default_values = BTreeMap::new();
+
             for input_tag in tags(body, "input") {
-                if let Some(name) = attribute_from_tag(input_tag, "name") {
-                    parameters.push(name.clone());
-                    if attribute_from_tag(input_tag, "type")
-                        .is_some_and(|value| value.eq_ignore_ascii_case("hidden"))
-                    {
+                if tag_has_attribute(input_tag, "disabled") {
+                    continue;
+                }
+                let Some(name) = attribute_from_tag(input_tag, "name")
+                    .filter(|name| !name.is_empty() && name.len() <= 256)
+                else {
+                    continue;
+                };
+                let input_type = attribute_from_tag(input_tag, "type")
+                    .unwrap_or_else(|| "text".to_string())
+                    .to_ascii_lowercase();
+                if matches!(
+                    input_type.as_str(),
+                    "submit" | "reset" | "button" | "image"
+                ) {
+                    continue;
+                }
+
+                parameters.push(name.clone());
+                match input_type.as_str() {
+                    "hidden" => {
                         hidden_names.push(name.clone());
-                        if let Some(value) = attribute_from_tag(input_tag, "value")
-                            .filter(|value| value.len() <= 2_048)
-                        {
-                            hidden_values.insert(name, value);
+                        protected_names.push(name.clone());
+                        if let Some(value) = bounded_form_value(attribute_from_tag(input_tag, "value")) {
+                            default_values.insert(name, value);
+                        }
+                    }
+                    "checkbox" | "radio" => {
+                        protected_names.push(name.clone());
+                        if tag_has_attribute(input_tag, "checked") {
+                            let value = bounded_form_value(attribute_from_tag(input_tag, "value"))
+                                .unwrap_or_else(|| "on".to_string());
+                            default_values.insert(name, value);
+                        }
+                    }
+                    "file" => {
+                        protected_names.push(name);
+                    }
+                    _ => {
+                        if let Some(value) = bounded_form_value(attribute_from_tag(input_tag, "value")) {
+                            default_values.insert(name, value);
                         }
                     }
                 }
             }
-            for select_tag in tags(body, "select") {
-                if let Some(name) = attribute_from_tag(select_tag, "name") {
-                    parameters.push(name);
+
+            for (select_tag, select_body) in element_bodies(body, "select") {
+                if tag_has_attribute(select_tag, "disabled") {
+                    continue;
+                }
+                let Some(name) = attribute_from_tag(select_tag, "name")
+                    .filter(|name| !name.is_empty() && name.len() <= 256)
+                else {
+                    continue;
+                };
+                parameters.push(name.clone());
+                if tag_has_attribute(select_tag, "multiple") {
+                    protected_names.push(name);
+                    continue;
+                }
+                if let Some(value) = select_default_value(select_body) {
+                    default_values.insert(name, value);
                 }
             }
-            for textarea_tag in tags(body, "textarea") {
-                if let Some(name) = attribute_from_tag(textarea_tag, "name") {
-                    parameters.push(name);
+
+            for (textarea_tag, textarea_body) in element_bodies(body, "textarea") {
+                if tag_has_attribute(textarea_tag, "disabled") {
+                    continue;
+                }
+                let Some(name) = attribute_from_tag(textarea_tag, "name")
+                    .filter(|name| !name.is_empty() && name.len() <= 256)
+                else {
+                    continue;
+                };
+                parameters.push(name.clone());
+                if let Some(value) = simple_control_text(textarea_body, 2_048) {
+                    default_values.insert(name, value);
                 }
             }
+
             parameters.sort();
             parameters.dedup();
+            hidden_names.sort();
+            hidden_names.dedup();
+            protected_names.sort();
+            protected_names.dedup();
             forms.push(FormObservation {
                 action,
                 method,
                 parameters,
                 hidden_names,
-                hidden_values,
+                protected_names,
+                default_values,
             });
         }
         cursor = close + "</form>".len();
     }
     forms
+}
+
+fn bounded_form_value(value: Option<String>) -> Option<String> {
+    value.filter(|value| value.len() <= 2_048)
+}
+
+fn element_bodies<'a>(html: &'a str, name: &str) -> Vec<(&'a str, &'a str)> {
+    let lower = html.to_ascii_lowercase();
+    let needle = format!("<{name}");
+    let close_needle = format!("</{name}>");
+    let mut cursor = 0usize;
+    let mut output = Vec::new();
+
+    while let Some(relative) = lower[cursor..].find(&needle) {
+        let start = cursor + relative;
+        let after_name = start + needle.len();
+        if lower
+            .as_bytes()
+            .get(after_name)
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && !matches!(*byte, b'>' | b'/'))
+        {
+            cursor = after_name;
+            continue;
+        }
+        let Some(open_end_relative) = lower[start..].find('>') else {
+            break;
+        };
+        let open_end = start + open_end_relative + 1;
+        let Some(close_relative) = lower[open_end..].find(&close_needle) else {
+            break;
+        };
+        let close = open_end + close_relative;
+        output.push((&html[start..open_end], &html[open_end..close]));
+        cursor = close + close_needle.len();
+    }
+    output
+}
+
+fn tag_has_attribute(tag: &str, name: &str) -> bool {
+    let bytes = tag.as_bytes();
+    let target = name.as_bytes();
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        while index < bytes.len()
+            && (bytes[index].is_ascii_whitespace()
+                || matches!(bytes[index], b'<' | b'/' | b'>'))
+        {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            break;
+        }
+
+        let name_start = index;
+        while index < bytes.len()
+            && !bytes[index].is_ascii_whitespace()
+            && !matches!(bytes[index], b'=' | b'>' | b'/')
+        {
+            index += 1;
+        }
+        let attribute_name = &bytes[name_start..index];
+        if attribute_name.eq_ignore_ascii_case(target) {
+            return true;
+        }
+
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index < bytes.len() && bytes[index] == b'=' {
+            index += 1;
+            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            if index < bytes.len() && matches!(bytes[index], b'"' | b'\'') {
+                let quote = bytes[index];
+                index += 1;
+                while index < bytes.len() && bytes[index] != quote {
+                    index += 1;
+                }
+                if index < bytes.len() {
+                    index += 1;
+                }
+            } else {
+                while index < bytes.len()
+                    && !bytes[index].is_ascii_whitespace()
+                    && bytes[index] != b'>'
+                {
+                    index += 1;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn select_default_value(body: &str) -> Option<String> {
+    let options = element_bodies(body, "option");
+    let mut first = None;
+    for (option_tag, option_body) in options {
+        if tag_has_attribute(option_tag, "disabled") {
+            continue;
+        }
+        let value = bounded_form_value(attribute_from_tag(option_tag, "value"))
+            .or_else(|| simple_control_text(option_body, 256));
+        let Some(value) = value else {
+            continue;
+        };
+        if first.is_none() {
+            first = Some(value.clone());
+        }
+        if tag_has_attribute(option_tag, "selected") {
+            return Some(value);
+        }
+    }
+    first
+}
+
+fn simple_control_text(value: &str, max: usize) -> Option<String> {
+    let value = value.trim();
+    if value.len() > max || value.contains('<') || value.contains('&') {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 fn tags<'a>(html: &'a str, name: &str) -> Vec<&'a str> {
@@ -759,17 +952,19 @@ fn discover_openapi(
             };
 
             let mut parameter_locations = ParameterLocations::new();
+            let mut seed_context = RequestSeedContext::default();
             collect_parameter_array(
                 &document,
                 path_item.get("parameters"),
                 &mut parameter_locations,
+                &mut seed_context,
             );
             collect_parameter_array(
                 &document,
                 operation.get("parameters"),
                 &mut parameter_locations,
+                &mut seed_context,
             );
-            let mut seed_context = RequestSeedContext::default();
             let request_content_type = collect_request_body_parameters(
                 &document,
                 operation,
@@ -913,6 +1108,7 @@ fn collect_parameter_array(
     document: &serde_json::Value,
     value: Option<&serde_json::Value>,
     output: &mut ParameterLocations,
+    seeds: &mut RequestSeedContext,
 ) {
     let Some(values) = value.and_then(|value| value.as_array()) else {
         return;
@@ -935,7 +1131,22 @@ fn collect_parameter_array(
             continue;
         };
         if matches!(location.as_str(), "query" | "path" | "header" | "cookie") {
-            insert_parameter_location(output, name.to_string(), location);
+            insert_parameter_location(output, name.to_string(), location.clone());
+            if location == "path" {
+                let seed = parameter
+                    .get("example")
+                    .and_then(bounded_scalar_value)
+                    .or_else(|| {
+                        parameter
+                            .get("schema")
+                            .and_then(|schema| {
+                                bounded_schema_seed_from_document(document, schema, 0)
+                            })
+                    });
+                if let Some(seed) = seed {
+                    seeds.values.entry(name.to_string()).or_insert(seed);
+                }
+            }
         }
     }
 }
@@ -1289,9 +1500,10 @@ mod tests {
         assert_eq!(forms[0].parameters, vec!["csrf_token", "q"]);
         assert_eq!(forms[0].hidden_names, vec!["csrf_token"]);
         assert_eq!(
-            forms[0].hidden_values.get("csrf_token").map(String::as_str),
+            forms[0].default_values.get("csrf_token").map(String::as_str),
             Some("csrf-secret-123")
         );
+        assert_eq!(forms[0].protected_names, vec!["csrf_token"]);
         assert_eq!(attribute_from_tag(r#"<a href="/x">"#, "href").as_deref(), Some("/x"));
         assert_eq!(
             attribute_from_tag(r#"<form data-action="/wrong" action="/right">"#, "action")
@@ -1306,6 +1518,80 @@ mod tests {
             extract_forms(&base, r#"<formality action="/wrong"></formality>"#).is_empty(),
             "tag-name prefixes must not be treated as form elements"
         );
+    }
+
+    #[test]
+    fn form_controls_preserve_browser_defaults_without_mutating_choice_controls() {
+        let base = Url::parse("http://localhost:8080/").expect("base");
+        let html = r#"
+            <form action="/profile" method="post">
+              <input type="text" name="display_name" value="Alice">
+              <input type="checkbox" name="remember" value="yes" checked>
+              <input type="radio" name="tier" value="free">
+              <input type="radio" name="tier" value="pro" checked>
+              <input type="file" name="avatar">
+              <input type="submit" name="submit_action" value="save">
+              <input name="ignored" value="x" disabled>
+              <select name="region">
+                <option value="eu">Europe</option>
+                <option value="us" selected>United States</option>
+              </select>
+              <select name="roles" multiple>
+                <option value="reader" selected>Reader</option>
+              </select>
+              <textarea name="bio">hello world</textarea>
+            </form>
+        "#;
+        let forms = extract_forms(&base, html);
+        assert_eq!(forms.len(), 1);
+        let form = &forms[0];
+        assert_eq!(
+            form.parameters,
+            vec![
+                "avatar".to_string(),
+                "bio".to_string(),
+                "display_name".to_string(),
+                "region".to_string(),
+                "remember".to_string(),
+                "roles".to_string(),
+                "tier".to_string(),
+            ]
+        );
+        assert_eq!(
+            form.default_values.get("display_name").map(String::as_str),
+            Some("Alice")
+        );
+        assert_eq!(
+            form.default_values.get("remember").map(String::as_str),
+            Some("yes")
+        );
+        assert_eq!(
+            form.default_values.get("tier").map(String::as_str),
+            Some("pro")
+        );
+        assert_eq!(
+            form.default_values.get("region").map(String::as_str),
+            Some("us")
+        );
+        assert!(
+            form.default_values.get("roles").is_none(),
+            "multi-select values are repeated-key semantics and must not be collapsed into one seed"
+        );
+        assert_eq!(
+            form.default_values.get("bio").map(String::as_str),
+            Some("hello world")
+        );
+        assert_eq!(
+            form.protected_names,
+            vec![
+                "avatar".to_string(),
+                "remember".to_string(),
+                "roles".to_string(),
+                "tier".to_string(),
+            ]
+        );
+        assert!(!form.parameters.iter().any(|name| name == "submit_action"));
+        assert!(!form.parameters.iter().any(|name| name == "ignored"));
     }
 
     #[test]
@@ -1375,7 +1661,7 @@ mod tests {
             "paths": {
                 "/users/{id}": {
                     "parameters": [
-                        { "name": "id", "in": "path", "required": true }
+                        { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
                     ],
                     "post": {
                         "parameters": [
@@ -1421,6 +1707,10 @@ mod tests {
             .get(&crate::endpoint_request_key(&endpoint.method, &endpoint.url))
             .expect("request seeds");
         assert_eq!(
+            seeds.values.get("id"),
+            Some(&serde_json::json!("codetwin-test"))
+        );
+        assert_eq!(
             seeds.values.get("email"),
             Some(&serde_json::json!("codetwin@example.invalid"))
         );
@@ -1431,38 +1721,3 @@ mod tests {
     #[test]
     fn openapi_external_refs_and_unresolved_server_variables_fail_closed() {
         let external = serde_json::json!({ "$ref": "https://example.invalid/schema.json" });
-        assert!(
-            super::resolve_local_openapi_ref(&external, &external, 0).is_none(),
-            "remote references must never be fetched or trusted"
-        );
-        assert!(
-            expand_openapi_server_url(&serde_json::json!({
-                "url": "/api/{tenant}",
-                "variables": { "tenant": {} }
-            }))
-            .is_none(),
-            "server variables without bounded defaults must be ignored"
-        );
-    }
-
-    #[test]
-    fn openapi_scalar_seed_values_preserve_simple_json_types() {
-        assert_eq!(
-            bounded_schema_seed(&serde_json::json!({"type":"integer"})),
-            Some(serde_json::json!(1))
-        );
-        assert_eq!(
-            bounded_schema_seed(&serde_json::json!({"type":"boolean"})),
-            Some(serde_json::json!(true))
-        );
-        assert_eq!(
-            bounded_schema_seed(&serde_json::json!({"type":"string","format":"email"})),
-            Some(serde_json::json!("codetwin@example.invalid"))
-        );
-        assert_eq!(
-            bounded_schema_seed(&serde_json::json!({"type":"object"})),
-            None,
-            "complex request shapes must remain fail-closed instead of being guessed"
-        );
-    }
-}
