@@ -549,6 +549,7 @@ fn typescript_object_models(
     let mut own_fields = BTreeMap::<String, Vec<String>>::new();
     let mut parents = BTreeMap::<String, Vec<String>>::new();
     let mut utilities = BTreeMap::<String, TypeScriptUtilityModel>::new();
+    let shadowed_utilities = typescript_shadowed_utility_names(source, root);
 
     walk(root, &mut |node| {
         if !matches!(node.kind(), "interface_declaration" | "type_alias_declaration") {
@@ -579,7 +580,9 @@ fn typescript_object_models(
                 return;
             };
             let type_value = type_value.trim().trim_end_matches(';').trim();
-            if let Some(parsed) = typescript_utility_model(type_value) {
+            if let Some(parsed) =
+                typescript_utility_model(type_value, &shadowed_utilities)
+            {
                 let source = parsed.source().to_string();
                 utility = Some(parsed);
                 vec![source]
@@ -671,8 +674,47 @@ fn typescript_object_models(
     resolved
 }
 
-fn typescript_utility_model(type_value: &str) -> Option<TypeScriptUtilityModel> {
+fn typescript_shadowed_utility_names(source: &str, root: Node<'_>) -> Vec<String> {
+    const UTILITY_NAMES: &[&str] = &["Partial", "Required", "Readonly", "Pick", "Omit"];
+    let mut shadowed = Vec::new();
+
+    walk(root, &mut |node| {
+        if !matches!(node.kind(), "interface_declaration" | "type_alias_declaration") {
+            return;
+        }
+        let Some(name) = node
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(str::trim)
+        else {
+            return;
+        };
+        if UTILITY_NAMES.contains(&name) {
+            shadowed.push(name.to_string());
+        }
+    });
+
+    for reference in crate::imports::extract_imports("TypeScript", source, root) {
+        for binding in reference.bindings {
+            if UTILITY_NAMES.contains(&binding.local_name.as_str()) {
+                shadowed.push(binding.local_name);
+            }
+        }
+    }
+
+    shadowed.sort();
+    shadowed.dedup();
+    shadowed
+}
+
+fn typescript_utility_model(
+    type_value: &str,
+    shadowed_utilities: &[String],
+) -> Option<TypeScriptUtilityModel> {
     let (utility, raw_arguments) = typescript_generic_application(type_value)?;
+    if shadowed_utilities.iter().any(|name| name == utility) {
+        return None;
+    }
     let arguments = typescript_top_level_generic_arguments(raw_arguments)?;
 
     match utility {
