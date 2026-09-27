@@ -1271,3 +1271,65 @@ export type DependencyAuditRunRecord = {
 };
 
 export type AdvisoryMode = "online" | "offline";
+
+export type BenchmarkTask = "vulnerability_detection" | "repair_pairs" | "secret_probe";
+export type BenchmarkDatasetStatus =
+  | "evaluated"
+  | "not_installed"
+  | "integrity_failed"
+  | "schema_unrecognized"
+  | "no_profile"
+  | "failed";
+
+export type BenchmarkCatalogDataset = {
+  id: string;
+  name: string;
+  repository: string;
+  license: string;
+  license_url: string;
+  task: BenchmarkTask | null;
+  splits: string[];
+  download_bytes: number;
+  installed: boolean;
+};
+
+export type DatasetBenchmarkStatus = {
+  datasets_root: string | null;
+  root_exists: boolean;
+  datasets: BenchmarkCatalogDataset[];
+};
+
+export type BenchmarkScores = {
+  precision: number | null;
+  recall: number | null;
+  f1: number | null;
+  accuracy: number | null;
+  specificity: number | null;
+  flag_rate: number | null;
+  base_rate: number | null;
+  always_flag_f1: number | null;
+};
+
+export type BenchmarkDatasetSummary = {
+  id: string;
+  name: string;
+  status: BenchmarkDatasetStatus;
+  message: string | null;
+  scored: number;
+  scores: BenchmarkScores | null;
+  secret_hits_per_thousand: number | null;
+  pairs_evaluated: number | null;
+  pairs_cleared_by_fix: number | null;
+};
+
+export type BenchmarkRunSummary = {
+  run_id: string;
+  generated_at: string;
+  split: string;
+  max_samples: number;
+  duration_ms: number;
+  evaluated: number;
+  datasets: BenchmarkDatasetSummary[];
+};
+
+export type BenchmarkReportFormat = "html" | "markdown" | "json";

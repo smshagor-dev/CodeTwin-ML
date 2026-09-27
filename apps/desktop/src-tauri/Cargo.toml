@@ -9,6 +9,7 @@ tauri-build = { version = "2" }
 
 [dependencies]
 codetwin-core = { path = "../../../crates/codetwin-core" }
+dataset-benchmark = { path = "../../../crates/dataset-benchmark" }
 project-discovery = { path = "../../../crates/project-discovery" }
 qa-execution = { path = "../../../crates/qa-execution" }
 web-security-testing = { path = "../../../crates/web-security-testing" }

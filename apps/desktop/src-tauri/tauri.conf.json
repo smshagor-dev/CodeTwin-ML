@@ -27,7 +27,8 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "windows/install-openmindai-datasets.ps1": "resources/install-openmindai-datasets.ps1"
+      "windows/install-openmindai-datasets.ps1": "resources/install-openmindai-datasets.ps1",
+      "../../../scripts/install_openmindai_datasets.py": "resources/install_openmindai_datasets.py"
     },
     "windows": {
       "nsis": {

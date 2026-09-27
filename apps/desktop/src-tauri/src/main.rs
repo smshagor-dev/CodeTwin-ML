@@ -1,3 +1,4 @@
+mod benchmark_commands;
 mod database_commands;
 mod guided_security_commands;
 mod ml_commands;
@@ -19,6 +20,10 @@ use std::{
     },
 };
 
+use benchmark_commands::{
+    dataset_benchmark_status, export_dataset_benchmark, list_dataset_benchmarks,
+    run_dataset_benchmark,
+};
 use codetwin_core::{
     AuthorizedWebSecurityStore, CodeQualityService, CodeSecurityService, Database,
     FindingEvidenceRecord, GraphNeighborhood, GraphSummary, GuidedSecurityStore,
@@ -777,6 +782,10 @@ fn main() {
             security_history,
             list_security_rules,
             run_secret_scan,
+            dataset_benchmark_status,
+            run_dataset_benchmark,
+            list_dataset_benchmarks,
+            export_dataset_benchmark,
             list_secret_findings,
             secret_scan_history,
             run_dependency_audit,
