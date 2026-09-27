@@ -63,6 +63,17 @@ class OpenMindAIDatasetReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid OpenMindAI dataset release asset"):
                 _BUILDER.load_release_config(path)
 
+    def test_checked_in_release_sources_have_complete_integrity_metadata(self) -> None:
+        catalog = json.loads((ROOT / "datasets" / "catalog.json").read_text(encoding="utf-8"))
+        release = json.loads(
+            (ROOT / "datasets" / "openmindai-release.json").read_text(encoding="utf-8")
+        )
+        _BUILDER.validate_release_source_integrity(catalog, release)
+        self.assertEqual(
+            catalog["estimated_total_download_bytes"],
+            sum(item["download_bytes"] for item in catalog["datasets"]),
+        )
+
     def test_release_source_integrity_requires_full_revision_size_and_sha256(self) -> None:
         release = {
             "assets": [
