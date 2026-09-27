@@ -408,6 +408,7 @@ flowchart LR
 | Guided Security Remediation Campaigns | Implemented baseline |
 | Hash-guarded Apply & Rollback | Implemented baseline |
 | Secret scanning (redacted, lifecycle-tracked) | Implemented for the working tree; git history is not scanned |
+| CycloneDX 1.5 SBOM export (components with package URLs, open vulnerabilities) | Implemented from the dependency inventory; no dependency graph yet |
 | Dependency vulnerability audit (OSV) | Implemented for npm/yarn/pnpm/bun, Cargo, PyPI (uv/poetry/Pipfile/requirements), Go, Composer, RubyGems, Maven/Gradle and NuGet manifests; offline OSV directory or consented OSV.dev lookup |
 | Deterministic database artifact analysis | Implemented baseline |
 | Deterministic runtime configuration analysis | Implemented baseline |
