@@ -137,6 +137,41 @@ export const workspaceApi = {
   securityHistory(projectId: string, limit = 50) {
     return invoke<SecurityRunRecord[]>("security_history", { projectId, limit });
   },
+  runSecretScan(projectId: string) {
+    return invoke<import("./types").SecretScanSummary>("run_secret_scan", { projectId });
+  },
+  secretFindings(projectId: string, status: string | null, limit = 500) {
+    return invoke<import("./types").SecretFindingRecord[]>("list_secret_findings", { projectId, status, limit });
+  },
+  secretScanHistory(projectId: string, limit = 20) {
+    return invoke<import("./types").SecretScanRunRecord[]>("secret_scan_history", { projectId, limit });
+  },
+  runDependencyAudit(
+    projectId: string,
+    mode: import("./types").AdvisoryMode,
+    offlineDirectory: string | null,
+    networkConsent: boolean,
+  ) {
+    return invoke<import("./types").DependencyAuditSummary>("run_dependency_audit", {
+      projectId,
+      mode,
+      offlineDirectory,
+      networkConsent,
+    });
+  },
+  dependencyFindings(projectId: string, status: string | null, limit = 1000) {
+    return invoke<import("./types").DependencyFindingRecord[]>("list_dependency_findings", { projectId, status, limit });
+  },
+  dependencyInventory(projectId: string, limit = 5000) {
+    return invoke<import("./types").DependencyRecord[]>("list_dependency_inventory", { projectId, limit });
+  },
+  dependencyAuditHistory(projectId: string, limit = 20) {
+    return invoke<import("./types").DependencyAuditRunRecord[]>("dependency_audit_history", { projectId, limit });
+  },
+  async pickAdvisoryDirectory(): Promise<string | null> {
+    const selected = await open({ directory: true, multiple: false, title: "Choose an extracted OSV advisory directory" });
+    return typeof selected === "string" ? selected : null;
+  },
   runQaDiscovery(projectId: string) {
     return invoke("run_qa_discovery", { projectId });
   },

@@ -1156,3 +1156,118 @@ export type RepairSourceSnapshot = {
   byte_size: number;
   content: string;
 };
+
+export type SecretScanSummary = {
+  project_id: string;
+  run_id: string;
+  status: string;
+  coverage_complete: boolean;
+  files_considered: number;
+  files_scanned: number;
+  files_skipped: number;
+  observations: number;
+  observations_in_test_paths: number;
+  findings_opened: number;
+  findings_refreshed: number;
+  findings_resolved: number;
+  duration_ms: number;
+};
+
+export type SecretFindingRecord = {
+  id: string;
+  rule_id: string;
+  severity: string;
+  confidence: number;
+  title: string;
+  description: string;
+  relative_path: string;
+  line: number | null;
+  redacted: string;
+  in_test_path: boolean;
+  remediation: string;
+  status: string;
+  first_seen: string;
+  last_seen: string;
+  resolved_at: string | null;
+};
+
+export type SecretScanRunRecord = {
+  run_id: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  coverage_complete: boolean;
+  files_scanned: number;
+  observations: number;
+  findings_opened: number;
+  findings_resolved: number;
+};
+
+export type DependencyAuditSummary = {
+  project_id: string;
+  run_id: string;
+  status: string;
+  coverage_complete: boolean;
+  advisory_source: string;
+  manifests: number;
+  manifest_errors: string[];
+  packages: number;
+  unpinned_requirements: number;
+  vulnerable_packages: number;
+  observations: number;
+  findings_opened: number;
+  findings_refreshed: number;
+  findings_resolved: number;
+  duration_ms: number;
+};
+
+export type DependencyFindingRecord = {
+  id: string;
+  advisory_id: string;
+  display_id: string;
+  aliases: string[];
+  severity: string;
+  cvss_score: number | null;
+  confidence: number;
+  title: string;
+  description: string;
+  ecosystem: string;
+  package: string;
+  version: string;
+  manifest_path: string;
+  line: number | null;
+  fixed_versions: string[];
+  references: string[];
+  is_dev: boolean;
+  match_basis: string;
+  status: string;
+  first_seen: string;
+  last_seen: string;
+  resolved_at: string | null;
+};
+
+export type DependencyRecord = {
+  ecosystem: string;
+  name: string;
+  version: string;
+  manifest_path: string;
+  is_dev: boolean;
+  open_advisories: number;
+};
+
+export type DependencyAuditRunRecord = {
+  run_id: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  coverage_complete: boolean;
+  advisory_source: string;
+  packages: number;
+  vulnerable_packages: number;
+  findings_opened: number;
+  findings_resolved: number;
+};
+
+export type AdvisoryMode = "online" | "offline";
