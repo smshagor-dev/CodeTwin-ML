@@ -3,8 +3,10 @@ use serde_json::json;
 use thiserror::Error;
 use tree_sitter::{Language, Node, Parser};
 
+mod java;
+
 pub const ANALYZER_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const RULESET_VERSION: &str = "appsec-source-v2";
+pub const RULESET_VERSION: &str = "appsec-source-v3";
 
 #[derive(Debug, Error)]
 pub enum SecurityAnalyzerError {
@@ -50,6 +52,7 @@ enum LanguageFamily {
     C,
     Cpp,
     Php,
+    Java,
 }
 
 pub fn analyze_source(
@@ -68,6 +71,9 @@ pub fn analyze_source(
 
     let mut observations = Vec::new();
     visit(tree.root_node(), source, family, &mut observations);
+    if family == LanguageFamily::Java {
+        java::analyze(tree.root_node(), source, &mut observations);
+    }
     observations.sort_by(|left, right| {
         (
             left.start_line,
@@ -105,7 +111,9 @@ fn visit(
     observations: &mut Vec<SecurityObservation>,
 ) {
     inspect_assignment(node, source, observations);
-    inspect_call(node, source, family, observations);
+    if family != LanguageFamily::Java {
+        inspect_call(node, source, family, observations);
+    }
 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -468,9 +476,11 @@ fn is_dynamic_execution_callee(callee: &str, family: LanguageFamily) -> bool {
         }
         LanguageFamily::Python => matches!(callee, "eval" | "exec"),
         LanguageFamily::Php => callee == "eval",
-        LanguageFamily::Rust | LanguageFamily::Go | LanguageFamily::C | LanguageFamily::Cpp => {
-            false
-        }
+        LanguageFamily::Rust
+        | LanguageFamily::Go
+        | LanguageFamily::C
+        | LanguageFamily::Cpp
+        | LanguageFamily::Java => false,
     }
 }
 
@@ -491,7 +501,7 @@ fn dynamic_code_observation(node: Node<'_>, callee: &str) -> SecurityObservation
 }
 
 #[allow(clippy::too_many_arguments)]
-fn observation(
+pub(crate) fn observation(
     rule_id: &str,
     severity: &str,
     confidence: f64,
@@ -686,6 +696,7 @@ fn language_spec(name: &str) -> Option<(Language, LanguageFamily)> {
         "C" => Some((tree_sitter_c::LANGUAGE.into(), LanguageFamily::C)),
         "C++" => Some((tree_sitter_cpp::LANGUAGE.into(), LanguageFamily::Cpp)),
         "PHP" => Some((tree_sitter_php::LANGUAGE_PHP.into(), LanguageFamily::Php)),
+        "Java" => Some((tree_sitter_java::LANGUAGE.into(), LanguageFamily::Java)),
         _ => None,
     }
 }
