@@ -16,6 +16,7 @@ pub mod repair_application;
 pub mod repair_workflow;
 pub mod repair_workspace;
 pub mod runtime_analysis;
+pub mod secret_history;
 pub mod secret_scanning;
 pub mod security_analysis;
 pub mod security_campaign;
@@ -95,6 +96,10 @@ pub use repair_workspace::{
 pub use runtime_analysis::{
     RuntimeAnalysisError, RuntimeArtifactRecord, RuntimeFindingRecord, RuntimeReliabilityService,
     RuntimeRuleRecord, RuntimeRunRecord, RuntimeRunSummary,
+};
+pub use secret_history::{
+    SecretHistoryError, SecretHistoryFindingRecord, SecretHistoryRunRecord, SecretHistoryService,
+    SecretHistorySummary, DEFAULT_MAX_COMMITS,
 };
 pub use secret_scanning::{
     SecretFindingRecord, SecretScanError, SecretScanRunRecord, SecretScanSummary,
