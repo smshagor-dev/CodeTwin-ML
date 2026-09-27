@@ -1661,7 +1661,7 @@ mod tests {
             "paths": {
                 "/users/{id}": {
                     "parameters": [
-                        { "name": "id", "in": "path", "required": true }
+                        { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
                     ],
                     "post": {
                         "parameters": [
