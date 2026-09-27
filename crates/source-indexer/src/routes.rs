@@ -521,6 +521,39 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
     parameters
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TypeScriptUtilityModel {
+    Identity { source: String },
+    Pick { source: String, keys: Vec<String> },
+    Omit { source: String, keys: Vec<String> },
+}
+
+impl TypeScriptUtilityModel {
+    fn source(&self) -> &str {
+        match self {
+            Self::Identity { source } | Self::Pick { source, .. } | Self::Omit { source, .. } => {
+                source
+            }
+        }
+    }
+
+    fn apply(&self, fields: &[String]) -> Vec<String> {
+        match self {
+            Self::Identity { .. } => fields.to_vec(),
+            Self::Pick { keys, .. } => fields
+                .iter()
+                .filter(|field| keys.iter().any(|key| key == *field))
+                .cloned()
+                .collect(),
+            Self::Omit { keys, .. } => fields
+                .iter()
+                .filter(|field| !keys.iter().any(|key| key == *field))
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
 fn typescript_object_models(source: &str, handler: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let mut root = handler;
     while let Some(parent) = root.parent() {
@@ -529,6 +562,8 @@ fn typescript_object_models(source: &str, handler: Node<'_>) -> BTreeMap<String,
 
     let mut own_fields = BTreeMap::<String, Vec<String>>::new();
     let mut parents = BTreeMap::<String, Vec<String>>::new();
+    let mut utilities = BTreeMap::<String, TypeScriptUtilityModel>::new();
+    let shadowed_utilities = typescript_shadowed_utility_names(source, root);
 
     walk(root, &mut |node| {
         if !matches!(
@@ -551,6 +586,7 @@ fn typescript_object_models(source: &str, handler: Node<'_>) -> BTreeMap<String,
             return;
         };
 
+        let mut utility = None;
         let parent_names = if node.kind() == "interface_declaration" {
             let Some(parent_names) = typescript_interface_parents(raw) else {
                 return;
@@ -561,10 +597,16 @@ fn typescript_object_models(source: &str, handler: Node<'_>) -> BTreeMap<String,
                 return;
             };
             let type_value = type_value.trim().trim_end_matches(';').trim();
-            let Some(parent_names) = typescript_type_alias_parents(type_value) else {
-                return;
-            };
-            parent_names
+            if let Some(parsed) = typescript_utility_model(type_value, &shadowed_utilities) {
+                let source = parsed.source().to_string();
+                utility = Some(parsed);
+                vec![source]
+            } else {
+                let Some(parent_names) = typescript_type_alias_parents(type_value) else {
+                    return;
+                };
+                parent_names
+            }
         };
 
         let mut fields = Vec::new();
@@ -596,6 +638,9 @@ fn typescript_object_models(source: &str, handler: Node<'_>) -> BTreeMap<String,
 
         own_fields.insert(name.to_string(), fields);
         parents.insert(name.to_string(), parent_names);
+        if let Some(utility) = utility {
+            utilities.insert(name.to_string(), utility);
+        }
     });
 
     let mut resolved = BTreeMap::<String, Vec<String>>::new();
@@ -613,12 +658,22 @@ fn typescript_object_models(source: &str, handler: Node<'_>) -> BTreeMap<String,
             {
                 continue;
             }
-            let mut fields = Vec::new();
-            for parent in &parent_names {
-                if let Some(parent_fields) = resolved.get(parent) {
-                    fields.extend(parent_fields.iter().cloned());
+
+            let mut fields = if let Some(utility) = utilities.get(name) {
+                let Some(source_fields) = resolved.get(utility.source()) else {
+                    continue;
+                };
+                utility.apply(source_fields)
+            } else {
+                let mut inherited = Vec::new();
+                for parent in &parent_names {
+                    if let Some(parent_fields) = resolved.get(parent) {
+                        inherited.extend(parent_fields.iter().cloned());
+                    }
                 }
-            }
+                inherited
+            };
+
             if let Some(model_fields) = own_fields.get(name) {
                 fields.extend(model_fields.iter().cloned());
             }
@@ -635,6 +690,227 @@ fn typescript_object_models(source: &str, handler: Node<'_>) -> BTreeMap<String,
         }
     }
     resolved
+}
+
+fn typescript_shadowed_utility_names(source: &str, root: Node<'_>) -> Vec<String> {
+    const UTILITY_NAMES: &[&str] = &["Partial", "Required", "Readonly", "Pick", "Omit"];
+    let mut shadowed = Vec::new();
+
+    walk(root, &mut |node| {
+        if !matches!(
+            node.kind(),
+            "interface_declaration" | "type_alias_declaration"
+        ) {
+            return;
+        }
+        let Some(name) = node
+            .child_by_field_name("name")
+            .and_then(|value| text(source, value))
+            .map(str::trim)
+        else {
+            return;
+        };
+        if UTILITY_NAMES.contains(&name) {
+            shadowed.push(name.to_string());
+        }
+    });
+
+    for reference in crate::imports::extract_imports("TypeScript", source, root) {
+        for binding in reference.bindings {
+            if UTILITY_NAMES.contains(&binding.local_name.as_str()) {
+                shadowed.push(binding.local_name);
+            }
+        }
+    }
+
+    shadowed.sort();
+    shadowed.dedup();
+    shadowed
+}
+
+fn typescript_utility_model(
+    type_value: &str,
+    shadowed_utilities: &[String],
+) -> Option<TypeScriptUtilityModel> {
+    let (utility, raw_arguments) = typescript_generic_application(type_value)?;
+    if shadowed_utilities.iter().any(|name| name == utility) {
+        return None;
+    }
+    let arguments = typescript_top_level_generic_arguments(raw_arguments)?;
+
+    match utility {
+        "Partial" | "Required" | "Readonly" if arguments.len() == 1 => {
+            let source = arguments[0].trim();
+            is_identifier(source).then(|| TypeScriptUtilityModel::Identity {
+                source: source.to_string(),
+            })
+        }
+        "Pick" | "Omit" if arguments.len() == 2 => {
+            let source = arguments[0].trim();
+            if !is_identifier(source) {
+                return None;
+            }
+            let keys = typescript_literal_key_union(arguments[1])?;
+            if utility == "Pick" {
+                Some(TypeScriptUtilityModel::Pick {
+                    source: source.to_string(),
+                    keys,
+                })
+            } else {
+                Some(TypeScriptUtilityModel::Omit {
+                    source: source.to_string(),
+                    keys,
+                })
+            }
+        }
+        _ => None,
+    }
+}
+
+fn typescript_generic_application(value: &str) -> Option<(&str, &str)> {
+    let value = value.trim();
+    let open = value.find('<')?;
+    let utility = value[..open].trim();
+    if !is_identifier(utility) || !value.ends_with('>') {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (relative, character) in value[open..].char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '"' | '\'' | '`' => quote = Some(character),
+            '<' => depth += 1,
+            '>' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 && open + relative + character.len_utf8() != value.len() {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 || quote.is_some() {
+        return None;
+    }
+    Some((utility, &value[open + 1..value.len() - 1]))
+}
+
+fn typescript_top_level_generic_arguments(value: &str) -> Option<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut angles = 0usize;
+    let mut braces = 0usize;
+    let mut parentheses = 0usize;
+    let mut brackets = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+
+    for (index, character) in value.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match character {
+            '"' | '\'' | '`' => quote = Some(character),
+            '<' => angles += 1,
+            '>' => {
+                if angles == 0 {
+                    return None;
+                }
+                angles -= 1;
+            }
+            '{' => braces += 1,
+            '}' => {
+                if braces == 0 {
+                    return None;
+                }
+                braces -= 1;
+            }
+            '(' => parentheses += 1,
+            ')' => {
+                if parentheses == 0 {
+                    return None;
+                }
+                parentheses -= 1;
+            }
+            '[' => brackets += 1,
+            ']' => {
+                if brackets == 0 {
+                    return None;
+                }
+                brackets -= 1;
+            }
+            ',' if angles == 0 && braces == 0 && parentheses == 0 && brackets == 0 => {
+                let part = value[start..index].trim();
+                if part.is_empty() {
+                    return None;
+                }
+                parts.push(part);
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    if quote.is_some() || angles != 0 || braces != 0 || parentheses != 0 || brackets != 0 {
+        return None;
+    }
+    let tail = value[start..].trim();
+    if tail.is_empty() {
+        return None;
+    }
+    parts.push(tail);
+    Some(parts)
+}
+
+fn typescript_literal_key_union(value: &str) -> Option<Vec<String>> {
+    let parts = typescript_top_level_type_parts(value, '|')?;
+    let mut keys = Vec::new();
+    for part in parts {
+        let raw = part.trim();
+        let key = strip_quotes(raw)?;
+        if key.is_empty() || key.len() > 256 {
+            return None;
+        }
+        keys.push(key);
+    }
+    keys.sort();
+    keys.dedup();
+    if keys.is_empty() || keys.len() > 256 {
+        None
+    } else {
+        Some(keys)
+    }
 }
 
 fn typescript_type_alias_parents(type_value: &str) -> Option<Vec<String>> {
@@ -5246,7 +5522,7 @@ fn text<'a>(source: &'a str, node: Node<'_>) -> Option<&'a str> {
 mod tests {
     use tree_sitter::Parser;
 
-    use super::extract_routes;
+    use super::{extract_routes, typescript_object_models};
 
     #[test]
     fn nextjs_function_body_does_not_create_fake_exported_methods() {
@@ -5593,6 +5869,138 @@ export async function OPTIONS(request: Request) {
                     && matches!(parameter.name.as_str(), "email" | "profile" | "displayName")
             }));
         }
+    }
+
+    #[test]
+    fn resolves_bounded_local_typescript_utility_request_models() {
+        let source = r#"
+interface BaseUser {
+  email: string;
+  profile: {
+    displayName: string;
+  };
+  role: string;
+  enabled: boolean;
+}
+
+type DraftUser = Partial<BaseUser>;
+type RequiredDraft = Required<DraftUser>;
+type PublicUser = Pick<BaseUser, "email" | "profile">;
+type NoRoleUser = Omit<BaseUser, "role" | "enabled">;
+type ReadonlyUser = Readonly<BaseUser>;
+
+type DynamicPick = Pick<BaseUser, keyof BaseUser>;
+type NestedUtility = Partial<Pick<BaseUser, "email">>;
+type ImportedPick = Pick<ImportedPayload, "email">;
+
+export async function POST(request: Request) {
+  const payload: DraftUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function PUT(request: Request) {
+  const payload: RequiredDraft = await request.json();
+  return Response.json(payload);
+}
+
+export async function PATCH(request: Request) {
+  const payload: PublicUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function DELETE(request: Request) {
+  const payload: NoRoleUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function OPTIONS(request: Request) {
+  const payload: ReadonlyUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function HEAD(request: Request) {
+  const payload: DynamicPick = await request.json();
+  return Response.json(payload);
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes(
+            "TypeScript",
+            "src/app/users/route.ts",
+            source,
+            tree.root_node(),
+        );
+
+        for method in ["POST", "PUT", "OPTIONS"] {
+            let route = routes
+                .iter()
+                .find(|route| route.framework == "nextjs" && route.http_method == method)
+                .expect("identity utility route");
+            for field in ["email", "profile", "role", "enabled"] {
+                assert!(route
+                    .parameters
+                    .iter()
+                    .any(|parameter| { parameter.name == field && parameter.location == "json" }));
+            }
+            assert!(!route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == "displayName"));
+        }
+
+        let patch = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PATCH")
+            .expect("Pick route");
+        for field in ["email", "profile"] {
+            assert!(patch
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
+        }
+        for field in ["role", "enabled", "displayName"] {
+            assert!(!patch
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == field));
+        }
+
+        let delete = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "DELETE")
+            .expect("Omit route");
+        for field in ["email", "profile"] {
+            assert!(delete
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
+        }
+        for field in ["role", "enabled", "displayName"] {
+            assert!(!delete
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == field));
+        }
+
+        let head = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "HEAD")
+            .expect("dynamic utility route");
+        assert!(!head.parameters.iter().any(|parameter| {
+            matches!(
+                parameter.name.as_str(),
+                "email" | "profile" | "role" | "enabled" | "displayName"
+            ) && parameter.location == "json"
+        }));
+
+        let models = typescript_object_models(source, tree.root_node());
+        assert!(!models.contains_key("DynamicPick"));
+        assert!(!models.contains_key("NestedUtility"));
+        assert!(!models.contains_key("ImportedPick"));
     }
 
     #[test]
