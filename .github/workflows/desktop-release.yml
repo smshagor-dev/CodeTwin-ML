@@ -242,13 +242,23 @@ jobs:
           }
 
           $pfxPath = Join-Path $env:RUNNER_TEMP "codetwin-release-signing.pfx"
-          $base64 = $env:WINDOWS_CERTIFICATE -replace '\s', ''
-          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($base64))
+          $base64 = ($env:WINDOWS_CERTIFICATE -replace '-----BEGIN [^-]+-----', '' -replace '-----END [^-]+-----', '' -replace '\s', '')
+          try {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($base64))
+          }
+          catch {
+            throw "WINDOWS_CERTIFICATE is not a valid base64-encoded PFX payload"
+          }
           $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
           $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password
           Remove-Item -Force $pfxPath
-          if ($null -eq $certificate -or -not $certificate.HasPrivateKey) {
-            throw "Windows signing certificate import did not yield a certificate with a private key"
+          $certificates = @($certificate)
+          if ($certificates.Count -ne 1 -or -not $certificates[0].HasPrivateKey) {
+            throw "Windows signing certificate import must yield exactly one certificate with a private key"
+          }
+          $certificate = $certificates[0]
+          if ($certificate.NotAfter -le (Get-Date)) {
+            throw "Windows signing certificate is expired"
           }
           "WINDOWS_CERT_THUMBPRINT=$($certificate.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
