@@ -278,6 +278,20 @@ fn is_test_path(path: &str) -> bool {
         || lower.contains(".test.")
         || lower.contains(".spec.")
         || lower.contains("_test.")
+        || lower
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name == "tests.rs" || name.starts_with("test_"))
+}
+
+/// Rust keeps unit tests in a `#[cfg(test)]` module inside the source file, conventionally at
+/// the end. Returns the 0-based line where that module starts, if any.
+fn rust_test_module_start(path: &str, text: &str) -> Option<usize> {
+    if !path.to_ascii_lowercase().ends_with(".rs") {
+        return None;
+    }
+    text.lines()
+        .position(|line| line.trim_start().starts_with("#[cfg(test)]"))
 }
 
 /// Values that are obviously not real credentials.
@@ -306,6 +320,21 @@ fn is_placeholder(value: &str) -> bool {
         "....",
     ];
     if MARKERS.iter().any(|marker| lower.contains(marker)) {
+        return true;
+    }
+    // Bare dictionary words used as stand-ins in docs and tests.
+    const STAND_INS: &[&str] = &[
+        "secret", "password", "passwd", "pass", "pwd", "postgres", "mysql", "root", "admin",
+        "test", "user", "guest", "default",
+    ];
+    if STAND_INS.contains(&lower.as_str()) {
+        return true;
+    }
+    // Format-string slots: `{password}`, `{0}`, `%s`, `%(password)s`.
+    if (value.starts_with('{') && value.ends_with('}'))
+        || value.contains("%s")
+        || value.contains("%(")
+    {
         return true;
     }
     // Template or environment indirection rather than a literal value.
@@ -380,7 +409,8 @@ pub fn redact(value: &str) -> String {
 /// Scans one file's text. `path` is only used for file-type and test-path decisions.
 pub fn scan_text(path: &str, text: &str) -> Vec<SecretObservation> {
     let env_file = is_env_file(path);
-    let in_test_path = is_test_path(path);
+    let test_file = is_test_path(path);
+    let test_module_start = rust_test_module_start(path, text);
     let mut observations = Vec::new();
     let mut offset = 0usize;
 
@@ -390,6 +420,7 @@ pub fn scan_text(path: &str, text: &str) -> Vec<SecretObservation> {
         if line.len() > MAX_LINE_BYTES || line.contains(SUPPRESSION_MARKER) {
             continue;
         }
+        let in_test_path = test_file || test_module_start.is_some_and(|start| index >= start);
         let mut matched_ranges: Vec<(usize, usize)> = Vec::new();
         for (regex, rule) in compiled() {
             if rule.id == "secret.env_file_assignment" && !env_file {
@@ -546,6 +577,35 @@ mod tests {
             "url = \"postgres://app:${DB_PASSWORD}@db/app\""
         )
         .is_empty());
+    }
+
+    #[test]
+    fn template_slots_and_stand_in_words_are_placeholders() {
+        for url in [
+            "format!(\"postgres://app:{password}@db/app\")",
+            "f\"mysql://root:{0}@db/app\"",
+            "\"redis://u:%s@cache:6379\" % pw",
+            "\"postgresql://app:secret@example/db\"",
+            "\"postgres://postgres:postgres@localhost/app\"",
+        ] {
+            assert!(rules("src/db.py", url).is_empty(), "{url}");
+        }
+    }
+
+    #[test]
+    fn rust_test_modules_and_test_files_count_as_test_code() {
+        let github = token("ghp_", 36);
+        let source = format!("const A: &str = \"{github}\";\n#[cfg(test)]\nmod tests {{\n    const B: &str = \"{github}\";\n}}\n");
+        let found = scan_text("src/lib.rs", &source);
+        assert_eq!(found.len(), 2);
+        assert!(!found[0].in_test_path);
+        assert!(found[1].in_test_path);
+        assert!(scan_text("src/security_fix/tests.rs", &source)
+            .iter()
+            .all(|o| o.in_test_path));
+        assert!(scan_text("app/test_views.py", &format!("T = \"{github}\"\n"))[0].in_test_path);
+        // Non-Rust files are not split at a `#[cfg(test)]` line.
+        assert!(!scan_text("src/a.py", &source)[1].in_test_path);
     }
 
     #[test]
