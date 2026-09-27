@@ -33,3 +33,4 @@ datasets/cache/*
 datasets/raw/
 logs/
 *.log
+*.tsbuildinfo
