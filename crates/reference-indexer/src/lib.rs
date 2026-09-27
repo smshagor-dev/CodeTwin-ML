@@ -125,8 +125,12 @@ obj.method();
 factory().next();
 "#;
         let refs = extract_references("TypeScript", source).expect("extract references");
-        assert!(refs.iter().any(|item| item.kind == "call" && item.name == "local"));
-        assert!(refs.iter().any(|item| item.kind == "constructor" && item.name == "Service"));
+        assert!(refs
+            .iter()
+            .any(|item| item.kind == "call" && item.name == "local"));
+        assert!(refs
+            .iter()
+            .any(|item| item.kind == "constructor" && item.name == "Service"));
         assert!(!refs.iter().any(|item| item.name == "method"));
         assert!(!refs.iter().any(|item| item.name == "next"));
     }

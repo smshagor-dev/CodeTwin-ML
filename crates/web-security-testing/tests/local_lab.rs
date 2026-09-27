@@ -140,8 +140,10 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
     let url = Url::parse(&format!("http://localhost{target}"))
         .unwrap_or_else(|_| Url::parse("http://localhost/").expect("fallback URL"));
     let path = url.path();
-    let query: std::collections::HashMap<String, String> =
-        url.query_pairs().map(|(key, value)| (key.into_owned(), value.into_owned())).collect();
+    let query: std::collections::HashMap<String, String> = url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
 
     if method == "OPTIONS" {
         respond(
@@ -229,7 +231,10 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
         }
         "/safe" => {
             let q = query.get("q").map(String::as_str).unwrap_or("");
-            let escaped = q.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+            let escaped = q
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
             respond(
                 &mut stream,
                 "200 OK",
@@ -389,7 +394,7 @@ fn request_header(request: &str, name: &str) -> Option<String> {
 fn respond(stream: &mut TcpStream, status: &str, headers: &[(&str, &str)], body: &str) {
     let mut response = format!(
         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.as_bytes().len()
+        body.len()
     );
     for (name, value) in headers {
         response.push_str(&format!("{name}: {value}\r\n"));
@@ -481,21 +486,16 @@ fn authorized_local_lab_detects_representative_findings_without_scope_escape() {
             && request.cookie.as_deref() == Some("session=primary-cookie-secret")
     }));
     assert!(history.iter().all(|request| {
-        request
-            .authorization
-            .as_deref()
-            .is_none_or(|value| {
-                value == "Bearer primary-secret-token" || value == "Bearer secondary-secret-token"
-            })
+        request.authorization.as_deref().is_none_or(|value| {
+            value == "Bearer primary-secret-token" || value == "Bearer secondary-secret-token"
+        })
     }));
     assert!(history.iter().all(|request| {
         request.cookie.as_deref().is_none_or(|value| {
-            value == "session=primary-cookie-secret"
-                || value == "session=secondary-cookie-secret"
+            value == "session=primary-cookie-secret" || value == "session=secondary-cookie-secret"
         })
     }));
 }
-
 
 #[test]
 fn guided_operator_maps_and_plans_before_active_execution() {
@@ -564,9 +564,10 @@ fn suspicious_but_safe_negative_fixtures_are_not_confirmed() {
         "safe-looking fixtures must not become confirmed vulnerabilities: {confirmed_on_safe_fixture:?}"
     );
 
-    assert!(!outcome.findings.iter().any(|finding| {
-        finding.category == "xss" && finding.endpoint.contains("/escaped")
-    }));
+    assert!(!outcome
+        .findings
+        .iter()
+        .any(|finding| { finding.category == "xss" && finding.endpoint.contains("/escaped") }));
     assert!(!outcome.findings.iter().any(|finding| {
         finding.category == "open_redirect" && finding.endpoint.contains("/redirect-safe")
     }));
@@ -626,7 +627,7 @@ fn targeted_post_retest_rejects_unusable_auth_baseline() {
             parameter_names: vec!["display_name".into()],
             parameter_locations: std::collections::BTreeMap::from([(
                 "display_name".into(),
-                "form".into(),
+                vec!["form".into()],
             )]),
             parameter_name: Some("display_name".into()),
             parameter_location: Some("form".into()),
@@ -651,7 +652,11 @@ fn targeted_post_retest_rejects_unusable_auth_baseline() {
         .iter()
         .filter(|request| request.target.starts_with("/update"))
         .collect();
-    assert_eq!(update_requests.len(), 1, "active probes must not run after a rejected baseline");
+    assert_eq!(
+        update_requests.len(),
+        1,
+        "active probes must not run after a rejected baseline"
+    );
     assert_eq!(update_requests[0].method, "POST");
 }
 
@@ -751,7 +756,8 @@ fn guided_developer_workflow_runs_end_to_end_on_local_fixtures() {
         .complete_preparation(PreparationCompletion {
             session_id: &session.id,
             preflight_json: &serde_json::to_string(&preparation.preflight).expect("preflight"),
-            application_map_json: &serde_json::to_string(&preparation.application_map).expect("map"),
+            application_map_json: &serde_json::to_string(&preparation.application_map)
+                .expect("map"),
             plan_json: &serde_json::to_string(&preparation.plan).expect("plan"),
             mapping_requests: preparation.mapping_requests,
             plan_items: &plan_items,
@@ -762,11 +768,7 @@ fn guided_developer_workflow_runs_end_to_end_on_local_fixtures() {
     let approved = guided.approve_session(&session.id).expect("approve plan");
     assert_eq!(approved.status, "approved");
     guided
-        .assert_execution_allowed(
-            &session.id,
-            &config.scope.target_url,
-            &config_json,
-        )
+        .assert_execution_allowed(&session.id, &config.scope.target_url, &config_json)
         .expect("approved config");
 
     let selected_categories = guided
@@ -894,8 +896,10 @@ fn guided_developer_workflow_runs_end_to_end_on_local_fixtures() {
         .update_from_scan(&session.id, "completed", "completed", None)
         .expect("complete guided session");
 
-    let categories: std::collections::HashSet<_> =
-        persisted.iter().map(|finding| finding.category.as_str()).collect();
+    let categories: std::collections::HashSet<_> = persisted
+        .iter()
+        .map(|finding| finding.category.as_str())
+        .collect();
     for expected in [
         "sql_injection",
         "xss",
@@ -910,7 +914,9 @@ fn guided_developer_workflow_runs_end_to_end_on_local_fixtures() {
 
     let sql = persisted
         .iter()
-        .find(|finding| finding.category == "sql_injection" && finding.endpoint_url.contains("/search"))
+        .find(|finding| {
+            finding.category == "sql_injection" && finding.endpoint_url.contains("/search")
+        })
         .expect("SQL finding");
     let candidates = guided
         .list_source_candidates(&sql.id, 5)

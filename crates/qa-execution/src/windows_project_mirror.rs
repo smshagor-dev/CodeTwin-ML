@@ -41,24 +41,25 @@ pub(crate) fn execute_approved_plan(
             "approved project manifest SHA-256 is malformed".to_string(),
         ));
     }
-    let approved_external_surface = plan
-        .approved_external_read_surface
-        .as_ref()
-        .ok_or_else(|| {
-            BackendExecutionError::JobSetup(
-                "approved execution plan is missing its external read-surface binding".to_string(),
-            )
-        })?;
+    let approved_external_surface =
+        plan.approved_external_read_surface
+            .as_ref()
+            .ok_or_else(|| {
+                BackendExecutionError::JobSetup(
+                    "approved execution plan is missing its external read-surface binding"
+                        .to_string(),
+                )
+            })?;
 
     let workspace_parent = std::env::temp_dir();
-    let workspace =
-        prepare_dependency_complete_workspace(project_root, &workspace_parent, snapshots).map_err(
-            |error| {
-                BackendExecutionError::JobSetup(format!(
-                    "dependency-complete project mirror: {error}"
-                ))
-            },
-        )?;
+    let workspace = prepare_dependency_complete_workspace(
+        project_root,
+        &workspace_parent,
+        snapshots,
+    )
+    .map_err(|error| {
+        BackendExecutionError::JobSetup(format!("dependency-complete project mirror: {error}"))
+    })?;
     let mut guard = ProjectMirrorGuard::new(workspace);
     let workspace = guard.workspace();
 
@@ -68,11 +69,14 @@ pub(crate) fn execute_approved_plan(
                 .to_string(),
         ));
     }
-    let actual_manifest = workspace.project_manifest_sha256.as_deref().ok_or_else(|| {
-        BackendExecutionError::JobSetup(
-            "dependency-complete project mirror did not retain its manifest digest".to_string(),
-        )
-    })?;
+    let actual_manifest = workspace
+        .project_manifest_sha256
+        .as_deref()
+        .ok_or_else(|| {
+            BackendExecutionError::JobSetup(
+                "dependency-complete project mirror did not retain its manifest digest".to_string(),
+            )
+        })?;
     if actual_manifest != expected_manifest {
         return Err(BackendExecutionError::JobSetup(format!(
             "approved project manifest mismatch: expected {expected_manifest}, prepared {actual_manifest}"
@@ -115,7 +119,9 @@ pub(crate) fn execute_approved_plan(
     let lpac_bundle =
         bundle::prepare_lpac_execution_bundle(plan, approved_external_surface, workspace)?;
     if !lpac_bundle.evidence().satisfies_readiness_contract()
-        || !lpac_bundle.root_path().starts_with(Path::new(&workspace.root_path))
+        || !lpac_bundle
+            .root_path()
+            .starts_with(Path::new(&workspace.root_path))
         || !lpac_bundle.runner_path().is_file()
     {
         return Err(BackendExecutionError::JobSetup(

@@ -291,8 +291,8 @@ pub(crate) async fn rollback_security_remediation_campaign_fix(
     }
 
     let task = tauri::async_runtime::spawn_blocking(move || {
-        let database = codetwin_core::Database::open(&database_path)
-            .map_err(|error| error.to_string())?;
+        let database =
+            codetwin_core::Database::open(&database_path).map_err(|error| error.to_string())?;
         let campaigns = SecurityRemediationCampaignService::new(&database);
         let authorized_attempt_id = campaigns
             .authorize_rollback(&campaign_id, &finding_id, &expected_attempt_id)

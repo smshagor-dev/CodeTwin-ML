@@ -1,9 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    fmt::Write as _,
-    fs,
-    path::Path,
-};
+use std::{collections::BTreeMap, fmt::Write as _, fs, path::Path};
 
 use sha2::{Digest, Sha256};
 
@@ -268,7 +263,9 @@ fn snapshot_from_workspace_manifest(
 fn snapshot_project_tree(root: &Path) -> Result<ProjectTreeSnapshot, WorkspaceError> {
     let canonical_root = fs::canonicalize(root)?;
     if !canonical_root.is_dir() {
-        return Err(WorkspaceError::InvalidSourceRoot(path_text(&canonical_root)));
+        return Err(WorkspaceError::InvalidSourceRoot(path_text(
+            &canonical_root,
+        )));
     }
 
     let mut directories = Vec::new();
@@ -483,9 +480,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{
-        prepare_dependency_complete_workspace, verify_dependency_complete_workspace,
-    };
+    use super::{prepare_dependency_complete_workspace, verify_dependency_complete_workspace};
     use crate::{cleanup_detached_workspace, snapshot_execution_inputs};
 
     fn temp_directory(label: &str) -> std::path::PathBuf {
@@ -504,8 +499,11 @@ mod tests {
         fs::create_dir_all(source.join("tests")).expect("tests");
         fs::create_dir_all(source.join("src")).expect("src");
         fs::create_dir_all(source.join("fixtures/empty")).expect("empty fixture");
-        fs::write(source.join("tests/test_api.py"), "def test_ok():\n    assert True\n")
-            .expect("test");
+        fs::write(
+            source.join("tests/test_api.py"),
+            "def test_ok():\n    assert True\n",
+        )
+        .expect("test");
         fs::write(source.join("src/app.py"), "VALUE = 1\n").expect("source");
         fs::write(source.join("pyproject.toml"), "[project]\nname='demo'\n").expect("config");
 

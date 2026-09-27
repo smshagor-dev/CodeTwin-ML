@@ -63,7 +63,7 @@ export function StaticSecurityPanel() {
         <ProjectSelect projects={projects} value={activeProjectId} onChange={setActiveProjectId}/>
         <button
           className="ws-button ws-button-primary"
-          onClick={() => void runSecurity().then(() => activeProjectId && load(activeProjectId))}
+          onClick={() => void runSecurity().then(() => (activeProjectId ? load(activeProjectId) : undefined))}
           disabled={!activeProjectId || operation !== null}
         >
           <Icon name="scan"/>

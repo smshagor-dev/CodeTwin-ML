@@ -1,7 +1,7 @@
 use std::{
     ffi::OsString,
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc::{self, Receiver, RecvTimeoutError},
@@ -54,10 +54,7 @@ where
 {
     variables
         .into_iter()
-        .filter(|(key, _)| {
-            key.to_str()
-                .is_some_and(is_allowed_lsp_environment_key)
-        })
+        .filter(|(key, _)| key.to_str().is_some_and(is_allowed_lsp_environment_key))
         .collect()
 }
 
@@ -90,6 +87,9 @@ impl LanguageServerKind {
         }
     }
 
+    // Returns `Option` rather than `Result`, so this is not a `FromStr` impl; renaming
+    // would ripple through every caller for no behavior change.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(value: &str) -> Option<Self> {
         match value {
             "typescript" => Some(Self::TypeScript),
@@ -361,8 +361,12 @@ impl StdioLanguageServer {
         text: &str,
     ) -> Result<String, LspError> {
         let uri = path_to_file_uri(path)?;
-        let language_id = language_id_for_indexed_language(indexed_language, path)
-            .ok_or_else(|| LspError::InvalidResponse(format!("unsupported indexed language: {indexed_language}")))?;
+        let language_id =
+            language_id_for_indexed_language(indexed_language, path).ok_or_else(|| {
+                LspError::InvalidResponse(format!(
+                    "unsupported indexed language: {indexed_language}"
+                ))
+            })?;
         self.notify(
             "textDocument/didOpen",
             json!({
@@ -464,9 +468,9 @@ impl StdioLanguageServer {
             });
         }
         let response = self.request("initialize", params)?;
-        let capabilities = response
-            .get("capabilities")
-            .ok_or_else(|| LspError::InvalidResponse("initialize response omitted capabilities".into()))?;
+        let capabilities = response.get("capabilities").ok_or_else(|| {
+            LspError::InvalidResponse("initialize response omitted capabilities".into())
+        })?;
         self.capabilities = ServerCapabilities {
             document_symbol: provider_enabled(capabilities.get("documentSymbolProvider")),
             definition: provider_enabled(capabilities.get("definitionProvider")),
@@ -504,7 +508,9 @@ impl StdioLanguageServer {
             let message = match self.receiver.recv_timeout(remaining) {
                 Ok(Ok(message)) => message,
                 Ok(Err(error)) => return Err(LspError::InvalidFrame(error)),
-                Err(RecvTimeoutError::Timeout) => return Err(LspError::Timeout(method.to_string())),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(LspError::Timeout(method.to_string()))
+                }
                 Err(RecvTimeoutError::Disconnected) => return Err(LspError::ChannelClosed),
             };
 
@@ -637,7 +643,9 @@ fn read_lsp_message(reader: &mut impl BufRead) -> Result<Option<Value>, LspError
         let bytes = reader.read_line(&mut line)?;
         if bytes == 0 {
             return if saw_header {
-                Err(LspError::InvalidFrame("unexpected EOF in LSP headers".into()))
+                Err(LspError::InvalidFrame(
+                    "unexpected EOF in LSP headers".into(),
+                ))
             } else {
                 Ok(None)
             };
@@ -660,8 +668,8 @@ fn read_lsp_message(reader: &mut impl BufRead) -> Result<Option<Value>, LspError
             }
         }
     }
-    let length = content_length
-        .ok_or_else(|| LspError::InvalidFrame("missing Content-Length".into()))?;
+    let length =
+        content_length.ok_or_else(|| LspError::InvalidFrame("missing Content-Length".into()))?;
     let mut body = vec![0_u8; length];
     reader.read_exact(&mut body)?;
     Ok(Some(serde_json::from_slice(&body)?))
@@ -710,7 +718,9 @@ fn parse_location(value: &Value) -> Result<LspLocation, LspError> {
         let range = value
             .get("targetSelectionRange")
             .or_else(|| value.get("targetRange"))
-            .ok_or_else(|| LspError::InvalidResponse("location link target range is missing".into()))?;
+            .ok_or_else(|| {
+                LspError::InvalidResponse("location link target range is missing".into())
+            })?;
         return Ok(LspLocation {
             uri: uri.to_string(),
             range: parse_range(range)?,
@@ -774,10 +784,9 @@ fn parse_document_symbol_tree(
         item.get("range")
             .ok_or_else(|| LspError::InvalidResponse("document symbol range missing".into()))?,
     )?;
-    let selection_range = parse_range(
-        item.get("selectionRange")
-            .ok_or_else(|| LspError::InvalidResponse("document symbol selectionRange missing".into()))?,
-    )?;
+    let selection_range = parse_range(item.get("selectionRange").ok_or_else(|| {
+        LspError::InvalidResponse("document symbol selectionRange missing".into())
+    })?)?;
     let container_name = parent.map(str::to_string);
     output.push(DocumentSymbolView {
         name: name.clone(),
@@ -818,8 +827,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        language_id_for_indexed_language, parse_document_symbols, parse_locations, read_lsp_message,
-        sanitized_lsp_environment_from, LspPosition,
+        language_id_for_indexed_language, parse_document_symbols, parse_locations,
+        read_lsp_message, sanitized_lsp_environment_from, LspPosition,
     };
 
     #[test]
@@ -841,14 +850,24 @@ mod tests {
 
         assert!(keys.iter().any(|key| key.eq_ignore_ascii_case("PATH")));
         assert!(keys.iter().any(|key| key.eq_ignore_ascii_case("HOME")));
-        assert!(keys.iter().any(|key| key.eq_ignore_ascii_case("CARGO_HOME")));
-        assert!(keys.iter().any(|key| key.eq_ignore_ascii_case("SYSTEMROOT")));
-        assert!(!keys.iter().any(|key| key.eq_ignore_ascii_case("GITHUB_TOKEN")));
-        assert!(!keys.iter().any(|key| key.eq_ignore_ascii_case("OPENAI_API_KEY")));
+        assert!(keys
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case("CARGO_HOME")));
+        assert!(keys
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case("SYSTEMROOT")));
+        assert!(!keys
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case("GITHUB_TOKEN")));
+        assert!(!keys
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case("OPENAI_API_KEY")));
         assert!(!keys
             .iter()
             .any(|key| key.eq_ignore_ascii_case("AWS_SECRET_ACCESS_KEY")));
-        assert!(!keys.iter().any(|key| key.eq_ignore_ascii_case("DATABASE_URL")));
+        assert!(!keys
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case("DATABASE_URL")));
     }
 
     #[test]
@@ -878,7 +897,13 @@ mod tests {
         let locations = parse_locations(&value).expect("locations");
         assert_eq!(locations.len(), 2);
         assert_eq!(locations[1].uri, "file:///work/b.ts");
-        assert_eq!(locations[1].range.start, LspPosition { line: 3, character: 1 });
+        assert_eq!(
+            locations[1].range.start,
+            LspPosition {
+                line: 3,
+                character: 1
+            }
+        );
     }
 
     #[test]

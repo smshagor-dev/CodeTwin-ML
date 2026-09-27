@@ -42,23 +42,23 @@ impl<'a> SemanticQueryService<'a> {
             }
         };
         let sql = format!(
-            "SELECT r.id, r.project_id, r.run_id, r.subject_symbol_id, r.occurrence_file_id,\
-                    r.container_symbol_id, r.target_file_id, r.target_symbol_id, r.relationship,\
-                    r.occurrence_start_line, r.occurrence_start_column, r.occurrence_end_line, r.occurrence_end_column,\
-                    r.target_start_line, r.target_start_column, r.target_end_line, r.target_end_column,\
-                    r.provider_kind, r.server_name, r.server_version\
-             FROM semantic_relations r\
-             JOIN files occurrence_file ON occurrence_file.id = r.occurrence_file_id\
-             JOIN files target_file ON target_file.id = r.target_file_id\
-             JOIN symbols subject_symbol ON subject_symbol.id = r.subject_symbol_id\
-             WHERE {clause}\
-               AND r.is_active = 1\
-               AND occurrence_file.is_active = 1\
-               AND target_file.is_active = 1\
-               AND subject_symbol.is_active = 1\
-               AND occurrence_file.content_hash = r.occurrence_content_hash\
-               AND target_file.content_hash = r.target_content_hash\
-             ORDER BY r.occurrence_file_id, r.occurrence_start_line, r.occurrence_start_column\
+            "SELECT r.id, r.project_id, r.run_id, r.subject_symbol_id, r.occurrence_file_id, \
+                    r.container_symbol_id, r.target_file_id, r.target_symbol_id, r.relationship, \
+                    r.occurrence_start_line, r.occurrence_start_column, r.occurrence_end_line, r.occurrence_end_column, \
+                    r.target_start_line, r.target_start_column, r.target_end_line, r.target_end_column, \
+                    r.provider_kind, r.server_name, r.server_version \
+             FROM semantic_relations r \
+             JOIN files occurrence_file ON occurrence_file.id = r.occurrence_file_id \
+             JOIN files target_file ON target_file.id = r.target_file_id \
+             JOIN symbols subject_symbol ON subject_symbol.id = r.subject_symbol_id \
+             WHERE {clause} \
+               AND r.is_active = 1 \
+               AND occurrence_file.is_active = 1 \
+               AND target_file.is_active = 1 \
+               AND subject_symbol.is_active = 1 \
+               AND occurrence_file.content_hash = r.occurrence_content_hash \
+               AND target_file.content_hash = r.target_content_hash \
+             ORDER BY r.occurrence_file_id, r.occurrence_start_line, r.occurrence_start_column \
              LIMIT ?2"
         );
         let mut statement = self.database.connection().prepare(&sql)?;
@@ -66,9 +66,10 @@ impl<'a> SemanticQueryService<'a> {
             params![symbol_id, bounded(limit, MAX_RELATION_LIMIT)],
             |row| {
                 let provider_text: String = row.get(17)?;
-                let provider_kind = LanguageServerKind::from_str(&provider_text).ok_or_else(|| {
-                    conversion_error(17, format!("invalid provider kind {provider_text}"))
-                })?;
+                let provider_kind =
+                    LanguageServerKind::from_str(&provider_text).ok_or_else(|| {
+                        conversion_error(17, format!("invalid provider kind {provider_text}"))
+                    })?;
                 Ok(SemanticRelationRecord {
                     id: row.get(0)?,
                     project_id: row.get(1)?,
@@ -107,7 +108,7 @@ impl<'a> SemanticQueryService<'a> {
         self.database
             .connection()
             .query_row(
-                "SELECT symbol_id, project_id, run_id, provider_kind, state, reference_locations, definitions_resolved, last_error\
+                "SELECT symbol_id, project_id, run_id, provider_kind, state, reference_locations, definitions_resolved, last_error \
                  FROM semantic_symbol_states WHERE symbol_id = ?1",
                 [symbol_id],
                 |row| {
@@ -141,38 +142,42 @@ impl<'a> SemanticQueryService<'a> {
         limit: usize,
     ) -> Result<Vec<SemanticImportResolutionRecord>, SemanticQueryError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT r.id, r.project_id, r.run_id, r.import_reference_id, r.source_file_id, r.target_file_id,\
-                    r.provider_kind, r.target_start_line, r.target_start_column, r.target_end_line, r.target_end_column\
-             FROM semantic_import_resolutions r\
-             JOIN files source_file ON source_file.id = r.source_file_id\
-             JOIN files target_file ON target_file.id = r.target_file_id\
-             WHERE (r.source_file_id = ?1 OR r.target_file_id = ?1)\
-               AND r.is_active = 1\
-               AND source_file.is_active = 1 AND target_file.is_active = 1\
-               AND source_file.content_hash = r.source_content_hash\
-               AND target_file.content_hash = r.target_content_hash\
-             ORDER BY r.source_file_id, r.import_reference_id, r.target_file_id\
+            "SELECT r.id, r.project_id, r.run_id, r.import_reference_id, r.source_file_id, r.target_file_id, \
+                    r.provider_kind, r.target_start_line, r.target_start_column, r.target_end_line, r.target_end_column \
+             FROM semantic_import_resolutions r \
+             JOIN files source_file ON source_file.id = r.source_file_id \
+             JOIN files target_file ON target_file.id = r.target_file_id \
+             WHERE (r.source_file_id = ?1 OR r.target_file_id = ?1) \
+               AND r.is_active = 1 \
+               AND source_file.is_active = 1 AND target_file.is_active = 1 \
+               AND source_file.content_hash = r.source_content_hash \
+               AND target_file.content_hash = r.target_content_hash \
+             ORDER BY r.source_file_id, r.import_reference_id, r.target_file_id \
              LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![file_id, bounded(limit, MAX_RELATION_LIMIT)], |row| {
-            let provider_text: String = row.get(6)?;
-            let provider_kind = LanguageServerKind::from_str(&provider_text).ok_or_else(|| {
-                conversion_error(6, format!("invalid provider kind {provider_text}"))
-            })?;
-            Ok(SemanticImportResolutionRecord {
-                id: row.get(0)?,
-                project_id: row.get(1)?,
-                run_id: row.get(2)?,
-                import_reference_id: row.get(3)?,
-                source_file_id: row.get(4)?,
-                target_file_id: row.get(5)?,
-                provider_kind,
-                target_start_line: to_usize(row.get(7)?),
-                target_start_column: to_usize(row.get(8)?),
-                target_end_line: to_usize(row.get(9)?),
-                target_end_column: to_usize(row.get(10)?),
-            })
-        })?;
+        let rows = statement.query_map(
+            params![file_id, bounded(limit, MAX_RELATION_LIMIT)],
+            |row| {
+                let provider_text: String = row.get(6)?;
+                let provider_kind =
+                    LanguageServerKind::from_str(&provider_text).ok_or_else(|| {
+                        conversion_error(6, format!("invalid provider kind {provider_text}"))
+                    })?;
+                Ok(SemanticImportResolutionRecord {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    run_id: row.get(2)?,
+                    import_reference_id: row.get(3)?,
+                    source_file_id: row.get(4)?,
+                    target_file_id: row.get(5)?,
+                    provider_kind,
+                    target_start_line: to_usize(row.get(7)?),
+                    target_start_column: to_usize(row.get(8)?),
+                    target_end_line: to_usize(row.get(9)?),
+                    target_end_column: to_usize(row.get(10)?),
+                })
+            },
+        )?;
         let mut records = Vec::new();
         for row in rows {
             records.push(row?);
@@ -186,39 +191,43 @@ impl<'a> SemanticQueryService<'a> {
         limit: usize,
     ) -> Result<Vec<SemanticRunRecord>, SemanticQueryError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT a.id, a.project_id, a.status, a.started_at, a.finished_at, a.duration_ms,\
-                    COALESCE(m.files_processed, 0), COALESCE(m.symbols_processed, 0),\
-                    COALESCE(m.symbols_matched, 0), COALESCE(m.reference_locations, 0),\
-                    COALESCE(m.definitions_resolved, 0), COALESCE(m.relations_persisted, 0),\
-                    COALESCE(m.graph_edges_materialized, 0), COALESCE(m.imports_upgraded, 0),\
-                    COALESCE(m.errors, 0)\
-             FROM analysis_runs a\
-             LEFT JOIN semantic_run_metrics m ON m.run_id = a.id\
-             WHERE a.project_id = ?1 AND a.run_kind = 'lsp_semantic'\
+            "SELECT a.id, a.project_id, a.status, a.started_at, a.finished_at, a.duration_ms, \
+                    COALESCE(m.files_processed, 0), COALESCE(m.symbols_processed, 0), \
+                    COALESCE(m.symbols_matched, 0), COALESCE(m.reference_locations, 0), \
+                    COALESCE(m.definitions_resolved, 0), COALESCE(m.relations_persisted, 0), \
+                    COALESCE(m.graph_edges_materialized, 0), COALESCE(m.imports_upgraded, 0), \
+                    COALESCE(m.errors, 0) \
+             FROM analysis_runs a \
+             LEFT JOIN semantic_run_metrics m ON m.run_id = a.id \
+             WHERE a.project_id = ?1 AND a.run_kind = 'lsp_semantic' \
              ORDER BY a.started_at DESC, a.id DESC LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![project_id, bounded(limit, MAX_HISTORY_LIMIT)], |row| {
-            let status_text: String = row.get(2)?;
-            let status = AnalysisStatus::from_db(&status_text)
-                .ok_or_else(|| conversion_error(2, format!("invalid analysis status {status_text}")))?;
-            Ok(SemanticRunRecord {
-                run_id: row.get(0)?,
-                project_id: row.get(1)?,
-                status,
-                started_at: row.get(3)?,
-                finished_at: row.get(4)?,
-                duration_ms: row.get::<_, Option<i64>>(5)?.map(to_u64),
-                files_processed: to_usize(row.get(6)?),
-                symbols_processed: to_usize(row.get(7)?),
-                symbols_matched: to_usize(row.get(8)?),
-                reference_locations: to_usize(row.get(9)?),
-                definitions_resolved: to_usize(row.get(10)?),
-                relations_persisted: to_usize(row.get(11)?),
-                graph_edges_materialized: to_usize(row.get(12)?),
-                imports_upgraded: to_usize(row.get(13)?),
-                errors: to_usize(row.get(14)?),
-            })
-        })?;
+        let rows = statement.query_map(
+            params![project_id, bounded(limit, MAX_HISTORY_LIMIT)],
+            |row| {
+                let status_text: String = row.get(2)?;
+                let status = AnalysisStatus::from_db(&status_text).ok_or_else(|| {
+                    conversion_error(2, format!("invalid analysis status {status_text}"))
+                })?;
+                Ok(SemanticRunRecord {
+                    run_id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    status,
+                    started_at: row.get(3)?,
+                    finished_at: row.get(4)?,
+                    duration_ms: row.get::<_, Option<i64>>(5)?.map(to_u64),
+                    files_processed: to_usize(row.get(6)?),
+                    symbols_processed: to_usize(row.get(7)?),
+                    symbols_matched: to_usize(row.get(8)?),
+                    reference_locations: to_usize(row.get(9)?),
+                    definitions_resolved: to_usize(row.get(10)?),
+                    relations_persisted: to_usize(row.get(11)?),
+                    graph_edges_materialized: to_usize(row.get(12)?),
+                    imports_upgraded: to_usize(row.get(13)?),
+                    errors: to_usize(row.get(14)?),
+                })
+            },
+        )?;
         let mut records = Vec::new();
         for row in rows {
             records.push(row?);
@@ -240,9 +249,5 @@ fn to_u64(value: i64) -> u64 {
 }
 
 fn conversion_error(column: usize, message: String) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(
-        column,
-        rusqlite::types::Type::Text,
-        message.into(),
-    )
+    rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, message.into())
 }

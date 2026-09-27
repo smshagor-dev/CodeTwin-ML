@@ -95,10 +95,10 @@ pub(crate) fn create_windows_write_restricted_token(
         Foundation::{CloseHandle, HANDLE},
         Security::{
             CreateRestrictedToken, CreateWellKnownSid, GetLengthSid, IsTokenRestricted,
-            SetTokenInformation, SID_AND_ATTRIBUTES, TOKEN_MANDATORY_LABEL,
-            DISABLE_MAX_PRIVILEGE, SECURITY_MAX_SID_SIZE, SE_GROUP_INTEGRITY,
-            TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_QUERY,
-            TokenIntegrityLevel, WRITE_RESTRICTED, WinLowLabelSid, WinWriteRestrictedCodeSid,
+            SetTokenInformation, TokenIntegrityLevel, WinLowLabelSid, WinWriteRestrictedCodeSid,
+            DISABLE_MAX_PRIVILEGE, SECURITY_MAX_SID_SIZE, SE_GROUP_INTEGRITY, SID_AND_ATTRIBUTES,
+            TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_MANDATORY_LABEL,
+            TOKEN_QUERY, WRITE_RESTRICTED,
         },
         System::Threading::{GetCurrentProcess, OpenProcessToken},
     };
@@ -231,7 +231,7 @@ fn token_has_low_integrity(
     expected_low_sid: windows_sys::Win32::Security::PSID,
 ) -> Result<bool, RestrictedIdentityError> {
     use windows_sys::Win32::Security::{
-        EqualSid, GetTokenInformation, TOKEN_MANDATORY_LABEL, TokenIntegrityLevel,
+        EqualSid, GetTokenInformation, TokenIntegrityLevel, TOKEN_MANDATORY_LABEL,
     };
 
     let mut needed = 0u32;
@@ -326,10 +326,8 @@ fn probe_windows_restricted_identity(
         | FILE_DELETE_CHILD;
 
     let access_result = (|| {
-        let source_root_write =
-            path_has_any_access(source_root, &directory_mutation_rights, true)?;
-        let inputs_directory_write =
-            path_has_any_access(inputs, &directory_mutation_rights, true)?;
+        let source_root_write = path_has_any_access(source_root, &directory_mutation_rights, true)?;
+        let inputs_directory_write = path_has_any_access(inputs, &directory_mutation_rights, true)?;
         let mut staged_input_write = false;
         for file in &workspace.files {
             let staged = inputs.join(&file.relative_path);
@@ -390,7 +388,7 @@ fn probe_windows_restricted_identity(
 fn windows_write_restricted_sid() -> Result<Vec<u8>, RestrictedIdentityError> {
     use std::ffi::c_void;
     use windows_sys::Win32::Security::{
-        CreateWellKnownSid, SECURITY_MAX_SID_SIZE, WinWriteRestrictedCodeSid,
+        CreateWellKnownSid, WinWriteRestrictedCodeSid, SECURITY_MAX_SID_SIZE,
     };
 
     let mut sid = vec![0u8; SECURITY_MAX_SID_SIZE as usize];
@@ -443,21 +441,13 @@ fn apply_workspace_security_contract(
     grant_restricted_sid(
         artifacts,
         restricting_sid,
-        FILE_GENERIC_READ
-            | FILE_GENERIC_WRITE
-            | FILE_GENERIC_EXECUTE
-            | FILE_DELETE_CHILD
-            | DELETE,
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | FILE_DELETE_CHILD | DELETE,
         true,
     )?;
     grant_restricted_sid(
         temp,
         restricting_sid,
-        FILE_GENERIC_READ
-            | FILE_GENERIC_WRITE
-            | FILE_GENERIC_EXECUTE
-            | FILE_DELETE_CHILD
-            | DELETE,
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | FILE_DELETE_CHILD | DELETE,
         true,
     )?;
 
@@ -488,15 +478,14 @@ fn grant_restricted_sid(
 ) -> Result<(), RestrictedIdentityError> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::{
-        Foundation::{ERROR_SUCCESS, HLOCAL, LocalFree},
+        Foundation::{LocalFree, ERROR_SUCCESS, HLOCAL},
         Security::{
+            Authorization::{
+                GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W,
+                GRANT_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+            },
             ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
             PSECURITY_DESCRIPTOR,
-            Authorization::{
-                EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, SE_FILE_OBJECT,
-                TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W, SetEntriesInAclW,
-                SetNamedSecurityInfoW,
-            },
         },
     };
 
@@ -586,18 +575,16 @@ fn grant_restricted_sid(
 }
 
 #[cfg(windows)]
-fn apply_low_integrity_label(
-    path: &std::path::Path,
-) -> Result<(), RestrictedIdentityError> {
+fn apply_low_integrity_label(path: &std::path::Path) -> Result<(), RestrictedIdentityError> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::{
-        Foundation::{HLOCAL, LocalFree},
+        Foundation::{LocalFree, HLOCAL},
         Security::{
-            ACL, GetSecurityDescriptorSacl, LABEL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
             Authorization::{
-                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-                SE_FILE_OBJECT, SetNamedSecurityInfoW,
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
+                SDDL_REVISION_1, SE_FILE_OBJECT,
             },
+            GetSecurityDescriptorSacl, ACL, LABEL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
         },
     };
 
@@ -785,8 +772,11 @@ mod tests {
         let source = temp_directory("source");
         let parent = temp_directory("parent");
         fs::create_dir_all(source.join("tests")).expect("tests");
-        fs::write(source.join("tests/test_api.py"), "def test_ok():\n    assert True\n")
-            .expect("source");
+        fs::write(
+            source.join("tests/test_api.py"),
+            "def test_ok():\n    assert True\n",
+        )
+        .expect("source");
         let targets = vec!["tests/test_api.py".to_string()];
         let snapshots = snapshot_execution_inputs(&source, &targets).expect("snapshots");
         let workspace =

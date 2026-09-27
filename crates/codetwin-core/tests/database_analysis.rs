@@ -24,7 +24,9 @@ fn database_artifacts_and_review_findings_are_persisted_with_redaction() {
         .open_project(root.path())
         .expect("project");
     let service = DatabaseAnalysisService::new(&database);
-    let run = service.analyze_project(&project.id).expect("database analysis");
+    let run = service
+        .analyze_project(&project.id)
+        .expect("database analysis");
 
     assert!(run.coverage_complete);
     assert_eq!(run.artifacts_analyzed, 2);
@@ -35,10 +37,16 @@ fn database_artifacts_and_review_findings_are_persisted_with_redaction() {
     assert_eq!(run.foreign_keys_disabled, 1);
     assert_eq!(run.literal_datasource_urls, 1);
 
-    let artifacts = service.list_artifacts(&project.id, true, 20).expect("artifacts");
+    let artifacts = service
+        .list_artifacts(&project.id, true, 20)
+        .expect("artifacts");
     assert_eq!(artifacts.len(), 2);
-    assert!(artifacts.iter().any(|item| item.artifact_kind == "sql_migration"));
-    assert!(artifacts.iter().any(|item| item.artifact_kind == "prisma_schema"));
+    assert!(artifacts
+        .iter()
+        .any(|item| item.artifact_kind == "sql_migration"));
+    assert!(artifacts
+        .iter()
+        .any(|item| item.artifact_kind == "prisma_schema"));
 
     let findings = service
         .list_findings(&project.id, Some("open"), 100)
@@ -53,7 +61,9 @@ fn database_artifacts_and_review_findings_are_persisted_with_redaction() {
     assert_eq!(evidence.len(), 1);
     assert!(!evidence[0].summary.contains("super_secret"));
     assert!(!evidence[0].metadata_json.contains("super_secret"));
-    assert!(evidence[0].metadata_json.contains("\"literal_redacted\":true"));
+    assert!(evidence[0]
+        .metadata_json
+        .contains("\"literal_redacted\":true"));
 }
 
 #[test]
@@ -76,8 +86,11 @@ fn complete_rescan_resolves_disappeared_database_finding() {
         .find(|item| item.rule_id == "database.unscoped_data_write")
         .expect("unscoped finding");
 
-    fs::write(&migration, "DELETE FROM sessions WHERE expires_at < CURRENT_TIMESTAMP;\n")
-        .expect("safe migration");
+    fs::write(
+        &migration,
+        "DELETE FROM sessions WHERE expires_at < CURRENT_TIMESTAMP;\n",
+    )
+    .expect("safe migration");
     let second = service.analyze_project(&project.id).expect("second run");
     assert!(second.coverage_complete);
     assert_eq!(second.unscoped_writes, 0);
@@ -131,13 +144,24 @@ fn deleted_artifact_becomes_inactive_after_complete_scan() {
         .expect("project");
     let service = DatabaseAnalysisService::new(&database);
     service.analyze_project(&project.id).expect("first run");
-    assert_eq!(service.list_artifacts(&project.id, true, 20).expect("active").len(), 1);
+    assert_eq!(
+        service
+            .list_artifacts(&project.id, true, 20)
+            .expect("active")
+            .len(),
+        1
+    );
 
     fs::remove_file(schema).expect("remove schema");
     let second = service.analyze_project(&project.id).expect("second run");
     assert!(second.coverage_complete);
-    assert!(service.list_artifacts(&project.id, true, 20).expect("active").is_empty());
-    let all = service.list_artifacts(&project.id, false, 20).expect("all artifacts");
+    assert!(service
+        .list_artifacts(&project.id, true, 20)
+        .expect("active")
+        .is_empty());
+    let all = service
+        .list_artifacts(&project.id, false, 20)
+        .expect("all artifacts");
     assert_eq!(all.len(), 1);
     assert!(!all[0].is_active);
 }

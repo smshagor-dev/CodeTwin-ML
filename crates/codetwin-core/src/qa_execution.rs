@@ -9,8 +9,8 @@ use ::qa_execution::{
     snapshot_execution_inputs, validate_approved_external_read_surface_shape,
     ApprovedExternalReadSurface, ExecutionCommand, ExecutionPlanStatus, ExecutionRunStatus,
     SandboxCapabilities, SandboxPolicy, TestExecutionPlan, TestExecutionRequest, TestRunnerKind,
-    TrustedToolchain, MAX_PROJECT_MIRROR_BYTES,
-    MAX_PROJECT_MIRROR_DIRECTORIES, MAX_PROJECT_MIRROR_FILES,
+    TrustedToolchain, MAX_PROJECT_MIRROR_BYTES, MAX_PROJECT_MIRROR_DIRECTORIES,
+    MAX_PROJECT_MIRROR_FILES,
 };
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -204,10 +204,10 @@ impl<'a> QaExecutionService<'a> {
             self.verify_discovery_run(project_id, discovery_run_id)?;
         }
         let discovery_run_id = request.discovery_run_id.clone();
+        let fully_enforced = capabilities == SandboxCapabilities::fully_enforced();
         let plan = build_execution_plan(request, toolchain, policy, capabilities)?;
         let plan_id = new_plan_id(project_id, &plan.request);
-        let public_backend_enabled = self.availability().execution_enabled
-            && capabilities == SandboxCapabilities::fully_enforced();
+        let public_backend_enabled = self.availability().execution_enabled && fully_enforced;
         let provenance = json!({
             "project_last_indexed_at": project_last_indexed_at,
             "discovery_run_id": discovery_run_id,
@@ -219,9 +219,9 @@ impl<'a> QaExecutionService<'a> {
         });
 
         self.database.connection().execute(
-            "INSERT INTO qa_execution_plans(\
-               id, project_id, discovery_run_id, runner_kind, status, request_json, toolchain_json,\
-               policy_json, capabilities_json, command_json, provenance_json, blocking_reasons_json\
+            "INSERT INTO qa_execution_plans( \
+               id, project_id, discovery_run_id, runner_kind, status, request_json, toolchain_json, \
+               policy_json, capabilities_json, command_json, provenance_json, blocking_reasons_json \
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 plan_id,
@@ -302,18 +302,18 @@ impl<'a> QaExecutionService<'a> {
         let blocking_reasons_json = serde_json::to_string(&plan.blocking_reasons)?;
         let original_provenance_json = plan.provenance.to_string();
         let changed = self.database.connection().execute(
-            "UPDATE qa_execution_plans\
-             SET status = 'approved', approved_at = CURRENT_TIMESTAMP,\
-                 approved_project_manifest_sha256 = ?2, approved_project_manifest_json = ?3,\
-                 approved_external_read_surface_sha256 = ?4,\
-                 approved_external_read_surface_json = ?5, provenance_json = ?6\
-             WHERE id = ?1 AND status = 'planned'\
-               AND approved_project_manifest_sha256 IS NULL\
-               AND approved_project_manifest_json IS NULL\
-               AND approved_external_read_surface_sha256 IS NULL\
-               AND approved_external_read_surface_json IS NULL\
-               AND request_json = ?7 AND toolchain_json = ?8 AND policy_json = ?9\
-               AND capabilities_json = ?10 AND command_json = ?11\
+            "UPDATE qa_execution_plans \
+             SET status = 'approved', approved_at = CURRENT_TIMESTAMP, \
+                 approved_project_manifest_sha256 = ?2, approved_project_manifest_json = ?3, \
+                 approved_external_read_surface_sha256 = ?4, \
+                 approved_external_read_surface_json = ?5, provenance_json = ?6 \
+             WHERE id = ?1 AND status = 'planned' \
+               AND approved_project_manifest_sha256 IS NULL \
+               AND approved_project_manifest_json IS NULL \
+               AND approved_external_read_surface_sha256 IS NULL \
+               AND approved_external_read_surface_json IS NULL \
+               AND request_json = ?7 AND toolchain_json = ?8 AND policy_json = ?9 \
+               AND capabilities_json = ?10 AND command_json = ?11 \
                AND blocking_reasons_json = ?12 AND provenance_json = ?13",
             params![
                 plan_id,
@@ -356,11 +356,11 @@ impl<'a> QaExecutionService<'a> {
         self.database
             .connection()
             .query_row(
-                "SELECT id, project_id, discovery_run_id, runner_kind, status, request_json,\
-                        toolchain_json, policy_json, capabilities_json, command_json, provenance_json,\
-                        blocking_reasons_json, approved_project_manifest_sha256,\
-                        approved_project_manifest_json, approved_external_read_surface_sha256,\
-                        approved_external_read_surface_json, created_at, approved_at, superseded_at\
+                "SELECT id, project_id, discovery_run_id, runner_kind, status, request_json, \
+                        toolchain_json, policy_json, capabilities_json, command_json, provenance_json, \
+                        blocking_reasons_json, approved_project_manifest_sha256, \
+                        approved_project_manifest_json, approved_external_read_surface_sha256, \
+                        approved_external_read_surface_json, created_at, approved_at, superseded_at \
                  FROM qa_execution_plans WHERE id = ?1",
                 [plan_id],
                 plan_from_row,
@@ -375,12 +375,12 @@ impl<'a> QaExecutionService<'a> {
         limit: usize,
     ) -> Result<Vec<QaExecutionPlanRecord>, QaExecutionError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, discovery_run_id, runner_kind, status, request_json,\
-                    toolchain_json, policy_json, capabilities_json, command_json, provenance_json,\
-                    blocking_reasons_json, approved_project_manifest_sha256,\
-                    approved_project_manifest_json, approved_external_read_surface_sha256,\
-                    approved_external_read_surface_json, created_at, approved_at, superseded_at\
-             FROM qa_execution_plans WHERE project_id = ?1\
+            "SELECT id, project_id, discovery_run_id, runner_kind, status, request_json, \
+                    toolchain_json, policy_json, capabilities_json, command_json, provenance_json, \
+                    blocking_reasons_json, approved_project_manifest_sha256, \
+                    approved_project_manifest_json, approved_external_read_surface_sha256, \
+                    approved_external_read_surface_json, created_at, approved_at, superseded_at \
+             FROM qa_execution_plans WHERE project_id = ?1 \
              ORDER BY created_at DESC, id DESC LIMIT ?2",
         )?;
         let rows = statement.query_map(
@@ -416,13 +416,18 @@ impl<'a> QaExecutionService<'a> {
             ));
         }
         let manifest = plan.approved_project_manifest.as_ref().ok_or_else(|| {
-            QaExecutionError::ApprovalManifest("approved plan is missing project manifest".to_string())
-        })?;
-        let external = plan.approved_external_read_surface.as_ref().ok_or_else(|| {
             QaExecutionError::ApprovalManifest(
-                "approved plan is missing external read surface".to_string(),
+                "approved plan is missing project manifest".to_string(),
             )
         })?;
+        let external = plan
+            .approved_external_read_surface
+            .as_ref()
+            .ok_or_else(|| {
+                QaExecutionError::ApprovalManifest(
+                    "approved plan is missing external read surface".to_string(),
+                )
+            })?;
         let project_root = self.project_root_path(&plan.project_id)?;
         let snapshots = snapshot_execution_inputs(&project_root, &plan.request.targets)?;
         let run_id = new_run_id(plan_id, &plan.project_id);
@@ -471,7 +476,9 @@ impl<'a> QaExecutionService<'a> {
                         i64::try_from(outcome.duration_ms).unwrap_or(i64::MAX),
                         outcome.exit_code,
                         if outcome.parser_completed { 1i64 } else { 0i64 },
-                        outcome.tests_passed.map(|value| if value { 1i64 } else { 0i64 }),
+                        outcome
+                            .tests_passed
+                            .map(|value| if value { 1i64 } else { 0i64 }),
                         outcome.stdout.text,
                         outcome.stderr.text,
                         i64::try_from(outcome.stdout.original_bytes).unwrap_or(i64::MAX),
@@ -507,10 +514,7 @@ impl<'a> QaExecutionService<'a> {
             .ok_or_else(|| QaExecutionError::PlanNotFound(run_id))
     }
 
-    pub fn get_run(
-        &self,
-        run_id: &str,
-    ) -> Result<Option<QaExecutionRunRecord>, QaExecutionError> {
+    pub fn get_run(&self, run_id: &str) -> Result<Option<QaExecutionRunRecord>, QaExecutionError> {
         self.database
             .connection()
             .query_row(
@@ -558,11 +562,8 @@ impl<'a> QaExecutionService<'a> {
         project_root: &Path,
     ) -> Result<QaExecutionProjectManifest, QaExecutionError> {
         let snapshots = snapshot_execution_inputs(project_root, &plan.request.targets)?;
-        let workspace = prepare_dependency_complete_workspace(
-            project_root,
-            std::env::temp_dir(),
-            &snapshots,
-        )?;
+        let workspace =
+            prepare_dependency_complete_workspace(project_root, std::env::temp_dir(), &snapshots)?;
 
         let evidence = if let Some(sha256) = workspace.project_manifest_sha256.as_deref() {
             if valid_sha256(sha256) {
@@ -622,9 +623,9 @@ impl<'a> QaExecutionService<'a> {
         discovery_run_id: &str,
     ) -> Result<(), QaExecutionError> {
         let valid: bool = self.database.connection().query_row(
-            "SELECT EXISTS(\
-               SELECT 1 FROM analysis_runs\
-               WHERE id = ?1 AND project_id = ?2 AND run_kind = 'qa_discovery' AND status = 'completed'\
+            "SELECT EXISTS( \
+               SELECT 1 FROM analysis_runs \
+               WHERE id = ?1 AND project_id = ?2 AND run_kind = 'qa_discovery' AND status = 'completed' \
              )",
             params![discovery_run_id, project_id],
             |row| row.get(0),
@@ -682,11 +683,8 @@ fn plan_from_row(row: &rusqlite::Row<'_>) -> Result<QaExecutionPlanRecord, rusql
     let external_surface_sha256: Option<String> = row.get(14)?;
     let external_surface_json: Option<String> = row.get(15)?;
     let approved_project_manifest = parse_optional_manifest(manifest_sha256, manifest_json, 13)?;
-    let approved_external_read_surface = parse_optional_external_surface(
-        external_surface_sha256,
-        external_surface_json,
-        15,
-    )?;
+    let approved_external_read_surface =
+        parse_optional_external_surface(external_surface_sha256, external_surface_json, 15)?;
     Ok(QaExecutionPlanRecord {
         id: row.get(0)?,
         project_id: row.get(1)?,
@@ -718,8 +716,7 @@ fn parse_optional_manifest(
         (Some(sha256), Some(text)) => {
             let manifest: QaExecutionProjectManifest = parse_json(&text, index)?;
             let file_limit = u64::try_from(MAX_PROJECT_MIRROR_FILES).unwrap_or(u64::MAX);
-            let directory_limit =
-                u64::try_from(MAX_PROJECT_MIRROR_DIRECTORIES).unwrap_or(u64::MAX);
+            let directory_limit = u64::try_from(MAX_PROJECT_MIRROR_DIRECTORIES).unwrap_or(u64::MAX);
             if manifest.sha256 != sha256
                 || !valid_sha256(&sha256)
                 || manifest.file_count == 0
@@ -884,7 +881,7 @@ mod tests {
         database
             .connection()
             .execute(
-                "INSERT INTO projects(id, root_path, display_name, last_indexed_at)\
+                "INSERT INTO projects(id, root_path, display_name, last_indexed_at) \
                  VALUES ('project-1', ?1, 'project', CURRENT_TIMESTAMP)",
                 [root_path],
             )
@@ -1017,20 +1014,16 @@ mod tests {
         fs::write(project.path().join("module.py"), "VALUE = 2\n").expect("mutate dependency");
         let targets = vec!["tests/test_api.py".to_string()];
         let snapshots = snapshot_execution_inputs(project.path(), &targets).expect("snapshots");
-        let current_workspace = prepare_dependency_complete_workspace(
-            project.path(),
-            std::env::temp_dir(),
-            &snapshots,
-        )
-        .expect("current project mirror");
+        let current_workspace =
+            prepare_dependency_complete_workspace(project.path(), std::env::temp_dir(), &snapshots)
+                .expect("current project mirror");
         assert_ne!(
             current_workspace.project_manifest_sha256.as_deref(),
             Some(manifest.sha256.as_str())
         );
         cleanup_detached_workspace(&current_workspace).expect("cleanup current mirror");
 
-        fs::write(runtime.path().join("Lib/runtime.py"), "VALUE = 2\n")
-            .expect("mutate runtime");
+        fs::write(runtime.path().join("Lib/runtime.py"), "VALUE = 2\n").expect("mutate runtime");
         assert!(matches!(
             verify_external_read_surface(
                 &approved.toolchain.declared_external_read_roots,
@@ -1110,9 +1103,9 @@ mod tests {
         let error = database
             .connection()
             .execute(
-                "UPDATE qa_execution_plans\
-                 SET status = 'approved', approved_project_manifest_sha256 = ?2,\
-                     approved_project_manifest_json = '{}'\
+                "UPDATE qa_execution_plans \
+                 SET status = 'approved', approved_project_manifest_sha256 = ?2, \
+                     approved_project_manifest_json = '{}' \
                  WHERE id = ?1",
                 params![plan.id, digest],
             )

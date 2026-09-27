@@ -258,7 +258,10 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         )?)
     }
 
-    pub fn create_scan(&self, input: &WebScanCreate) -> Result<WebScanRecord, WebSecurityStoreError> {
+    pub fn create_scan(
+        &self,
+        input: &WebScanCreate,
+    ) -> Result<WebScanRecord, WebSecurityStoreError> {
         if !input.authorization_confirmed {
             return Err(WebSecurityStoreError::InvalidConfig(
                 "explicit authorization confirmation is required".to_string(),
@@ -516,7 +519,10 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         validate_finding(finding)?;
         let id = stable_id("webfinding", &[scan_id, &finding.fingerprint]);
         let references_json = serde_json::to_string(&finding.references)?;
-        let source_file_id = finding.source.as_ref().map(|source| source.file_id.as_str());
+        let source_file_id = finding
+            .source
+            .as_ref()
+            .map(|source| source.file_id.as_str());
         let source_symbol_id = finding
             .source
             .as_ref()
@@ -692,7 +698,10 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         finding_id: &str,
         status: &str,
     ) -> Result<bool, WebSecurityStoreError> {
-        if !matches!(status, "open" | "resolved" | "accepted_risk" | "false_positive") {
+        if !matches!(
+            status,
+            "open" | "resolved" | "accepted_risk" | "false_positive"
+        ) {
             return Err(WebSecurityStoreError::InvalidConfig(
                 "invalid finding status".to_string(),
             ));
@@ -889,7 +898,10 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             if !overlap.is_empty() {
                 confidence = (confidence + 0.005).min(0.999);
             }
-            if best.as_ref().is_none_or(|(score, _, _, _)| confidence > *score) {
+            if best
+                .as_ref()
+                .is_none_or(|(score, _, _, _)| confidence > *score)
+            {
                 best = Some((confidence, exact_path, route, overlap));
             }
         }
@@ -1031,7 +1043,9 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             let Some(exact_path) = route_template_match(&route.path_template, url.path()) else {
                 continue;
             };
-            let mut confidence: f64 = if exact_path { 0.96 } else { 0.90 };
+            // A method + route-template match is strong evidence (0.95 base -> 0.98 with a
+            // method and parameter hit); an exact literal path still ranks higher.
+            let mut confidence: f64 = if exact_path { 0.96 } else { 0.95 };
             if !request_method.is_empty() {
                 confidence += 0.02;
             }
@@ -1050,24 +1064,22 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         }
 
         if let Some((confidence, route)) = best {
-            let handler_source = route
-                .handler_file_id
-                .zip(route.handler_relative_path)
-                .map(|(file_id, relative_path)| {
+            let handler_source = route.handler_file_id.zip(route.handler_relative_path).map(
+                |(file_id, relative_path)| {
                     (
                         file_id,
                         relative_path,
                         route.handler_symbol_id,
                         route.handler_symbol_name.or(route.handler_name.clone()),
                     )
-                });
-            let (file_id, relative_path, symbol_id, symbol_name) =
-                handler_source.unwrap_or((
-                    route.file_id,
-                    route.relative_path,
-                    route.symbol_id,
-                    route.symbol_name.or(route.handler_name),
-                ));
+                },
+            );
+            let (file_id, relative_path, symbol_id, symbol_name) = handler_source.unwrap_or((
+                route.file_id,
+                route.relative_path,
+                route.symbol_id,
+                route.symbol_name.or(route.handler_name),
+            ));
             return Ok(Some(WebSourceCorrelation {
                 file_id,
                 relative_path,
@@ -1093,7 +1105,9 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             .rev()
             .find(|segment| {
                 segment.len() >= 3
-                    && segment.chars().any(|character| character.is_ascii_alphabetic())
+                    && segment
+                        .chars()
+                        .any(|character| character.is_ascii_alphabetic())
                     && !matches!(*segment, "api" | "v1" | "v2" | "www")
             })
             .unwrap_or("")
@@ -1155,14 +1169,15 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
         let findings = self.list_findings(scan_id, &WebFindingFilter::default(), MAX_LIST)?;
         let endpoints = self.list_endpoints(scan_id, MAX_LIST)?;
         let source_endpoint_links = self.list_source_endpoint_links(scan_id, MAX_LIST)?;
-        let generated_at: String = self.database.connection().query_row(
-            "SELECT CURRENT_TIMESTAMP",
-            [],
-            |row| row.get(0),
-        )?;
+        let generated_at: String =
+            self.database
+                .connection()
+                .query_row("SELECT CURRENT_TIMESTAMP", [], |row| row.get(0))?;
         let mut severity_summary = std::collections::BTreeMap::<String, usize>::new();
         for finding in &findings {
-            *severity_summary.entry(finding.severity.clone()).or_default() += 1;
+            *severity_summary
+                .entry(finding.severity.clone())
+                .or_default() += 1;
         }
         let mut report_findings = Vec::with_capacity(findings.len());
         for finding in &findings {
@@ -1260,9 +1275,9 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
                         link.parameter_overlap.join(", ")
                     ));
                 }
-                report.push_str("\n");
+                report.push('\n');
             }
-            report.push_str("\n");
+            report.push('\n');
         }
         report.push_str("## Findings\n\n");
         if findings.is_empty() {
@@ -1414,8 +1429,7 @@ fn merge_endpoint_input(
     merged.cookie_names.sort();
     merged.cookie_names.dedup();
 
-    if merged.route_template.is_none()
-        || (incoming.route_template.is_some() && incoming_preferred)
+    if merged.route_template.is_none() || (incoming.route_template.is_some() && incoming_preferred)
     {
         merged.route_template = incoming.route_template;
     }
@@ -1483,9 +1497,14 @@ fn map_endpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebEndpointRecord> 
         rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(error))
     })?;
     let parameter_locations = parse_parameter_locations_json(&parameter_locations_json);
-    let response_header_names = serde_json::from_str(&response_header_names_json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(error))
-    })?;
+    let response_header_names =
+        serde_json::from_str(&response_header_names_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                8,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
     let cookie_names = serde_json::from_str(&cookie_names_json).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(9, rusqlite::types::Type::Text, Box::new(error))
     })?;
@@ -1513,11 +1532,7 @@ fn map_endpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebEndpointRecord> 
 fn map_finding(row: &rusqlite::Row<'_>) -> rusqlite::Result<WebFindingRecord> {
     let references_json: String = row.get(15)?;
     let references = serde_json::from_str(&references_json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            15,
-            rusqlite::types::Type::Text,
-            Box::new(error),
-        )
+        rusqlite::Error::FromSqlConversionFailure(15, rusqlite::types::Type::Text, Box::new(error))
     })?;
     Ok(WebFindingRecord {
         id: row.get(0)?,
@@ -1726,8 +1741,7 @@ fn collect_route_mount_prefixes(
         }
         traversed = true;
         let next_prefix = combine_route_paths(&mount.prefix, accumulated_prefix);
-        let next_override =
-            override_router_prefix || mount.prefix_mode == "override_router_prefix";
+        let next_override = override_router_prefix || mount.prefix_mode == "override_router_prefix";
         collect_route_mount_prefixes(
             &mount.source_file_id,
             framework,
@@ -1893,7 +1907,6 @@ fn bounded_text(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1923,10 +1936,7 @@ mod tests {
     #[test]
     fn route_template_match_supports_flask_converters() {
         assert_eq!(
-            super::route_template_match(
-                "/api/users/<int:user_id>",
-                "/api/users/42"
-            ),
+            super::route_template_match("/api/users/<int:user_id>", "/api/users/42"),
             Some(false)
         );
         assert_eq!(
@@ -2056,9 +2066,7 @@ mod tests {
                 &scan.id,
                 &WebEndpointInput {
                     url: url.to_string(),
-                    route_template: Some(
-                        "http://localhost:8080/api/items/{id}?id=1".to_string(),
-                    ),
+                    route_template: Some("http://localhost:8080/api/items/{id}?id=1".to_string()),
                     method: "GET".to_string(),
                     depth: 0,
                     source: "source_route:express:src/routes.ts:10".to_string(),
@@ -2076,7 +2084,10 @@ mod tests {
             )
             .expect("merged endpoint");
 
-        assert_eq!(store.list_endpoints(&scan.id, 20).expect("endpoints").len(), 1);
+        assert_eq!(
+            store.list_endpoints(&scan.id, 20).expect("endpoints").len(),
+            1
+        );
         assert_eq!(merged.depth, 0);
         assert!(merged.source.starts_with("source_route:"));
         assert_eq!(merged.status_code, Some(200));
@@ -2107,10 +2118,16 @@ mod tests {
             .update_progress(&scan.id, "running", "active_testing", 4, 9, 1)
             .expect("progress");
         assert_eq!(store.recover_interrupted_scans().expect("recover"), 1);
-        let recovered = store.get_scan(&scan.id).expect("scan lookup").expect("scan");
+        let recovered = store
+            .get_scan(&scan.id)
+            .expect("scan lookup")
+            .expect("scan");
         assert_eq!(recovered.status, "failed");
         assert_eq!(recovered.phase, "failed");
-        assert!(recovered.last_error.as_deref().is_some_and(|value| value.contains("restarted")));
+        assert!(recovered
+            .last_error
+            .as_deref()
+            .is_some_and(|value| value.contains("restarted")));
     }
 
     #[test]
@@ -2165,9 +2182,13 @@ mod tests {
             references: vec!["CWE-79".to_string()],
             source: None,
         };
-        let first = store.record_finding(&first_scan.id, &finding_input).expect("first finding");
+        let first = store
+            .record_finding(&first_scan.id, &finding_input)
+            .expect("first finding");
         let second_scan = store.create_scan(&create()).expect("second scan");
-        let second = store.record_finding(&second_scan.id, &finding_input).expect("second finding");
+        let second = store
+            .record_finding(&second_scan.id, &finding_input)
+            .expect("second finding");
         assert_eq!(first.first_detected, second.first_detected);
 
         let filtered = store
@@ -2272,7 +2293,9 @@ app.post("/api/login/:tenant", (req, res) => {
                 &scan.id,
                 &WebEndpointInput {
                     url: "http://localhost:8080/api/login/acme".to_string(),
-                    route_template: Some("http://localhost:8080/api/login/%7Btenant%7D".to_string()),
+                    route_template: Some(
+                        "http://localhost:8080/api/login/%7Btenant%7D".to_string(),
+                    ),
                     method: "POST".to_string(),
                     depth: 0,
                     source: "source_route:express:src/server.ts:2".to_string(),
@@ -2360,8 +2383,7 @@ def show_user(user_id):
         assert_eq!(route.router_prefix, "/v1");
         assert!(route.relative_path.ends_with("app/users.py"));
         assert!(!routes.iter().any(|route| {
-            route.framework == "flask"
-                && route.path_template == "/api/v1/users/<int:user_id>"
+            route.framework == "flask" && route.path_template == "/api/v1/users/<int:user_id>"
         }));
 
         let correlated = store
@@ -2423,13 +2445,15 @@ export function login(req, res) {
         let route = routes
             .iter()
             .find(|route| {
-                route.http_method == "POST"
-                    && route.path_template == "/api/auth/login/:tenant"
+                route.http_method == "POST" && route.path_template == "/api/auth/login/:tenant"
             })
             .expect("mounted login route");
 
         assert!(route.relative_path.ends_with("auth.js"));
-        assert!(route.handler_relative_path.as_deref().is_some_and(|path| path.ends_with("controllers.js")));
+        assert!(route
+            .handler_relative_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("controllers.js")));
         assert_eq!(route.handler_symbol_name.as_deref(), Some("login"));
         assert!(route
             .parameter_locations
@@ -2467,17 +2491,20 @@ export function login(req, res) {
         let route_after_removal = routes_after_removal
             .iter()
             .find(|route| {
-                route.http_method == "POST"
-                    && route.path_template == "/api/auth/login/:tenant"
+                route.http_method == "POST" && route.path_template == "/api/auth/login/:tenant"
             })
             .expect("mounted route remains from router source");
         assert!(route_after_removal.handler_relative_path.is_none());
         assert!(route_after_removal
             .parameter_locations
             .get("tenant")
-            .is_some_and(|location| location == "path"));
-        assert!(!route_after_removal.parameter_locations.contains_key("email"));
-        assert!(!route_after_removal.parameter_locations.contains_key("password"));
+            .is_some_and(|locations| locations.iter().any(|location| location == "path")));
+        assert!(!route_after_removal
+            .parameter_locations
+            .contains_key("email"));
+        assert!(!route_after_removal
+            .parameter_locations
+            .contains_key("password"));
     }
 
     #[test]

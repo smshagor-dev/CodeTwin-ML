@@ -31,8 +31,12 @@ pub fn analyze_artifact(kind: RuntimeArtifactKind, source: &str) -> Vec<RuntimeO
         RuntimeArtifactKind::DockerCompose => analyze_compose(source),
     };
     observations.sort_by(|left, right| {
-        (left.start_line, left.end_line, &left.rule_id, &left.anchor)
-            .cmp(&(right.start_line, right.end_line, &right.rule_id, &right.anchor))
+        (left.start_line, left.end_line, &left.rule_id, &left.anchor).cmp(&(
+            right.start_line,
+            right.end_line,
+            &right.rule_id,
+            &right.anchor,
+        ))
     });
     observations.dedup_by(|left, right| {
         left.rule_id == right.rule_id
@@ -376,7 +380,10 @@ fn unquote(value: &str) -> &str {
 }
 
 fn yaml_truthy(value: &str) -> bool {
-    matches!(unquote(value).to_ascii_lowercase().as_str(), "true" | "yes" | "on")
+    matches!(
+        unquote(value).to_ascii_lowercase().as_str(),
+        "true" | "yes" | "on"
+    )
 }
 
 #[cfg(test)]
@@ -385,9 +392,16 @@ mod tests {
 
     #[test]
     fn dockerfile_reports_mutable_image_and_missing_healthcheck() {
-        let findings = analyze_artifact(RuntimeArtifactKind::Dockerfile, "FROM node:latest\nRUN echo ok\n");
-        assert!(findings.iter().any(|item| item.rule_id == "runtime.mutable_container_image"));
-        assert!(findings.iter().any(|item| item.rule_id == "runtime.healthcheck_not_declared"));
+        let findings = analyze_artifact(
+            RuntimeArtifactKind::Dockerfile,
+            "FROM node:latest\nRUN echo ok\n",
+        );
+        assert!(findings
+            .iter()
+            .any(|item| item.rule_id == "runtime.mutable_container_image"));
+        assert!(findings
+            .iter()
+            .any(|item| item.rule_id == "runtime.healthcheck_not_declared"));
     }
 
     #[test]
@@ -396,23 +410,35 @@ mod tests {
             RuntimeArtifactKind::Dockerfile,
             "FROM node@sha256:0123456789abcdef\nHEALTHCHECK CMD node health.js\n",
         );
-        assert!(findings.iter().all(|item| item.rule_id != "runtime.mutable_container_image"));
-        assert!(findings.iter().all(|item| item.rule_id != "runtime.healthcheck_not_declared"));
+        assert!(findings
+            .iter()
+            .all(|item| item.rule_id != "runtime.mutable_container_image"));
+        assert!(findings
+            .iter()
+            .all(|item| item.rule_id != "runtime.healthcheck_not_declared"));
     }
 
     #[test]
     fn compose_reports_explicit_restart_and_healthcheck_disable() {
         let source = "services:\n  api:\n    image: example/api:1.2.3\n    restart: \"no\"\n    healthcheck:\n      disable: true\n";
         let findings = analyze_artifact(RuntimeArtifactKind::DockerCompose, source);
-        assert!(findings.iter().any(|item| item.rule_id == "runtime.restart_disabled"));
-        assert!(findings.iter().any(|item| item.rule_id == "runtime.healthcheck_disabled"));
-        assert!(findings.iter().all(|item| item.rule_id != "runtime.healthcheck_not_declared"));
+        assert!(findings
+            .iter()
+            .any(|item| item.rule_id == "runtime.restart_disabled"));
+        assert!(findings
+            .iter()
+            .any(|item| item.rule_id == "runtime.healthcheck_disabled"));
+        assert!(findings
+            .iter()
+            .all(|item| item.rule_id != "runtime.healthcheck_not_declared"));
     }
 
     #[test]
     fn compose_does_not_treat_hash_inside_quotes_as_comment() {
         let source = "services:\n  api:\n    image: \"registry.example/api:latest#candidate\"\n";
         let findings = analyze_artifact(RuntimeArtifactKind::DockerCompose, source);
-        assert!(findings.iter().any(|item| item.rule_id == "runtime.healthcheck_not_declared"));
+        assert!(findings
+            .iter()
+            .any(|item| item.rule_id == "runtime.healthcheck_not_declared"));
     }
 }

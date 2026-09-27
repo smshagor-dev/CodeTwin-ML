@@ -112,15 +112,19 @@ impl<'a> SymbolReferenceService<'a> {
             };
             let observations = extract_references(&file.language, &source)?;
             files_scanned += 1;
-            pending.extend(observations.into_iter().map(|observation| PendingObservation {
-                source_file_id: file.id.clone(),
-                name: observation.name,
-                kind: observation.kind,
-                start_line: observation.start_line,
-                start_column: observation.start_column,
-                end_line: observation.end_line,
-                end_column: observation.end_column,
-            }));
+            pending.extend(
+                observations
+                    .into_iter()
+                    .map(|observation| PendingObservation {
+                        source_file_id: file.id.clone(),
+                        name: observation.name,
+                        kind: observation.kind,
+                        start_line: observation.start_line,
+                        start_column: observation.start_column,
+                        end_line: observation.end_line,
+                        end_column: observation.end_column,
+                    }),
+            );
         }
 
         let transaction = connection.unchecked_transaction()?;
@@ -143,8 +147,8 @@ impl<'a> SymbolReferenceService<'a> {
                 ],
             );
             transaction.execute(
-                "INSERT INTO symbol_reference_observations(\
-                   id, project_id, source_file_id, name, kind, start_line, start_column, end_line, end_column, analyzer_version\
+                "INSERT INTO symbol_reference_observations( \
+                   id, project_id, source_file_id, name, kind, start_line, start_column, end_line, end_column, analyzer_version \
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     id,
@@ -177,10 +181,10 @@ impl<'a> SymbolReferenceService<'a> {
     ) -> Result<Vec<SymbolReferenceObservationRecord>, SymbolReferenceError> {
         let limit = limit.clamp(1, MAX_REFERENCE_RESULTS);
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, source_file_id, name, kind, start_line, start_column, end_line, end_column, analyzer_version\
-             FROM symbol_reference_observations\
-             WHERE source_file_id = ?1\
-             ORDER BY start_line, start_column, end_line, end_column, kind, name, id\
+            "SELECT id, project_id, source_file_id, name, kind, start_line, start_column, end_line, end_column, analyzer_version \
+             FROM symbol_reference_observations \
+             WHERE source_file_id = ?1 \
+             ORDER BY start_line, start_column, end_line, end_column, kind, name, id \
              LIMIT ?2",
         )?;
         let rows = statement.query_map(params![file_id, to_i64(limit)], |row| {
@@ -206,8 +210,8 @@ fn load_active_files(
     project_id: &str,
 ) -> Result<Vec<ActiveFile>, rusqlite::Error> {
     let mut statement = connection.prepare(
-        "SELECT id, relative_path, COALESCE(language, '')\
-         FROM files WHERE project_id = ?1 AND is_active = 1\
+        "SELECT id, relative_path, COALESCE(language, '') \
+         FROM files WHERE project_id = ?1 AND is_active = 1 \
          ORDER BY relative_path, id",
     )?;
     let rows = statement.query_map([project_id], |row| {

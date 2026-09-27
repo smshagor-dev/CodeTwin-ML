@@ -23,16 +23,14 @@ use windows_sys::Win32::{
         CloseHandle, SetHandleInformation, ERROR_ALREADY_EXISTS, GENERIC_READ, HANDLE,
         HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
+    Security::Isolation::{CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName},
     Security::{
-        CreateWellKnownSid, EqualSid, FreeSid, GetTokenInformation, IsTokenRestricted, PSID,
-        SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
-        TOKEN_APPCONTAINER_INFORMATION, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+        CreateWellKnownSid, EqualSid, FreeSid, GetTokenInformation, IsTokenRestricted,
         TokenAppContainerSid, TokenCapabilities, TokenIntegrityLevel, TokenIsAppContainer,
         TokenIsLessPrivilegedAppContainer, TokenRestrictedSids, WinLowLabelSid,
-        WinWriteRestrictedCodeSid,
-    },
-    Security::Isolation::{
-        CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
+        WinWriteRestrictedCodeSid, PSID, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES,
+        SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES, TOKEN_APPCONTAINER_INFORMATION, TOKEN_GROUPS,
+        TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
     },
     Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -52,9 +50,9 @@ use windows_sys::Win32::{
         Pipes::CreatePipe,
         Threading::{
             CreateProcessAsUserW, DeleteProcThreadAttributeList, GetExitCodeProcess,
-            InitializeProcThreadAttributeList, ResumeThread, UpdateProcThreadAttribute,
-            WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-            EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken,
+            InitializeProcThreadAttributeList, OpenProcessToken, ResumeThread,
+            UpdateProcThreadAttribute, WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+            CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST,
             PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
             PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
             STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
@@ -67,8 +65,8 @@ use crate::workspace::identity::create_windows_write_restricted_token;
 use crate::workspace::DetachedExecutionWorkspace;
 use crate::{
     bound_output, cleanup_detached_workspace, current_backend_info, BackendExecutionError,
-    BoundedOutput, ExecutionInputSnapshot,
-    ExecutionPlanStatus, ExecutionRunStatus, RawExecutionOutcome, TestExecutionPlan,
+    BoundedOutput, ExecutionInputSnapshot, ExecutionPlanStatus, ExecutionRunStatus,
+    RawExecutionOutcome, TestExecutionPlan,
 };
 
 const POST_TERMINATION_WAIT_MS: u32 = 5_000;
@@ -97,7 +95,8 @@ pub(crate) fn execute_lpac_bundle_plan(
     }
 
     let backend = current_backend_info();
-    if !backend.execution_available || !backend.capabilities.filesystem_isolation
+    if !backend.execution_available
+        || !backend.capabilities.filesystem_isolation
         || !backend.capabilities.network_isolation
     {
         return Err(BackendExecutionError::BackendUnavailable);
@@ -122,8 +121,9 @@ pub(crate) fn execute_lpac_bundle_plan(
 
     let profile = AppContainerProfileSid::open_or_create()?;
     crate::windows_project_mirror::assert_lpac_profile_network_isolation(profile.sid())?;
-    let token = create_windows_write_restricted_token()
-        .map_err(|error| BackendExecutionError::JobSetup(format!("LPAC restricted token: {error}")))?;
+    let token = create_windows_write_restricted_token().map_err(|error| {
+        BackendExecutionError::JobSetup(format!("LPAC restricted token: {error}"))
+    })?;
     let job = configure_job(plan)?;
     let mut child = spawn_lpac_suspended(
         plan,
@@ -201,8 +201,13 @@ pub(crate) fn execute_lpac_bundle_plan(
     drop(job);
     let stdout = receive_bounded_output(stdout_reader, OUTPUT_DRAIN_TIMEOUT)?;
     let stderr = receive_bounded_output(stderr_reader, OUTPUT_DRAIN_TIMEOUT)?;
-    let (parser_completed, tests_passed) =
-        parse_runner_result(plan.request.runner, status, exit_code, &stdout.text, &stderr.text);
+    let (parser_completed, tests_passed) = parse_runner_result(
+        plan.request.runner,
+        status,
+        exit_code,
+        &stdout.text,
+        &stderr.text,
+    );
 
     Ok(RawExecutionOutcome {
         status,
@@ -272,7 +277,9 @@ fn verify_toolchain(plan: &TestExecutionPlan, root: &Path) -> Result<(), Backend
         return Err(BackendExecutionError::MissingToolchainHash);
     };
     if expected_hash.len() != 64
-        || !expected_hash.chars().all(|character| character.is_ascii_hexdigit())
+        || !expected_hash
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
     {
         return Err(BackendExecutionError::InvalidToolchain(
             "toolchain SHA-256 must be 64 hexadecimal characters".to_string(),
@@ -393,10 +400,9 @@ fn configure_job(plan: &TestExecutionPlan) -> Result<JobHandle, BackendExecution
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         | JOB_OBJECT_LIMIT_JOB_MEMORY
         | JOB_OBJECT_LIMIT_JOB_TIME;
-    limits.BasicLimitInformation.PerJobUserTimeLimit = i64::try_from(
-        plan.policy.cpu_time_seconds.saturating_mul(10_000_000),
-    )
-    .map_err(|_| BackendExecutionError::JobSetup("CPU time limit overflow".to_string()))?;
+    limits.BasicLimitInformation.PerJobUserTimeLimit =
+        i64::try_from(plan.policy.cpu_time_seconds.saturating_mul(10_000_000))
+            .map_err(|_| BackendExecutionError::JobSetup("CPU time limit overflow".to_string()))?;
     limits.JobMemoryLimit = usize::try_from(plan.policy.memory_bytes)
         .map_err(|_| BackendExecutionError::JobSetup("memory limit overflow".to_string()))?;
     if unsafe {
@@ -837,8 +843,7 @@ impl AppContainerProfileSid {
                 result as u32
             )));
         }
-        let derived =
-            unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
+        let derived = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
         if derived < 0 || sid.is_null() {
             return Err(BackendExecutionError::JobSetup(format!(
                 "DeriveAppContainerSidFromAppContainerName failed with HRESULT 0x{:08x}",
@@ -957,12 +962,7 @@ impl ProcThreadAttributeList {
         const ATTRIBUTE_COUNT: u32 = 3;
         let mut bytes = 0usize;
         unsafe {
-            InitializeProcThreadAttributeList(
-                std::ptr::null_mut(),
-                ATTRIBUTE_COUNT,
-                0,
-                &mut bytes,
-            );
+            InitializeProcThreadAttributeList(std::ptr::null_mut(), ATTRIBUTE_COUNT, 0, &mut bytes);
         }
         if bytes == 0 {
             return Err(std::io::Error::last_os_error());
@@ -970,10 +970,7 @@ impl ProcThreadAttributeList {
         let words = bytes.div_ceil(size_of::<usize>());
         let mut storage = vec![0usize; words.max(1)];
         let ptr = storage.as_mut_ptr().cast::<c_void>();
-        if unsafe {
-            InitializeProcThreadAttributeList(ptr, ATTRIBUTE_COUNT, 0, &mut bytes)
-        } == 0
-        {
+        if unsafe { InitializeProcThreadAttributeList(ptr, ATTRIBUTE_COUNT, 0, &mut bytes) } == 0 {
             return Err(std::io::Error::last_os_error());
         }
         let list = Self {
@@ -1024,7 +1021,6 @@ impl ProcThreadAttributeList {
         }
         Ok(list)
     }
-
 }
 
 impl Drop for ProcThreadAttributeList {
@@ -1215,16 +1211,22 @@ fn parse_runner_result(
         crate::TestRunnerKind::GoTest => {
             combined.contains("\npass")
                 || combined.contains("\nfail")
-                || combined.lines().any(|line| line.starts_with("ok\t") || line.starts_with("fail\t"))
+                || combined
+                    .lines()
+                    .any(|line| line.starts_with("ok\t") || line.starts_with("fail\t"))
         }
         crate::TestRunnerKind::Vitest => {
-            combined.contains("test files") && (combined.contains("passed") || combined.contains("failed"))
+            combined.contains("test files")
+                && (combined.contains("passed") || combined.contains("failed"))
         }
         crate::TestRunnerKind::Jest => {
-            combined.contains("test suites:") && (combined.contains("passed") || combined.contains("failed"))
+            combined.contains("test suites:")
+                && (combined.contains("passed") || combined.contains("failed"))
         }
         crate::TestRunnerKind::PhpUnit => {
-            combined.contains("ok (") || combined.contains("failures!") || combined.contains("errors!")
+            combined.contains("ok (")
+                || combined.contains("failures!")
+                || combined.contains("errors!")
         }
     };
     if !recognized {
@@ -1318,15 +1320,14 @@ fn receive_bounded_output(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_command_line, build_environment_block, qa_job_ui_limit_flags,
-        quote_windows_argument,
+        build_command_line, build_environment_block, qa_job_ui_limit_flags, quote_windows_argument,
     };
     use crate::DetachedExecutionWorkspace;
     use windows_sys::Win32::System::JobObjects::{
         JOB_OBJECT_UILIMIT_DESKTOP, JOB_OBJECT_UILIMIT_DISPLAYSETTINGS,
-        JOB_OBJECT_UILIMIT_EXITWINDOWS, JOB_OBJECT_UILIMIT_GLOBALATOMS,
-        JOB_OBJECT_UILIMIT_HANDLES, JOB_OBJECT_UILIMIT_READCLIPBOARD,
-        JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS, JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
+        JOB_OBJECT_UILIMIT_EXITWINDOWS, JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES,
+        JOB_OBJECT_UILIMIT_READCLIPBOARD, JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
+        JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
     };
 
     #[test]

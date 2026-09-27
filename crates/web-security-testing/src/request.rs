@@ -81,15 +81,14 @@ impl RequestBudget {
                 return Err(RequestError::Cancelled);
             }
             let wait = {
-                let mut state = self
-                    .rate_state
-                    .lock()
-                    .map_err(|_| RequestError::Http("request rate limiter lock is poisoned".to_string()))?;
+                let mut state = self.rate_state.lock().map_err(|_| {
+                    RequestError::Http("request rate limiter lock is poisoned".to_string())
+                })?;
                 let now = Instant::now();
                 let elapsed = now.duration_since(state.last_refill).as_secs_f64();
                 if elapsed > 0.0 {
-                    state.tokens = (state.tokens + elapsed * self.rate_per_second)
-                        .min(self.burst as f64);
+                    state.tokens =
+                        (state.tokens + elapsed * self.rate_per_second).min(self.burst as f64);
                     state.last_refill = now;
                 }
                 if state.tokens >= 1.0 {
@@ -197,7 +196,8 @@ impl ScopedRequester {
             Vec::new()
         };
         let extra_headers = parse_borrowed_headers(extra_headers)?;
-        let retry_safe = method == Method::GET || method == Method::HEAD || method == Method::OPTIONS;
+        let retry_safe =
+            method == Method::GET || method == Method::HEAD || method == Method::OPTIONS;
         let attempts = if retry_safe {
             self.policy.config().retry_limit + 1
         } else {
@@ -345,14 +345,18 @@ fn client_for(policy: &ScopePolicy, url: &Url, pinned: SocketAddr) -> Result<Cli
         .map_err(|_| RequestError::Http("HTTP client initialization failed".to_string()))
 }
 
-fn parse_headers(values: &[(String, String)]) -> Result<Vec<(HeaderName, HeaderValue)>, RequestError> {
+fn parse_headers(
+    values: &[(String, String)],
+) -> Result<Vec<(HeaderName, HeaderValue)>, RequestError> {
     values
         .iter()
         .map(|(name, value)| parse_header(name, value))
         .collect()
 }
 
-fn parse_borrowed_headers(values: &[(&str, &str)]) -> Result<Vec<(HeaderName, HeaderValue)>, RequestError> {
+fn parse_borrowed_headers(
+    values: &[(&str, &str)],
+) -> Result<Vec<(HeaderName, HeaderValue)>, RequestError> {
     values
         .iter()
         .map(|(name, value)| parse_header(name, value))

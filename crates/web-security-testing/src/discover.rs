@@ -9,7 +9,7 @@ use std::{
 use url::Url;
 
 use crate::{
-    endpoint_request_key, insert_parameter_location, passive, query_parameters, CheckConfig,
+    endpoint_request_key, insert_parameter_location, passive, query_parameters,
     EndpointObservation, FindingObservation, ObservedResponse, ParameterLocations,
     RequestSeedContext, ScanConfig, ScanError, ScopePolicy, ScopedRequester, SourceEndpointSeed,
 };
@@ -19,23 +19,6 @@ pub(crate) struct DiscoveryResult {
     pub findings: Vec<FindingObservation>,
     pub responses: HashMap<String, ObservedResponse>,
     pub request_seeds: HashMap<String, RequestSeedContext>,
-}
-
-pub fn crawl(
-    policy: &ScopePolicy,
-    requester: &ScopedRequester,
-    config: &ScanConfig,
-    cancelled: Arc<AtomicBool>,
-    on_progress: &mut impl FnMut(usize, usize),
-) -> Result<DiscoveryResult, ScanError> {
-    crawl_with_seeds(
-        policy,
-        requester,
-        config,
-        &[],
-        cancelled,
-        on_progress,
-    )
 }
 
 pub fn crawl_with_seeds(
@@ -195,7 +178,11 @@ pub fn crawl_with_seeds(
         } else {
             responses.insert(normalized.clone(), response.clone());
             if depth < policy.config().max_crawl_depth {
-                let content_type = response.content_type.as_deref().unwrap_or("").to_ascii_lowercase();
+                let content_type = response
+                    .content_type
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
                 if content_type.contains("text/html") {
                     let body = String::from_utf8_lossy(&response.body);
                     for next in extract_links(&url, &body) {
@@ -210,7 +197,11 @@ pub fn crawl_with_seeds(
                             insert_parameter_location(
                                 &mut parameter_locations,
                                 name.clone(),
-                                if form.method == "GET" { "query" } else { "form" },
+                                if form.method == "GET" {
+                                    "query"
+                                } else {
+                                    "form"
+                                },
                             );
                         }
                         let form_endpoint = EndpointObservation {
@@ -223,7 +214,11 @@ pub fn crawl_with_seeds(
                             parameter_locations,
                             response_header_names: Vec::new(),
                             cookie_names: Vec::new(),
-                            content_type: if form.method == "GET" { None } else { Some("application/x-www-form-urlencoded".to_string()) },
+                            content_type: if form.method == "GET" {
+                                None
+                            } else {
+                                Some("application/x-www-form-urlencoded".to_string())
+                            },
                             status_code: None,
                             redirect_to: None,
                         };
@@ -235,15 +230,17 @@ pub fn crawl_with_seeds(
                                 &config.checks,
                             ));
                             if !form.protected_names.is_empty() || !form.default_values.is_empty() {
-                                let key = endpoint_request_key(&form_endpoint.method, &form_endpoint.url);
+                                let key =
+                                    endpoint_request_key(&form_endpoint.method, &form_endpoint.url);
                                 let context = request_seeds.entry(key).or_default();
                                 context
                                     .protected_parameters
                                     .extend(form.protected_names.iter().cloned());
                                 for (name, value) in &form.default_values {
-                                    context
-                                        .values
-                                        .insert(name.clone(), serde_json::Value::String(value.clone()));
+                                    context.values.insert(
+                                        name.clone(),
+                                        serde_json::Value::String(value.clone()),
+                                    );
                                     if !value.trim().is_empty() && value.len() <= 2_048 {
                                         context.redaction_secrets.push(value.clone());
                                     }
@@ -258,35 +255,31 @@ pub fn crawl_with_seeds(
                     }
                     for next in extract_script_references(&url, &body) {
                         if policy.assert_url(&next).is_ok() {
-                            add_endpoint(
-                                &mut endpoints,
-                                &mut endpoint_keys,
-                                {
-                                    let parameter_names = query_parameters(&next);
-                                    let mut parameter_locations = ParameterLocations::new();
-                                    for name in &parameter_names {
-                                        insert_parameter_location(
-                                            &mut parameter_locations,
-                                            name.clone(),
-                                            "query",
-                                        );
-                                    }
-                                    EndpointObservation {
-                                        url: next.to_string(),
-                                        route_template: None,
-                                        method: "GET".to_string(),
-                                        depth: depth + 1,
-                                        source: "javascript_reference".to_string(),
-                                        parameter_names,
-                                        parameter_locations,
-                                        response_header_names: Vec::new(),
-                                        cookie_names: Vec::new(),
-                                        content_type: None,
-                                        status_code: None,
-                                        redirect_to: None,
-                                    }
-                                },
-                            );
+                            add_endpoint(&mut endpoints, &mut endpoint_keys, {
+                                let parameter_names = query_parameters(&next);
+                                let mut parameter_locations = ParameterLocations::new();
+                                for name in &parameter_names {
+                                    insert_parameter_location(
+                                        &mut parameter_locations,
+                                        name.clone(),
+                                        "query",
+                                    );
+                                }
+                                EndpointObservation {
+                                    url: next.to_string(),
+                                    route_template: None,
+                                    method: "GET".to_string(),
+                                    depth: depth + 1,
+                                    source: "javascript_reference".to_string(),
+                                    parameter_names,
+                                    parameter_locations,
+                                    response_header_names: Vec::new(),
+                                    cookie_names: Vec::new(),
+                                    content_type: None,
+                                    status_code: None,
+                                    redirect_to: None,
+                                }
+                            });
                         }
                     }
                 } else if content_type.contains("application/json") {
@@ -329,7 +322,11 @@ fn add_endpoint(
     mut endpoint: EndpointObservation,
 ) {
     normalize_endpoint_metadata(&mut endpoint);
-    let key = format!("{} {}", endpoint.method, normalized_url_string(&endpoint.url));
+    let key = format!(
+        "{} {}",
+        endpoint.method,
+        normalized_url_string(&endpoint.url)
+    );
     if let Some(index) = keys.get(&key).copied() {
         if let Some(existing) = endpoints.get_mut(index) {
             merge_endpoint(existing, endpoint);
@@ -471,7 +468,9 @@ fn normalized_key(url: &Url) -> String {
 }
 
 fn normalized_url_string(raw: &str) -> String {
-    Url::parse(raw).map(|value| normalized_key(&value)).unwrap_or_else(|_| raw.to_string())
+    Url::parse(raw)
+        .map(|value| normalized_key(&value))
+        .unwrap_or_else(|_| raw.to_string())
 }
 
 fn resolve_url(base: &Url, value: &str) -> Result<Url, url::ParseError> {
@@ -576,10 +575,7 @@ fn extract_forms(base: &Url, html: &str) -> Vec<FormObservation> {
                 let input_type = attribute_from_tag(input_tag, "type")
                     .unwrap_or_else(|| "text".to_string())
                     .to_ascii_lowercase();
-                if matches!(
-                    input_type.as_str(),
-                    "submit" | "reset" | "button" | "image"
-                ) {
+                if matches!(input_type.as_str(), "submit" | "reset" | "button" | "image") {
                     continue;
                 }
 
@@ -588,7 +584,9 @@ fn extract_forms(base: &Url, html: &str) -> Vec<FormObservation> {
                     "hidden" => {
                         hidden_names.push(name.clone());
                         protected_names.push(name.clone());
-                        if let Some(value) = bounded_form_value(attribute_from_tag(input_tag, "value")) {
+                        if let Some(value) =
+                            bounded_form_value(attribute_from_tag(input_tag, "value"))
+                        {
                             default_values.insert(name, value);
                         }
                     }
@@ -604,7 +602,9 @@ fn extract_forms(base: &Url, html: &str) -> Vec<FormObservation> {
                         protected_names.push(name);
                     }
                     _ => {
-                        if let Some(value) = bounded_form_value(attribute_from_tag(input_tag, "value")) {
+                        if let Some(value) =
+                            bounded_form_value(attribute_from_tag(input_tag, "value"))
+                        {
                             default_values.insert(name, value);
                         }
                     }
@@ -708,8 +708,7 @@ fn tag_has_attribute(tag: &str, name: &str) -> bool {
 
     while index < bytes.len() {
         while index < bytes.len()
-            && (bytes[index].is_ascii_whitespace()
-                || matches!(bytes[index], b'<' | b'/' | b'>'))
+            && (bytes[index].is_ascii_whitespace() || matches!(bytes[index], b'<' | b'/' | b'>'))
         {
             index += 1;
         }
@@ -805,7 +804,9 @@ fn tags<'a>(html: &'a str, name: &str) -> Vec<&'a str> {
             cursor = after_name;
             continue;
         }
-        let Some(end_relative) = lower[start..].find('>') else { break };
+        let Some(end_relative) = lower[start..].find('>') else {
+            break;
+        };
         let end = start + end_relative + 1;
         output.push(&html[start..end]);
         cursor = end;
@@ -832,8 +833,7 @@ fn attribute_from_tag(tag: &str, name: &str) -> Option<String> {
 
     while index < bytes.len() {
         while index < bytes.len()
-            && (bytes[index].is_ascii_whitespace()
-                || matches!(bytes[index], b'<' | b'/' | b'>'))
+            && (bytes[index].is_ascii_whitespace() || matches!(bytes[index], b'<' | b'/' | b'>'))
         {
             index += 1;
         }
@@ -853,12 +853,8 @@ fn attribute_from_tag(tag: &str, name: &str) -> Option<String> {
             index += 1;
         }
         if index >= bytes.len() || bytes[index] != b'=' {
-            while index < bytes.len()
-                && !bytes[index].is_ascii_whitespace()
-                && bytes[index] != b'>'
-            {
-                index += 1;
-            }
+            // Valueless attribute (or the tag name itself): `index` already points
+            // at the next token, so resume scanning there instead of skipping it.
             continue;
         }
         index += 1;
@@ -881,9 +877,7 @@ fn attribute_from_tag(tag: &str, name: &str) -> Option<String> {
             }
         } else {
             value_start = index;
-            while index < bytes.len()
-                && !bytes[index].is_ascii_whitespace()
-                && bytes[index] != b'>'
+            while index < bytes.len() && !bytes[index].is_ascii_whitespace() && bytes[index] != b'>'
             {
                 index += 1;
             }
@@ -891,7 +885,11 @@ fn attribute_from_tag(tag: &str, name: &str) -> Option<String> {
         }
 
         if attribute_name.eq_ignore_ascii_case(target) {
-            return Some(String::from_utf8_lossy(&bytes[value_start..value_end]).trim().to_string());
+            return Some(
+                String::from_utf8_lossy(&bytes[value_start..value_end])
+                    .trim()
+                    .to_string(),
+            );
         }
     }
     None
@@ -909,7 +907,9 @@ fn discover_openapi(
     keys: &mut HashMap<String, usize>,
     request_seeds: &mut HashMap<String, RequestSeedContext>,
 ) {
-    let Ok(document) = serde_json::from_slice::<serde_json::Value>(body) else { return };
+    let Ok(document) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return;
+    };
     if document.get("openapi").is_none() && document.get("swagger").is_none() {
         return;
     }
@@ -936,13 +936,7 @@ fn discover_openapi(
             let Some(operation) = resolve_local_openapi_ref(&document, raw_operation, 0) else {
                 continue;
             };
-            let server_base = openapi_operation_base(
-                policy,
-                base,
-                &document,
-                path_item,
-                operation,
-            );
+            let server_base = openapi_operation_base(policy, base, &document, path_item, operation);
             let Some(url) = server_base
                 .as_ref()
                 .and_then(|server| join_openapi_path(server, path))
@@ -972,14 +966,11 @@ fn discover_openapi(
                 &mut seed_context,
             );
 
-            let mut parameter_names: Vec<String> =
-                parameter_locations.keys().cloned().collect();
+            let mut parameter_names: Vec<String> = parameter_locations.keys().cloned().collect();
             parameter_names.sort();
             let endpoint = EndpointObservation {
                 url: url.to_string(),
-                route_template: path
-                    .contains('{')
-                    .then(|| url.to_string()),
+                route_template: path.contains('{').then(|| url.to_string()),
                 method: method_upper,
                 depth: depth + 1,
                 source: "openapi".to_string(),
@@ -1071,7 +1062,7 @@ fn expand_openapi_server_url(server: &serde_json::Value) -> Option<String> {
             let default = definition
                 .get("default")
                 .and_then(bounded_scalar_value)
-                .and_then(|value| seed_to_form_value(value))?;
+                .and_then(seed_to_form_value)?;
             if default.len() > 256 {
                 return None;
             }
@@ -1137,11 +1128,9 @@ fn collect_parameter_array(
                     .get("example")
                     .and_then(bounded_scalar_value)
                     .or_else(|| {
-                        parameter
-                            .get("schema")
-                            .and_then(|schema| {
-                                bounded_schema_seed_from_document(document, schema, 0)
-                            })
+                        parameter.get("schema").and_then(|schema| {
+                            bounded_schema_seed_from_document(document, schema, 0)
+                        })
                     });
                 if let Some(seed) = seed {
                     seeds.values.entry(name.to_string()).or_insert(seed);
@@ -1179,15 +1168,7 @@ fn collect_request_body_parameters(
             return Some(content_type.to_string());
         };
         let mut remaining = MAX_OPENAPI_SCHEMA_FIELDS;
-        collect_openapi_schema_fields(
-            document,
-            schema,
-            location,
-            output,
-            seeds,
-            &mut remaining,
-            0,
-        );
+        collect_openapi_schema_fields(document, schema, location, output, seeds, &mut remaining, 0);
         return Some(content_type.to_string());
     }
     None
@@ -1361,9 +1342,7 @@ mod tests {
         add_endpoint, attribute_from_tag, bounded_schema_seed, discover_openapi,
         expand_openapi_server_url, extract_forms, extract_links, merge_source_seed,
     };
-    use crate::{
-        EndpointObservation, ParameterLocations, SourceEndpointSeed,
-    };
+    use crate::{EndpointObservation, ParameterLocations, SourceEndpointSeed};
 
     #[test]
     fn duplicate_endpoints_merge_richer_metadata_without_overwrite() {
@@ -1380,10 +1359,7 @@ mod tests {
                 depth: 0,
                 source: "source_route:express:src/routes.ts:10".into(),
                 parameter_names: vec!["id".into()],
-                parameter_locations: ParameterLocations::from([(
-                    "id".into(),
-                    vec!["path".into()],
-                )]),
+                parameter_locations: ParameterLocations::from([("id".into(), vec!["path".into()])]),
                 response_header_names: Vec::new(),
                 cookie_names: Vec::new(),
                 content_type: Some("application/json".into()),
@@ -1428,7 +1404,10 @@ mod tests {
             endpoint.parameter_locations.get("q"),
             Some(&vec!["query".to_string()])
         );
-        assert_eq!(endpoint.response_header_names, vec!["content-type".to_string()]);
+        assert_eq!(
+            endpoint.response_header_names,
+            vec!["content-type".to_string()]
+        );
         assert_eq!(endpoint.cookie_names, vec!["session".to_string()]);
         assert_eq!(endpoint.content_type.as_deref(), Some("application/json"));
         assert_eq!(endpoint.status_code, Some(200));
@@ -1443,10 +1422,7 @@ mod tests {
             discovery_url: Some("https://example.test/api/items/1".into()),
             method: "GET".into(),
             parameter_names: vec!["id".into()],
-            parameter_locations: ParameterLocations::from([(
-                "id".into(),
-                vec!["path".into()],
-            )]),
+            parameter_locations: ParameterLocations::from([("id".into(), vec!["path".into()])]),
             content_type: Some("application/json".into()),
             source_label: "source_route:express:a.ts:1".into(),
         };
@@ -1492,7 +1468,9 @@ mod tests {
               <input name="q">
             </form>"#;
         let links = extract_links(&base, html);
-        assert!(links.iter().any(|url| url.as_str().contains("/app/users?id=1")));
+        assert!(links
+            .iter()
+            .any(|url| url.as_str().contains("/app/users?id=1")));
         let forms = extract_forms(&base, html);
         assert_eq!(forms.len(), 1);
         assert_eq!(forms[0].method, "POST");
@@ -1500,11 +1478,17 @@ mod tests {
         assert_eq!(forms[0].parameters, vec!["csrf_token", "q"]);
         assert_eq!(forms[0].hidden_names, vec!["csrf_token"]);
         assert_eq!(
-            forms[0].default_values.get("csrf_token").map(String::as_str),
+            forms[0]
+                .default_values
+                .get("csrf_token")
+                .map(String::as_str),
             Some("csrf-secret-123")
         );
         assert_eq!(forms[0].protected_names, vec!["csrf_token"]);
-        assert_eq!(attribute_from_tag(r#"<a href="/x">"#, "href").as_deref(), Some("/x"));
+        assert_eq!(
+            attribute_from_tag(r#"<a href="/x">"#, "href").as_deref(),
+            Some("/x")
+        );
         assert_eq!(
             attribute_from_tag(r#"<form data-action="/wrong" action="/right">"#, "action")
                 .as_deref(),
@@ -1574,7 +1558,7 @@ mod tests {
             Some("us")
         );
         assert!(
-            form.default_values.get("roles").is_none(),
+            !form.default_values.contains_key("roles"),
             "multi-select values are repeated-key semantics and must not be collapsed into one seed"
         );
         assert_eq!(
@@ -1704,7 +1688,10 @@ mod tests {
             );
         }
         let seeds = request_seeds
-            .get(&crate::endpoint_request_key(&endpoint.method, &endpoint.url))
+            .get(&crate::endpoint_request_key(
+                &endpoint.method,
+                &endpoint.url,
+            ))
             .expect("request seeds");
         assert_eq!(
             seeds.values.get("id"),
@@ -1721,3 +1708,38 @@ mod tests {
     #[test]
     fn openapi_external_refs_and_unresolved_server_variables_fail_closed() {
         let external = serde_json::json!({ "$ref": "https://example.invalid/schema.json" });
+        assert!(
+            super::resolve_local_openapi_ref(&external, &external, 0).is_none(),
+            "remote references must never be fetched or trusted"
+        );
+        assert!(
+            expand_openapi_server_url(&serde_json::json!({
+                "url": "/api/{tenant}",
+                "variables": { "tenant": {} }
+            }))
+            .is_none(),
+            "server variables without bounded defaults must be ignored"
+        );
+    }
+
+    #[test]
+    fn openapi_scalar_seed_values_preserve_simple_json_types() {
+        assert_eq!(
+            bounded_schema_seed(&serde_json::json!({"type":"integer"})),
+            Some(serde_json::json!(1))
+        );
+        assert_eq!(
+            bounded_schema_seed(&serde_json::json!({"type":"boolean"})),
+            Some(serde_json::json!(true))
+        );
+        assert_eq!(
+            bounded_schema_seed(&serde_json::json!({"type":"string","format":"email"})),
+            Some(serde_json::json!("codetwin@example.invalid"))
+        );
+        assert_eq!(
+            bounded_schema_seed(&serde_json::json!({"type":"object"})),
+            None,
+            "complex request shapes must remain fail-closed instead of being guessed"
+        );
+    }
+}

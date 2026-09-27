@@ -30,9 +30,9 @@ impl<'a> LanguageServerConfigService<'a> {
         persisted.initialization_options = None;
         let value = serde_json::to_string(&persisted)?;
         self.database.connection().execute(
-            "INSERT INTO settings(scope, key, value_json, updated_at)\
-             VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP)\
-             ON CONFLICT(scope, key) DO UPDATE SET\
+            "INSERT INTO settings(scope, key, value_json, updated_at) \
+             VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP) \
+             ON CONFLICT(scope, key) DO UPDATE SET \
                value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP",
             params![SETTINGS_SCOPE, key, value],
         )?;
@@ -60,7 +60,7 @@ impl<'a> LanguageServerConfigService<'a> {
 
     pub fn list(&self) -> Result<Vec<LanguageServerConfig>, SemanticConfigError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT value_json FROM settings\
+            "SELECT value_json FROM settings \
              WHERE scope = ?1 AND key LIKE ?2 ESCAPE '\\' ORDER BY key",
         )?;
         let pattern = format!("{}%", SETTINGS_PREFIX.replace('_', "\\_"));

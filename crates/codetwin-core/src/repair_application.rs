@@ -49,7 +49,9 @@ pub enum RepairApplicationError {
     CorruptProposal(String),
     #[error("repair backup is missing or corrupt for: {0}")]
     CorruptBackup(String),
-    #[error("rollback refused because the current file no longer matches the applied proposal: {0}")]
+    #[error(
+        "rollback refused because the current file no longer matches the applied proposal: {0}"
+    )]
     RollbackConflict(String),
     #[error("unsafe repair backup root")]
     UnsafeBackupRoot,
@@ -136,7 +138,11 @@ impl<'a> RepairApplicationService<'a> {
         self.insert_items(&run_id, &prepared)?;
         if let Err(error) = stage_apply_files(&prepared) {
             let cleanup_ok = cleanup_apply_work_files(&prepared);
-            let status = if cleanup_ok { "failed" } else { "rollback_failed" };
+            let status = if cleanup_ok {
+                "failed"
+            } else {
+                "rollback_failed"
+            };
             if !cleanup_ok {
                 self.set_plan_status(repair_id, "superseded")?;
             }
@@ -170,7 +176,11 @@ impl<'a> RepairApplicationService<'a> {
                 self.set_item_state(&run_id, &prepared[*index].change.id, "applied")?;
             }
             let recovered = rollback.failed_indices.is_empty() && cleanup_ok;
-            let status = if recovered { "failed" } else { "rollback_failed" };
+            let status = if recovered {
+                "failed"
+            } else {
+                "rollback_failed"
+            };
             if !recovered {
                 self.set_plan_status(repair_id, "superseded")?;
             }
@@ -220,7 +230,7 @@ impl<'a> RepairApplicationService<'a> {
     ) -> Result<usize, RepairApplicationError> {
         let backup_root = ensure_backup_root(backup_root.as_ref())?;
         let mut statement = self.database.connection().prepare(
-            "SELECT id, repair_id, project_id, status, changes_total, changes_applied, rollback_performed, backup_dir_name, error_message, created_at, completed_at\
+            "SELECT id, repair_id, project_id, status, changes_total, changes_applied, rollback_performed, backup_dir_name, error_message, created_at, completed_at \
              FROM repair_application_runs WHERE status='running' ORDER BY created_at, id",
         )?;
         let rows = statement.query_map([], map_application_run)?;
@@ -302,11 +312,10 @@ impl<'a> RepairApplicationService<'a> {
                     continue;
                 }
             };
-            let target = parent_canonical.join(
-                relative
-                    .file_name()
-                    .ok_or_else(|| RepairApplicationError::UnsafePath(item.relative_path.clone()))?,
-            );
+            let target =
+                parent_canonical.join(relative.file_name().ok_or_else(|| {
+                    RepairApplicationError::UnsafePath(item.relative_path.clone())
+                })?);
             let token = safe_token(&format!("{}:{}", run.id, item.change_id));
             let stage_path = parent_canonical.join(format!(".codetwin-{token}.new"));
             let sidecar_path = parent_canonical.join(format!(".codetwin-{token}.old"));
@@ -472,7 +481,8 @@ impl<'a> RepairApplicationService<'a> {
         let mut restored_indices = Vec::new();
         let mut failure: Option<String> = None;
         for (index, item) in prepared.iter().enumerate() {
-            if let Err(error) = revalidate_hash(&item.target_path, &item.item.proposed_content_hash) {
+            if let Err(error) = revalidate_hash(&item.target_path, &item.item.proposed_content_hash)
+            {
                 failure = Some(error.to_string());
                 break;
             }
@@ -534,7 +544,7 @@ impl<'a> RepairApplicationService<'a> {
         limit: usize,
     ) -> Result<Vec<RepairApplicationRunRecord>, RepairApplicationError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, repair_id, project_id, status, changes_total, changes_applied, rollback_performed, backup_dir_name, error_message, created_at, completed_at\
+            "SELECT id, repair_id, project_id, status, changes_total, changes_applied, rollback_performed, backup_dir_name, error_message, created_at, completed_at \
              FROM repair_application_runs WHERE repair_id=?1 ORDER BY created_at DESC, id DESC LIMIT ?2",
         )?;
         let rows = statement.query_map(
@@ -550,7 +560,7 @@ impl<'a> RepairApplicationService<'a> {
         limit: usize,
     ) -> Result<Vec<RepairApplicationItemRecord>, RepairApplicationError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT run_id, change_id, relative_path, base_content_hash, proposed_content_hash, backup_content_hash, backup_file_name, state\
+            "SELECT run_id, change_id, relative_path, base_content_hash, proposed_content_hash, backup_content_hash, backup_file_name, state \
              FROM repair_application_items WHERE run_id=?1 ORDER BY relative_path, change_id LIMIT ?2",
         )?;
         let rows = statement.query_map(
@@ -567,7 +577,7 @@ impl<'a> RepairApplicationService<'a> {
         self.database
             .connection()
             .query_row(
-                "SELECT id, repair_id, project_id, status, changes_total, changes_applied, rollback_performed, backup_dir_name, error_message, created_at, completed_at\
+                "SELECT id, repair_id, project_id, status, changes_total, changes_applied, rollback_performed, backup_dir_name, error_message, created_at, completed_at \
                  FROM repair_application_runs WHERE id=?1",
                 [run_id],
                 map_application_run,
@@ -585,7 +595,9 @@ impl<'a> RepairApplicationService<'a> {
         let root = PathBuf::from(root);
         let metadata = fs::symlink_metadata(&root)?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(RepairApplicationError::UnsafePath(root.display().to_string()));
+            return Err(RepairApplicationError::UnsafePath(
+                root.display().to_string(),
+            ));
         }
         Ok(fs::canonicalize(root)?)
     }
@@ -598,7 +610,7 @@ impl<'a> RepairApplicationService<'a> {
         backup_dir_name: &str,
     ) -> Result<(), RepairApplicationError> {
         self.database.connection().execute(
-            "INSERT INTO repair_application_runs(id, repair_id, project_id, status, changes_total, backup_dir_name)\
+            "INSERT INTO repair_application_runs(id, repair_id, project_id, status, changes_total, backup_dir_name) \
              VALUES (?1, ?2, ?3, 'running', ?4, ?5)",
             params![run_id, &plan.id, &plan.project_id, to_i64(total), backup_dir_name],
         )?;
@@ -613,8 +625,8 @@ impl<'a> RepairApplicationService<'a> {
         let tx = self.database.connection().unchecked_transaction()?;
         for item in prepared {
             tx.execute(
-                "INSERT INTO repair_application_items(\
-                   run_id, change_id, relative_path, base_content_hash, proposed_content_hash, backup_content_hash, backup_file_name\
+                "INSERT INTO repair_application_items( \
+                   run_id, change_id, relative_path, base_content_hash, proposed_content_hash, backup_content_hash, backup_file_name \
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     run_id,
@@ -688,25 +700,35 @@ impl<'a> RepairApplicationService<'a> {
             let metadata = fs::symlink_metadata(&target)
                 .map_err(|_| RepairApplicationError::UnsafeTarget(change.relative_path.clone()))?;
             if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(RepairApplicationError::UnsafeTarget(change.relative_path.clone()));
+                return Err(RepairApplicationError::UnsafeTarget(
+                    change.relative_path.clone(),
+                ));
             }
             if metadata.len() > MAX_APPLICATION_FILE_BYTES {
-                return Err(RepairApplicationError::OversizedTarget(change.relative_path.clone()));
+                return Err(RepairApplicationError::OversizedTarget(
+                    change.relative_path.clone(),
+                ));
             }
             let canonical_target = fs::canonicalize(&target)?;
             if !canonical_target.starts_with(root) {
-                return Err(RepairApplicationError::UnsafePath(change.relative_path.clone()));
+                return Err(RepairApplicationError::UnsafePath(
+                    change.relative_path.clone(),
+                ));
             }
             let parent = canonical_target
                 .parent()
                 .ok_or_else(|| RepairApplicationError::UnsafePath(change.relative_path.clone()))?;
             if !parent.starts_with(root) {
-                return Err(RepairApplicationError::UnsafePath(change.relative_path.clone()));
+                return Err(RepairApplicationError::UnsafePath(
+                    change.relative_path.clone(),
+                ));
             }
             let original = fs::read(&canonical_target)?;
             let original_hash = sha256_hex(&original);
             if original_hash != change.base_content_hash {
-                return Err(RepairApplicationError::StaleBase(change.relative_path.clone()));
+                return Err(RepairApplicationError::StaleBase(
+                    change.relative_path.clone(),
+                ));
             }
             let proposed = change.proposed_content.as_bytes();
             if proposed.len() != change.proposed_byte_size
@@ -720,7 +742,9 @@ impl<'a> RepairApplicationService<'a> {
             let stage_path = parent.join(format!(".codetwin-{token}.new"));
             let sidecar_path = parent.join(format!(".codetwin-{token}.old"));
             if stage_path.exists() || sidecar_path.exists() {
-                return Err(RepairApplicationError::UnsafePath(change.relative_path.clone()));
+                return Err(RepairApplicationError::UnsafePath(
+                    change.relative_path.clone(),
+                ));
             }
             let backup_file_name = format!("{}.bak", safe_token(&change.id));
             let backup_path = backup_dir.join(&backup_file_name);
@@ -758,14 +782,20 @@ impl<'a> RepairApplicationService<'a> {
             let metadata = fs::symlink_metadata(&target)
                 .map_err(|_| RepairApplicationError::UnsafeTarget(item.relative_path.clone()))?;
             if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(RepairApplicationError::UnsafeTarget(item.relative_path.clone()));
+                return Err(RepairApplicationError::UnsafeTarget(
+                    item.relative_path.clone(),
+                ));
             }
             if metadata.len() > MAX_APPLICATION_FILE_BYTES {
-                return Err(RepairApplicationError::OversizedTarget(item.relative_path.clone()));
+                return Err(RepairApplicationError::OversizedTarget(
+                    item.relative_path.clone(),
+                ));
             }
             let canonical_target = fs::canonicalize(&target)?;
             if !canonical_target.starts_with(root) {
-                return Err(RepairApplicationError::UnsafePath(item.relative_path.clone()));
+                return Err(RepairApplicationError::UnsafePath(
+                    item.relative_path.clone(),
+                ));
             }
             let current = fs::read(&canonical_target)?;
             if sha256_hex(&current) != item.proposed_content_hash {
@@ -777,13 +807,17 @@ impl<'a> RepairApplicationService<'a> {
             let backup_meta = fs::symlink_metadata(&backup_path)
                 .map_err(|_| RepairApplicationError::CorruptBackup(item.relative_path.clone()))?;
             if backup_meta.file_type().is_symlink() || !backup_meta.is_file() {
-                return Err(RepairApplicationError::CorruptBackup(item.relative_path.clone()));
+                return Err(RepairApplicationError::CorruptBackup(
+                    item.relative_path.clone(),
+                ));
             }
             let backup = fs::read(&backup_path)?;
             if sha256_hex(&backup) != item.backup_content_hash
                 || item.backup_content_hash != item.base_content_hash
             {
-                return Err(RepairApplicationError::CorruptBackup(item.relative_path.clone()));
+                return Err(RepairApplicationError::CorruptBackup(
+                    item.relative_path.clone(),
+                ));
             }
             let parent = canonical_target
                 .parent()
@@ -792,7 +826,9 @@ impl<'a> RepairApplicationService<'a> {
             let stage_path = parent.join(format!(".codetwin-{token}.restore"));
             let sidecar_path = parent.join(format!(".codetwin-{token}.applied"));
             if stage_path.exists() || sidecar_path.exists() {
-                return Err(RepairApplicationError::UnsafePath(item.relative_path.clone()));
+                return Err(RepairApplicationError::UnsafePath(
+                    item.relative_path.clone(),
+                ));
             }
             prepared.push(PreparedRollback {
                 item: item.clone(),
@@ -837,7 +873,9 @@ fn safe_work_file_hash(path: &Path) -> Result<Option<String>, RepairApplicationE
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
-                return Err(RepairApplicationError::UnsafePath(path.display().to_string()));
+                return Err(RepairApplicationError::UnsafePath(
+                    path.display().to_string(),
+                ));
             }
             if metadata.len() > MAX_APPLICATION_FILE_BYTES {
                 return Err(RepairApplicationError::OversizedTarget(
@@ -1031,10 +1069,11 @@ fn cleanup_apply_work_files(items: &[PreparedApply]) -> bool {
     let mut clean = true;
     for item in items {
         let _ = fs::remove_file(&item.stage_path);
-        if item.sidecar_path.exists() && !item.target_path.exists() {
-            if fs::rename(&item.sidecar_path, &item.target_path).is_err() {
-                clean = false;
-            }
+        if item.sidecar_path.exists()
+            && !item.target_path.exists()
+            && fs::rename(&item.sidecar_path, &item.target_path).is_err()
+        {
+            clean = false;
         }
         if item.sidecar_path.exists() {
             clean = false;
@@ -1047,10 +1086,11 @@ fn cleanup_rollback_work_files(items: &[PreparedRollback]) -> bool {
     let mut clean = true;
     for item in items {
         let _ = fs::remove_file(&item.stage_path);
-        if item.sidecar_path.exists() && !item.target_path.exists() {
-            if fs::rename(&item.sidecar_path, &item.target_path).is_err() {
-                clean = false;
-            }
+        if item.sidecar_path.exists()
+            && !item.target_path.exists()
+            && fs::rename(&item.sidecar_path, &item.target_path).is_err()
+        {
+            clean = false;
         }
         if item.sidecar_path.exists() {
             clean = false;
@@ -1062,13 +1102,19 @@ fn cleanup_rollback_work_files(items: &[PreparedRollback]) -> bool {
 fn revalidate_hash(path: &Path, expected: &str) -> Result<(), RepairApplicationError> {
     let metadata = fs::symlink_metadata(path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(RepairApplicationError::UnsafeTarget(path.display().to_string()));
+        return Err(RepairApplicationError::UnsafeTarget(
+            path.display().to_string(),
+        ));
     }
     if metadata.len() > MAX_APPLICATION_FILE_BYTES {
-        return Err(RepairApplicationError::OversizedTarget(path.display().to_string()));
+        return Err(RepairApplicationError::OversizedTarget(
+            path.display().to_string(),
+        ));
     }
     if sha256_hex(&fs::read(path)?) != expected {
-        return Err(RepairApplicationError::StaleBase(path.display().to_string()));
+        return Err(RepairApplicationError::StaleBase(
+            path.display().to_string(),
+        ));
     }
     Ok(())
 }

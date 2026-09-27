@@ -10,15 +10,15 @@ fn seed_project(db: &Database) -> (String, String) {
     let file_id = deterministic_id("file", &[&project_id, "src/main.rs"]);
     db.connection()
         .execute(
-            "INSERT INTO projects(id, root_path, display_name, path_identity)\
+            "INSERT INTO projects(id, root_path, display_name, path_identity) \
              VALUES (?1, '/tmp/codetwin-repair', 'repair', '/tmp/codetwin-repair')",
             [&project_id],
         )
         .expect("project");
     db.connection()
         .execute(
-            "INSERT INTO files(\
-               id, project_id, relative_path, relative_path_identity, content_hash, byte_size, is_active\
+            "INSERT INTO files( \
+               id, project_id, relative_path, relative_path_identity, content_hash, byte_size, is_active \
              ) VALUES (?1, ?2, 'src/main.rs', 'src/main.rs', ?3, 3, 1)",
             rusqlite::params![file_id, project_id, hash(b"old")],
         )
@@ -31,15 +31,15 @@ fn seed_open_finding(db: &Database, project_id: &str, file_id: &str) -> String {
     let finding_id = "repair-finding";
     db.connection()
         .execute(
-            "INSERT INTO analysis_runs(id, project_id, status, analyzer_version, run_kind)\
+            "INSERT INTO analysis_runs(id, project_id, status, analyzer_version, run_kind) \
              VALUES (?1, ?2, 'completed', 'repair-test', 'code_quality')",
             rusqlite::params![run_id, project_id],
         )
         .expect("run");
     db.connection()
         .execute(
-            "INSERT INTO findings(\
-               id, project_id, run_id, category, severity, title, description, file_id, status, fingerprint, analyzer_key\
+            "INSERT INTO findings( \
+               id, project_id, run_id, category, severity, title, description, file_id, status, fingerprint, analyzer_key \
              ) VALUES (?1, ?2, ?3, 'quality', 'medium', 'Finding', 'Finding under repair', ?4, 'open', 'repair-test-fingerprint', 'code_quality')",
             rusqlite::params![finding_id, project_id, run_id, file_id],
         )
@@ -74,7 +74,11 @@ fn approval_rejects_a_stale_indexed_base() {
     let error = service.approve_plan(&plan.id).expect_err("stale base");
     assert!(error.to_string().contains("stale"));
     assert_eq!(
-        service.get_plan(&plan.id).expect("query").expect("plan").status,
+        service
+            .get_plan(&plan.id)
+            .expect("query")
+            .expect("plan")
+            .status,
         "draft"
     );
 }
@@ -112,7 +116,11 @@ fn verification_observes_reindexed_hashes_without_applying_files() {
     assert_eq!(second.status, "verified");
     assert_eq!(second.matched_changes, 1);
     assert_eq!(
-        service.get_plan(&plan.id).expect("query").expect("plan").status,
+        service
+            .get_plan(&plan.id)
+            .expect("query")
+            .expect("plan")
+            .status,
         "verified"
     );
 }
@@ -145,7 +153,11 @@ fn linked_finding_must_be_resolved_before_plan_is_verified() {
     let first = service.verify_plan(&plan.id).expect("applied run");
     assert_eq!(first.status, "applied_finding_open");
     assert_eq!(
-        service.get_plan(&plan.id).expect("query").expect("plan").status,
+        service
+            .get_plan(&plan.id)
+            .expect("query")
+            .expect("plan")
+            .status,
         "applied"
     );
 

@@ -79,7 +79,7 @@ def _iter_graph_tensors(graph: Any, onnx: Any) -> Iterator[Any]:
 
 def _validate_single_file_onnx(model_path: Path) -> None:
     try:
-        import onnx  # type: ignore[import-not-found]
+        import onnx
     except ImportError as error:
         raise InferenceRuntimeError(
             "ONNX validation dependency is not installed; install the ml optional dependencies"
@@ -99,7 +99,7 @@ def _validate_single_file_onnx(model_path: Path) -> None:
 
 def _default_array_factory(values: list[list[int]]) -> Any:
     try:
-        import numpy as np  # type: ignore[import-not-found]
+        import numpy as np
     except ImportError as error:
         raise InferenceRuntimeError(
             "NumPy is not installed; install the ml optional dependencies"
@@ -109,7 +109,7 @@ def _default_array_factory(values: list[list[int]]) -> Any:
 
 def _default_session_factory(model_path: Path) -> Any:
     try:
-        import onnxruntime as ort  # type: ignore[import-not-found]
+        import onnxruntime as ort
     except ImportError as error:
         raise InferenceRuntimeError(
             "ONNX Runtime is not installed; install the ml optional dependencies"

@@ -14,8 +14,8 @@ use crate::{
     body_hash, endpoint_request_key, fingerprint, operator::check_applicable,
     parameter_has_location, payload_policy::validate_active_payload, response_evidence,
     response_header, single_parameter_location, AuthContext, EndpointObservation,
-    FindingObservation, ObservedResponse, RequestError, RequestSeedContext, ScanConfig,
-    ScanError, ScopePolicy, ScopedRequester,
+    FindingObservation, ObservedResponse, RequestError, RequestSeedContext, ScanConfig, ScanError,
+    ScopePolicy, ScopedRequester,
 };
 
 pub(crate) struct ActiveCheckContext<'a> {
@@ -92,44 +92,45 @@ pub(crate) fn run_active_checks(
             return Err(ScanError::Cancelled);
         }
         let mut chunk_results = Vec::new();
-        let chunk_state = thread::scope(|scope| -> Result<bool, ScanError> {
-            let mut handles = Vec::new();
-            for task in chunk.iter().cloned() {
-                let requester = requester.clone();
-                let policy = policy.clone();
-                let config = config.clone();
-                let cancelled = Arc::clone(&cancelled);
-                handles.push(scope.spawn(move || {
-                    probe_parameter(&policy, &requester, &config, &task, cancelled)
-                }));
-            }
-
-            let mut cancelled_observed = false;
-            let mut first_error = None;
-            let mut worker_panicked = false;
-            for handle in handles {
-                match handle.join() {
-                    Ok(Ok(mut observed)) => chunk_results.append(&mut observed),
-                    Ok(Err(ScanError::Cancelled)) => cancelled_observed = true,
-                    Ok(Err(error)) => {
-                        if first_error.is_none() {
-                            first_error = Some(error);
-                        }
-                    }
-                    Err(_) => worker_panicked = true,
+        let chunk_state =
+            thread::scope(|scope| -> Result<bool, ScanError> {
+                let mut handles = Vec::new();
+                for task in chunk {
+                    let requester = requester.clone();
+                    let policy = policy.clone();
+                    let config = config.clone();
+                    let cancelled = Arc::clone(&cancelled);
+                    handles.push(scope.spawn(move || {
+                        probe_parameter(&policy, &requester, &config, task, cancelled)
+                    }));
                 }
-            }
 
-            if worker_panicked {
-                return Err(ScanError::Discovery(
-                    "active probe worker panicked before producing a result".to_string(),
-                ));
-            }
-            if let Some(error) = first_error {
-                return Err(error);
-            }
-            Ok(cancelled_observed)
-        })?;
+                let mut cancelled_observed = false;
+                let mut first_error = None;
+                let mut worker_panicked = false;
+                for handle in handles {
+                    match handle.join() {
+                        Ok(Ok(mut observed)) => chunk_results.append(&mut observed),
+                        Ok(Err(ScanError::Cancelled)) => cancelled_observed = true,
+                        Ok(Err(error)) => {
+                            if first_error.is_none() {
+                                first_error = Some(error);
+                            }
+                        }
+                        Err(_) => worker_panicked = true,
+                    }
+                }
+
+                if worker_panicked {
+                    return Err(ScanError::Discovery(
+                        "active probe worker panicked before producing a result".to_string(),
+                    ));
+                }
+                if let Some(error) = first_error {
+                    return Err(error);
+                }
+                Ok(cancelled_observed)
+            })?;
         if chunk_state || cancelled.load(Ordering::SeqCst) {
             return Err(ScanError::Cancelled);
         }
@@ -137,7 +138,11 @@ pub(crate) fn run_active_checks(
         on_progress(findings.len());
     }
 
-    for endpoint in endpoints.iter().filter(|item| item.method == "GET").take(256) {
+    for endpoint in endpoints
+        .iter()
+        .filter(|item| item.method == "GET")
+        .take(256)
+    {
         if cancelled.load(Ordering::SeqCst) {
             return Err(ScanError::Cancelled);
         }
@@ -149,8 +154,13 @@ pub(crate) fn run_active_checks(
 
     if config.checks.access_control {
         if let Some(secondary) = secondary_auth.filter(|auth| {
-            auth.cookie_header.as_ref().is_some_and(|value| !value.trim().is_empty())
-                || auth.bearer_token.as_ref().is_some_and(|value| !value.trim().is_empty())
+            auth.cookie_header
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty())
+                || auth
+                    .bearer_token
+                    .as_ref()
+                    .is_some_and(|value| !value.trim().is_empty())
                 || !auth.custom_headers.is_empty()
         }) {
             let secondary_requester = ScopedRequester::new(
@@ -159,11 +169,17 @@ pub(crate) fn run_active_checks(
                 requester.budget().clone(),
                 Arc::clone(&cancelled),
             );
-            for endpoint in endpoints.iter().filter(|item| item.method == "GET").take(128) {
+            for endpoint in endpoints
+                .iter()
+                .filter(|item| item.method == "GET")
+                .take(128)
+            {
                 if !looks_object_specific(endpoint) {
                     continue;
                 }
-                let Ok(url) = policy.normalize_and_assert(&endpoint.url) else { continue };
+                let Ok(url) = policy.normalize_and_assert(&endpoint.url) else {
+                    continue;
+                };
                 let Some(primary) = baselines
                     .get(&baseline_key("GET", &endpoint.url))
                     .or_else(|| baselines.get(&normalized_key(&endpoint.url)))
@@ -233,36 +249,59 @@ fn probe_parameter(
     let marker = short_marker(&task.endpoint.url, &task.parameter);
     let mut findings = Vec::new();
 
-    if config.checks.sql_injection && check_applicable(&task.endpoint, &task.parameter, "sql_injection") {
-        findings.extend(probe_sqli(requester, policy, task, &endpoint_url, &baseline)?);
+    if config.checks.sql_injection
+        && check_applicable(&task.endpoint, &task.parameter, "sql_injection")
+    {
+        findings.extend(probe_sqli(
+            requester,
+            policy,
+            task,
+            &endpoint_url,
+            &baseline,
+        )?);
     }
     if config.checks.xss && check_applicable(&task.endpoint, &task.parameter, "xss") {
-        if let Some(finding) = probe_xss(requester, policy, task, &endpoint_url, &baseline, &marker)? {
+        if let Some(finding) =
+            probe_xss(requester, policy, task, &endpoint_url, &baseline, &marker)?
+        {
             findings.push(finding);
         }
     }
     if config.checks.open_redirect && looks_redirect_parameter(&task.parameter) {
-        if let Some(finding) = probe_open_redirect(requester, policy, task, &endpoint_url, &marker)? {
+        if let Some(finding) = probe_open_redirect(requester, policy, task, &endpoint_url, &marker)?
+        {
             findings.push(finding);
         }
     }
     if config.checks.path_traversal && looks_path_parameter(&task.parameter) {
-        if let Some(finding) = probe_path_traversal(requester, policy, task, &endpoint_url, &baseline, &marker)? {
+        if let Some(finding) =
+            probe_path_traversal(requester, policy, task, &endpoint_url, &baseline, &marker)?
+        {
             findings.push(finding);
         }
     }
     if config.checks.ssrf_indicators && looks_url_parameter(&task.parameter) {
-        if let Some(finding) = probe_ssrf_indicator(requester, policy, task, &endpoint_url, &baseline, &marker)? {
+        if let Some(finding) =
+            probe_ssrf_indicator(requester, policy, task, &endpoint_url, &baseline, &marker)?
+        {
             findings.push(finding);
         }
     }
-    if config.checks.template_command_indicators && check_applicable(&task.endpoint, &task.parameter, "template_injection") {
-        if let Some(finding) = probe_template_indicator(requester, policy, task, &endpoint_url, &baseline, &marker)? {
+    if config.checks.template_command_indicators
+        && check_applicable(&task.endpoint, &task.parameter, "template_injection")
+    {
+        if let Some(finding) =
+            probe_template_indicator(requester, policy, task, &endpoint_url, &baseline, &marker)?
+        {
             findings.push(finding);
         }
     }
-    if config.checks.api_validation && check_applicable(&task.endpoint, &task.parameter, "api_validation") {
-        if let Some(finding) = probe_input_validation(requester, policy, task, &endpoint_url, &baseline, &marker)? {
+    if config.checks.api_validation
+        && check_applicable(&task.endpoint, &task.parameter, "api_validation")
+    {
+        if let Some(finding) =
+            probe_input_validation(requester, policy, task, &endpoint_url, &baseline, &marker)?
+        {
             findings.push(finding);
         }
     }
@@ -319,12 +358,23 @@ fn probe_sqli(
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
         Err(_) => return Ok(findings),
     };
-    if similar_response(baseline, &true_response) && materially_different(baseline, &false_response) {
+    if similar_response(baseline, &true_response) && materially_different(baseline, &false_response)
+    {
         let mut confidence = "Likely";
         let mut evidence = vec![
             response_evidence("baseline", &task.endpoint.method, url, baseline),
-            response_evidence("boolean true probe", &task.endpoint.method, url, &true_response),
-            response_evidence("boolean false probe", &task.endpoint.method, url, &false_response),
+            response_evidence(
+                "boolean true probe",
+                &task.endpoint.method,
+                url,
+                &true_response,
+            ),
+            response_evidence(
+                "boolean false probe",
+                &task.endpoint.method,
+                url,
+                &false_response,
+            ),
         ];
         if let (Ok(true_repeat), Ok(false_repeat)) = (
             send_task_payload(requester, task, url, true_payload),
@@ -335,8 +385,18 @@ fn probe_sqli(
                 && similar_response(&false_response, &false_repeat)
             {
                 confidence = "Confirmed";
-                evidence.push(response_evidence("boolean true repeat", &task.endpoint.method, url, &true_repeat));
-                evidence.push(response_evidence("boolean false repeat", &task.endpoint.method, url, &false_repeat));
+                evidence.push(response_evidence(
+                    "boolean true repeat",
+                    &task.endpoint.method,
+                    url,
+                    &true_repeat,
+                ));
+                evidence.push(response_evidence(
+                    "boolean false repeat",
+                    &task.endpoint.method,
+                    url,
+                    &false_repeat,
+                ));
             }
         }
         findings.push(FindingObservation {
@@ -356,7 +416,6 @@ fn probe_sqli(
             evidence,
         });
     }
-
 
     Ok(findings)
 }
@@ -386,9 +445,21 @@ fn probe_xss(
     }
     let context = reflection_context(&body, &payload);
     let (confidence, severity, title) = match context {
-        ReflectionContext::ScriptOrAttribute => ("Likely", "high", "Unescaped XSS marker reached executable browser context"),
-        ReflectionContext::HtmlMarkup => ("Likely", "medium", "Unescaped XSS marker reached HTML markup context"),
-        ReflectionContext::Text => ("Potential", "low", "User-controlled marker is reflected without encoding"),
+        ReflectionContext::ScriptOrAttribute => (
+            "Likely",
+            "high",
+            "Unescaped XSS marker reached executable browser context",
+        ),
+        ReflectionContext::HtmlMarkup => (
+            "Likely",
+            "medium",
+            "Unescaped XSS marker reached HTML markup context",
+        ),
+        ReflectionContext::Text => (
+            "Potential",
+            "low",
+            "User-controlled marker is reflected without encoding",
+        ),
     };
     Ok(Some(FindingObservation {
         category: "xss".into(),
@@ -461,8 +532,16 @@ fn probe_path_traversal(
     };
     let text = String::from_utf8_lossy(&response.body).to_ascii_lowercase();
     let baseline_text = String::from_utf8_lossy(&baseline.body).to_ascii_lowercase();
-    let indicators = ["no such file", "file not found", "enoent", "path traversal", "invalid path"];
-    let new_indicator = indicators.iter().any(|value| text.contains(value) && !baseline_text.contains(value));
+    let indicators = [
+        "no such file",
+        "file not found",
+        "enoent",
+        "path traversal",
+        "invalid path",
+    ];
+    let new_indicator = indicators
+        .iter()
+        .any(|value| text.contains(value) && !baseline_text.contains(value));
     if !new_indicator {
         return Ok(None);
     }
@@ -501,8 +580,17 @@ fn probe_ssrf_indicator(
     };
     let text = String::from_utf8_lossy(&response.body).to_ascii_lowercase();
     let baseline_text = String::from_utf8_lossy(&baseline.body).to_ascii_lowercase();
-    let indicators = ["connection refused", "connect timeout", "connection timed out", "failed to connect", "name or service not known"];
-    if !indicators.iter().any(|value| text.contains(value) && !baseline_text.contains(value)) {
+    let indicators = [
+        "connection refused",
+        "connect timeout",
+        "connection timed out",
+        "failed to connect",
+        "name or service not known",
+    ];
+    if !indicators
+        .iter()
+        .any(|value| text.contains(value) && !baseline_text.contains(value))
+    {
         return Ok(None);
     }
     Ok(Some(FindingObservation {
@@ -540,7 +628,8 @@ fn probe_template_indicator(
     };
     let text = String::from_utf8_lossy(&response.body);
     let baseline_text = String::from_utf8_lossy(&baseline.body);
-    let evaluated = text.contains(&format!("codetwin-{marker}-49")) && !baseline_text.contains(&format!("codetwin-{marker}-49"));
+    let evaluated = text.contains(&format!("codetwin-{marker}-49"))
+        && !baseline_text.contains(&format!("codetwin-{marker}-49"));
     if !evaluated {
         return Ok(None);
     }
@@ -606,12 +695,17 @@ fn probe_options(
     endpoint: &EndpointObservation,
     config: &ScanConfig,
 ) -> Result<Vec<FindingObservation>, ScanError> {
-    let Ok(url) = Url::parse(&endpoint.url) else { return Ok(Vec::new()) };
+    let Ok(url) = Url::parse(&endpoint.url) else {
+        return Ok(Vec::new());
+    };
     let response = match requester.send(
         Method::OPTIONS,
         &url,
         None,
-        &[("Origin", "https://example.invalid"), ("Access-Control-Request-Method", "GET")],
+        &[
+            ("Origin", "https://example.invalid"),
+            ("Access-Control-Request-Method", "GET"),
+        ],
     ) {
         Ok(value) => value,
         Err(RequestError::BudgetExhausted) => return Ok(Vec::new()),
@@ -621,7 +715,8 @@ fn probe_options(
     let mut findings = Vec::new();
     if config.checks.cors {
         let origin = response_header(&response, "access-control-allow-origin").unwrap_or_default();
-        let credentials = response_header(&response, "access-control-allow-credentials").unwrap_or_default();
+        let credentials =
+            response_header(&response, "access-control-allow-credentials").unwrap_or_default();
         if origin == "https://example.invalid" && credentials.eq_ignore_ascii_case("true") {
             findings.push(FindingObservation {
                 category: "cors".into(),
@@ -740,20 +835,14 @@ fn send_payload_with_seed(
     }
     if location == "header" && !active_header_probe_allowed(parameter) {
         return Err(RequestError::Http(
-            "sensitive or transport-controlled header probes are intentionally disabled".to_string(),
+            "sensitive or transport-controlled header probes are intentionally disabled"
+                .to_string(),
         ));
     }
 
     let method = Method::from_bytes(endpoint.method.as_bytes())
         .map_err(|_| RequestError::Http("unsupported HTTP method".to_string()))?;
-    let url = request_url_with_seed(
-        endpoint,
-        base,
-        parameter,
-        location,
-        payload,
-        request_seed,
-    )?;
+    let url = request_url_with_seed(endpoint, base, parameter, location, payload, request_seed)?;
 
     let body = contextual_request_body_with_seed(
         endpoint,
@@ -769,7 +858,10 @@ fn send_payload_with_seed(
                 method,
                 &url,
                 Some(body.as_str()),
-                &[("Content-Type", *content_type), (parameter, header_value.as_str())],
+                &[
+                    ("Content-Type", *content_type),
+                    (parameter, header_value.as_str()),
+                ],
                 &request_seed.redaction_secrets,
             )
         }
@@ -824,9 +916,11 @@ fn request_url_with_seed(
         })?;
     }
 
-    for name in endpoint.parameter_names.iter().filter(|name| {
-        parameter_has_location(&endpoint.parameter_locations, name, "path")
-    }) {
+    for name in endpoint
+        .parameter_names
+        .iter()
+        .filter(|name| parameter_has_location(&endpoint.parameter_locations, name, "path"))
+    {
         if !has_path_parameter_placeholder(&url, name) {
             continue;
         }
@@ -905,9 +999,7 @@ fn proven_parameter_location<'a>(
             "active probe requires an unambiguous parameter location; {parameter} has {count} proven locations"
         )
     } else {
-        format!(
-            "active probe requires proven location evidence for parameter {parameter}"
-        )
+        format!("active probe requires proven location evidence for parameter {parameter}")
     }))
 }
 
@@ -936,6 +1028,7 @@ fn replace_query_parameter(url: &mut Url, parameter: &str, payload: &str) {
     }
 }
 
+#[cfg(test)]
 fn contextual_request_body(
     endpoint: &EndpointObservation,
     target_parameter: &str,
@@ -965,17 +1058,13 @@ fn contextual_request_body_with_seed(
     let json_parameters: Vec<&str> = endpoint
         .parameter_names
         .iter()
-        .filter(|name| {
-            parameter_has_location(&endpoint.parameter_locations, name, "json")
-        })
+        .filter(|name| parameter_has_location(&endpoint.parameter_locations, name, "json"))
         .map(String::as_str)
         .collect();
     let form_parameters: Vec<&str> = endpoint
         .parameter_names
         .iter()
-        .filter(|name| {
-            parameter_has_location(&endpoint.parameter_locations, name, "form")
-        })
+        .filter(|name| parameter_has_location(&endpoint.parameter_locations, name, "form"))
         .map(String::as_str)
         .collect();
 
@@ -1024,10 +1113,7 @@ fn contextual_request_body_with_seed(
             };
             serializer.append_pair(name, value);
         }
-        return Some((
-            serializer.finish(),
-            "application/x-www-form-urlencoded",
-        ));
+        return Some((serializer.finish(), "application/x-www-form-urlencoded"));
     }
 
     None
@@ -1158,7 +1244,9 @@ fn reflection_context(body: &str, marker: &str) -> ReflectionContext {
     let script_start = before.rfind("<script");
     let script_end = before.rfind("</script>");
     let inside_script = script_start.is_some()
-        && script_end.map(|end| end < script_start.unwrap_or(0)).unwrap_or(true);
+        && script_end
+            .map(|end| end < script_start.unwrap_or(0))
+            .unwrap_or(true);
     if inside_script
         || before.ends_with(r#"=""#)
         || before.ends_with("='")
@@ -1174,14 +1262,25 @@ fn reflection_context(body: &str, marker: &str) -> ReflectionContext {
 }
 
 fn short_marker(endpoint: &str, parameter: &str) -> String {
-    fingerprint(&[endpoint, parameter]).chars().take(12).collect()
+    fingerprint(&[endpoint, parameter])
+        .chars()
+        .take(12)
+        .collect()
 }
 
 fn looks_redirect_parameter(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    ["next", "url", "redirect", "redirect_uri", "return", "return_to", "callback"]
-        .iter()
-        .any(|value| lower == *value || lower.contains(value))
+    [
+        "next",
+        "url",
+        "redirect",
+        "redirect_uri",
+        "return",
+        "return_to",
+        "callback",
+    ]
+    .iter()
+    .any(|value| lower == *value || lower.contains(value))
 }
 
 fn looks_path_parameter(name: &str) -> bool {
@@ -1193,25 +1292,30 @@ fn looks_path_parameter(name: &str) -> bool {
 
 fn looks_url_parameter(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    ["url", "uri", "endpoint", "webhook", "callback", "image", "avatar", "feed"]
-        .iter()
-        .any(|value| lower.contains(value))
+    [
+        "url", "uri", "endpoint", "webhook", "callback", "image", "avatar", "feed",
+    ]
+    .iter()
+    .any(|value| lower.contains(value))
 }
 
 fn looks_object_specific(endpoint: &EndpointObservation) -> bool {
-    let Ok(url) = Url::parse(&endpoint.url) else { return false };
+    let Ok(url) = Url::parse(&endpoint.url) else {
+        return false;
+    };
     if endpoint.parameter_names.iter().any(|name| {
         let lower = name.to_ascii_lowercase();
-        ["id", "user", "account", "order", "document", "file", "record"]
-            .iter()
-            .any(|needle| lower.contains(needle))
+        [
+            "id", "user", "account", "order", "document", "file", "record",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
     }) {
         return true;
     }
-    url.path_segments()
-        .into_iter()
-        .flatten()
-        .any(|segment| segment.len() >= 2 && segment.chars().all(|character| character.is_ascii_digit()))
+    url.path_segments().into_iter().flatten().any(|segment| {
+        segment.len() >= 2 && segment.chars().all(|character| character.is_ascii_digit())
+    })
 }
 
 fn method_probe_allowed(method: &str, allow_non_idempotent: bool) -> bool {
@@ -1271,10 +1375,7 @@ mod tests {
     fn active_worker_scope_errors_fail_the_scan() {
         use std::{
             collections::{BTreeMap, HashMap},
-            sync::{
-                atomic::AtomicBool,
-                Arc,
-            },
+            sync::{atomic::AtomicBool, Arc},
         };
 
         let config = crate::ScanConfig {
@@ -1418,10 +1519,7 @@ mod tests {
             depth: 0,
             source: "source_route:laravel:routes/api.php:1".to_string(),
             parameter_names: vec!["email".to_string()],
-            parameter_locations: BTreeMap::from([(
-                "email".to_string(),
-                vec!["body".to_string()],
-            )]),
+            parameter_locations: BTreeMap::from([("email".to_string(), vec!["body".to_string()])]),
             response_header_names: vec![],
             cookie_names: vec![],
             content_type: None,
@@ -1462,11 +1560,13 @@ mod tests {
         };
 
         let (body, content_type) =
-            super::contextual_request_body(&endpoint, "email", "json", "probe")
-                .expect("json body");
+            super::contextual_request_body(&endpoint, "email", "json", "probe").expect("json body");
         let value: serde_json::Value = serde_json::from_str(&body).expect("json");
         assert_eq!(content_type, "application/json");
-        assert_eq!(value.get("email").and_then(|item| item.as_str()), Some("probe"));
+        assert_eq!(
+            value.get("email").and_then(|item| item.as_str()),
+            Some("probe")
+        );
         assert_eq!(
             value.get("password").and_then(|item| item.as_str()),
             Some("codetwin-test")
@@ -1506,15 +1606,8 @@ mod tests {
         };
         let base = Url::parse(&endpoint.url).expect("url");
 
-        let baseline = super::request_url_with_seed(
-            &endpoint,
-            &base,
-            "q",
-            "query",
-            "",
-            &seed,
-        )
-        .expect("seeded baseline");
+        let baseline = super::request_url_with_seed(&endpoint, &base, "q", "query", "", &seed)
+            .expect("seeded baseline");
         let baseline_pairs: BTreeMap<_, _> = baseline
             .query_pairs()
             .map(|(name, value)| (name.into_owned(), value.into_owned()))
@@ -1528,15 +1621,8 @@ mod tests {
             Some("default-query")
         );
 
-        let probe = super::request_url_with_seed(
-            &endpoint,
-            &base,
-            "q",
-            "query",
-            "probe",
-            &seed,
-        )
-        .expect("seeded probe");
+        let probe = super::request_url_with_seed(&endpoint, &base, "q", "query", "probe", &seed)
+            .expect("seeded probe");
         let probe_pairs: BTreeMap<_, _> = probe
             .query_pairs()
             .map(|(name, value)| (name.into_owned(), value.into_owned()))
@@ -1554,9 +1640,7 @@ mod tests {
 
         let endpoint = crate::EndpointObservation {
             url: "http://localhost:3000/orgs/%7Borg%7D/users/%7Bid%7D".into(),
-            route_template: Some(
-                "http://localhost:3000/orgs/%7Borg%7D/users/%7Bid%7D".into(),
-            ),
+            route_template: Some("http://localhost:3000/orgs/%7Borg%7D/users/%7Bid%7D".into()),
             method: "GET".into(),
             depth: 0,
             source: "openapi".into(),
@@ -1581,15 +1665,8 @@ mod tests {
         };
         let base = Url::parse(&endpoint.url).expect("url");
 
-        let url = super::request_url_with_seed(
-            &endpoint,
-            &base,
-            "id",
-            "path",
-            "2",
-            &seed,
-        )
-        .expect("materialized URL");
+        let url = super::request_url_with_seed(&endpoint, &base, "id", "path", "2", &seed)
+            .expect("materialized URL");
         assert!(url.path().contains("/orgs/acme/users/2"));
         assert!(!url.as_str().contains("%7B"));
     }
@@ -1622,14 +1699,9 @@ mod tests {
             ("name".into(), serde_json::json!("baseline-name")),
         ]);
 
-        let (body, content_type) = super::contextual_request_body_with_seed(
-            &endpoint,
-            "name",
-            "json",
-            "",
-            &seeds,
-        )
-        .expect("json body");
+        let (body, content_type) =
+            super::contextual_request_body_with_seed(&endpoint, "name", "json", "", &seeds)
+                .expect("json body");
         assert_eq!(content_type, "application/json");
         let value: serde_json::Value = serde_json::from_str(&body).expect("json");
         assert_eq!(value["count"], serde_json::json!(1));
@@ -1672,11 +1744,13 @@ mod tests {
         )
         .expect("form body");
         assert_eq!(content_type, "application/x-www-form-urlencoded");
-        let pairs: std::collections::BTreeMap<_, _> =
-            url::form_urlencoded::parse(body.as_bytes())
-                .map(|(key, value)| (key.into_owned(), value.into_owned()))
-                .collect();
-        assert_eq!(pairs.get("csrf_token").map(String::as_str), Some("csrf-secret-123"));
+        let pairs: std::collections::BTreeMap<_, _> = url::form_urlencoded::parse(body.as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
+        assert_eq!(
+            pairs.get("csrf_token").map(String::as_str),
+            Some("csrf-secret-123")
+        );
         assert_eq!(pairs.get("display_name").map(String::as_str), Some("probe"));
     }
 

@@ -5,8 +5,8 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{params, Connection, OptionalExtension};
 use runtime_analyzer::{analyze_artifact, RuntimeArtifactKind, RuntimeObservation};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -205,8 +205,8 @@ impl<'a> RuntimeReliabilityService<'a> {
         );
 
         self.database.connection().execute(
-            "INSERT INTO analysis_runs(\
-               id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint\
+            "INSERT INTO analysis_runs( \
+               id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint \
              ) VALUES (?1, ?2, 'running', ?3, CURRENT_TIMESTAMP, ?4, 'runtime_reliability', ?5, ?6)",
             params![
                 run_id,
@@ -263,14 +263,18 @@ impl<'a> RuntimeReliabilityService<'a> {
         limit: usize,
     ) -> Result<Vec<RuntimeArtifactRecord>, RuntimeAnalysisError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, relative_path, artifact_kind, content_hash, byte_size,\
-                    last_run_id, first_seen_at, last_seen_at, is_active\
-             FROM runtime_artifacts\
-             WHERE project_id = ?1 AND (?2 = 0 OR is_active = 1)\
+            "SELECT id, project_id, relative_path, artifact_kind, content_hash, byte_size, \
+                    last_run_id, first_seen_at, last_seen_at, is_active \
+             FROM runtime_artifacts \
+             WHERE project_id = ?1 AND (?2 = 0 OR is_active = 1) \
              ORDER BY is_active DESC, artifact_kind, relative_path, id LIMIT ?3",
         )?;
         let rows = statement.query_map(
-            params![project_id, i64::from(active_only), bounded(limit, MAX_ARTIFACT_QUERY)],
+            params![
+                project_id,
+                i64::from(active_only),
+                bounded(limit, MAX_ARTIFACT_QUERY)
+            ],
             |row| {
                 Ok(RuntimeArtifactRecord {
                     id: row.get(0)?,
@@ -296,15 +300,20 @@ impl<'a> RuntimeReliabilityService<'a> {
         limit: usize,
     ) -> Result<Vec<RuntimeFindingRecord>, RuntimeAnalysisError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, run_id, COALESCE(sub_category, ''), severity, confidence, title, description,\
-                    source_start_line, source_end_line, status, fingerprint, first_seen, last_seen, resolved_at\
-             FROM findings\
-             WHERE project_id = ?1 AND analyzer_key = ?2 AND (?3 IS NULL OR status = ?3)\
-             ORDER BY CASE severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END DESC,\
+            "SELECT id, project_id, run_id, COALESCE(sub_category, ''), severity, confidence, title, description, \
+                    source_start_line, source_end_line, status, fingerprint, first_seen, last_seen, resolved_at \
+             FROM findings \
+             WHERE project_id = ?1 AND analyzer_key = ?2 AND (?3 IS NULL OR status = ?3) \
+             ORDER BY CASE severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END DESC, \
                       status, last_seen DESC, id LIMIT ?4",
         )?;
         let rows = statement.query_map(
-            params![project_id, ANALYZER_KEY, status, bounded(limit, MAX_FINDINGS_QUERY)],
+            params![
+                project_id,
+                ANALYZER_KEY,
+                status,
+                bounded(limit, MAX_FINDINGS_QUERY)
+            ],
             |row| {
                 Ok(RuntimeFindingRecord {
                     id: row.get(0)?,
@@ -334,8 +343,8 @@ impl<'a> RuntimeReliabilityService<'a> {
         limit: usize,
     ) -> Result<Vec<FindingEvidenceRecord>, RuntimeAnalysisError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json\
-             FROM finding_evidence WHERE finding_id = ?1\
+            "SELECT id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json \
+             FROM finding_evidence WHERE finding_id = ?1 \
              ORDER BY COALESCE(uri, ''), COALESCE(line_start, 0), id LIMIT ?2",
         )?;
         let rows = statement.query_map(
@@ -391,15 +400,15 @@ impl<'a> RuntimeReliabilityService<'a> {
         limit: usize,
     ) -> Result<Vec<RuntimeRunRecord>, RuntimeAnalysisError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT a.id, a.project_id, a.status, a.started_at, a.finished_at, a.duration_ms,\
-                    COALESCE(m.coverage_complete, 0), COALESCE(m.artifacts_considered, 0),\
-                    COALESCE(m.artifacts_analyzed, 0), COALESCE(m.artifacts_skipped, 0),\
-                    COALESCE(m.dockerfiles, 0), COALESCE(m.compose_files, 0), COALESCE(m.observations, 0),\
-                    COALESCE(m.findings_opened, 0), COALESCE(m.findings_refreshed, 0), COALESCE(m.findings_resolved, 0),\
-                    COALESCE(m.mutable_images, 0), COALESCE(m.healthchecks_disabled, 0),\
-                    COALESCE(m.healthchecks_missing, 0), COALESCE(m.restarts_disabled, 0)\
-             FROM analysis_runs a LEFT JOIN runtime_run_metrics m ON m.run_id = a.id\
-             WHERE a.project_id = ?1 AND a.run_kind = 'runtime_reliability'\
+            "SELECT a.id, a.project_id, a.status, a.started_at, a.finished_at, a.duration_ms, \
+                    COALESCE(m.coverage_complete, 0), COALESCE(m.artifacts_considered, 0), \
+                    COALESCE(m.artifacts_analyzed, 0), COALESCE(m.artifacts_skipped, 0), \
+                    COALESCE(m.dockerfiles, 0), COALESCE(m.compose_files, 0), COALESCE(m.observations, 0), \
+                    COALESCE(m.findings_opened, 0), COALESCE(m.findings_refreshed, 0), COALESCE(m.findings_resolved, 0), \
+                    COALESCE(m.mutable_images, 0), COALESCE(m.healthchecks_disabled, 0), \
+                    COALESCE(m.healthchecks_missing, 0), COALESCE(m.restarts_disabled, 0) \
+             FROM analysis_runs a LEFT JOIN runtime_run_metrics m ON m.run_id = a.id \
+             WHERE a.project_id = ?1 AND a.run_kind = 'runtime_reliability' \
              ORDER BY a.started_at DESC, a.id DESC LIMIT ?2",
         )?;
         let rows = statement.query_map(
@@ -449,7 +458,12 @@ fn project_root(
         .query_row(
             "SELECT root_path, path_identity FROM projects WHERE id = ?1",
             [project_id],
-            |row| Ok((PathBuf::from(row.get::<_, String>(0)?), row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    PathBuf::from(row.get::<_, String>(0)?),
+                    row.get::<_, String>(1)?,
+                ))
+            },
         )
         .optional()?
         .ok_or_else(|| RuntimeAnalysisError::ProjectNotFound(project_id.to_string()))
@@ -487,7 +501,9 @@ fn scan_runtime_artifacts(
         };
         collection.artifacts_considered += 1;
         if collection.artifacts_considered > MAX_ARTIFACTS {
-            return Err(RuntimeAnalysisError::TooManyArtifacts { limit: MAX_ARTIFACTS });
+            return Err(RuntimeAnalysisError::TooManyArtifacts {
+                limit: MAX_ARTIFACTS,
+            });
         }
         if entry.file_type().is_symlink() {
             collection.coverage_complete = false;
@@ -508,9 +524,9 @@ fn scan_runtime_artifacts(
             collection.artifacts_skipped += 1;
             continue;
         }
-        let relative = canonical
-            .strip_prefix(canonical_root)
-            .map_err(|_| RuntimeAnalysisError::UnsafeArtifactPath(canonical.display().to_string()))?;
+        let relative = canonical.strip_prefix(canonical_root).map_err(|_| {
+            RuntimeAnalysisError::UnsafeArtifactPath(canonical.display().to_string())
+        })?;
         let relative_text = relative.to_string_lossy().replace('\\', "/");
         let path_identity = normalize_relative_path(&relative_text, case_insensitive)
             .ok_or_else(|| RuntimeAnalysisError::UnsafeArtifactPath(relative_text.clone()))?;
@@ -561,7 +577,9 @@ fn scan_runtime_artifacts(
         });
     }
 
-    collection.artifacts.sort_by(|left, right| left.path_identity.cmp(&right.path_identity));
+    collection
+        .artifacts
+        .sort_by(|left, right| left.path_identity.cmp(&right.path_identity));
     Ok(collection)
 }
 
@@ -611,7 +629,10 @@ fn persist_scan(
 ) -> Result<RuntimeRunSummary, RuntimeAnalysisError> {
     let existing_findings = load_existing_findings(connection, project_id)?;
     let observed = flatten_observations(project_id, &collection.artifacts);
-    let observed_fingerprints: BTreeSet<&str> = observed.iter().map(|item| item.fingerprint.as_str()).collect();
+    let observed_fingerprints: BTreeSet<&str> = observed
+        .iter()
+        .map(|item| item.fingerprint.as_str())
+        .collect();
     let findings_opened = observed
         .iter()
         .filter(|item| !existing_findings.contains_key(item.fingerprint.as_str()))
@@ -634,15 +655,19 @@ fn persist_scan(
     let restarts_disabled = count_rule(&observed, "runtime.restart_disabled");
 
     let transaction = connection.unchecked_transaction()?;
-    let active_artifact_ids: BTreeSet<&str> = collection.artifacts.iter().map(|artifact| artifact.id.as_str()).collect();
+    let active_artifact_ids: BTreeSet<&str> = collection
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.id.as_str())
+        .collect();
     for artifact in &collection.artifacts {
         transaction.execute(
-            "INSERT INTO runtime_artifacts(\
-               id, project_id, relative_path, path_identity, artifact_kind, content_hash, byte_size, last_run_id, first_seen_at, last_seen_at, is_active\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
-             ON CONFLICT(project_id, path_identity) DO UPDATE SET\
-               relative_path = excluded.relative_path, artifact_kind = excluded.artifact_kind,\
-               content_hash = excluded.content_hash, byte_size = excluded.byte_size, last_run_id = excluded.last_run_id,\
+            "INSERT INTO runtime_artifacts( \
+               id, project_id, relative_path, path_identity, artifact_kind, content_hash, byte_size, last_run_id, first_seen_at, last_seen_at, is_active \
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) \
+             ON CONFLICT(project_id, path_identity) DO UPDATE SET \
+               relative_path = excluded.relative_path, artifact_kind = excluded.artifact_kind, \
+               content_hash = excluded.content_hash, byte_size = excluded.byte_size, last_run_id = excluded.last_run_id, \
                last_seen_at = CURRENT_TIMESTAMP, is_active = 1",
             params![
                 artifact.id,
@@ -657,9 +682,8 @@ fn persist_scan(
         )?;
     }
     if collection.coverage_complete {
-        let mut statement = transaction.prepare(
-            "SELECT id FROM runtime_artifacts WHERE project_id = ?1 AND is_active = 1",
-        )?;
+        let mut statement = transaction
+            .prepare("SELECT id FROM runtime_artifacts WHERE project_id = ?1 AND is_active = 1")?;
         let ids = statement
             .query_map([project_id], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -673,30 +697,32 @@ fn persist_scan(
             }
         }
         transaction.execute(
-            "UPDATE findings SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, last_run_id = ?2\
+            "UPDATE findings SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, last_run_id = ?2 \
              WHERE project_id = ?1 AND analyzer_key = ?3 AND status = 'open'",
             params![project_id, run_id, ANALYZER_KEY],
         )?;
     }
 
     for item in &observed {
-        let finding_id = existing_findings.get(item.fingerprint.as_str()).map_or_else(
-            || deterministic_id("finding", &[project_id, ANALYZER_KEY, &item.fingerprint]),
-            |finding| finding.id.clone(),
-        );
+        let finding_id = existing_findings
+            .get(item.fingerprint.as_str())
+            .map_or_else(
+                || deterministic_id("finding", &[project_id, ANALYZER_KEY, &item.fingerprint]),
+                |finding| finding.id.clone(),
+            );
         transaction.execute(
-            "INSERT INTO findings(\
-               id, project_id, run_id, category, sub_category, severity, confidence, title, description,\
-               file_id, symbol_id, source_start_line, source_end_line, status, fingerprint, rule_version,\
-               model_version, first_seen, last_seen, analyzer_key, last_run_id, resolved_at\
-             ) VALUES (?1, ?2, ?3, 'runtime', ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?9, ?10, 'open', ?11, ?12,\
-                       NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?13, ?3, NULL)\
-             ON CONFLICT(project_id, fingerprint) DO UPDATE SET\
-               run_id = excluded.run_id, category = excluded.category, sub_category = excluded.sub_category,\
-               severity = excluded.severity, confidence = excluded.confidence, title = excluded.title,\
-               description = excluded.description, source_start_line = excluded.source_start_line,\
-               source_end_line = excluded.source_end_line, status = 'open', rule_version = excluded.rule_version,\
-               last_seen = CURRENT_TIMESTAMP, analyzer_key = excluded.analyzer_key, last_run_id = excluded.last_run_id,\
+            "INSERT INTO findings( \
+               id, project_id, run_id, category, sub_category, severity, confidence, title, description, \
+               file_id, symbol_id, source_start_line, source_end_line, status, fingerprint, rule_version, \
+               model_version, first_seen, last_seen, analyzer_key, last_run_id, resolved_at \
+             ) VALUES (?1, ?2, ?3, 'runtime', ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?9, ?10, 'open', ?11, ?12, \
+                       NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?13, ?3, NULL) \
+             ON CONFLICT(project_id, fingerprint) DO UPDATE SET \
+               run_id = excluded.run_id, category = excluded.category, sub_category = excluded.sub_category, \
+               severity = excluded.severity, confidence = excluded.confidence, title = excluded.title, \
+               description = excluded.description, source_start_line = excluded.source_start_line, \
+               source_end_line = excluded.source_end_line, status = 'open', rule_version = excluded.rule_version, \
+               last_seen = CURRENT_TIMESTAMP, analyzer_key = excluded.analyzer_key, last_run_id = excluded.last_run_id, \
                resolved_at = NULL",
             params![
                 finding_id,
@@ -714,10 +740,18 @@ fn persist_scan(
                 ANALYZER_KEY,
             ],
         )?;
-        transaction.execute("DELETE FROM finding_evidence WHERE finding_id = ?1", [&finding_id])?;
+        transaction.execute(
+            "DELETE FROM finding_evidence WHERE finding_id = ?1",
+            [&finding_id],
+        )?;
         let evidence_id = deterministic_id(
             "runtime-evidence",
-            &[&finding_id, &item.artifact.id, &item.observation.rule_id, &item.observation.anchor],
+            &[
+                &finding_id,
+                &item.artifact.id,
+                &item.observation.rule_id,
+                &item.observation.anchor,
+            ],
         );
         let metadata = merge_evidence_metadata(
             &item.observation.metadata_json,
@@ -726,8 +760,8 @@ fn persist_scan(
             artifact_kind_text(item.artifact.kind),
         );
         transaction.execute(
-            "INSERT INTO finding_evidence(\
-               id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json\
+            "INSERT INTO finding_evidence( \
+               id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json \
              ) VALUES (?1, ?2, 'runtime_config', ?3, ?4, ?5, ?6, ?7)",
             params![
                 evidence_id,
@@ -742,10 +776,10 @@ fn persist_scan(
     }
 
     transaction.execute(
-        "INSERT INTO runtime_run_metrics(\
-           run_id, coverage_complete, artifacts_considered, artifacts_analyzed, artifacts_skipped, dockerfiles, compose_files,\
-           observations, findings_opened, findings_refreshed, findings_resolved, mutable_images, healthchecks_disabled,\
-           healthchecks_missing, restarts_disabled\
+        "INSERT INTO runtime_run_metrics( \
+           run_id, coverage_complete, artifacts_considered, artifacts_analyzed, artifacts_skipped, dockerfiles, compose_files, \
+           observations, findings_opened, findings_refreshed, findings_resolved, mutable_images, healthchecks_disabled, \
+           healthchecks_missing, restarts_disabled \
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             run_id,

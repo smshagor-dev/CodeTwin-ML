@@ -147,7 +147,9 @@ struct Collection {
 
 impl Collection {
     fn coverage_complete(&self) -> bool {
-        self.files_stale == 0 && self.files_skipped == 0 && self.files_analyzed == self.files_considered
+        self.files_stale == 0
+            && self.files_skipped == 0
+            && self.files_analyzed == self.files_considered
     }
 }
 
@@ -192,28 +194,25 @@ impl<'a> CodeSecurityService<'a> {
             ],
         );
         self.database.connection().execute(
-            "INSERT INTO analysis_runs(\
-               id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint\
+            "INSERT INTO analysis_runs( \
+               id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint \
              ) VALUES (?1, ?2, 'running', ?3, CURRENT_TIMESTAMP, ?4, 'security_analysis', ?5, ?6)",
             params![run_id, project_id, ANALYZER_VERSION, configuration_json, QUERY_VERSION, config_fingerprint],
         )?;
 
-        let collected = match collect_observations(
-            self.database.connection(),
-            project_id,
-            &canonical_root,
-        ) {
-            Ok(value) => value,
-            Err(error) => {
-                let _ = finish_run(
-                    self.database.connection(),
-                    &run_id,
-                    AnalysisStatus::Failed,
-                    elapsed_ms(started),
-                );
-                return Err(error);
-            }
-        };
+        let collected =
+            match collect_observations(self.database.connection(), project_id, &canonical_root) {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = finish_run(
+                        self.database.connection(),
+                        &run_id,
+                        AnalysisStatus::Failed,
+                        elapsed_ms(started),
+                    );
+                    return Err(error);
+                }
+            };
         let duration_ms = elapsed_ms(started);
         match persist_collection(
             self.database.connection(),
@@ -242,16 +241,21 @@ impl<'a> CodeSecurityService<'a> {
         limit: usize,
     ) -> Result<Vec<SecurityFindingRecord>, SecurityAnalysisError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, run_id, COALESCE(sub_category, ''), severity, confidence, title, description,\
-                    file_id, symbol_id, source_start_line, source_end_line, cwe, owasp, status, fingerprint,\
-                    first_seen, last_seen, resolved_at\
-             FROM findings\
-             WHERE project_id = ?1 AND analyzer_key = ?2 AND (?3 IS NULL OR status = ?3)\
-             ORDER BY CASE severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3\
+            "SELECT id, project_id, run_id, COALESCE(sub_category, ''), severity, confidence, title, description, \
+                    file_id, symbol_id, source_start_line, source_end_line, cwe, owasp, status, fingerprint, \
+                    first_seen, last_seen, resolved_at \
+             FROM findings \
+             WHERE project_id = ?1 AND analyzer_key = ?2 AND (?3 IS NULL OR status = ?3) \
+             ORDER BY CASE severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 \
                         WHEN 'low' THEN 2 ELSE 1 END DESC, status, last_seen DESC, id LIMIT ?4",
         )?;
         let rows = statement.query_map(
-            params![project_id, ANALYZER_KEY, status, bounded(limit, MAX_FINDINGS_QUERY)],
+            params![
+                project_id,
+                ANALYZER_KEY,
+                status,
+                bounded(limit, MAX_FINDINGS_QUERY)
+            ],
             |row| {
                 Ok(SecurityFindingRecord {
                     id: row.get(0)?,
@@ -285,8 +289,8 @@ impl<'a> CodeSecurityService<'a> {
         limit: usize,
     ) -> Result<Vec<FindingEvidenceRecord>, SecurityAnalysisError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json\
-             FROM finding_evidence WHERE finding_id = ?1\
+            "SELECT id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json \
+             FROM finding_evidence WHERE finding_id = ?1 \
              ORDER BY COALESCE(uri, ''), COALESCE(line_start, 0), id LIMIT ?2",
         )?;
         let rows = statement.query_map(
@@ -350,14 +354,14 @@ impl<'a> CodeSecurityService<'a> {
         limit: usize,
     ) -> Result<Vec<SecurityRunRecord>, SecurityAnalysisError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT a.id, a.project_id, a.status, a.started_at, a.finished_at, a.duration_ms,\
-                    COALESCE(m.files_considered, 0), COALESCE(m.files_analyzed, 0),\
-                    COALESCE(m.files_stale, 0), COALESCE(m.files_skipped, 0), COALESCE(m.observations, 0),\
-                    COALESCE(m.findings_opened, 0), COALESCE(m.findings_refreshed, 0), COALESCE(m.findings_resolved, 0),\
-                    COALESCE(m.hardcoded_credentials, 0), COALESCE(m.dynamic_execution, 0),\
-                    COALESCE(m.weak_crypto, 0), COALESCE(m.unsafe_c_apis, 0)\
-             FROM analysis_runs a LEFT JOIN security_run_metrics m ON m.run_id = a.id\
-             WHERE a.project_id = ?1 AND a.run_kind = 'security_analysis'\
+            "SELECT a.id, a.project_id, a.status, a.started_at, a.finished_at, a.duration_ms, \
+                    COALESCE(m.files_considered, 0), COALESCE(m.files_analyzed, 0), \
+                    COALESCE(m.files_stale, 0), COALESCE(m.files_skipped, 0), COALESCE(m.observations, 0), \
+                    COALESCE(m.findings_opened, 0), COALESCE(m.findings_refreshed, 0), COALESCE(m.findings_resolved, 0), \
+                    COALESCE(m.hardcoded_credentials, 0), COALESCE(m.dynamic_execution, 0), \
+                    COALESCE(m.weak_crypto, 0), COALESCE(m.unsafe_c_apis, 0) \
+             FROM analysis_runs a LEFT JOIN security_run_metrics m ON m.run_id = a.id \
+             WHERE a.project_id = ?1 AND a.run_kind = 'security_analysis' \
              ORDER BY a.started_at DESC, a.id DESC LIMIT ?2",
         )?;
         let rows = statement.query_map(
@@ -404,7 +408,10 @@ impl<'a> CodeSecurityService<'a> {
     }
 }
 
-fn project_root(connection: &Connection, project_id: &str) -> Result<PathBuf, SecurityAnalysisError> {
+fn project_root(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<PathBuf, SecurityAnalysisError> {
     connection
         .query_row(
             "SELECT root_path FROM projects WHERE id = ?1",
@@ -456,15 +463,17 @@ fn collect_observations(
             continue;
         }
         collection.files_analyzed += 1;
-        collection.observations.extend(
-            result
-                .observations
-                .into_iter()
-                .map(|observation| PersistedObservation {
-                    file: file.clone(),
-                    observation,
-                }),
-        );
+        collection
+            .observations
+            .extend(
+                result
+                    .observations
+                    .into_iter()
+                    .map(|observation| PersistedObservation {
+                        file: file.clone(),
+                        observation,
+                    }),
+            );
     }
     Ok(collection)
 }
@@ -474,8 +483,8 @@ fn load_active_files(
     project_id: &str,
 ) -> Result<Vec<IndexedSecurityFile>, SecurityAnalysisError> {
     let mut statement = connection.prepare(
-        "SELECT id, relative_path, language, content_hash, byte_size, parse_state\
-         FROM files WHERE project_id = ?1 AND is_active = 1\
+        "SELECT id, relative_path, language, content_hash, byte_size, parse_state \
+         FROM files WHERE project_id = ?1 AND is_active = 1 \
          ORDER BY relative_path, id LIMIT ?2",
     )?;
     let rows = statement.query_map(
@@ -517,7 +526,8 @@ fn read_verified_source(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES {
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_SOURCE_BYTES
+    {
         return Ok(None);
     }
     let canonical = fs::canonicalize(&candidate)?;
@@ -576,7 +586,7 @@ fn persist_collection(
                 continue;
             }
             resolved += transaction.execute(
-                "UPDATE findings SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, last_run_id = ?1\
+                "UPDATE findings SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, last_run_id = ?1 \
                  WHERE id = ?2 AND analyzer_key = ?3 AND status = 'open'",
                 params![run_id, finding_id, ANALYZER_KEY],
             )?;
@@ -584,10 +594,10 @@ fn persist_collection(
     }
 
     transaction.execute(
-        "INSERT INTO security_run_metrics(\
-           run_id, files_considered, files_analyzed, files_stale, files_skipped, observations,\
-           findings_opened, findings_refreshed, findings_resolved, hardcoded_credentials,\
-           dynamic_execution, weak_crypto, unsafe_c_apis\
+        "INSERT INTO security_run_metrics( \
+           run_id, files_considered, files_analyzed, files_stale, files_skipped, observations, \
+           findings_opened, findings_refreshed, findings_resolved, hardcoded_credentials, \
+           dynamic_execution, weak_crypto, unsafe_c_apis \
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             run_id,
@@ -634,13 +644,14 @@ fn load_open_fingerprints(
     project_id: &str,
 ) -> Result<BTreeMap<String, String>, SecurityAnalysisError> {
     let mut statement = connection.prepare(
-        "SELECT fingerprint, id FROM findings\
+        "SELECT fingerprint, id FROM findings \
          WHERE project_id = ?1 AND analyzer_key = ?2 AND status = 'open'",
     )?;
     let rows = statement.query_map(params![project_id, ANALYZER_KEY], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
-    rows.collect::<Result<BTreeMap<_, _>, _>>().map_err(Into::into)
+    rows.collect::<Result<BTreeMap<_, _>, _>>()
+        .map_err(Into::into)
 }
 
 fn persist_finding(
@@ -658,19 +669,19 @@ fn persist_finding(
         item.observation.end_line,
     )?;
     connection.execute(
-        "INSERT INTO findings(\
-           id, project_id, run_id, category, sub_category, severity, confidence, title, description,\
-           file_id, symbol_id, source_start_line, source_end_line, cwe, owasp, status, fingerprint,\
-           rule_version, first_seen, last_seen, analyzer_key, last_run_id, resolved_at\
-         ) VALUES (?1, ?2, ?3, 'security', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,\
-                   'open', ?15, ?16, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?17, ?3, NULL)\
-         ON CONFLICT(project_id, fingerprint) DO UPDATE SET\
-           run_id = excluded.run_id, category = excluded.category, sub_category = excluded.sub_category,\
-           severity = excluded.severity, confidence = excluded.confidence, title = excluded.title,\
-           description = excluded.description, file_id = excluded.file_id, symbol_id = excluded.symbol_id,\
-           source_start_line = excluded.source_start_line, source_end_line = excluded.source_end_line,\
-           cwe = excluded.cwe, owasp = excluded.owasp, status = 'open', rule_version = excluded.rule_version,\
-           last_seen = CURRENT_TIMESTAMP, analyzer_key = excluded.analyzer_key, last_run_id = excluded.last_run_id,\
+        "INSERT INTO findings( \
+           id, project_id, run_id, category, sub_category, severity, confidence, title, description, \
+           file_id, symbol_id, source_start_line, source_end_line, cwe, owasp, status, fingerprint, \
+           rule_version, first_seen, last_seen, analyzer_key, last_run_id, resolved_at \
+         ) VALUES (?1, ?2, ?3, 'security', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
+                   'open', ?15, ?16, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?17, ?3, NULL) \
+         ON CONFLICT(project_id, fingerprint) DO UPDATE SET \
+           run_id = excluded.run_id, category = excluded.category, sub_category = excluded.sub_category, \
+           severity = excluded.severity, confidence = excluded.confidence, title = excluded.title, \
+           description = excluded.description, file_id = excluded.file_id, symbol_id = excluded.symbol_id, \
+           source_start_line = excluded.source_start_line, source_end_line = excluded.source_end_line, \
+           cwe = excluded.cwe, owasp = excluded.owasp, status = 'open', rule_version = excluded.rule_version, \
+           last_seen = CURRENT_TIMESTAMP, analyzer_key = excluded.analyzer_key, last_run_id = excluded.last_run_id, \
            resolved_at = NULL",
         params![
             finding_id,
@@ -693,7 +704,10 @@ fn persist_finding(
         ],
     )?;
 
-    connection.execute("DELETE FROM finding_evidence WHERE finding_id = ?1", [&finding_id])?;
+    connection.execute(
+        "DELETE FROM finding_evidence WHERE finding_id = ?1",
+        [&finding_id],
+    )?;
     let evidence_id = deterministic_id("security-evidence", &[&finding_id, &item.file.id]);
     let analyzer_metadata: Value = serde_json::from_str(&item.observation.metadata_json)
         .unwrap_or_else(|_| json!({"metadata_parse_error": true}));
@@ -707,8 +721,8 @@ fn persist_finding(
     })
     .to_string();
     connection.execute(
-        "INSERT INTO finding_evidence(\
-           id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json\
+        "INSERT INTO finding_evidence( \
+           id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json \
          ) VALUES (?1, ?2, 'source', ?3, ?4, ?5, ?6, ?7)",
         params![
             evidence_id,
@@ -731,8 +745,8 @@ fn containing_symbol(
 ) -> Result<Option<String>, SecurityAnalysisError> {
     connection
         .query_row(
-            "SELECT id FROM symbols WHERE file_id = ?1 AND is_active = 1\
-               AND start_line <= ?2 AND end_line >= ?3\
+            "SELECT id FROM symbols WHERE file_id = ?1 AND is_active = 1 \
+               AND start_line <= ?2 AND end_line >= ?3 \
              ORDER BY (end_line - start_line) ASC, start_line DESC, id LIMIT 1",
             params![file_id, to_i64(start_line), to_i64(end_line)],
             |row| row.get(0),

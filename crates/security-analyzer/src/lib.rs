@@ -184,7 +184,10 @@ fn inspect_call(
         return;
     }
 
-    if !matches!(node.kind(), "call_expression" | "call" | "function_call_expression") {
+    if !matches!(
+        node.kind(),
+        "call_expression" | "call" | "function_call_expression"
+    ) {
         return;
     }
 
@@ -201,7 +204,9 @@ fn inspect_call(
         observations.push(dynamic_code_observation(node, &callee));
     }
 
-    if matches!(base.as_str(), "md5" | "sha1") || create_hash_uses_weak_algorithm(node, source, &base) {
+    if matches!(base.as_str(), "md5" | "sha1")
+        || create_hash_uses_weak_algorithm(node, source, &base)
+    {
         observations.push(observation(
             "security.weak_cryptographic_hash",
             "medium",
@@ -218,7 +223,10 @@ fn inspect_call(
     }
 
     if matches!(family, LanguageFamily::C | LanguageFamily::Cpp)
-        && matches!(base.as_str(), "gets" | "strcpy" | "strcat" | "sprintf" | "vsprintf")
+        && matches!(
+            base.as_str(),
+            "gets" | "strcpy" | "strcat" | "sprintf" | "vsprintf"
+        )
     {
         observations.push(observation(
             "security.unsafe_c_string_api",
@@ -398,9 +406,16 @@ fn contains_request_input(value: &str) -> bool {
 }
 
 fn contains_sql_identifier_position(value: &str) -> bool {
-    [" from ", " join ", " order by ", " group by ", " update ", " into "]
-        .iter()
-        .any(|needle| value.contains(needle))
+    [
+        " from ",
+        " join ",
+        " order by ",
+        " group by ",
+        " update ",
+        " into ",
+    ]
+    .iter()
+    .any(|needle| value.contains(needle))
 }
 
 fn is_explicitly_unsafe_raw_sql(callee: &str) -> bool {
@@ -437,11 +452,13 @@ fn is_outbound_http_sink(callee: &str) -> bool {
 }
 
 fn is_process_sink(callee: &str, base: &str) -> bool {
-    matches!(base, "system" | "popen" | "run" | "call" | "check_output" | "exec" | "execsync")
-        && (callee.starts_with("os.")
-            || callee.starts_with("subprocess.")
-            || callee.starts_with("child_process.")
-            || matches!(base, "exec" | "execsync"))
+    matches!(
+        base,
+        "system" | "popen" | "run" | "call" | "check_output" | "exec" | "execsync"
+    ) && (callee.starts_with("os.")
+        || callee.starts_with("subprocess.")
+        || callee.starts_with("child_process.")
+        || matches!(base, "exec" | "execsync"))
 }
 
 fn is_dynamic_execution_callee(callee: &str, family: LanguageFamily) -> bool {
@@ -451,7 +468,9 @@ fn is_dynamic_execution_callee(callee: &str, family: LanguageFamily) -> bool {
         }
         LanguageFamily::Python => matches!(callee, "eval" | "exec"),
         LanguageFamily::Php => callee == "eval",
-        LanguageFamily::Rust | LanguageFamily::Go | LanguageFamily::C | LanguageFamily::Cpp => false,
+        LanguageFamily::Rust | LanguageFamily::Go | LanguageFamily::C | LanguageFamily::Cpp => {
+            false
+        }
     }
 }
 
@@ -515,7 +534,9 @@ fn assignment_parts(node: Node<'_>) -> Option<(Node<'_>, Node<'_>)> {
         .find_map(|field| node.child_by_field_name(field))
         .or_else(|| {
             let count = node.named_child_count();
-            count.checked_sub(1).and_then(|index| node.named_child(index))
+            count
+                .checked_sub(1)
+                .and_then(|index| node.named_child(index))
         })?;
     if left.id() == right.id() {
         None
@@ -537,13 +558,15 @@ fn create_hash_uses_weak_algorithm(node: Node<'_>, source: &str, base: &str) -> 
     }
     let Some(arguments) = node.child_by_field_name("arguments").or_else(|| {
         let mut cursor = node.walk();
-        node.named_children(&mut cursor)
-            .find(|child| child.kind() == "arguments")
+        let arguments = node
+            .named_children(&mut cursor)
+            .find(|child| child.kind() == "arguments");
+        arguments
     }) else {
         return false;
     };
     let mut cursor = arguments.walk();
-    arguments.named_children(&mut cursor).any(|argument| {
+    let weak = arguments.named_children(&mut cursor).any(|argument| {
         if !is_plain_string_literal(argument) {
             return false;
         }
@@ -552,7 +575,8 @@ fn create_hash_uses_weak_algorithm(node: Node<'_>, source: &str, base: &str) -> 
             .ok()
             .map(strip_string_delimiters)
             .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "md5" | "sha1"))
-    })
+    });
+    weak
 }
 
 fn is_plain_string_literal(node: Node<'_>) -> bool {
@@ -635,7 +659,7 @@ fn normalize_callee(value: &str) -> String {
 
 fn callee_basename(value: &str) -> String {
     value
-        .rsplit(|character| matches!(character, '.' | ':' | '\\'))
+        .rsplit(['.', ':', '\\'])
         .find(|part| !part.is_empty())
         .unwrap_or(value)
         .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '_')
@@ -656,21 +680,12 @@ fn language_spec(name: &str) -> Option<(Language, LanguageFamily)> {
             tree_sitter_javascript::LANGUAGE.into(),
             LanguageFamily::JavaScript,
         )),
-        "Python" => Some((
-            tree_sitter_python::LANGUAGE.into(),
-            LanguageFamily::Python,
-        )),
-        "Rust" => Some((
-            tree_sitter_rust::LANGUAGE.into(),
-            LanguageFamily::Rust,
-        )),
+        "Python" => Some((tree_sitter_python::LANGUAGE.into(), LanguageFamily::Python)),
+        "Rust" => Some((tree_sitter_rust::LANGUAGE.into(), LanguageFamily::Rust)),
         "Go" => Some((tree_sitter_go::LANGUAGE.into(), LanguageFamily::Go)),
         "C" => Some((tree_sitter_c::LANGUAGE.into(), LanguageFamily::C)),
         "C++" => Some((tree_sitter_cpp::LANGUAGE.into(), LanguageFamily::Cpp)),
-        "PHP" => Some((
-            tree_sitter_php::LANGUAGE_PHP.into(),
-            LanguageFamily::Php,
-        )),
+        "PHP" => Some((tree_sitter_php::LANGUAGE_PHP.into(), LanguageFamily::Php)),
         _ => None,
     }
 }
@@ -716,7 +731,8 @@ mod tests {
 
     #[test]
     fn does_not_treat_javascript_regex_exec_as_dynamic_code_execution() {
-        let result = analyze_source("JavaScript", "const ok = /a/.exec(value);\n").expect("analyze");
+        let result =
+            analyze_source("JavaScript", "const ok = /a/.exec(value);\n").expect("analyze");
         assert!(result
             .observations
             .iter()
@@ -732,8 +748,7 @@ mod tests {
             .iter()
             .any(|item| item.rule_id == "security.weak_cryptographic_hash"));
 
-        let c = analyze_source("C", "void f(char *d, char *s) { strcpy(d, s); }\n")
-            .expect("c");
+        let c = analyze_source("C", "void f(char *d, char *s) { strcpy(d, s); }\n").expect("c");
         assert!(c
             .observations
             .iter()

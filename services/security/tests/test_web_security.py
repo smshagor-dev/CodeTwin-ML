@@ -9,8 +9,8 @@ SERVICE_ROOT = Path(__file__).resolve().parents[1]
 if str(SERVICE_ROOT) not in sys.path:
     sys.path.insert(0, str(SERVICE_ROOT))
 
-from codetwin_security import scan_repository
-from codetwin_security.cli import main
+from codetwin_security import scan_repository  # noqa: E402
+from codetwin_security.cli import main  # noqa: E402
 
 
 class WebSecurityAnalyzerTests(unittest.TestCase):

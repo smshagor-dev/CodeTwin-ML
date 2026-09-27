@@ -166,8 +166,8 @@ impl<'a> QaDiscoveryService<'a> {
         );
 
         self.database.connection().execute(
-            "INSERT INTO analysis_runs(\
-               id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint\
+            "INSERT INTO analysis_runs( \
+               id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint \
              ) VALUES (?1, ?2, 'running', ?3, CURRENT_TIMESTAMP, ?4, 'qa_discovery', ?5, ?6)",
             params![
                 run_id,
@@ -225,10 +225,10 @@ impl<'a> QaDiscoveryService<'a> {
         limit: usize,
     ) -> Result<Vec<QaArtifactRecord>, QaDiscoveryError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, relative_path, artifact_kind, framework, evidence_kind,\
-                    content_hash, byte_size, last_run_id, first_seen_at, last_seen_at, is_active\
-             FROM qa_test_artifacts\
-             WHERE project_id = ?1 AND (?2 = 0 OR is_active = 1) AND (?3 IS NULL OR framework = ?3)\
+            "SELECT id, project_id, relative_path, artifact_kind, framework, evidence_kind, \
+                    content_hash, byte_size, last_run_id, first_seen_at, last_seen_at, is_active \
+             FROM qa_test_artifacts \
+             WHERE project_id = ?1 AND (?2 = 0 OR is_active = 1) AND (?3 IS NULL OR framework = ?3) \
              ORDER BY is_active DESC, framework, artifact_kind, relative_path, evidence_kind, id LIMIT ?4",
         )?;
         let rows = statement.query_map(
@@ -263,12 +263,12 @@ impl<'a> QaDiscoveryService<'a> {
         project_id: &str,
     ) -> Result<Vec<QaFrameworkSummary>, QaDiscoveryError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT framework, COUNT(*),\
-                    SUM(CASE WHEN artifact_kind = 'test_file' THEN 1 ELSE 0 END),\
-                    SUM(CASE WHEN artifact_kind = 'config_file' THEN 1 ELSE 0 END)\
-             FROM qa_test_artifacts\
-             WHERE project_id = ?1 AND is_active = 1\
-             GROUP BY framework\
+            "SELECT framework, COUNT(*), \
+                    SUM(CASE WHEN artifact_kind = 'test_file' THEN 1 ELSE 0 END), \
+                    SUM(CASE WHEN artifact_kind = 'config_file' THEN 1 ELSE 0 END) \
+             FROM qa_test_artifacts \
+             WHERE project_id = ?1 AND is_active = 1 \
+             GROUP BY framework \
              ORDER BY framework",
         )?;
         let rows = statement.query_map([project_id], |row| {
@@ -288,12 +288,12 @@ impl<'a> QaDiscoveryService<'a> {
         limit: usize,
     ) -> Result<Vec<QaDiscoveryRunRecord>, QaDiscoveryError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT a.id, a.project_id, a.status, a.started_at, a.finished_at, a.duration_ms,\
-                    COALESCE(m.coverage_complete, 0), COALESCE(m.candidate_files, 0),\
-                    COALESCE(m.artifacts_discovered, 0), COALESCE(m.artifacts_skipped, 0),\
-                    COALESCE(m.test_files, 0), COALESCE(m.config_files, 0), COALESCE(m.framework_count, 0)\
-             FROM analysis_runs a LEFT JOIN qa_discovery_run_metrics m ON m.run_id = a.id\
-             WHERE a.project_id = ?1 AND a.run_kind = 'qa_discovery'\
+            "SELECT a.id, a.project_id, a.status, a.started_at, a.finished_at, a.duration_ms, \
+                    COALESCE(m.coverage_complete, 0), COALESCE(m.candidate_files, 0), \
+                    COALESCE(m.artifacts_discovered, 0), COALESCE(m.artifacts_skipped, 0), \
+                    COALESCE(m.test_files, 0), COALESCE(m.config_files, 0), COALESCE(m.framework_count, 0) \
+             FROM analysis_runs a LEFT JOIN qa_discovery_run_metrics m ON m.run_id = a.id \
+             WHERE a.project_id = ?1 AND a.run_kind = 'qa_discovery' \
              ORDER BY a.started_at DESC, a.id DESC LIMIT ?2",
         )?;
         let rows = statement.query_map(
@@ -336,7 +336,12 @@ fn project_root(
         .query_row(
             "SELECT root_path, path_identity FROM projects WHERE id = ?1",
             [project_id],
-            |row| Ok((PathBuf::from(row.get::<_, String>(0)?), row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    PathBuf::from(row.get::<_, String>(0)?),
+                    row.get::<_, String>(1)?,
+                ))
+            },
         )
         .optional()?
         .ok_or_else(|| QaDiscoveryError::ProjectNotFound(project_id.to_string()))
@@ -482,7 +487,9 @@ fn scan_project(
                 right.artifact_kind,
             ))
     });
-    collection.artifacts.dedup_by(|left, right| left.id == right.id);
+    collection
+        .artifacts
+        .dedup_by(|left, right| left.id == right.id);
     Ok(collection)
 }
 
@@ -517,18 +524,22 @@ fn persist_scan(
     collection: ScanCollection,
     duration_ms: u64,
 ) -> Result<QaDiscoveryRunSummary, QaDiscoveryError> {
-    let active_ids: BTreeSet<&str> = collection.artifacts.iter().map(|item| item.id.as_str()).collect();
+    let active_ids: BTreeSet<&str> = collection
+        .artifacts
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect();
     let transaction = connection.unchecked_transaction()?;
 
     for artifact in &collection.artifacts {
         transaction.execute(
-            "INSERT INTO qa_test_artifacts(\
-               id, project_id, relative_path, path_identity, artifact_kind, framework, evidence_kind,\
-               content_hash, byte_size, last_run_id, first_seen_at, last_seen_at, is_active\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
-             ON CONFLICT(project_id, path_identity, framework, evidence_kind) DO UPDATE SET\
-               id = excluded.id, relative_path = excluded.relative_path, artifact_kind = excluded.artifact_kind,\
-               content_hash = excluded.content_hash, byte_size = excluded.byte_size, last_run_id = excluded.last_run_id,\
+            "INSERT INTO qa_test_artifacts( \
+               id, project_id, relative_path, path_identity, artifact_kind, framework, evidence_kind, \
+               content_hash, byte_size, last_run_id, first_seen_at, last_seen_at, is_active \
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) \
+             ON CONFLICT(project_id, path_identity, framework, evidence_kind) DO UPDATE SET \
+               id = excluded.id, relative_path = excluded.relative_path, artifact_kind = excluded.artifact_kind, \
+               content_hash = excluded.content_hash, byte_size = excluded.byte_size, last_run_id = excluded.last_run_id, \
                last_seen_at = CURRENT_TIMESTAMP, is_active = 1",
             params![
                 artifact.id,
@@ -546,9 +557,8 @@ fn persist_scan(
     }
 
     if collection.coverage_complete {
-        let mut statement = transaction.prepare(
-            "SELECT id FROM qa_test_artifacts WHERE project_id = ?1 AND is_active = 1",
-        )?;
+        let mut statement = transaction
+            .prepare("SELECT id FROM qa_test_artifacts WHERE project_id = ?1 AND is_active = 1")?;
         let ids = statement
             .query_map([project_id], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -564,9 +574,9 @@ fn persist_scan(
     }
 
     transaction.execute(
-        "INSERT INTO qa_discovery_run_metrics(\
-           run_id, coverage_complete, candidate_files, artifacts_discovered, artifacts_skipped,\
-           test_files, config_files, framework_count\
+        "INSERT INTO qa_discovery_run_metrics( \
+           run_id, coverage_complete, candidate_files, artifacts_discovered, artifacts_skipped, \
+           test_files, config_files, framework_count \
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             run_id,
@@ -699,7 +709,9 @@ mod tests {
         let artifacts = service
             .list_artifacts(&project_id, true, Some("vitest"), 100)
             .expect("artifacts");
-        assert!(artifacts.iter().any(|item| item.relative_path == "src/math.test.ts"));
+        assert!(artifacts
+            .iter()
+            .any(|item| item.relative_path == "src/math.test.ts"));
     }
 
     #[test]
@@ -710,9 +722,13 @@ mod tests {
         let database = Database::open_in_memory().expect("db");
         let project_id = project(&database, root.path());
         let service = QaDiscoveryService::new(&database);
-        service.discover_project(&project_id).expect("first discovery");
+        service
+            .discover_project(&project_id)
+            .expect("first discovery");
         fs::remove_file(test_path).expect("remove");
-        service.discover_project(&project_id).expect("second discovery");
+        service
+            .discover_project(&project_id)
+            .expect("second discovery");
         let records = service
             .list_artifacts(&project_id, false, None, 100)
             .expect("artifacts");

@@ -5,10 +5,10 @@ use std::{
 
 use codetwin_core::{
     Database, GuidedSecurityStore, RepairApplicationItemRecord, RepairApplicationRunRecord,
-    RepairApplicationService,
-    RepairChangeRecord, RepairFindingRecord, RepairPlanRecord, RepairSourceSnapshot,
-    RepairVerificationItemRecord, RepairVerificationRunRecord, RepairWorkspaceQueryService,
-    SecurityFixAttemptRecord, SecurityFixService, VerifiedRepairService,
+    RepairApplicationService, RepairChangeRecord, RepairFindingRecord, RepairPlanRecord,
+    RepairSourceSnapshot, RepairVerificationItemRecord, RepairVerificationRunRecord,
+    RepairWorkspaceQueryService, SecurityFixAttemptRecord, SecurityFixService,
+    VerifiedRepairService,
 };
 
 use super::{with_database, AppState};
@@ -354,12 +354,7 @@ pub(crate) async fn rollback_repair_application(
         };
         if run.status == "rolled_back" {
             if let Some(attempt) = security_fix.as_ref() {
-                finalize_security_fix_rollback(
-                    &database,
-                    &attempt.id,
-                    &run.repair_id,
-                    &run,
-                )?;
+                finalize_security_fix_rollback(&database, &attempt.id, &run.repair_id, &run)?;
             } else {
                 GuidedSecurityStore::new(&database)
                     .sync_repair_application_state(&run.repair_id)
@@ -398,7 +393,6 @@ pub(crate) fn list_repair_application_items(
             .map_err(|error| error.to_string())
     })
 }
-
 
 #[cfg(test)]
 mod security_fix_boundary_tests {
@@ -458,12 +452,9 @@ mod security_fix_boundary_tests {
     fn generic_repair_plan_mutation_is_blocked_for_security_fix_links() {
         let database = boundary_database();
         for action in ["approved", "rejected", "verified"] {
-            let error = reject_generic_security_fix_plan_mutation(
-                &database,
-                "repair-security",
-                action,
-            )
-            .expect_err("security-linked generic mutation must be blocked");
+            let error =
+                reject_generic_security_fix_plan_mutation(&database, "repair-security", action)
+                    .expect_err("security-linked generic mutation must be blocked");
             assert!(error.contains("Guided Security Fix & Verify"));
         }
     }
@@ -471,11 +462,7 @@ mod security_fix_boundary_tests {
     #[test]
     fn ordinary_repair_plan_mutation_boundary_remains_open() {
         let database = boundary_database();
-        reject_generic_security_fix_plan_mutation(
-            &database,
-            "repair-ordinary",
-            "approved",
-        )
-        .expect("ordinary repair plan remains supported");
+        reject_generic_security_fix_plan_mutation(&database, "repair-ordinary", "approved")
+            .expect("ordinary repair plan remains supported");
     }
 }

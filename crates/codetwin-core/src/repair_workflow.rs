@@ -161,11 +161,11 @@ impl<'a> VerifiedRepairService<'a> {
         }
         let id = deterministic_id("repair-change", &[repair_id, &file.relative_path]);
         self.database.connection().execute(
-            "INSERT INTO repair_changes(id, repair_id, file_id, relative_path, base_content_hash, proposed_content_hash, proposed_content, proposed_byte_size)\
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)\
-             ON CONFLICT(repair_id, relative_path) DO UPDATE SET\
-               file_id=excluded.file_id, base_content_hash=excluded.base_content_hash,\
-               proposed_content_hash=excluded.proposed_content_hash, proposed_content=excluded.proposed_content,\
+            "INSERT INTO repair_changes(id, repair_id, file_id, relative_path, base_content_hash, proposed_content_hash, proposed_content, proposed_byte_size) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+             ON CONFLICT(repair_id, relative_path) DO UPDATE SET \
+               file_id=excluded.file_id, base_content_hash=excluded.base_content_hash, \
+               proposed_content_hash=excluded.proposed_content_hash, proposed_content=excluded.proposed_content, \
                proposed_byte_size=excluded.proposed_byte_size",
             params![
                 id,
@@ -297,7 +297,7 @@ impl<'a> VerifiedRepairService<'a> {
         );
         let tx = self.database.connection().unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO repair_verification_runs(id, repair_id, project_id, status, finding_status, matched_changes, mismatched_changes, missing_changes)\
+            "INSERT INTO repair_verification_runs(id, repair_id, project_id, status, finding_status, matched_changes, mismatched_changes, missing_changes) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 run_id,
@@ -334,7 +334,10 @@ impl<'a> VerifiedRepairService<'a> {
             .ok_or_else(|| RepairWorkflowError::PlanNotFound(run_id))
     }
 
-    pub fn get_plan(&self, repair_id: &str) -> Result<Option<RepairPlanRecord>, RepairWorkflowError> {
+    pub fn get_plan(
+        &self,
+        repair_id: &str,
+    ) -> Result<Option<RepairPlanRecord>, RepairWorkflowError> {
         self.database
             .connection()
             .query_row(
@@ -354,11 +357,14 @@ impl<'a> VerifiedRepairService<'a> {
     ) -> Result<Vec<RepairPlanRecord>, RepairWorkflowError> {
         ensure_project(self.database.connection(), project_id)?;
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, finding_id, title, rationale, status, created_at, updated_at, approved_at, verified_at\
-             FROM repair_plans WHERE project_id=?1 AND (?2 IS NULL OR status=?2)\
+            "SELECT id, project_id, finding_id, title, rationale, status, created_at, updated_at, approved_at, verified_at \
+             FROM repair_plans WHERE project_id=?1 AND (?2 IS NULL OR status=?2) \
              ORDER BY updated_at DESC, id DESC LIMIT ?3",
         )?;
-        let rows = statement.query_map(params![project_id, status, bounded(limit, MAX_PLANS_QUERY)], map_plan)?;
+        let rows = statement.query_map(
+            params![project_id, status, bounded(limit, MAX_PLANS_QUERY)],
+            map_plan,
+        )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -368,10 +374,13 @@ impl<'a> VerifiedRepairService<'a> {
         limit: usize,
     ) -> Result<Vec<RepairChangeRecord>, RepairWorkflowError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, repair_id, file_id, relative_path, base_content_hash, proposed_content_hash, proposed_content, proposed_byte_size, created_at\
+            "SELECT id, repair_id, file_id, relative_path, base_content_hash, proposed_content_hash, proposed_content, proposed_byte_size, created_at \
              FROM repair_changes WHERE repair_id=?1 ORDER BY relative_path, id LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![repair_id, bounded(limit, MAX_CHANGES_QUERY)], map_change)?;
+        let rows = statement.query_map(
+            params![repair_id, bounded(limit, MAX_CHANGES_QUERY)],
+            map_change,
+        )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -381,7 +390,7 @@ impl<'a> VerifiedRepairService<'a> {
         limit: usize,
     ) -> Result<Vec<RepairVerificationRunRecord>, RepairWorkflowError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, repair_id, project_id, status, finding_status, matched_changes, mismatched_changes, missing_changes, created_at\
+            "SELECT id, repair_id, project_id, status, finding_status, matched_changes, mismatched_changes, missing_changes, created_at \
              FROM repair_verification_runs WHERE repair_id=?1 ORDER BY created_at DESC, id DESC LIMIT ?2",
         )?;
         let rows = statement.query_map(
@@ -397,18 +406,19 @@ impl<'a> VerifiedRepairService<'a> {
         limit: usize,
     ) -> Result<Vec<RepairVerificationItemRecord>, RepairWorkflowError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT run_id, change_id, state, expected_hash, observed_hash FROM repair_verification_items\
+            "SELECT run_id, change_id, state, expected_hash, observed_hash FROM repair_verification_items \
              WHERE run_id=?1 ORDER BY change_id LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![run_id, bounded(limit, MAX_CHANGES_QUERY)], |row| {
-            Ok(RepairVerificationItemRecord {
-                run_id: row.get(0)?,
-                change_id: row.get(1)?,
-                state: row.get(2)?,
-                expected_hash: row.get(3)?,
-                observed_hash: row.get(4)?,
-            })
-        })?;
+        let rows =
+            statement.query_map(params![run_id, bounded(limit, MAX_CHANGES_QUERY)], |row| {
+                Ok(RepairVerificationItemRecord {
+                    run_id: row.get(0)?,
+                    change_id: row.get(1)?,
+                    state: row.get(2)?,
+                    expected_hash: row.get(3)?,
+                    observed_hash: row.get(4)?,
+                })
+            })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -420,7 +430,7 @@ impl<'a> VerifiedRepairService<'a> {
         self.database
             .connection()
             .query_row(
-                "SELECT id, repair_id, file_id, relative_path, base_content_hash, proposed_content_hash, proposed_content, proposed_byte_size, created_at\
+                "SELECT id, repair_id, file_id, relative_path, base_content_hash, proposed_content_hash, proposed_content, proposed_byte_size, created_at \
                  FROM repair_changes WHERE repair_id=?1 AND relative_path=?2",
                 params![repair_id, relative_path],
                 map_change,
@@ -436,7 +446,7 @@ impl<'a> VerifiedRepairService<'a> {
         self.database
             .connection()
             .query_row(
-                "SELECT id, repair_id, project_id, status, finding_status, matched_changes, mismatched_changes, missing_changes, created_at\
+                "SELECT id, repair_id, project_id, status, finding_status, matched_changes, mismatched_changes, missing_changes, created_at \
                  FROM repair_verification_runs WHERE id=?1",
                 [run_id],
                 map_verification,
@@ -452,7 +462,10 @@ struct CurrentFile {
     content_hash: String,
 }
 
-fn current_file(connection: &Connection, file_id: &str) -> Result<Option<CurrentFile>, RepairWorkflowError> {
+fn current_file(
+    connection: &Connection,
+    file_id: &str,
+) -> Result<Option<CurrentFile>, RepairWorkflowError> {
     connection
         .query_row(
             "SELECT project_id, relative_path, content_hash FROM files WHERE id=?1 AND is_active=1",
@@ -508,7 +521,11 @@ fn project_for_finding(
     finding_id: &str,
 ) -> Result<Option<String>, RepairWorkflowError> {
     connection
-        .query_row("SELECT project_id FROM findings WHERE id=?1", [finding_id], |row| row.get(0))
+        .query_row(
+            "SELECT project_id FROM findings WHERE id=?1",
+            [finding_id],
+            |row| row.get(0),
+        )
         .optional()
         .map_err(Into::into)
 }
@@ -518,7 +535,11 @@ fn finding_status(
     finding_id: &str,
 ) -> Result<Option<String>, RepairWorkflowError> {
     connection
-        .query_row("SELECT status FROM findings WHERE id=?1", [finding_id], |row| row.get(0))
+        .query_row(
+            "SELECT status FROM findings WHERE id=?1",
+            [finding_id],
+            |row| row.get(0),
+        )
         .optional()
         .map_err(Into::into)
 }

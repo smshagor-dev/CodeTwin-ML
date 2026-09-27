@@ -1,0 +1,4 @@
+# Project-wide limits for structural lints. Store/service functions here take
+# explicit evidence parameters and row tuples by design.
+too-many-arguments-threshold = 12
+type-complexity-threshold = 400

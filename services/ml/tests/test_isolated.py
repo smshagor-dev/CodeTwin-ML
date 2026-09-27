@@ -104,7 +104,7 @@ class IsolatedInferenceTests(unittest.TestCase):
             clear=True,
         ), patch(
             "codetwin_ml.isolated.subprocess.run",
-            return_value=self._completed(result),
+            side_effect=self._run_with_result(result),
         ) as run:
             run_isolated_inference("security_analysis", "x")
 

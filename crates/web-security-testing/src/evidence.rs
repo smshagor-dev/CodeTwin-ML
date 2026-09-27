@@ -5,10 +5,28 @@ use url::Url;
 use crate::{EvidenceObservation, ObservedResponse};
 
 const SENSITIVE_KEYS: &[&str] = &[
-    "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key",
-    "api-key", "apikey", "password", "passwd", "secret", "token", "access_token",
-    "refresh_token", "session", "sessionid", "email", "phone", "telephone", "ssn",
-    "social_security", "date_of_birth", "dob",
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "api-key",
+    "apikey",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "access_token",
+    "refresh_token",
+    "session",
+    "sessionid",
+    "email",
+    "phone",
+    "telephone",
+    "ssn",
+    "social_security",
+    "date_of_birth",
+    "dob",
 ];
 
 pub fn redact_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
@@ -37,8 +55,7 @@ pub fn redact_url_with_secrets(url: &Url, secrets: &[String]) -> String {
                 || secrets.iter().any(|secret| {
                     let secret = secret.trim();
                     !secret.is_empty() && value.as_ref() == secret
-                })
-            {
+                }) {
                 "<redacted>".to_string()
             } else {
                 truncate(&value, 256)
@@ -66,9 +83,7 @@ pub fn response_evidence(
     EvidenceObservation {
         summary: format!(
             "{label}: {method} {} -> HTTP {} in {} ms",
-            safe_url,
-            response.status,
-            response.elapsed_ms
+            safe_url, response.status, response.elapsed_ms
         ),
         request_metadata: serde_json::json!({
             "method": method,
@@ -101,9 +116,7 @@ fn evidence_body_excerpt(response: &ObservedResponse) -> Option<String> {
         || content_type.contains("xml")
         || content_type.contains("javascript")
         || content_type == "application/x-www-form-urlencoded";
-    textual.then(|| {
-        redact_body_with_secrets(&response.body, &response.redaction_secrets)
-    })
+    textual.then(|| redact_body_with_secrets(&response.body, &response.redaction_secrets))
 }
 
 pub fn redact_body_with_secrets(body: &[u8], secrets: &[String]) -> String {
@@ -172,9 +185,9 @@ fn redact_map(map: &mut Map<String, Value>) {
 }
 
 fn is_sensitive_name(name: &str) -> bool {
-    let normalized = name.to_ascii_lowercase().replace('-', "").replace('_', "");
+    let normalized = name.to_ascii_lowercase().replace(['-', '_'], "");
     SENSITIVE_KEYS.iter().any(|candidate| {
-        normalized.contains(&candidate.to_ascii_lowercase().replace('-', "").replace('_', ""))
+        normalized.contains(&candidate.to_ascii_lowercase().replace(['-', '_'], ""))
     })
 }
 
@@ -230,7 +243,10 @@ fn redact_prefixed_token(input: &str, prefix: &str, keep_prefix: bool) -> String
         while end < input.len() {
             let byte = input.as_bytes()[end];
             if byte.is_ascii_whitespace()
-                || matches!(byte, b'"' | b'\'' | b'<' | b'>' | b',' | b';' | b'&' | b')' | b']')
+                || matches!(
+                    byte,
+                    b'"' | b'\'' | b'<' | b'>' | b',' | b';' | b'&' | b')' | b']'
+                )
             {
                 break;
             }
@@ -248,14 +264,17 @@ fn redact_jwt_like_tokens(input: &str) -> String {
         let trimmed = part.trim_end_matches(char::is_whitespace);
         let suffix = &part[trimmed.len()..];
         let core = trimmed.trim_matches(|character: char| {
-            matches!(character, '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';')
+            matches!(
+                character,
+                '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+            )
         });
         let jwt_like = core.len() >= 32
             && core.starts_with("eyJ")
             && core.matches('.').count() == 2
-            && core
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'));
+            && core.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+            });
         if jwt_like {
             let prefix_len = trimmed.find(core).unwrap_or(0);
             output.push_str(&trimmed[..prefix_len]);
@@ -272,7 +291,11 @@ fn redact_jwt_like_tokens(input: &str) -> String {
 fn truncate(value: &str, max: usize) -> String {
     let mut chars = value.chars();
     let prefix: String = chars.by_ref().take(max).collect();
-    if chars.next().is_some() { format!("{prefix}…") } else { prefix }
+    if chars.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
 }
 
 #[cfg(test)]
@@ -311,7 +334,10 @@ mod tests {
 
         let echoed = redact_body_with_secrets(
             b"debug echo raw-primary-secret and custom-secret",
-            &["raw-primary-secret".to_string(), "custom-secret".to_string()],
+            &[
+                "raw-primary-secret".to_string(),
+                "custom-secret".to_string(),
+            ],
         );
         assert!(!echoed.contains("raw-primary-secret"));
         assert!(!echoed.contains("custom-secret"));
@@ -320,14 +346,11 @@ mod tests {
 
     #[test]
     fn runtime_request_seed_values_are_redacted_from_query_evidence() {
-        let url = Url::parse(
-            "https://example.test/search?q=Alice&csrf_token=runtime-token&mode=safe",
-        )
-        .expect("url");
-        let safe = redact_url_with_secrets(
-            &url,
-            &["Alice".to_string(), "runtime-token".to_string()],
-        );
+        let url =
+            Url::parse("https://example.test/search?q=Alice&csrf_token=runtime-token&mode=safe")
+                .expect("url");
+        let safe =
+            redact_url_with_secrets(&url, &["Alice".to_string(), "runtime-token".to_string()]);
         assert!(!safe.contains("Alice"));
         assert!(!safe.contains("runtime-token"));
         assert!(safe.contains("q=%3Credacted%3E"));

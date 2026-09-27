@@ -13,9 +13,8 @@ use std::{
 
 use codetwin_core::{
     AuthorizedWebSecurityStore, Database, FixEligibility, GuidedRetestInput, GuidedSecurityStore,
-    PatchSafetyClass, ProjectIndexService, RepairApplicationService,
-    SecurityFixService, SecurityRemediationCampaignCreate,
-    SecurityRemediationCampaignService, ValidationResultInput,
+    PatchSafetyClass, ProjectIndexService, RepairApplicationService, SecurityFixService,
+    SecurityRemediationCampaignCreate, SecurityRemediationCampaignService, ValidationResultInput,
     WebEndpointInput, WebEvidenceInput, WebFindingInput, WebFindingRecord, WebScanCreate,
 };
 use tempfile::tempdir;
@@ -167,12 +166,7 @@ fn handle_source_backed(mut stream: TcpStream, project_root: &Path) {
         }
         "/api/render" => handle_render(&mut stream, project_root, &query, false),
         "/api/render-ambiguous" => handle_render(&mut stream, project_root, &query, true),
-        "/api/object" => handle_object(
-            &mut stream,
-            project_root,
-            &query,
-            authorization.as_deref(),
-        ),
+        "/api/object" => handle_object(&mut stream, project_root, &query, authorization.as_deref()),
         "/headers/a" | "/headers/b" | "/headers/c" | "/headers/d" | "/headers/e" => {
             handle_security_headers(&mut stream, project_root)
         }
@@ -190,10 +184,9 @@ fn handle_search(
     project_root: &Path,
     query: &std::collections::HashMap<String, String>,
 ) {
-    let source = fs::read_to_string(project_root.join("src/api/search_controller.ts"))
-        .unwrap_or_default();
-    let parameterized =
-        source.contains("WHERE name = ?") && source.contains("[q]");
+    let source =
+        fs::read_to_string(project_root.join("src/api/search_controller.ts")).unwrap_or_default();
+    let parameterized = source.contains("WHERE name = ?") && source.contains("[q]");
     let q = query.get("q").map(String::as_str).unwrap_or("");
 
     if !parameterized {
@@ -293,8 +286,8 @@ fn handle_object(
     query: &std::collections::HashMap<String, String>,
     authorization: Option<&str>,
 ) {
-    let source = fs::read_to_string(project_root.join("src/api/object_controller.ts"))
-        .unwrap_or_default();
+    let source =
+        fs::read_to_string(project_root.join("src/api/object_controller.ts")).unwrap_or_default();
     let ownership_enforced = source.contains("findOwned(id, user.id)");
     let id = query.get("id").map(String::as_str).unwrap_or("a");
     let user = match authorization {
@@ -330,10 +323,8 @@ fn handle_object(
 }
 
 fn handle_security_headers(stream: &mut TcpStream, project_root: &Path) {
-    let source = fs::read_to_string(
-        project_root.join("src/middleware/security_headers.config.ts"),
-    )
-    .unwrap_or_default();
+    let source = fs::read_to_string(project_root.join("src/middleware/security_headers.config.ts"))
+        .unwrap_or_default();
     if source.contains("browserSecurityHeaders = true") {
         respond(
             stream,
@@ -343,7 +334,10 @@ fn handle_security_headers(stream: &mut TcpStream, project_root: &Path) {
                 ("Content-Security-Policy", "default-src 'self'"),
                 ("X-Content-Type-Options", "nosniff"),
                 ("Referrer-Policy", "strict-origin-when-cross-origin"),
-                ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
+                (
+                    "Permissions-Policy",
+                    "camera=(), microphone=(), geolocation=()",
+                ),
             ],
             "<html><body>header fixture</body></html>",
         );
@@ -370,7 +364,7 @@ fn request_header(request: &str, name: &str) -> Option<String> {
 fn respond(stream: &mut TcpStream, status: &str, headers: &[(&str, &str)], body: &str) {
     let mut response = format!(
         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.as_bytes().len()
+        body.len()
     );
     for (name, value) in headers {
         response.push_str(&format!("{name}: {value}\r\n"));
@@ -557,7 +551,10 @@ fn apply_generated_fix(
     let prepared = service
         .prepare_fix(&finding.id, false)
         .expect("prepare security fix");
-    assert_eq!(prepared.eligibility.result, FixEligibility::AutoFixCandidate);
+    assert_eq!(
+        prepared.eligibility.result,
+        FixEligibility::AutoFixCandidate
+    );
     assert!(prepared.root_causes[0].confidence >= 0.82);
 
     let review = service
@@ -679,7 +676,10 @@ fn targeted_retest_and_sync(
         .sync_retest_result(&finding.id, status)
         .expect("sync fix retest")
         .expect("fix attempt");
-    assert_eq!(status, "retest_passed", "targeted vulnerability still reproduced");
+    assert_eq!(
+        status, "retest_passed",
+        "targeted vulnerability still reproduced"
+    );
     assert_eq!(attempt.status, "fix_verified");
     assert_eq!(attempt.retest_state, "FIX_VERIFIED");
 }
@@ -730,9 +730,7 @@ fn sql_injection_fix_verify_changes_real_local_behavior() {
     );
     let finding = findings
         .iter()
-        .find(|item| {
-            item.category == "sql_injection" && item.endpoint_url.contains("/api/search")
-        })
+        .find(|item| item.category == "sql_injection" && item.endpoint_url.contains("/api/search"))
         .expect("SQLi finding");
 
     let service = SecurityFixService::new(&database);
@@ -818,10 +816,7 @@ fn xss_fix_verify_preserves_text_and_ambiguous_context_is_not_auto_patched() {
 
     let ambiguous = findings
         .iter()
-        .find(|item| {
-            item.category == "xss"
-                && item.endpoint_url.contains("/api/render-ambiguous")
-        })
+        .find(|item| item.category == "xss" && item.endpoint_url.contains("/api/render-ambiguous"))
         .expect("ambiguous XSS finding");
     let assessment = SecurityFixService::new(&database)
         .evaluate_eligibility(&ambiguous.id)
@@ -872,9 +867,7 @@ fn idor_guided_fix_verify_uses_two_local_identities_and_server_side_patch() {
     );
     let finding = findings
         .iter()
-        .find(|item| {
-            item.category == "access_control" && item.endpoint_url.contains("/api/object")
-        })
+        .find(|item| item.category == "access_control" && item.endpoint_url.contains("/api/object"))
         .expect("authorization finding");
     assert_eq!(finding.confidence, "Potential");
 
@@ -949,13 +942,7 @@ fn idor_guided_fix_verify_uses_two_local_identities_and_server_side_patch() {
         &prepared.attempt.id,
         "Owner/cross-owner authorization regression",
     );
-    targeted_retest_and_sync(
-        &database,
-        &config,
-        finding,
-        &primary,
-        Some(&secondary),
-    );
+    targeted_retest_and_sync(&database, &config, finding, &primary, Some(&secondary));
 }
 
 #[test]
@@ -1014,12 +1001,8 @@ fn unable_to_verify_never_becomes_fixed_when_local_target_is_down() {
     }
 
     let service = SecurityFixService::new(&database);
-    let prepared = service
-        .prepare_fix(&finding.id, false)
-        .expect("prepare");
-    let review = service
-        .generate_patch(&prepared.attempt.id)
-        .expect("patch");
+    let prepared = service.prepare_fix(&finding.id, false).expect("prepare");
+    let review = service.generate_patch(&prepared.attempt.id).expect("patch");
     service
         .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false)
         .expect("approve");
@@ -1090,7 +1073,8 @@ fn unable_to_verify_never_becomes_fixed_when_local_target_is_down() {
             detail_json: &serde_json::json!({
                 "reason": retest.failure_reason,
                 "responses_observed": retest.responses_observed,
-            }).to_string(),
+            })
+            .to_string(),
         })
         .expect("persist unable retest");
     let attempt = service
@@ -1101,7 +1085,6 @@ fn unable_to_verify_never_becomes_fixed_when_local_target_is_down() {
     assert_eq!(attempt.retest_state, "UNABLE_TO_VERIFY");
     assert_ne!(attempt.status, "fix_verified");
 }
-
 
 #[test]
 fn rollback_restores_exact_source_index_and_current_vulnerable_state() {
@@ -1145,15 +1128,11 @@ fn rollback_restores_exact_source_index_and_current_vulnerable_state() {
     );
     let finding = findings
         .iter()
-        .find(|item| {
-            item.category == "sql_injection" && item.endpoint_url.contains("/api/search")
-        })
+        .find(|item| item.category == "sql_injection" && item.endpoint_url.contains("/api/search"))
         .expect("SQLi finding");
 
     let service = SecurityFixService::new(&database);
-    let prepared = service
-        .prepare_fix(&finding.id, false)
-        .expect("prepare");
+    let prepared = service.prepare_fix(&finding.id, false).expect("prepare");
     let review = service
         .generate_patch(&prepared.attempt.id)
         .expect("generate patch");
@@ -1258,11 +1237,13 @@ fn rollback_restores_exact_source_index_and_current_vulnerable_state() {
         .iter()
         .any(|observed| observed.category == "sql_injection"));
 
-    let events = service
-        .events(&prepared.attempt.id, 100)
-        .expect("history");
-    assert!(events.iter().any(|item| item.event_type == "security_retest_completed"));
-    assert!(events.iter().any(|item| item.event_type == "fix_rolled_back"));
+    let events = service.events(&prepared.attempt.id, 100).expect("history");
+    assert!(events
+        .iter()
+        .any(|item| item.event_type == "security_retest_completed"));
+    assert!(events
+        .iter()
+        .any(|item| item.event_type == "fix_rolled_back"));
 }
 
 #[test]
@@ -1295,18 +1276,18 @@ fn still_vulnerable_creates_new_immutable_attempt_and_stops_automatic_loop() {
     );
     let finding = findings
         .iter()
-        .find(|item| {
-            item.category == "xss" && item.endpoint_url.contains("/api/render-ambiguous")
-        })
+        .find(|item| item.category == "xss" && item.endpoint_url.contains("/api/render-ambiguous"))
         .expect("ambiguous XSS finding");
 
     let service = SecurityFixService::new(&database);
-    let first = service
-        .prepare_fix(&finding.id, false)
-        .expect("attempt 1");
+    let first = service.prepare_fix(&finding.id, false).expect("attempt 1");
     assert_eq!(first.eligibility.result, FixEligibility::GuidedFixCandidate);
-    let source = fs::read_to_string(project.path().join("src/api/render-ambiguous-controller.ts"))
-        .expect("source");
+    let source = fs::read_to_string(
+        project
+            .path()
+            .join("src/api/render-ambiguous-controller.ts"),
+    )
+    .expect("source");
     let insufficient = source.replace(
         "export function getRenderAmbiguous",
         "/* reviewed but insufficient remediation */\nexport function getRenderAmbiguous",
@@ -1385,9 +1366,7 @@ fn still_vulnerable_creates_new_immutable_attempt_and_stops_automatic_loop() {
     assert_eq!(first_after.status, "still_vulnerable");
     let immutable_first = first_after.clone();
 
-    let second = service
-        .prepare_fix(&finding.id, false)
-        .expect("attempt 2");
+    let second = service.prepare_fix(&finding.id, false).expect("attempt 2");
     assert_eq!(second.attempt.attempt_number, 2);
     assert_ne!(second.attempt.id, first_after.id);
     assert!(second
@@ -1403,9 +1382,7 @@ fn still_vulnerable_creates_new_immutable_attempt_and_stops_automatic_loop() {
         "new attempts must not rewrite previous attempts"
     );
 
-    let third = service
-        .prepare_fix(&finding.id, false)
-        .expect("attempt 3");
+    let third = service.prepare_fix(&finding.id, false).expect("attempt 3");
     assert_eq!(third.attempt.attempt_number, 3);
     assert!(matches!(
         service.prepare_fix(&finding.id, false),
@@ -1477,18 +1454,23 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
             finding_ids: vec![finding.id.clone()],
         })
         .expect("regression campaign");
-    let analyzed = campaigns.analyze(&campaign.id).expect("analyze regression campaign");
+    let analyzed = campaigns
+        .analyze(&campaign.id)
+        .expect("analyze regression campaign");
     campaigns
-        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("campaign hash"))
+        .approve_plan(
+            &campaign.id,
+            analyzed.plan_hash.as_deref().expect("campaign hash"),
+        )
         .expect("approve regression campaign");
-    campaigns.start(&campaign.id).expect("start regression campaign");
+    campaigns
+        .start(&campaign.id)
+        .expect("start regression campaign");
 
     let service = SecurityFixService::new(&database);
-    let prepared = service
-        .prepare_fix(&finding.id, false)
-        .expect("prepare");
-    let source = fs::read_to_string(project.path().join("src/api/render_controller.ts"))
-        .expect("source");
+    let prepared = service.prepare_fix(&finding.id, false).expect("prepare");
+    let source =
+        fs::read_to_string(project.path().join("src/api/render_controller.ts")).expect("source");
     let regressive = source
         .replace(".innerHTML = q", ".textContent = q")
         .replace("return output;", "return null;");
@@ -1524,9 +1506,11 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
         .index_project(project.path())
         .expect("re-index");
 
-    let (normal_status, _) =
-        blocking_get(&format!("{}/api/render?q=hello", lab.base_url), None);
-    assert_eq!(normal_status, 500, "patch intentionally introduced a regression");
+    let (normal_status, _) = blocking_get(&format!("{}/api/render?q=hello", lab.base_url), None);
+    assert_eq!(
+        normal_status, 500,
+        "patch intentionally introduced a regression"
+    );
     service
         .add_validation_result(
             &prepared.attempt.id,
@@ -1586,7 +1570,9 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
     assert_eq!(final_attempt.status, "validation_failed");
     assert_ne!(final_attempt.status, "fix_verified");
 
-    let campaign_state = campaigns.sync(&campaign.id).expect("sync regression campaign");
+    let campaign_state = campaigns
+        .sync(&campaign.id)
+        .expect("sync regression campaign");
     assert_eq!(campaign_state.status, "BLOCKED");
     let member = campaigns
         .findings(&campaign.id)
@@ -1595,9 +1581,14 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
         .next()
         .expect("regression campaign member");
     assert_eq!(member.status, "REGRESSION_DETECTED");
-    assert_eq!(campaigns.summary(&campaign.id).expect("summary").verified_fixed, 0);
+    assert_eq!(
+        campaigns
+            .summary(&campaign.id)
+            .expect("summary")
+            .verified_fixed,
+        0
+    );
 }
-
 
 #[test]
 fn targeted_retest_transport_scope_and_auth_failures_never_verify() {
@@ -1621,7 +1612,10 @@ fn targeted_retest_transport_scope_and_auth_failures_never_verify() {
         &base,
         &AuthContext::default(),
         None,
-        &request_for(format!("{}/api/auth-search?q=hello", lab.base_url), "sql_injection"),
+        &request_for(
+            format!("{}/api/auth-search?q=hello", lab.base_url),
+            "sql_injection",
+        ),
         Arc::new(AtomicBool::new(false)),
     )
     .expect("auth-failure retest");
@@ -1661,7 +1655,10 @@ fn targeted_retest_transport_scope_and_auth_failures_never_verify() {
         &timeout_config,
         &primary_auth(),
         None,
-        &request_for(format!("{}/api/slow-search?q=hello", lab.base_url), "sql_injection"),
+        &request_for(
+            format!("{}/api/slow-search?q=hello", lab.base_url),
+            "sql_injection",
+        ),
         Arc::new(AtomicBool::new(false)),
     )
     .expect("timeout retest outcome");
@@ -1714,9 +1711,11 @@ fn targeted_retest_transport_scope_and_auth_failures_never_verify() {
         &request_for(format!("{}/api/render?q=hello", lab.base_url), "xss"),
         Arc::new(AtomicBool::new(false)),
     );
-    assert!(matches!(scope_rejected, Err(web_security_testing::ScanError::Scope(_))));
+    assert!(matches!(
+        scope_rejected,
+        Err(web_security_testing::ScanError::Scope(_))
+    ));
 }
-
 
 fn apply_campaign_guided_idor_fix(
     database: &Database,
@@ -1797,13 +1796,7 @@ fn apply_campaign_guided_idor_fix(
         &prepared.attempt.id,
         "Campaign owner/cross-owner authorization regression",
     );
-    targeted_retest_and_sync(
-        database,
-        config,
-        finding,
-        primary,
-        Some(secondary),
-    );
+    targeted_retest_and_sync(database, config, finding, primary, Some(secondary));
     prepared.attempt.id
 }
 
@@ -1937,9 +1930,14 @@ fn remediation_campaign_collapses_shared_security_header_root_but_retests_every_
         "five identical header observations should collapse to one probable shared root"
     );
     campaigns
-        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("plan hash"))
+        .approve_plan(
+            &campaign.id,
+            analyzed.plan_hash.as_deref().expect("plan hash"),
+        )
         .expect("approve shared-header campaign");
-    campaigns.start(&campaign.id).expect("start shared-header campaign");
+    campaigns
+        .start(&campaign.id)
+        .expect("start shared-header campaign");
 
     let members = campaigns.findings(&campaign.id).expect("campaign members");
     let primary_member = members
@@ -2055,7 +2053,9 @@ fn remediation_campaign_collapses_shared_security_header_root_but_retests_every_
     assert!(members.iter().all(|item| item.status == "VERIFIED"));
     let attempt_count: i64 = database
         .connection()
-        .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| {
+            row.get(0)
+        })
         .expect("fix attempt count");
     assert_eq!(
         attempt_count, 1,
@@ -2103,7 +2103,9 @@ fn remediation_campaign_collapses_shared_security_header_root_but_retests_every_
     campaigns
         .finalize_completion_verification(&campaign.id)
         .expect("finalize shared-header verification");
-    let completed = campaigns.complete(&campaign.id).expect("complete shared-header campaign");
+    let completed = campaigns
+        .complete(&campaign.id)
+        .expect("complete shared-header campaign");
     assert_eq!(completed.status, "COMPLETED");
     assert_eq!(
         campaigns
@@ -2146,9 +2148,7 @@ fn remediation_campaign_orchestrates_source_backed_fixes_without_bypassing_fix_v
 
     let sql = findings
         .iter()
-        .find(|item| {
-            item.category == "sql_injection" && item.endpoint_url.contains("/api/search")
-        })
+        .find(|item| item.category == "sql_injection" && item.endpoint_url.contains("/api/search"))
         .expect("campaign SQLi finding");
     let xss = findings
         .iter()
@@ -2160,9 +2160,7 @@ fn remediation_campaign_orchestrates_source_backed_fixes_without_bypassing_fix_v
         .expect("campaign XSS finding");
     let idor = findings
         .iter()
-        .find(|item| {
-            item.category == "access_control" && item.endpoint_url.contains("/api/object")
-        })
+        .find(|item| item.category == "access_control" && item.endpoint_url.contains("/api/object"))
         .expect("campaign IDOR finding");
 
     database
@@ -2198,7 +2196,9 @@ fn remediation_campaign_orchestrates_source_backed_fixes_without_bypassing_fix_v
     // Campaign-plan approval is intentionally weaker than patch approval.
     let attempt_count_before_approval: i64 = database
         .connection()
-        .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| {
+            row.get(0)
+        })
         .expect("attempt count before campaign approval");
     assert_eq!(attempt_count_before_approval, 0);
     campaigns
@@ -2206,7 +2206,9 @@ fn remediation_campaign_orchestrates_source_backed_fixes_without_bypassing_fix_v
         .expect("approve campaign plan");
     let attempt_count_after_approval: i64 = database
         .connection()
-        .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| {
+            row.get(0)
+        })
         .expect("attempt count after campaign approval");
     assert_eq!(
         attempt_count_after_approval, 0,
@@ -2221,7 +2223,9 @@ fn remediation_campaign_orchestrates_source_backed_fixes_without_bypassing_fix_v
     let (sql_attempt, _) = apply_generated_fix(&database, project.path(), sql);
     record_runtime_validation(&database, &sql_attempt, "Campaign SQL regression");
     targeted_retest_and_sync(&database, &config, sql, &primary, None);
-    campaigns.sync(&campaign.id).expect("sync SQL campaign result");
+    campaigns
+        .sync(&campaign.id)
+        .expect("sync SQL campaign result");
     assert_eq!(
         campaigns
             .findings(&campaign.id)
@@ -2236,7 +2240,9 @@ fn remediation_campaign_orchestrates_source_backed_fixes_without_bypassing_fix_v
     let (xss_attempt, _) = apply_generated_fix(&database, project.path(), xss);
     record_runtime_validation(&database, &xss_attempt, "Campaign XSS regression");
     targeted_retest_and_sync(&database, &config, xss, &primary, None);
-    campaigns.sync(&campaign.id).expect("sync XSS campaign result");
+    campaigns
+        .sync(&campaign.id)
+        .expect("sync XSS campaign result");
     assert_eq!(
         campaigns
             .findings(&campaign.id)
@@ -2257,7 +2263,9 @@ fn remediation_campaign_orchestrates_source_backed_fixes_without_bypassing_fix_v
         &primary,
         &secondary,
     );
-    campaigns.sync(&campaign.id).expect("sync IDOR campaign result");
+    campaigns
+        .sync(&campaign.id)
+        .expect("sync IDOR campaign result");
     assert_eq!(
         SecurityFixService::new(&database)
             .get_attempt(&idor_attempt)

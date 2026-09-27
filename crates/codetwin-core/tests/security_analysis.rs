@@ -29,14 +29,13 @@ fn appsec_findings_are_persisted_with_redacted_secret_evidence() {
     let findings = security
         .list_findings(&index.project_id, Some("open"), 100)
         .expect("findings");
-    assert!(findings
-        .iter()
-        .any(|finding| finding.rule_id == "security.hardcoded_credential_literal"
-            && finding.cwe.as_deref() == Some("CWE-798")));
-    assert!(findings
-        .iter()
-        .any(|finding| finding.rule_id == "security.dynamic_code_execution"
-            && finding.cwe.as_deref() == Some("CWE-95")));
+    assert!(findings.iter().any(|finding| finding.rule_id
+        == "security.hardcoded_credential_literal"
+        && finding.cwe.as_deref() == Some("CWE-798")));
+    assert!(findings.iter().any(
+        |finding| finding.rule_id == "security.dynamic_code_execution"
+            && finding.cwe.as_deref() == Some("CWE-95")
+    ));
 
     let hardcoded = findings
         .iter()
@@ -50,7 +49,9 @@ fn appsec_findings_are_persisted_with_redacted_secret_evidence() {
     assert!(!evidence[0]
         .metadata_json
         .contains("sk_live_super_secret_value"));
-    assert!(evidence[0].metadata_json.contains("\"literal_redacted\":true"));
+    assert!(evidence[0]
+        .metadata_json
+        .contains("\"literal_redacted\":true"));
 }
 
 #[test]

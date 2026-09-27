@@ -6,8 +6,8 @@ mod repair_commands;
 mod runtime_commands;
 mod security_campaign_commands;
 mod security_fix_commands;
-mod workspace_commands;
 mod web_security_commands;
+mod workspace_commands;
 
 use std::{
     collections::HashMap,
@@ -19,31 +19,30 @@ use std::{
 };
 
 use codetwin_core::{
-    AuthorizedWebSecurityStore, CodeQualityService, CodeSecurityService, Database, FindingEvidenceRecord,
-    GraphNeighborhood, GuidedSecurityStore,
-    GraphSummary, ImpactAnalysisService, ImpactReport, ImportReferenceRecord, IndexRunRecord,
-    IndexSummary, LanguageServerConfig, LanguageServerConfigService, LanguageServerKind,
-    ProjectIndexService, ProjectQueryService, QualityFindingRecord, QualityRuleRecord,
-    QualityRunRecord, QualityRunSummary, ReferenceRefreshSummary, RepairApplicationService,
-    SecurityFindingRecord, WorkspaceService,
+    AuthorizedWebSecurityStore, CodeQualityService, CodeSecurityService, Database,
+    FindingEvidenceRecord, GraphNeighborhood, GraphSummary, GuidedSecurityStore,
+    ImpactAnalysisService, ImpactReport, ImportReferenceRecord, IndexRunRecord, IndexSummary,
+    LanguageServerConfig, LanguageServerConfigService, LanguageServerKind, ProjectIndexService,
+    ProjectQueryService, QualityFindingRecord, QualityRuleRecord, QualityRunRecord,
+    QualityRunSummary, ReferenceRefreshSummary, RepairApplicationService, SecurityFindingRecord,
     SecurityRuleRecord, SecurityRunRecord, SecurityRunSummary, SemanticEnrichmentRequest,
     SemanticEnrichmentService, SemanticImportResolutionRecord, SemanticQueryService,
     SemanticReferenceRecord, SemanticRelationDirection, SemanticRelationRecord,
     SemanticResolutionSummary, SemanticRunRecord, SemanticRunSummary, SemanticSymbolResolver,
     SemanticSymbolStateRecord, SourceFileRecord, SymbolRecord, SymbolReferenceObservationRecord,
-    SymbolReferenceService, SymbolSearchQuery,
+    SymbolReferenceService, SymbolSearchQuery, WorkspaceService,
 };
 use database_commands::{
     database_history, list_database_artifacts, list_database_evidence, list_database_findings,
     list_database_rules, run_database_analysis,
 };
 use guided_security_commands::{
-    approve_guided_security_plan, compare_guided_security_scans,
-    correlate_guided_security_sources, get_guided_security_session, guided_security_risk_graph,
-    guided_security_scorecard, list_guided_security_activity, list_guided_security_plan_items,
+    approve_guided_security_plan, compare_guided_security_scans, correlate_guided_security_sources,
+    get_guided_security_session, guided_security_risk_graph, guided_security_scorecard,
+    list_guided_security_activity, list_guided_security_plan_items,
     list_guided_security_retest_candidates, list_guided_security_retests,
-    list_guided_security_sessions, prepare_guided_security_fix,
-    prepare_guided_security_test, retest_guided_security_finding,
+    list_guided_security_sessions, prepare_guided_security_fix, prepare_guided_security_test,
+    retest_guided_security_finding,
 };
 use ml_commands::{
     link_ml_finding, list_ml_finding_links, ml_inference_history, ml_inference_plan, ml_models,
@@ -52,10 +51,9 @@ use ml_commands::{
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
-    approve_qa_execution_plan, cancel_qa_execution, create_qa_execution_plan,
-    list_qa_artifacts, list_qa_execution_plans, list_qa_execution_runs, list_qa_frameworks,
-    qa_discovery_history, qa_execution_availability, qa_toolchain_sha256, run_qa_discovery,
-    run_qa_execution_plan,
+    approve_qa_execution_plan, cancel_qa_execution, create_qa_execution_plan, list_qa_artifacts,
+    list_qa_execution_plans, list_qa_execution_runs, list_qa_frameworks, qa_discovery_history,
+    qa_execution_availability, qa_toolchain_sha256, run_qa_discovery, run_qa_execution_plan,
 };
 use repair_commands::{
     add_repair_file_replacement, apply_repair_plan, approve_repair_plan, create_repair_plan,
@@ -73,12 +71,12 @@ use security_campaign_commands::{
     assess_security_remediation_campaign_rollback,
     begin_security_remediation_campaign_completion_verification,
     cancel_security_remediation_campaign, complete_security_remediation_campaign,
+    create_security_remediation_campaign,
     finalize_security_remediation_campaign_completion_verification,
-    create_security_remediation_campaign, get_security_remediation_campaign,
-    list_security_remediation_campaign_events, list_security_remediation_campaign_findings,
-    list_security_remediation_campaign_relationships, list_security_remediation_campaigns,
-    pause_security_remediation_campaign, resume_security_remediation_campaign,
-    rollback_security_remediation_campaign_fix,
+    get_security_remediation_campaign, list_security_remediation_campaign_events,
+    list_security_remediation_campaign_findings, list_security_remediation_campaign_relationships,
+    list_security_remediation_campaigns, pause_security_remediation_campaign,
+    resume_security_remediation_campaign, rollback_security_remediation_campaign_fix,
     security_remediation_campaign_before_after, security_remediation_campaign_debt,
     security_remediation_campaign_regression_tracking, security_remediation_campaign_summary,
     skip_security_remediation_campaign_finding, start_security_remediation_campaign,
@@ -96,8 +94,7 @@ use web_security_commands::{
     cancel_web_security_scan, export_web_security_report, generate_web_security_report,
     get_web_security_scan, list_source_routes, list_web_security_endpoints,
     list_web_security_evidence, list_web_security_findings, list_web_security_scans,
-    list_web_source_endpoint_links, start_web_security_scan,
-    update_web_security_finding_status,
+    list_web_source_endpoint_links, start_web_security_scan, update_web_security_finding_status,
 };
 use workspace_commands::{
     add_website, check_website, get_app_preferences, list_projects, list_websites, recent_activity,
@@ -533,10 +530,10 @@ fn quality_history(
 }
 
 #[tauri::command]
-fn list_quality_rules(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<QualityRuleRecord>, String> {
-    with_database(&state, |database| Ok(CodeQualityService::new(database).rules()))
+fn list_quality_rules(state: tauri::State<'_, AppState>) -> Result<Vec<QualityRuleRecord>, String> {
+    with_database(&state, |database| {
+        Ok(CodeQualityService::new(database).rules())
+    })
 }
 
 #[tauri::command]
@@ -604,7 +601,9 @@ fn security_history(
 fn list_security_rules(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<SecurityRuleRecord>, String> {
-    with_database(&state, |database| Ok(CodeSecurityService::new(database).rules()))
+    with_database(&state, |database| {
+        Ok(CodeSecurityService::new(database).rules())
+    })
 }
 
 fn release_smoke_request() -> Result<Option<(PathBuf, PathBuf)>, String> {
@@ -629,7 +628,10 @@ fn release_smoke_request() -> Result<Option<(PathBuf, PathBuf)>, String> {
     Ok(Some((fixture, database)))
 }
 
-fn run_release_smoke(fixture: &std::path::Path, database_path: &std::path::Path) -> Result<(), String> {
+fn run_release_smoke(
+    fixture: &std::path::Path,
+    database_path: &std::path::Path,
+) -> Result<(), String> {
     let fixture = std::fs::canonicalize(fixture)
         .map_err(|error| format!("release smoke fixture could not be opened: {error}"))?;
     let fixture_metadata = std::fs::symlink_metadata(&fixture)

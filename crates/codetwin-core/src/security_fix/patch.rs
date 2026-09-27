@@ -1,10 +1,7 @@
 use super::*;
 
 impl<'a> SecurityFixService<'a> {
-    pub fn generate_patch(
-        &self,
-        attempt_id: &str,
-    ) -> Result<PatchReview, SecurityFixError> {
+    pub fn generate_patch(&self, attempt_id: &str) -> Result<PatchReview, SecurityFixError> {
         let attempt = self
             .get_attempt(attempt_id)?
             .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))?;
@@ -83,10 +80,7 @@ impl<'a> SecurityFixService<'a> {
         self.review_attempt(attempt_id)
     }
 
-    pub fn review_attempt(
-        &self,
-        attempt_id: &str,
-    ) -> Result<PatchReview, SecurityFixError> {
+    pub fn review_attempt(&self, attempt_id: &str) -> Result<PatchReview, SecurityFixError> {
         let attempt = self
             .get_attempt(attempt_id)?
             .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))?;
@@ -230,10 +224,7 @@ impl<'a> SecurityFixService<'a> {
         }
     }
 
-    pub fn assert_application_allowed(
-        &self,
-        attempt_id: &str,
-    ) -> Result<String, SecurityFixError> {
+    pub fn assert_application_allowed(&self, attempt_id: &str) -> Result<String, SecurityFixError> {
         let attempt = self
             .get_attempt(attempt_id)?
             .ok_or_else(|| SecurityFixError::AttemptNotFound(attempt_id.to_string()))?;
@@ -377,10 +368,10 @@ impl<'a> SecurityFixService<'a> {
 
             let old_lower = source.content.to_ascii_lowercase();
             let new_lower = change.proposed_content.to_ascii_lowercase();
-            let additions = added_lines(&source.content, &change.proposed_content)
-                .to_ascii_lowercase();
-            let removals = removed_lines(&source.content, &change.proposed_content)
-                .to_ascii_lowercase();
+            let additions =
+                added_lines(&source.content, &change.proposed_content).to_ascii_lowercase();
+            let removals =
+                removed_lines(&source.content, &change.proposed_content).to_ascii_lowercase();
 
             for (needle, message) in [
                 (
@@ -395,7 +386,10 @@ impl<'a> SecurityFixService<'a> {
                     "dangerouslysetinnerhtml",
                     "Unsafe React HTML rendering was introduced.",
                 ),
-                ("child_process", "Shell or process execution surface was introduced."),
+                (
+                    "child_process",
+                    "Shell or process execution surface was introduced.",
+                ),
                 ("eval(", "Dynamic code evaluation was introduced."),
                 ("shell=true", "Shell execution was introduced."),
             ] {
@@ -404,8 +398,7 @@ impl<'a> SecurityFixService<'a> {
                 }
             }
             if additions.contains("access-control-allow-origin") && additions.contains('*') {
-                rejected_reasons
-                    .push("Patch introduces an unrestricted CORS wildcard.".into());
+                rejected_reasons.push("Patch introduces an unrestricted CORS wildcard.".into());
             }
             if looks_like_secret(&additions) {
                 rejected_reasons
@@ -460,17 +453,16 @@ impl<'a> SecurityFixService<'a> {
                 ));
             }
 
-            if attempt.category == "sql_injection" {
-                if contains_interpolated_sql(&new_lower, finding.parameter_name.as_deref())
+            if attempt.category == "sql_injection"
+                && (contains_interpolated_sql(&new_lower, finding.parameter_name.as_deref())
                     || introduced_sql_concatenation(&additions)
                     || additions.contains("replace(\"'\"")
-                    || additions.contains("replace('\\''")
-                {
-                    rejected_reasons.push(
+                    || additions.contains("replace('\\''"))
+            {
+                rejected_reasons.push(
                         "SQL injection remediation still uses interpolation, concatenation, or manual quote escaping instead of parameter binding."
                             .into(),
                     );
-                }
             }
             if attempt.category == "xss"
                 && !is_test_path(&change.relative_path)
@@ -527,18 +519,12 @@ impl<'a> SecurityFixService<'a> {
         })
     }
 
-    fn unified_diff(
-        &self,
-        changes: &[RepairChangeRecord],
-    ) -> Result<String, SecurityFixError> {
+    fn unified_diff(&self, changes: &[RepairChangeRecord]) -> Result<String, SecurityFixError> {
         let mut output = String::new();
         for change in changes {
-            let file_id = change
-                .file_id
-                .as_deref()
-                .ok_or_else(|| SecurityFixError::State(
-                    "repair change is not bound to an indexed file".into(),
-                ))?;
+            let file_id = change.file_id.as_deref().ok_or_else(|| {
+                SecurityFixError::State("repair change is not bound to an indexed file".into())
+            })?;
             let source = RepairWorkspaceQueryService::new(self.database)
                 .read_source_snapshot(file_id)
                 .map_err(|error| SecurityFixError::Source(error.to_string()))?;
@@ -556,10 +542,7 @@ impl<'a> SecurityFixService<'a> {
     }
 }
 
-pub(super) fn propose_bounded_patch(
-    finding: &FindingContext,
-    content: &str,
-) -> Option<String> {
+pub(super) fn propose_bounded_patch(finding: &FindingContext, content: &str) -> Option<String> {
     match finding.category.as_str() {
         "sql_injection" => {
             rewrite_js_sql_parameter_binding(content, finding.parameter_name.as_deref()?)
@@ -594,9 +577,8 @@ fn rewrite_js_sql_parameter_binding(content: &str, parameter: &str) -> Option<St
                 .replace(&quoted_double, "?")
                 .replace(&marker, "?");
             let last_tick = line.rfind(tick)?;
-            let close = line[last_tick + tick.len_utf8()..].find(')')?
-                + last_tick
-                + tick.len_utf8();
+            let close =
+                line[last_tick + tick.len_utf8()..].find(')')? + last_tick + tick.len_utf8();
             line.insert_str(close, &format!(", [{parameter}]"));
             if !line.contains(&marker) {
                 lines.push(line);
@@ -657,7 +639,10 @@ fn unsafe_patch_path(value: &str) -> bool {
     normalized.is_empty()
         || normalized.starts_with('/')
         || normalized.starts_with("//")
-        || normalized.as_bytes().get(1).is_some_and(|byte| *byte == b':')
+        || normalized
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| *byte == b':')
         || normalized
             .split('/')
             .any(|segment| matches!(segment, ".." | "."))
@@ -687,9 +672,16 @@ fn is_frontend_only_path(path: &str) -> bool {
 
 fn looks_like_secret(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    ["api_key", "apikey", "secret", "password", "private_key", "bearer "]
-        .iter()
-        .any(|needle| lower.contains(needle))
+    [
+        "api_key",
+        "apikey",
+        "secret",
+        "password",
+        "private_key",
+        "bearer ",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
         && (lower.contains("=\"")
             || lower.contains("='")
             || lower.contains(": \"")
@@ -800,9 +792,7 @@ fn patch_hash(changes: &[RepairChangeRecord]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn approved_file_identity(
-    changes: &[RepairChangeRecord],
-) -> Vec<BTreeMap<String, String>> {
+fn approved_file_identity(changes: &[RepairChangeRecord]) -> Vec<BTreeMap<String, String>> {
     let mut values = changes
         .iter()
         .map(|change| {

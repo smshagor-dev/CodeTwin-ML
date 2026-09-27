@@ -70,8 +70,8 @@ impl<'a> SemanticSymbolResolver<'a> {
         let observations = load_observations(connection, project_id)?;
         let transaction = connection.unchecked_transaction()?;
         transaction.execute(
-            "UPDATE symbol_reference_observations\
-             SET resolution_state = 'observed', resolved_target_symbol_id = NULL, updated_at = CURRENT_TIMESTAMP\
+            "UPDATE symbol_reference_observations \
+             SET resolution_state = 'observed', resolved_target_symbol_id = NULL, updated_at = CURRENT_TIMESTAMP \
              WHERE project_id = ?1",
             [project_id],
         )?;
@@ -131,11 +131,11 @@ impl<'a> SemanticSymbolResolver<'a> {
     ) -> Result<Vec<SemanticReferenceRecord>, SemanticResolutionError> {
         let limit = limit.clamp(1, MAX_RESOLUTION_RESULTS);
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, source_file_id, name, kind, start_line, start_column, end_line, end_column,\
-                    resolution_state, resolved_target_symbol_id\
-             FROM symbol_reference_observations\
-             WHERE source_file_id = ?1\
-             ORDER BY start_line, start_column, end_line, end_column, kind, name, id\
+            "SELECT id, project_id, source_file_id, name, kind, start_line, start_column, end_line, end_column, \
+                    resolution_state, resolved_target_symbol_id \
+             FROM symbol_reference_observations \
+             WHERE source_file_id = ?1 \
+             ORDER BY start_line, start_column, end_line, end_column, kind, name, id \
              LIMIT ?2",
         )?;
         let rows = statement.query_map(params![file_id, to_i64(limit)], |row| {
@@ -162,10 +162,10 @@ fn load_observations(
     project_id: &str,
 ) -> Result<Vec<Observation>, rusqlite::Error> {
     let mut statement = connection.prepare(
-        "SELECT o.id, o.source_file_id, o.name, o.kind\
-         FROM symbol_reference_observations o\
-         JOIN files f ON f.id = o.source_file_id\
-         WHERE o.project_id = ?1 AND f.is_active = 1\
+        "SELECT o.id, o.source_file_id, o.name, o.kind \
+         FROM symbol_reference_observations o \
+         JOIN files f ON f.id = o.source_file_id \
+         WHERE o.project_id = ?1 AND f.is_active = 1 \
          ORDER BY f.relative_path, o.start_line, o.start_column, o.end_line, o.end_column, o.kind, o.name, o.id",
     )?;
     let rows = statement.query_map([project_id], |row| {
@@ -186,8 +186,8 @@ fn load_candidates(
     kind: &str,
 ) -> Result<Vec<String>, rusqlite::Error> {
     let mut statement = connection.prepare(
-        "SELECT id FROM symbols\
-         WHERE file_id = ?1 AND is_active = 1 AND name = ?2 AND kind = ?3\
+        "SELECT id FROM symbols \
+         WHERE file_id = ?1 AND is_active = 1 AND name = ?2 AND kind = ?3 \
          ORDER BY id LIMIT 2",
     )?;
     let rows = statement.query_map(params![file_id, name, kind], |row| row.get(0))?;
@@ -201,8 +201,8 @@ fn update_resolution(
     target_symbol_id: Option<&String>,
 ) -> Result<(), rusqlite::Error> {
     connection.execute(
-        "UPDATE symbol_reference_observations\
-         SET resolution_state = ?2, resolved_target_symbol_id = ?3, updated_at = CURRENT_TIMESTAMP\
+        "UPDATE symbol_reference_observations \
+         SET resolution_state = ?2, resolved_target_symbol_id = ?3, updated_at = CURRENT_TIMESTAMP \
          WHERE id = ?1",
         params![observation_id, state, target_symbol_id],
     )?;
@@ -317,7 +317,7 @@ mod tests {
         let resolved_count: i64 = database
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM symbol_reference_observations\
+                "SELECT COUNT(*) FROM symbol_reference_observations \
                  WHERE project_id = ?1 AND resolved_target_symbol_id IS NOT NULL",
                 [&indexed.project_id],
                 |row| row.get(0),
@@ -329,8 +329,7 @@ mod tests {
     #[test]
     fn does_not_resolve_cross_file_name_matches_without_binding_evidence() {
         let dir = tempdir().expect("tempdir");
-        fs::write(dir.path().join("target.ts"), "export function run() {}\n")
-            .expect("target");
+        fs::write(dir.path().join("target.ts"), "export function run() {}\n").expect("target");
         fs::write(dir.path().join("main.ts"), "run();\n").expect("main");
 
         let database = Database::open_in_memory().expect("database");

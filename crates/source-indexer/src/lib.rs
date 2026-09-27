@@ -118,7 +118,6 @@ pub struct IndexedRoute {
     pub end_line: usize,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedFile {
     pub relative_path: String,
@@ -163,7 +162,10 @@ impl IndexResult {
     }
 
     pub fn import_count(&self) -> usize {
-        self.indexed_files.iter().map(|file| file.imports.len()).sum()
+        self.indexed_files
+            .iter()
+            .map(|file| file.imports.len())
+            .sum()
     }
 }
 
@@ -454,7 +456,11 @@ fn collect_symbols(source: &str, tree: &tree_sitter::Tree, query: &Query) -> Vec
     }
 
     captured.sort_by(|left, right| {
-        (left.start_byte, left.end_byte, &left.name).cmp(&(right.start_byte, right.end_byte, &right.name))
+        (left.start_byte, left.end_byte, &left.name).cmp(&(
+            right.start_byte,
+            right.end_byte,
+            &right.name,
+        ))
     });
     let parents: Vec<Option<usize>> = (0..captured.len())
         .map(|child_index| structural_parent(&captured, child_index))
@@ -496,7 +502,8 @@ fn structural_parent(symbols: &[CapturedSymbol], child_index: usize) -> Option<u
             *index != child_index
                 && candidate.start_byte <= child.start_byte
                 && candidate.end_byte >= child.end_byte
-                && (candidate.start_byte != child.start_byte || candidate.end_byte != child.end_byte)
+                && (candidate.start_byte != child.start_byte
+                    || candidate.end_byte != child.end_byte)
         })
         .min_by_key(|(_, candidate)| candidate.end_byte.saturating_sub(candidate.start_byte))
         .map(|(index, _)| index)
@@ -615,13 +622,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        fs,
-        path::Path,
-        sync::atomic::AtomicBool,
-        time::Duration,
-    };
+    use std::{collections::BTreeMap, fs, path::Path, sync::atomic::AtomicBool, time::Duration};
 
     use tempfile::tempdir;
 
@@ -657,19 +658,42 @@ mod tests {
     #[test]
     fn extracts_definition_symbols_across_initial_languages() {
         let cases = [
-            ("sample.ts", "export function add(a: number, b: number): number { return a + b; }", "add"),
+            (
+                "sample.ts",
+                "export function add(a: number, b: number): number { return a + b; }",
+                "add",
+            ),
             ("sample.js", "function add(a, b) { return a + b; }", "add"),
             ("sample.py", "def add(a, b):\n    return a + b\n", "add"),
-            ("sample.rs", "fn add(a: i32, b: i32) -> i32 { a + b }", "add"),
-            ("sample.go", "package sample\nfunc add(a int, b int) int { return a + b }", "add"),
+            (
+                "sample.rs",
+                "fn add(a: i32, b: i32) -> i32 { a + b }",
+                "add",
+            ),
+            (
+                "sample.go",
+                "package sample\nfunc add(a int, b int) int { return a + b }",
+                "add",
+            ),
             ("sample.c", "int add(int a, int b) { return a + b; }", "add"),
-            ("sample.cpp", "int add(int a, int b) { return a + b; }", "add"),
-            ("sample.php", "<?php function add($a, $b) { return $a + $b; }", "add"),
+            (
+                "sample.cpp",
+                "int add(int a, int b) { return a + b; }",
+                "add",
+            ),
+            (
+                "sample.php",
+                "<?php function add($a, $b) { return $a + $b; }",
+                "add",
+            ),
         ];
         for (path, source, expected_name) in cases {
             let indexed = parse_fixture(path, source);
             assert_eq!(indexed.parse_state, ParseState::Parsed, "{path}");
-            assert!(indexed.symbols.iter().any(|symbol| symbol.name == expected_name));
+            assert!(indexed
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == expected_name));
         }
     }
 
@@ -696,7 +720,11 @@ export const exportedArrow = async () => 3;
         assert_has_symbol(&indexed, "type", "Result");
         assert_has_symbol(&indexed, "function", "localArrow");
         assert_has_symbol(&indexed, "function", "exportedArrow");
-        let run = indexed.symbols.iter().find(|symbol| symbol.name == "run").expect("run");
+        let run = indexed
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "run")
+            .expect("run");
         assert_eq!(run.parent_scope.as_deref(), Some("Service"));
         assert_eq!(run.qualified_name.as_deref(), Some("Service.run"));
 
@@ -740,28 +768,58 @@ export const exportedArrow = async () => 3;
             "sample.ts",
             "import { x } from './x'; export { y } from \"../y\"; const z = require('pkg');",
         );
-        assert!(ts.imports.iter().any(|item| item.kind == "import" && item.raw_specifier == "./x"));
-        assert!(ts.imports.iter().any(|item| item.kind == "export_from" && item.raw_specifier == "../y"));
-        assert!(ts.imports.iter().any(|item| item.kind == "require" && item.raw_specifier == "pkg"));
+        assert!(ts
+            .imports
+            .iter()
+            .any(|item| item.kind == "import" && item.raw_specifier == "./x"));
+        assert!(ts
+            .imports
+            .iter()
+            .any(|item| item.kind == "export_from" && item.raw_specifier == "../y"));
+        assert!(ts
+            .imports
+            .iter()
+            .any(|item| item.kind == "require" && item.raw_specifier == "pkg"));
 
-        let python = parse_fixture("sample.py", "import os, pkg.mod as mod\nfrom .local import value\n");
+        let python = parse_fixture(
+            "sample.py",
+            "import os, pkg.mod as mod\nfrom .local import value\n",
+        );
         assert!(python.imports.iter().any(|item| item.raw_specifier == "os"));
-        assert!(python.imports.iter().any(|item| item.raw_specifier == "pkg.mod"));
-        assert!(python.imports.iter().any(|item| item.raw_specifier == ".local"));
+        assert!(python
+            .imports
+            .iter()
+            .any(|item| item.raw_specifier == "pkg.mod"));
+        assert!(python
+            .imports
+            .iter()
+            .any(|item| item.raw_specifier == ".local"));
 
         let rust = parse_fixture("sample.rs", "use crate::module::Thing;\nfn main() {}\n");
-        assert!(rust.imports.iter().any(|item| item.raw_specifier == "crate::module::Thing"));
-        let go = parse_fixture("sample.go", "package sample\nimport \"fmt\"\nfunc main() {}\n");
+        assert!(rust
+            .imports
+            .iter()
+            .any(|item| item.raw_specifier == "crate::module::Thing"));
+        let go = parse_fixture(
+            "sample.go",
+            "package sample\nimport \"fmt\"\nfunc main() {}\n",
+        );
         assert!(go.imports.iter().any(|item| item.raw_specifier == "fmt"));
-        let c = parse_fixture("sample.c", "#include <stdio.h>\nint main(void) { return 0; }\n");
+        let c = parse_fixture(
+            "sample.c",
+            "#include <stdio.h>\nint main(void) { return 0; }\n",
+        );
         assert!(c.imports.iter().any(|item| item.raw_specifier == "stdio.h"));
     }
 
     #[test]
     fn skips_unchanged_files_by_content_hash() {
         let dir = tempdir().expect("tempdir");
-        fs::write(dir.path().join("sample.ts"), "export function value() { return 1; }")
-            .expect("write fixture");
+        fs::write(
+            dir.path().join("sample.ts"),
+            "export function value() { return 1; }",
+        )
+        .expect("write fixture");
         let first = index_project(dir.path(), &BTreeMap::new()).expect("first index");
         assert_eq!(first.indexed_files.len(), 1);
         let indexed = &first.indexed_files[0];
@@ -852,8 +910,11 @@ export const exportedArrow = async () => 3;
         let dir = tempdir().expect("tempdir");
         fs::create_dir_all(dir.path().join("src")).expect("src");
         fs::create_dir_all(dir.path().join("node_modules/pkg")).expect("node_modules");
-        fs::write(dir.path().join("src/main.js"), "function local() { return true; }")
-            .expect("source");
+        fs::write(
+            dir.path().join("src/main.js"),
+            "function local() { return true; }",
+        )
+        .expect("source");
         fs::write(
             dir.path().join("node_modules/pkg/index.js"),
             "function dependency() { return true; }",

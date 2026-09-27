@@ -278,10 +278,7 @@ fn canonical_project_root(root: &Path) -> Result<PathBuf, BackendExecutionError>
     Ok(canonical)
 }
 
-fn resolve_execution_input(
-    root: &Path,
-    target: &str,
-) -> Result<PathBuf, BackendExecutionError> {
+fn resolve_execution_input(root: &Path, target: &str) -> Result<PathBuf, BackendExecutionError> {
     crate::validate_target(target)
         .map_err(|_| BackendExecutionError::UnsafeInput(target.to_string()))?;
     let candidate = root.join(target);
@@ -325,7 +322,9 @@ fn verify_toolchain(plan: &TestExecutionPlan, root: &Path) -> Result<(), Backend
         return Err(BackendExecutionError::MissingToolchainHash);
     };
     if expected_hash.len() != 64
-        || !expected_hash.chars().all(|character| character.is_ascii_hexdigit())
+        || !expected_hash
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
     {
         return Err(BackendExecutionError::InvalidToolchain(
             "toolchain SHA-256 must be 64 hexadecimal characters".to_string(),

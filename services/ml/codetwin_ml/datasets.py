@@ -48,6 +48,8 @@ def load_catalog(path: Path | str | None = None) -> dict[str, Any]:
         data = json.loads(catalog_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise DatasetError(f"cannot load dataset catalog: {error}") from error
+    if not isinstance(data, dict):
+        raise DatasetError("dataset catalog must be a JSON object")
 
     if data.get("schema_version") != CATALOG_SCHEMA_VERSION:
         raise DatasetError("unsupported dataset catalog schema")

@@ -87,6 +87,9 @@ fn fixture(
         },
     )
     .expect("evidence");
+    // Findings come from a finished scan; remediation campaigns require it.
+    web.update_progress(&scan.id, "completed", "completed", 1, 1, 1)
+        .expect("complete fixture scan");
 
     Fixture {
         _root: root,
@@ -149,7 +152,10 @@ fn sql_injection_fix_uses_parameter_binding_and_exact_approval_hash() {
     let prepared = service
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare");
-    assert_eq!(prepared.eligibility.result, FixEligibility::AutoFixCandidate);
+    assert_eq!(
+        prepared.eligibility.result,
+        FixEligibility::AutoFixCandidate
+    );
     assert!(prepared.root_causes[0].confidence >= 0.82);
     assert!(prepared.strategy.change_summary.contains("parameter"));
 
@@ -178,9 +184,7 @@ fn source_change_after_approval_is_rejected() {
     let prepared = service
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare");
-    let review = service
-        .generate_patch(&prepared.attempt.id)
-        .expect("patch");
+    let review = service.generate_patch(&prepared.attempt.id).expect("patch");
     service
         .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false)
         .expect("approve");
@@ -204,15 +208,10 @@ fn dangerous_patch_is_rejected_and_cannot_be_approved() {
     let prepared = service
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare");
-    let unsafe_source = fs::read_to_string(&fixture.source_path)
-        .expect("source")
+    let unsafe_source = fs::read_to_string(&fixture.source_path).expect("source")
         + "\nprocess.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';\n";
     let review = service
-        .propose_replacement(
-            &prepared.attempt.id,
-            &fixture.file_id,
-            &unsafe_source,
-        )
+        .propose_replacement(&prepared.attempt.id, &fixture.file_id, &unsafe_source)
         .expect("review unsafe patch");
     assert_eq!(review.safety.classification, PatchSafetyClass::Rejected);
     assert!(!review.safety.rejected_reasons.is_empty());
@@ -229,7 +228,10 @@ fn xss_plain_text_sink_gets_context_bounded_text_content_patch() {
     let prepared = service
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare");
-    assert_eq!(prepared.eligibility.result, FixEligibility::AutoFixCandidate);
+    assert_eq!(
+        prepared.eligibility.result,
+        FixEligibility::AutoFixCandidate
+    );
     let review = service
         .generate_patch(&prepared.attempt.id)
         .expect("generate patch");
@@ -313,9 +315,7 @@ fn authorization_frontend_only_patch_is_rejected() {
     .expect("evidence");
 
     let service = SecurityFixService::new(&database);
-    let prepared = service
-        .prepare_fix(&finding.id, false)
-        .expect("prepare");
+    let prepared = service.prepare_fix(&finding.id, false).expect("prepare");
     assert_eq!(
         prepared.eligibility.result,
         FixEligibility::GuidedFixCandidate
@@ -342,9 +342,7 @@ fn apply_validation_retest_and_rollback_keep_history() {
     let prepared = service
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare");
-    let review = service
-        .generate_patch(&prepared.attempt.id)
-        .expect("patch");
+    let review = service.generate_patch(&prepared.attempt.id).expect("patch");
     service
         .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false)
         .expect("approve");
@@ -450,11 +448,13 @@ fn apply_validation_retest_and_rollback_keep_history() {
     assert!(fs::read_to_string(&fixture.source_path)
         .expect("restored source")
         .contains(&format!("{}{{q}}", char::from(36))));
-    assert!(service
-        .events(&prepared.attempt.id, 100)
-        .expect("events")
-        .len()
-        >= 5);
+    assert!(
+        service
+            .events(&prepared.attempt.id, 100)
+            .expect("events")
+            .len()
+            >= 5
+    );
 }
 
 #[test]
@@ -579,12 +579,9 @@ fn fix_history_rejects_secret_bearing_event_details() {
             r#"{"bearer_token":"must-not-persist"}"#,
         )
         .is_err());
-    let serialized = serde_json::to_string(
-        &service
-            .events(&prepared.attempt.id, 100)
-            .expect("events"),
-    )
-    .expect("json");
+    let serialized =
+        serde_json::to_string(&service.events(&prepared.attempt.id, 100).expect("events"))
+            .expect("json");
     assert!(!serialized.contains("must-not-persist"));
 }
 
@@ -607,7 +604,6 @@ fn configuration_finding_without_in_project_target_is_manual() {
     assert!(!fixture.project_id.is_empty());
 }
 
-
 fn approved_sql_attempt() -> (Fixture, String, String) {
     let fixture = sql_fixture();
     let service = SecurityFixService::new(&fixture.database);
@@ -620,11 +616,7 @@ fn approved_sql_attempt() -> (Fixture, String, String) {
     service
         .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false)
         .expect("approve fixture patch");
-    let repair_id = prepared
-        .attempt
-        .repair_id
-        .clone()
-        .expect("repair id");
+    let repair_id = prepared.attempt.repair_id.clone().expect("repair id");
     (fixture, prepared.attempt.id, repair_id)
 }
 
@@ -639,7 +631,10 @@ fn fix_verified_cannot_be_forged_by_status_or_validation_only() {
          WHERE id=?1",
         [&attempt_id],
     );
-    assert!(direct.is_err(), "persistence must reject direct FIX_VERIFIED");
+    assert!(
+        direct.is_err(),
+        "persistence must reject direct FIX_VERIFIED"
+    );
 
     GuidedSecurityStore::new(&fixture.database)
         .record_retest(GuidedRetestInput {
@@ -711,7 +706,10 @@ fn fix_verified_cannot_be_forged_by_status_or_validation_only() {
         .get_attempt(&attempt_id)
         .expect("attempt")
         .expect("attempt exists");
-    assert_eq!(after_failed_service_transition.status, "verification_pending");
+    assert_eq!(
+        after_failed_service_transition.status,
+        "verification_pending"
+    );
     assert_eq!(after_failed_service_transition.retest_state, "not_executed");
 }
 
@@ -735,10 +733,7 @@ fn caution_patch_requires_and_persists_explicit_acknowledgement() {
             |row| row.get(0),
         )
         .expect("safe proposal");
-    let cautious = safe_proposal.replace(
-        "}\n",
-        "  try { audit(); } catch {}\n}\n",
-    );
+    let cautious = safe_proposal.replace("}\n", "  try { audit(); } catch {}\n}\n");
     let review = service
         .propose_replacement(&prepared.attempt.id, &fixture.file_id, &cautious)
         .expect("caution review");
@@ -795,7 +790,10 @@ fn approval_rejects_patch_hash_base_hash_proposed_hash_and_file_set_substitution
                 fixture
                     .database
                     .connection()
-                    .execute("DELETE FROM repair_changes WHERE repair_id=?1", [&repair_id])
+                    .execute(
+                        "DELETE FROM repair_changes WHERE repair_id=?1",
+                        [&repair_id],
+                    )
                     .expect("delete approved file");
             }
             "add_file" => {
@@ -914,11 +912,9 @@ fn patch_safety_rejects_high_risk_generated_or_proposed_changes() {
             "{name} patch must be rejected"
         );
         assert!(
-            review
-                .safety
-                .rejected_reasons
-                .iter()
-                .any(|reason| reason.to_ascii_lowercase().contains(&expected.to_ascii_lowercase())),
+            review.safety.rejected_reasons.iter().any(|reason| reason
+                .to_ascii_lowercase()
+                .contains(&expected.to_ascii_lowercase())),
             "{name} rejection should explain the {expected} risk"
         );
     }
@@ -995,7 +991,6 @@ fn validation_and_event_records_cannot_be_rewritten() {
         .is_err());
 }
 
-
 #[test]
 fn secret_storage_rejects_jwt_bearer_cookie_and_redacts_validation_output() {
     let fixture = sql_fixture();
@@ -1060,7 +1055,6 @@ fn secret_storage_rejects_jwt_bearer_cookie_and_redacts_validation_output() {
     assert!(!persisted.contains("top-secret-value"));
 }
 
-
 #[test]
 fn overlapping_findings_require_fresh_hashes_and_do_not_share_approval() {
     let fixture = sql_fixture();
@@ -1108,10 +1102,7 @@ fn overlapping_findings_require_fresh_hashes_and_do_not_share_approval() {
 
     let service = SecurityFixService::new(&fixture.database);
     let overlap = service
-        .analyze_multi_finding_overlap(&[
-            fixture.finding_id.clone(),
-            second.id.clone(),
-        ])
+        .analyze_multi_finding_overlap(&[fixture.finding_id.clone(), second.id.clone()])
         .expect("overlap");
     assert!(overlap.requires_combined_review);
     assert!(overlap
@@ -1127,9 +1118,7 @@ fn overlapping_findings_require_fresh_hashes_and_do_not_share_approval() {
         .approve_attempt(&first.attempt.id, &review_a.safety.patch_hash, false)
         .expect("approve A");
 
-    let second_fix = service
-        .prepare_fix(&second.id, false)
-        .expect("prepare B");
+    let second_fix = service.prepare_fix(&second.id, false).expect("prepare B");
     let review_b = service
         .generate_patch(&second_fix.attempt.id)
         .expect("patch B");
@@ -1193,7 +1182,9 @@ fn remediation_campaign_blocks_overlapping_approved_patch_after_prior_source_mut
             finding_ids: vec![fixture.finding_id.clone(), second_id.clone()],
         })
         .expect("campaign");
-    let analyzed = campaigns.analyze(&campaign.id).expect("analyze campaign overlap");
+    let analyzed = campaigns
+        .analyze(&campaign.id)
+        .expect("analyze campaign overlap");
     let relationships = campaigns
         .relationships(&campaign.id)
         .expect("campaign relationships");
@@ -1204,7 +1195,10 @@ fn remediation_campaign_blocks_overlapping_approved_patch_after_prior_source_mut
         )
     }));
     campaigns
-        .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("plan hash"))
+        .approve_plan(
+            &campaign.id,
+            analyzed.plan_hash.as_deref().expect("plan hash"),
+        )
         .expect("approve campaign");
     campaigns.start(&campaign.id).expect("start campaign");
 
@@ -1212,7 +1206,9 @@ fn remediation_campaign_blocks_overlapping_approved_patch_after_prior_source_mut
     let first = fixes
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare first");
-    let first_review = fixes.generate_patch(&first.attempt.id).expect("first patch");
+    let first_review = fixes
+        .generate_patch(&first.attempt.id)
+        .expect("first patch");
     fixes
         .approve_attempt(
             &first.attempt.id,
@@ -1224,7 +1220,9 @@ fn remediation_campaign_blocks_overlapping_approved_patch_after_prior_source_mut
     let second = fixes
         .prepare_fix(&second_id, false)
         .expect("prepare second");
-    let second_review = fixes.generate_patch(&second.attempt.id).expect("second patch");
+    let second_review = fixes
+        .generate_patch(&second.attempt.id)
+        .expect("second patch");
     fixes
         .approve_attempt(
             &second.attempt.id,
@@ -1355,7 +1353,9 @@ fn remediation_campaign_dependency_gate_is_stable_and_requires_verified_prerequi
             detail_json: r#"{"fixture":"dependency-prerequisite-verified"}"#,
         })
         .expect("verify prerequisite");
-    campaigns.sync(&campaign.id).expect("sync verified prerequisite");
+    campaigns
+        .sync(&campaign.id)
+        .expect("sync verified prerequisite");
 
     let dependent_after_prerequisite = campaigns
         .findings(&campaign.id)
@@ -1542,7 +1542,9 @@ fn remediation_campaign_terminal_history_does_not_adopt_future_fix_attempts() {
         Some(first.attempt.id.as_str())
     );
 
-    campaigns.cancel(&campaign.id).expect("cancel historical campaign");
+    campaigns
+        .cancel(&campaign.id)
+        .expect("cancel historical campaign");
     fixture
         .database
         .connection()
@@ -1627,7 +1629,9 @@ fn remediation_campaign_pause_reconciles_inflight_apply_without_resuming() {
     let prepared = fixes
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare fix");
-    let review = fixes.generate_patch(&prepared.attempt.id).expect("generate patch");
+    let review = fixes
+        .generate_patch(&prepared.attempt.id)
+        .expect("generate patch");
     fixes
         .approve_attempt(
             &prepared.attempt.id,
@@ -1645,10 +1649,16 @@ fn remediation_campaign_pause_reconciles_inflight_apply_without_resuming() {
         .expect("atomic source apply");
     assert_eq!(application.status, "applied");
 
-    let paused = campaigns.pause(&campaign.id).expect("pause during bookkeeping gap");
+    let paused = campaigns
+        .pause(&campaign.id)
+        .expect("pause during bookkeeping gap");
     assert_eq!(paused.status, "PAUSED");
     assert!(campaigns
-        .skip_finding(&campaign.id, &fixture.finding_id, "must not mutate while paused")
+        .skip_finding(
+            &campaign.id,
+            &fixture.finding_id,
+            "must not mutate while paused"
+        )
         .is_err());
 
     fixes
@@ -1722,7 +1732,9 @@ fn remediation_campaign_resume_blocks_approved_patch_after_external_source_chang
     let prepared = fixes
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare fix");
-    let review = fixes.generate_patch(&prepared.attempt.id).expect("generate patch");
+    let review = fixes
+        .generate_patch(&prepared.attempt.id)
+        .expect("generate patch");
     fixes
         .approve_attempt(
             &prepared.attempt.id,
@@ -1754,7 +1766,10 @@ fn remediation_campaign_resume_blocks_approved_patch_after_external_source_chang
         .find(|finding| finding.finding_id == fixture.finding_id)
         .expect("campaign finding");
     assert_eq!(member.status, "BLOCKED");
-    assert_eq!(member.active_attempt_id.as_deref(), Some(prepared.attempt.id.as_str()));
+    assert_eq!(
+        member.active_attempt_id.as_deref(),
+        Some(prepared.attempt.id.as_str())
+    );
     assert!(campaigns
         .events(&campaign.id, 100)
         .expect("campaign events")
@@ -1802,7 +1817,11 @@ fn remediation_campaign_completion_rejects_external_source_change_after_final_ve
         .expect("approve");
     campaigns.start(&campaign.id).expect("start");
     campaigns
-        .skip_finding(&campaign.id, &fixture.finding_id, "deferred for final source guard")
+        .skip_finding(
+            &campaign.id,
+            &fixture.finding_id,
+            "deferred for final source guard",
+        )
         .expect("skip");
 
     campaigns
@@ -1957,19 +1976,11 @@ fn remediation_campaign_rollback_preserves_terminal_history_and_rejects_tamperin
         Some(prepared.attempt.id.as_str())
     );
     assert!(campaigns
-        .authorize_rollback(
-            &campaign.id,
-            &fixture.finding_id,
-            "tampered-attempt-id",
-        )
+        .authorize_rollback(&campaign.id, &fixture.finding_id, "tampered-attempt-id",)
         .is_err());
     assert_eq!(
         campaigns
-            .authorize_rollback(
-                &campaign.id,
-                &fixture.finding_id,
-                &prepared.attempt.id,
-            )
+            .authorize_rollback(&campaign.id, &fixture.finding_id, &prepared.attempt.id,)
             .expect("correct bound rollback authorization"),
         prepared.attempt.id
     );
@@ -1989,11 +2000,7 @@ fn remediation_campaign_rollback_preserves_terminal_history_and_rejects_tamperin
     );
     assert_eq!(
         campaigns
-            .authorize_rollback(
-                &campaign.id,
-                &fixture.finding_id,
-                &prepared.attempt.id,
-            )
+            .authorize_rollback(&campaign.id, &fixture.finding_id, &prepared.attempt.id,)
             .expect("terminal history rollback authorization"),
         prepared.attempt.id
     );
@@ -2090,7 +2097,10 @@ fn remediation_campaign_rollback_checks_dependencies_across_all_active_campaigns
         .expect("campaign B");
     let analyzed_b = campaigns.analyze(&campaign_b.id).expect("analyze B");
     campaigns
-        .approve_plan(&campaign_b.id, analyzed_b.plan_hash.as_deref().expect("hash B"))
+        .approve_plan(
+            &campaign_b.id,
+            analyzed_b.plan_hash.as_deref().expect("hash B"),
+        )
         .expect("approve B");
     campaigns.start(&campaign_b.id).expect("start B");
 
@@ -2110,7 +2120,10 @@ fn remediation_campaign_rollback_checks_dependencies_across_all_active_campaigns
         .expect("campaign A");
     let analyzed_a = campaigns.analyze(&campaign_a.id).expect("analyze A");
     campaigns
-        .approve_plan(&campaign_a.id, analyzed_a.plan_hash.as_deref().expect("hash A"))
+        .approve_plan(
+            &campaign_a.id,
+            analyzed_a.plan_hash.as_deref().expect("hash A"),
+        )
         .expect("approve A");
     campaigns.start(&campaign_a.id).expect("start A");
 
@@ -2153,7 +2166,9 @@ fn remediation_campaign_rollback_checks_dependencies_across_all_active_campaigns
             [&dependent.finding_id],
         )
         .expect("persist dependent evidence");
-    campaigns.sync(&campaign_b.id).expect("sync verified dependent");
+    campaigns
+        .sync(&campaign_b.id)
+        .expect("sync verified dependent");
 
     let assessment_a = campaigns
         .rollback_assessment(&campaign_a.id, &prerequisite_id)
@@ -2224,7 +2239,9 @@ fn remediation_campaign_blocks_rollback_when_verified_dependent_relies_on_applie
     let prepared = fixes
         .prepare_fix(&prerequisite_id, false)
         .expect("prepare prerequisite");
-    let review = fixes.generate_patch(&prepared.attempt.id).expect("review prerequisite");
+    let review = fixes
+        .generate_patch(&prepared.attempt.id)
+        .expect("review prerequisite");
     fixes
         .approve_attempt(
             &prepared.attempt.id,
@@ -2258,7 +2275,9 @@ fn remediation_campaign_blocks_rollback_when_verified_dependent_relies_on_applie
             [&dependent.finding_id],
         )
         .expect("persist dependent targeted retest");
-    campaigns.sync(&campaign.id).expect("sync verified dependent");
+    campaigns
+        .sync(&campaign.id)
+        .expect("sync verified dependent");
 
     let assessment = campaigns
         .rollback_assessment(&campaign.id, &prerequisite_id)
@@ -2270,11 +2289,7 @@ fn remediation_campaign_blocks_rollback_when_verified_dependent_relies_on_applie
         .any(|finding_id| finding_id == &dependent.finding_id));
     assert!(assessment.reason.contains("depend"));
     assert!(campaigns
-        .authorize_rollback(
-            &campaign.id,
-            &prerequisite_id,
-            &prepared.attempt.id,
-        )
+        .authorize_rollback(&campaign.id, &prerequisite_id, &prepared.attempt.id,)
         .is_err());
 }
 
@@ -2292,14 +2307,12 @@ fn approved_security_fix_rejects_symlink_substitution_before_application() {
 
     assert!(
         matches!(
-            SecurityFixService::new(&fixture.database)
-                .assert_application_allowed(&attempt_id),
+            SecurityFixService::new(&fixture.database).assert_application_allowed(&attempt_id),
             Err(SecurityFixError::StaleApproval)
         ),
         "symlink substitution must fail before repair application"
     );
 }
-
 
 #[test]
 fn persistence_rejects_invalid_security_fix_lifecycle_transitions() {
@@ -2309,26 +2322,31 @@ fn persistence_rejects_invalid_security_fix_lifecycle_transitions() {
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare");
 
-    assert!(fixture
-        .database
-        .connection()
-        .execute(
-            "UPDATE security_fix_attempts SET status='approved' WHERE id=?1",
-            [&prepared.attempt.id],
-        )
-        .is_err(), "prepared must not skip patch review");
+    assert!(
+        fixture
+            .database
+            .connection()
+            .execute(
+                "UPDATE security_fix_attempts SET status='approved' WHERE id=?1",
+                [&prepared.attempt.id],
+            )
+            .is_err(),
+        "prepared must not skip patch review"
+    );
 
-    assert!(fixture
-        .database
-        .connection()
-        .execute(
-            "UPDATE security_fix_attempts
+    assert!(
+        fixture
+            .database
+            .connection()
+            .execute(
+                "UPDATE security_fix_attempts
              SET retest_state='FIX_VERIFIED' WHERE id=?1",
-            [&prepared.attempt.id],
-        )
-        .is_err(), "runtime verification state must not be set without the matching verified lifecycle");
+                [&prepared.attempt.id],
+            )
+            .is_err(),
+        "runtime verification state must not be set without the matching verified lifecycle"
+    );
 }
-
 
 #[test]
 fn patch_safety_rejects_removed_server_security_controls() {
@@ -2436,8 +2454,7 @@ fn patch_safety_rejects_excessive_file_spread() {
             .path()
             .join(format!("config/security-{index}.ts"));
         fs::create_dir_all(path.parent().expect("config parent")).expect("config dir");
-        fs::write(&path, format!("export const setting{index} = false;\n"))
-            .expect("config file");
+        fs::write(&path, format!("export const setting{index} = false;\n")).expect("config file");
     }
     ProjectIndexService::new(&fixture.database)
         .index_project(fixture._root.path())
@@ -2470,14 +2487,16 @@ fn patch_safety_rejects_excessive_file_spread() {
         );
     }
     let final_review = final_review.expect("final review");
-    assert_eq!(final_review.safety.classification, PatchSafetyClass::Rejected);
+    assert_eq!(
+        final_review.safety.classification,
+        PatchSafetyClass::Rejected
+    );
     assert!(final_review
         .safety
         .rejected_reasons
         .iter()
         .any(|reason| reason.contains("bounded to")));
 }
-
 
 fn add_overlapping_sql_finding(fixture: &Fixture, suffix: &str) -> String {
     let scan_id: String = fixture
@@ -2645,11 +2664,7 @@ fn approval_rejects_patch_file_base_and_proposed_hash_changes_after_display() {
 
         assert!(
             matches!(
-                service.approve_attempt(
-                    &prepared.attempt.id,
-                    &displayed.safety.patch_hash,
-                    false,
-                ),
+                service.approve_attempt(&prepared.attempt.id, &displayed.safety.patch_hash, false,),
                 Err(SecurityFixError::StaleApproval)
             ),
             "displayed approval must become stale after {mutation}"
@@ -2687,11 +2702,7 @@ fn approval_rejects_wrong_attempt_id_and_preapproval_finding_project_substitutio
         )
         .expect("preapproval finding substitution");
     assert!(matches!(
-        service.approve_attempt(
-            &prepared.attempt.id,
-            &review.safety.patch_hash,
-            false,
-        ),
+        service.approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false,),
         Err(SecurityFixError::StaleApproval)
     ));
 
@@ -2704,8 +2715,11 @@ fn approval_rejects_wrong_attempt_id_and_preapproval_finding_project_substitutio
         )
         .expect("restore finding");
     let other_root = tempdir().expect("other project");
-    fs::write(other_root.path().join("other.ts"), "export const other = true;\n")
-        .expect("other source");
+    fs::write(
+        other_root.path().join("other.ts"),
+        "export const other = true;\n",
+    )
+    .expect("other source");
     let other_project = ProjectIndexService::new(&fixture.database)
         .index_project(other_root.path())
         .expect("other project");
@@ -2718,11 +2732,7 @@ fn approval_rejects_wrong_attempt_id_and_preapproval_finding_project_substitutio
         )
         .expect("preapproval project substitution");
     assert!(matches!(
-        service.approve_attempt(
-            &prepared.attempt.id,
-            &review.safety.patch_hash,
-            false,
-        ),
+        service.approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false,),
         Err(SecurityFixError::StaleApproval)
     ));
 }
@@ -2731,8 +2741,11 @@ fn approval_rejects_wrong_attempt_id_and_preapproval_finding_project_substitutio
 fn approved_attempt_identity_rejects_project_mutation_too() {
     let (fixture, attempt_id, _) = approved_sql_attempt();
     let other_root = tempdir().expect("other project");
-    fs::write(other_root.path().join("other.ts"), "export const other = true;\n")
-        .expect("other source");
+    fs::write(
+        other_root.path().join("other.ts"),
+        "export const other = true;\n",
+    )
+    .expect("other source");
     let other_project = ProjectIndexService::new(&fixture.database)
         .index_project(other_root.path())
         .expect("other project");
@@ -2747,7 +2760,6 @@ fn approved_attempt_identity_rejects_project_mutation_too() {
         .is_err());
 }
 
-
 #[test]
 fn patch_safety_rejects_project_root_escape_path() {
     let fixture = sql_fixture();
@@ -2755,9 +2767,7 @@ fn patch_safety_rejects_project_root_escape_path() {
     let prepared = service
         .prepare_fix(&fixture.finding_id, false)
         .expect("prepare");
-    let displayed = service
-        .generate_patch(&prepared.attempt.id)
-        .expect("patch");
+    let displayed = service.generate_patch(&prepared.attempt.id).expect("patch");
     let repair_id = prepared.attempt.repair_id.as_deref().expect("repair");
     fixture
         .database
@@ -2778,15 +2788,10 @@ fn patch_safety_rejects_project_root_escape_path() {
         .iter()
         .any(|reason| reason.contains("project root")));
     assert!(matches!(
-        service.approve_attempt(
-            &prepared.attempt.id,
-            &displayed.safety.patch_hash,
-            false,
-        ),
+        service.approve_attempt(&prepared.attempt.id, &displayed.safety.patch_hash, false,),
         Err(SecurityFixError::StaleApproval)
     ));
 }
-
 
 #[test]
 fn regression_test_plan_uses_recommendation_only_when_no_safe_test_location_is_known() {
@@ -2812,10 +2817,7 @@ fn regression_test_plan_uses_recommendation_only_when_no_safe_test_location_is_k
 #[test]
 fn regression_test_plan_selects_relevant_existing_test_without_inventing_new_file() {
     let fixture = sql_fixture();
-    let test_path = fixture
-        ._root
-        .path()
-        .join("tests/searchController.test.ts");
+    let test_path = fixture._root.path().join("tests/searchController.test.ts");
     fs::create_dir_all(test_path.parent().expect("test parent")).expect("test dir");
     fs::write(
         &test_path,
@@ -2835,17 +2837,15 @@ fn regression_test_plan_selects_relevant_existing_test_without_inventing_new_fil
         prepared.test_plan.regression_generation_status,
         "EXISTING_TEST_SELECTED"
     );
-    assert!(prepared
-        .test_plan
-        .targeted
-        .iter()
-        .any(|item| {
-            item.repository_command_execution_required
-                && item.runner_kind == "vitest"
-                && item.targets.iter().any(|target| target.ends_with("tests/searchController.test.ts"))
-        }));
+    assert!(prepared.test_plan.targeted.iter().any(|item| {
+        item.repository_command_execution_required
+            && item.runner_kind == "vitest"
+            && item
+                .targets
+                .iter()
+                .any(|target| target.ends_with("tests/searchController.test.ts"))
+    }));
 }
-
 
 #[test]
 fn applied_retest_floor_cannot_be_lowered_or_rebound() {
@@ -2914,11 +2914,7 @@ fn failed_security_approval_rolls_back_underlying_repair_approval_atomically() {
         .expect("install injected failure");
 
     assert!(service
-        .approve_attempt(
-            &prepared.attempt.id,
-            &review.safety.patch_hash,
-            false,
-        )
+        .approve_attempt(&prepared.attempt.id, &review.safety.patch_hash, false,)
         .is_err());
 
     let repair_status: String = fixture
@@ -2942,7 +2938,6 @@ fn failed_security_approval_rolls_back_underlying_repair_approval_atomically() {
     assert_eq!(repair_status, "draft");
     assert_eq!(attempt_status, "patch_proposed");
 }
-
 
 #[test]
 fn validation_can_retry_after_unable_to_verify_without_skipping_runtime_verification() {
@@ -3003,7 +2998,6 @@ fn validation_can_retry_after_unable_to_verify_without_skipping_runtime_verifica
     assert_ne!(retried.status, "fix_verified");
 }
 
-
 #[test]
 fn bookkeeping_failure_recovery_records_rolled_back_application_without_stranding_approval() {
     let (fixture, attempt_id, repair_id) = approved_sql_attempt();
@@ -3024,7 +3018,10 @@ fn bookkeeping_failure_recovery_records_rolled_back_application_without_strandin
         .record_application_recovery_rollback(&attempt_id, &run.id)
         .expect("record recovery rollback");
     assert_eq!(recovered.status, "rolled_back");
-    assert_eq!(recovered.application_run_id.as_deref(), Some(run.id.as_str()));
+    assert_eq!(
+        recovered.application_run_id.as_deref(),
+        Some(run.id.as_str())
+    );
     assert_eq!(recovered.retest_state, "not_executed");
 
     GuidedSecurityStore::new(&fixture.database)
@@ -3046,7 +3043,6 @@ fn bookkeeping_failure_recovery_records_rolled_back_application_without_strandin
         .iter()
         .any(|event| event.event_type == "application_bookkeeping_rollback"));
 }
-
 
 #[test]
 fn failed_fix_preparation_rolls_back_repair_link_lifecycle_and_attempt_atomically() {
@@ -3109,7 +3105,6 @@ fn failed_fix_preparation_rolls_back_repair_link_lifecycle_and_attempt_atomicall
     assert_eq!(repair_count, 0);
 }
 
-
 #[test]
 fn xss_guided_proposal_that_leaves_inner_html_sink_is_rejected() {
     let fixture = xss_fixture();
@@ -3123,11 +3118,7 @@ fn xss_guided_proposal_that_leaves_inner_html_sink_is_rejected() {
         "/* attempted remediation without changing the sink */\nexport function getRender",
     );
     let review = service
-        .propose_replacement(
-            &prepared.attempt.id,
-            &fixture.file_id,
-            &insufficient,
-        )
+        .propose_replacement(&prepared.attempt.id, &fixture.file_id, &insufficient)
         .expect("review");
     assert_eq!(review.safety.classification, PatchSafetyClass::Rejected);
     assert!(review
@@ -3136,7 +3127,6 @@ fn xss_guided_proposal_that_leaves_inner_html_sink_is_rejected() {
         .iter()
         .any(|reason| reason.contains("unsafe rendering sink")));
 }
-
 
 #[test]
 fn rollback_bookkeeping_can_be_retried_after_files_are_already_restored() {
@@ -3180,7 +3170,10 @@ fn rollback_bookkeeping_can_be_retried_after_files_are_already_restored() {
         .into_iter()
         .filter(|event| event.event_type == "fix_rolled_back")
         .count();
-    assert_eq!(rollback_events, 1, "retry must not duplicate rollback history");
+    assert_eq!(
+        rollback_events, 1,
+        "retry must not duplicate rollback history"
+    );
 
     let lifecycle: String = fixture
         .database
