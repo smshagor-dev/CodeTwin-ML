@@ -6,7 +6,10 @@ use std::{
     fmt::Write as _,
     fs,
     path::Path,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     time::{Duration, Instant},
 };
 
@@ -368,8 +371,7 @@ fn parse_source(
     } else {
         ParseState::Parsed
     };
-    let query = Query::new(&spec.language, spec.definitions_query)
-        .map_err(|error| format!("definition_query_error:{error}"))?;
+    let query = definitions_query(&spec)?;
     let symbols = collect_symbols(source, &tree, &query);
     let imports = imports::extract_imports(spec.name, source, tree.root_node());
     let (routes, route_mounts, handler_inputs) =
@@ -401,6 +403,25 @@ struct CapturedSymbol {
     end_column: usize,
     start_byte: usize,
     end_byte: usize,
+}
+
+/// Compiling a definitions query costs far more than parsing a typical file, so each
+/// language's query is compiled once per process and shared.
+fn definitions_query(spec: &LanguageSpec) -> Result<Arc<Query>, String> {
+    static CACHE: OnceLock<Mutex<BTreeMap<&'static str, Arc<Query>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut cache = cache
+        .lock()
+        .map_err(|_| "definition_query_cache_poisoned".to_string())?;
+    if let Some(query) = cache.get(spec.name) {
+        return Ok(Arc::clone(query));
+    }
+    let query = Arc::new(
+        Query::new(&spec.language, spec.definitions_query)
+            .map_err(|error| format!("definition_query_error:{error}"))?,
+    );
+    cache.insert(spec.name, Arc::clone(&query));
+    Ok(query)
 }
 
 fn collect_symbols(source: &str, tree: &tree_sitter::Tree, query: &Query) -> Vec<IndexedSymbol> {

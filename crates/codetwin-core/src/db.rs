@@ -34,6 +34,10 @@ pub enum DatabaseError {
     Sqlite(#[from] rusqlite::Error),
 }
 
+/// Indexing reuses a few dozen statements per file; with rusqlite's default of 16
+/// they evicted each other and SQL preparation dominated indexing time.
+const STATEMENT_CACHE_CAPACITY: usize = 128;
+
 pub struct Database {
     connection: Connection,
 }
@@ -41,6 +45,7 @@ pub struct Database {
 impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
         let connection = Connection::open(path)?;
+        connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let database = Self { connection };
@@ -50,6 +55,7 @@ impl Database {
 
     pub fn open_in_memory() -> Result<Self, DatabaseError> {
         let connection = Connection::open_in_memory()?;
+        connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let database = Self { connection };
         database.migrate()?;

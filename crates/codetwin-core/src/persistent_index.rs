@@ -6,7 +6,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Params};
 use serde_json::{json, Value};
 use source_indexer::{IndexResult, IndexedFile, IndexedImportBinding, IndexedSymbol, ParseState};
 use thiserror::Error;
@@ -230,7 +230,7 @@ fn open_project(connection: &Connection, root: &Path) -> Result<ProjectRecord, I
         .optional()?;
     let id = existing_id.unwrap_or_else(|| project_id(&path_identity));
 
-    connection.execute(
+    cached_execute(connection,
         "INSERT INTO projects(id, root_path, display_name, path_identity, git_remote, last_opened_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP) \
          ON CONFLICT(id) DO UPDATE SET \
@@ -278,6 +278,16 @@ fn load_known_hashes(
         hashes.insert(path, hash);
     }
     Ok(hashes)
+}
+
+/// `Connection::execute` re-parses its SQL on every call; indexing issues the same
+/// statements once per file/symbol/import, so route them through the statement cache.
+fn cached_execute(
+    connection: &Connection,
+    sql: &str,
+    params: impl Params,
+) -> rusqlite::Result<usize> {
+    connection.prepare_cached(sql)?.execute(params)
 }
 
 fn persist_index_result(
@@ -365,7 +375,7 @@ fn persist_index_result(
     let graph = graph_summary(&transaction, &project.id)?;
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
-    transaction.execute(
+    cached_execute(&transaction,
         "UPDATE projects SET last_indexed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
         [&project.id],
     )?;
@@ -436,7 +446,7 @@ fn persist_file(
     relative_identity: &str,
     indexed: &IndexedFile,
 ) -> Result<(), rusqlite::Error> {
-    connection.execute(
+    cached_execute(connection,
         "INSERT INTO files( \
            id, project_id, relative_path, relative_path_identity, language, content_hash, byte_size, indexed_at, \
            ast_root_kind, parse_state, analysis_fingerprint, last_index_run_id, created_at, updated_at, is_active \
@@ -493,7 +503,8 @@ fn persist_symbols(
         .map(|symbol| symbol.fingerprint.as_str())
         .collect();
 
-    connection.execute(
+    cached_execute(
+        connection,
         "UPDATE symbols SET is_active = 0, updated_at = CURRENT_TIMESTAMP \
          WHERE file_id = ?1 AND is_active = 1",
         [stable_file_id],
@@ -512,7 +523,7 @@ fn persist_symbols(
             }
             Some(_) => {}
         }
-        connection.execute(
+        cached_execute(connection,
             "INSERT INTO symbols( \
                id, file_id, project_id, kind, name, qualified_name, start_line, start_column, end_line, end_column, signature, \
                parent_symbol_id, fingerprint, last_index_run_id, created_at, updated_at, is_active \
@@ -660,7 +671,8 @@ fn persist_handler_inputs(
     run_id: &str,
     indexed: &IndexedFile,
 ) -> Result<(), rusqlite::Error> {
-    connection.execute(
+    cached_execute(
+        connection,
         "UPDATE source_handler_inputs
          SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
          WHERE file_id = ?1 AND is_active = 1",
@@ -679,7 +691,8 @@ fn persist_handler_inputs(
         );
         let parameter_names = parameter_names_from_indexed(&handler.parameters);
         let parameter_locations = parameter_locations_from_indexed(&handler.parameters);
-        connection.execute(
+        cached_execute(
+            connection,
             "INSERT INTO source_handler_inputs(
                id, project_id, file_id, handler_name, parameter_names_json,
                parameter_locations_json, start_line, end_line, last_index_run_id, is_active
@@ -715,7 +728,8 @@ fn persist_routes(
     run_id: &str,
     indexed: &IndexedFile,
 ) -> Result<(), rusqlite::Error> {
-    connection.execute(
+    cached_execute(
+        connection,
         "UPDATE source_routes
          SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
          WHERE file_id = ?1 AND is_active = 1",
@@ -752,7 +766,8 @@ fn persist_routes(
                 .flatten()
         });
 
-        connection.execute(
+        cached_execute(
+            connection,
             "INSERT INTO source_routes(
                id, project_id, file_id, symbol_id, handler_file_id, handler_symbol_id,
                framework, router_name, router_prefix, http_method, path_template, handler_name,
@@ -820,7 +835,8 @@ fn persist_route_mounts(
     run_id: &str,
     indexed: &IndexedFile,
 ) -> Result<(), rusqlite::Error> {
-    connection.execute(
+    cached_execute(
+        connection,
         "UPDATE source_route_mounts
          SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
          WHERE source_file_id = ?1 AND is_active = 1",
@@ -840,7 +856,8 @@ fn persist_route_mounts(
                 &mount.start_line.to_string(),
             ],
         );
-        connection.execute(
+        cached_execute(
+            connection,
             "INSERT INTO source_route_mounts(
                id, project_id, source_file_id, framework, parent_router, mounted_binding,
                prefix, prefix_mode, start_line, end_line, last_index_run_id, is_active
@@ -880,7 +897,8 @@ fn persist_imports(
     run_id: &str,
     indexed: &IndexedFile,
 ) -> Result<(), rusqlite::Error> {
-    connection.execute(
+    cached_execute(
+        connection,
         "DELETE FROM import_references WHERE source_file_id = ?1",
         [source_file_id],
     )?;
@@ -900,7 +918,7 @@ fn persist_imports(
         );
         let bindings_json =
             serde_json::to_string(&reference.bindings).unwrap_or_else(|_| "[]".to_string());
-        connection.execute(
+        cached_execute(connection,
             "INSERT INTO import_references( \
                id, project_id, source_file_id, raw_specifier, kind, start_line, start_column, end_line, end_column, \
                resolution_state, resolved_target_file_id, last_index_run_id, bindings_json \
@@ -934,34 +952,40 @@ fn deactivate_file(
         [file_id],
         |row| row.get(0),
     )?;
-    connection.execute(
+    cached_execute(
+        connection,
         "DELETE FROM import_references WHERE source_file_id = ?1",
         [file_id],
     )?;
-    connection.execute(
+    cached_execute(
+        connection,
         "UPDATE source_routes
          SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
          WHERE file_id = ?1 AND is_active = 1",
         params![file_id, run_id],
     )?;
-    connection.execute(
+    cached_execute(
+        connection,
         "UPDATE source_route_mounts
          SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
          WHERE source_file_id = ?1 AND is_active = 1",
         params![file_id, run_id],
     )?;
-    connection.execute(
+    cached_execute(
+        connection,
         "UPDATE source_handler_inputs
          SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP
          WHERE file_id = ?1 AND is_active = 1",
         params![file_id, run_id],
     )?;
-    connection.execute(
+    cached_execute(
+        connection,
         "UPDATE symbols SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP \
          WHERE file_id = ?1 AND is_active = 1",
         params![file_id, run_id],
     )?;
-    connection.execute(
+    cached_execute(
+        connection,
         "UPDATE files SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP \
          WHERE id = ?1 AND is_active = 1",
         params![file_id, run_id],
@@ -1006,7 +1030,7 @@ fn resolve_all_imports(
             case_insensitive,
             &php_psr4_roots,
         );
-        connection.execute(
+        cached_execute(connection,
             "UPDATE import_references SET resolution_state = ?2, resolved_target_file_id = ?3, updated_at = CURRENT_TIMESTAMP \
              WHERE id = ?1",
             params![id, resolved.state.as_str(), resolved.target_file_id],
@@ -1086,7 +1110,8 @@ fn resolve_imported_route_handlers(
     connection: &Connection,
     project_id: &str,
 ) -> Result<(), IndexServiceError> {
-    connection.execute(
+    cached_execute(
+        connection,
         "UPDATE source_routes
          SET handler_file_id = CASE WHEN symbol_id IS NOT NULL THEN file_id ELSE NULL END,
              handler_symbol_id = symbol_id,
@@ -1238,7 +1263,8 @@ fn resolve_imported_route_handlers(
             current_content_type.clone()
         };
 
-        connection.execute(
+        cached_execute(
+            connection,
             "UPDATE source_routes
              SET handler_file_id=?2,
                  handler_symbol_id=?3,
@@ -1431,14 +1457,15 @@ fn materialize_graph(
     project_id: &str,
     run_id: &str,
 ) -> Result<(), rusqlite::Error> {
-    connection.execute(
+    cached_execute(connection,
         "UPDATE graph_edges SET is_active = 0, updated_at = CURRENT_TIMESTAMP \
          WHERE project_id = ?1 AND relationship IN ( \
            'PROJECT_CONTAINS_FILE','FILE_DEFINES_SYMBOL','SYMBOL_PARENT_OF_SYMBOL','FILE_IMPORTS_FILE' \
          )",
         [project_id],
     )?;
-    connection.execute(
+    cached_execute(
+        connection,
         "UPDATE graph_nodes SET is_active = 0, updated_at = CURRENT_TIMESTAMP \
          WHERE project_id = ?1 AND node_type IN ('FILE','SYMBOL')",
         [project_id],
@@ -1591,7 +1618,7 @@ fn upsert_graph_node(
     metadata_json: &str,
     run_id: &str,
 ) -> Result<(), rusqlite::Error> {
-    connection.execute(
+    cached_execute(connection,
         "INSERT INTO graph_nodes( \
            id, project_id, node_type, external_key, label, metadata_json, last_index_run_id, created_at, updated_at, is_active \
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) \
@@ -1612,7 +1639,7 @@ fn upsert_graph_edge(
     run_id: &str,
 ) -> Result<(), rusqlite::Error> {
     let id = graph_edge_id(project_id, source_node_id, target_node_id, relationship);
-    connection.execute(
+    cached_execute(connection,
         "INSERT INTO graph_edges( \
            id, project_id, source_node_id, target_node_id, relationship, metadata_json, last_index_run_id, created_at, updated_at, is_active \
          ) VALUES (?1, ?2, ?3, ?4, ?5, '{}', ?6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) \
@@ -1649,7 +1676,7 @@ fn finish_run(
     delta: &IndexDelta,
     duration_ms: u64,
 ) -> Result<(), rusqlite::Error> {
-    connection.execute(
+    cached_execute(connection,
         "UPDATE analysis_runs SET \
            status = 'completed', finished_at = CURRENT_TIMESTAMP, \
            files_scanned = ?2, files_added = ?3, files_modified = ?4, files_unchanged = ?5, files_deleted = ?6, \
@@ -1678,7 +1705,7 @@ fn mark_run_failed(
     run_id: &str,
     elapsed_ms: u128,
 ) -> Result<(), rusqlite::Error> {
-    connection.execute(
+    cached_execute(connection,
         "UPDATE analysis_runs SET status = 'failed', finished_at = CURRENT_TIMESTAMP, duration_ms = ?2 WHERE id = ?1",
         params![run_id, i64::try_from(elapsed_ms).unwrap_or(i64::MAX)],
     )?;
