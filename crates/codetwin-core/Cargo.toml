@@ -6,12 +6,14 @@ license.workspace = true
 
 [dependencies]
 database-analyzer = { path = "../database-analyzer" }
+dependency-audit = { path = "../dependency-audit" }
 lsp-enrichment = { path = "../lsp-enrichment" }
 qa-analyzer = { path = "../qa-analyzer" }
 qa-execution = { path = "../qa-execution" }
 rusqlite.workspace = true
 runtime-analyzer = { path = "../runtime-analyzer" }
 security-analyzer = { path = "../security-analyzer" }
+secret-scanner = { path = "../secret-scanner" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

@@ -8,9 +8,10 @@
 use std::{path::PathBuf, time::Instant};
 
 use codetwin_core::{
-    AuthorizedWebSecurityStore, CodeQualityService, CodeSecurityService, Database,
-    DatabaseAnalysisService, ImpactAnalysisService, ProjectIndexService, ProjectQueryService,
-    QaDiscoveryService, RuntimeReliabilityService, SymbolReferenceService,
+    AdvisorySource, AuthorizedWebSecurityStore, CodeQualityService, CodeSecurityService, Database,
+    DatabaseAnalysisService, DependencyAuditService, ImpactAnalysisService, ProjectIndexService,
+    ProjectQueryService, QaDiscoveryService, RuntimeReliabilityService, SecretScanningService,
+    SymbolReferenceService,
 };
 
 fn stage<T: std::fmt::Debug, E: std::fmt::Display>(
@@ -79,6 +80,31 @@ fn main() {
     });
     stage(&mut failures, "qa discovery", || {
         QaDiscoveryService::new(&database).discover_project(&project_id)
+    });
+    stage(&mut failures, "secret scan", || {
+        SecretScanningService::new(&database)
+            .scan_project(&project_id)
+            .map(|summary| {
+                (
+                    summary.files_scanned,
+                    summary.observations,
+                    summary.coverage_complete,
+                )
+            })
+    });
+    // Offline mode with an empty advisory directory: exercises lockfile inventory
+    // without network access.
+    let advisories = std::env::temp_dir().join("codetwin-e2e-empty-osv");
+    let _ = std::fs::create_dir_all(&advisories);
+    stage(&mut failures, "dependency audit", || {
+        DependencyAuditService::new(&database)
+            .audit_project(
+                &project_id,
+                &AdvisorySource::OfflineDirectory {
+                    path: advisories.clone(),
+                },
+            )
+            .map(|summary| (summary.manifests, summary.packages, summary.manifest_errors))
     });
     stage(&mut failures, "source routes", || {
         AuthorizedWebSecurityStore::new(&database)

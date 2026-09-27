@@ -1,5 +1,6 @@
 pub mod database_analysis;
 pub mod db;
+pub mod dependency_audit;
 pub mod domain;
 pub mod guided_security;
 pub mod identity;
@@ -15,6 +16,7 @@ pub mod repair_application;
 pub mod repair_workflow;
 pub mod repair_workspace;
 pub mod runtime_analysis;
+pub mod secret_scanning;
 pub mod security_analysis;
 pub mod security_campaign;
 pub mod security_fix;
@@ -32,6 +34,10 @@ pub use database_analysis::{
     DatabaseRuleRecord, DatabaseRunRecord, DatabaseRunSummary,
 };
 pub use db::{Database, DatabaseError};
+pub use dependency_audit::{
+    AdvisorySource, DependencyAuditError, DependencyAuditRunRecord, DependencyAuditService,
+    DependencyAuditSummary, DependencyFindingRecord, DependencyRecord,
+};
 pub use domain::{
     AnalysisRun, AnalysisStatus, EvidenceKind, FindingSeverity, GraphEdgeRecord, GraphNeighborhood,
     GraphNodeRecord, GraphSummary, ImportReferenceRecord, ImportResolutionState, IndexDelta,
@@ -89,6 +95,10 @@ pub use repair_workspace::{
 pub use runtime_analysis::{
     RuntimeAnalysisError, RuntimeArtifactRecord, RuntimeFindingRecord, RuntimeReliabilityService,
     RuntimeRuleRecord, RuntimeRunRecord, RuntimeRunSummary,
+};
+pub use secret_scanning::{
+    SecretFindingRecord, SecretScanError, SecretScanRunRecord, SecretScanSummary,
+    SecretScanningService,
 };
 pub use security_analysis::{
     CodeSecurityService, SecurityAnalysisError, SecurityFindingRecord, SecurityRuleRecord,

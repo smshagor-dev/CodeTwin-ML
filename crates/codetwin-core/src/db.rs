@@ -28,6 +28,7 @@ const MIGRATION_0021: &str = include_str!("../migrations/0021_security_remediati
 const MIGRATION_0022: &str = include_str!("../migrations/0022_source_route_mapping.sql");
 const MIGRATION_0023: &str = include_str!("../migrations/0023_route_prefix_semantics.sql");
 const MIGRATION_0024: &str = include_str!("../migrations/0024_campaign_regression_transitions.sql");
+const MIGRATION_0025: &str = include_str!("../migrations/0025_supply_chain_scanning.sql");
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -95,6 +96,7 @@ impl Database {
         self.apply_migration(22, MIGRATION_0022)?;
         self.apply_migration(23, MIGRATION_0023)?;
         self.apply_migration(24, MIGRATION_0024)?;
+        self.apply_migration(25, MIGRATION_0025)?;
         Ok(())
     }
 
@@ -134,12 +136,13 @@ mod tests {
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('projects','analysis_runs','files','symbols','graph_nodes','graph_edges','import_references','symbol_reference_observations','semantic_run_metrics','semantic_relations','semantic_symbol_states','semantic_import_resolutions','quality_run_metrics','security_run_metrics','database_artifacts','database_run_metrics','runtime_artifacts','runtime_run_metrics','ml_inference_records','ml_finding_links','repair_plans','repair_changes','repair_verification_runs','repair_verification_items','repair_application_runs','repair_application_items','qa_test_artifacts','qa_discovery_run_metrics','qa_execution_plans','qa_execution_runs','websites','web_security_scans','web_security_endpoints','web_security_findings','web_security_evidence','guided_security_sessions','guided_security_plan_items','guided_security_activity','guided_security_source_candidates','guided_security_finding_lifecycle','guided_security_retests','guided_security_comparisons','guided_security_fix_links','security_fix_attempts','security_fix_validation_results','security_fix_events',
                               'security_remediation_campaigns','security_remediation_campaign_findings',
                               'security_remediation_campaign_relationships','security_remediation_campaign_events',
-                              'source_routes','source_handler_inputs','source_route_mounts','web_source_endpoint_links')",
+                              'source_routes','source_handler_inputs','source_route_mounts','web_source_endpoint_links',
+                              'secret_scan_run_metrics','dependency_inventory','osv_advisories','dependency_audit_run_metrics')",
                 [],
                 |row| row.get(0),
             )
             .expect("query tables");
-        assert_eq!(count, 54);
+        assert_eq!(count, 58);
     }
 
     #[test]
@@ -151,9 +154,9 @@ mod tests {
                 row.get(0)
             })
             .expect("query migrations");
-        assert_eq!(count, 24);
+        assert_eq!(count, 25);
         for version in [
-            10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
         ] {
             let applied: i64 = db
                 .connection()
