@@ -180,7 +180,9 @@ def _file_ready(target: Path, file_spec: dict[str, Any], provenance: dict[str, A
     expected_hash = file_spec.get("sha256")
     if not isinstance(expected_hash, str) or not expected_hash:
         expected_hash = _provenance_hash(provenance, file_spec["path"])
-    return expected_hash is None or _sha256(target) == expected_hash
+    if not isinstance(expected_hash, str) or not expected_hash:
+        return False
+    return _sha256(target) == expected_hash
 
 
 def dataset_status(
