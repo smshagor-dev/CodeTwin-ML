@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import pathlib
+import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -41,6 +42,26 @@ class OpenMindAIDatasetReleaseTests(unittest.TestCase):
             self.assertTrue(asset.endswith(".zip"))
             self.assertNotIn(asset, asset_names)
             asset_names.add(asset)
+
+    def test_release_config_rejects_unsafe_asset_paths(self) -> None:
+        value = {
+            "schema_version": 1,
+            "release_tag": "openmindai-datasets-v1.0.0",
+            "release_name": "OpenMindAI Dataset v1.0.0",
+            "manifest_asset": "openmindai-dataset-manifest-v1.0.0.json",
+            "assets": [
+                {
+                    "dataset_id": "fixture",
+                    "display_name": "OpenMindAI Dataset - Fixture",
+                    "asset_name": "../openmindai-dataset-fixture-v1.0.0.zip",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "release.json"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid OpenMindAI dataset release asset"):
+                _BUILDER.load_release_config(path)
 
     def test_release_source_integrity_requires_full_revision_size_and_sha256(self) -> None:
         release = {
