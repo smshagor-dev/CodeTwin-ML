@@ -34,8 +34,8 @@ jobs:
         env:
           PYTHONPATH: services/ml
         run: |
-          python -m unittest services.ml.tests.test_datasets -v
-          python -m unittest services.ml.tests.test_openmindai_release -v
+          python -m unittest discover -s services/ml/tests -p "test_datasets.py" -v
+          python -m unittest discover -s services/ml/tests -p "test_openmindai_release.py" -v
 
       - name: Build OpenMindAI Dataset assets
         env:
