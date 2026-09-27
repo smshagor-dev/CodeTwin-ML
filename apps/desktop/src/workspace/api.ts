@@ -168,6 +168,27 @@ export const workspaceApi = {
   dependencyAuditHistory(projectId: string, limit = 20) {
     return invoke<import("./types").DependencyAuditRunRecord[]>("dependency_audit_history", { projectId, limit });
   },
+  datasetBenchmarkStatus(datasetsRoot: string | null) {
+    return invoke<import("./types").DatasetBenchmarkStatus>("dataset_benchmark_status", { datasetsRoot });
+  },
+  runDatasetBenchmark(datasetsRoot: string | null, datasetIds: string[], split: string, maxSamples: number) {
+    return invoke<import("./types").BenchmarkRunSummary>("run_dataset_benchmark", {
+      datasetsRoot,
+      datasetIds,
+      split,
+      maxSamples,
+    });
+  },
+  datasetBenchmarks() {
+    return invoke<import("./types").BenchmarkRunSummary[]>("list_dataset_benchmarks");
+  },
+  exportDatasetBenchmark(runId: string, format: import("./types").BenchmarkReportFormat, path: string) {
+    return invoke<string>("export_dataset_benchmark", { runId, format, path });
+  },
+  async pickDatasetDirectory(): Promise<string | null> {
+    const selected = await open({ directory: true, multiple: false, title: "Choose the installed OpenMindAI Dataset directory" });
+    return typeof selected === "string" ? selected : null;
+  },
   async pickAdvisoryDirectory(): Promise<string | null> {
     const selected = await open({ directory: true, multiple: false, title: "Choose an extracted OSV advisory directory" });
     return typeof selected === "string" ? selected : null;
@@ -563,6 +584,19 @@ export async function chooseWebSecurityReportPath(
       name: format === "json" ? "JSON report" : "Markdown report",
       extensions: [extension],
     }],
+  });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function chooseBenchmarkReportPath(
+  format: import("./types").BenchmarkReportFormat,
+): Promise<string | null> {
+  const extension = format === "markdown" ? "md" : format;
+  const names = { html: "HTML report", markdown: "Markdown report", json: "JSON report" } as const;
+  const selected = await save({
+    title: "Save CodeTwin Benchmark Report",
+    defaultPath: "codetwin-benchmark-report." + extension,
+    filters: [{ name: names[format], extensions: [extension] }],
   });
   return typeof selected === "string" ? selected : null;
 }

@@ -2,19 +2,20 @@ import { useState } from "react";
 
 import { PageHeader } from "../ui";
 import { AuthorizedWebSecurityPanel } from "../security/AuthorizedWebSecurityPanel";
+import { DatasetBenchmarkPanel } from "../security/DatasetBenchmarkPanel";
 import { GuidedSecurityOperator } from "../security/GuidedSecurityOperator";
 import { StaticSecurityPanel } from "../security/StaticSecurityPanel";
 import { SupplyChainPanel } from "../security/SupplyChainPanel";
 
 export function SecurityPage() {
-  const [mode, setMode] = useState<"developer" | "web" | "source" | "supply">("developer");
+  const [mode, setMode] = useState<"developer" | "web" | "source" | "supply" | "benchmark">("developer");
 
   return (
     <div>
       <PageHeader
         eyebrow="APPLICATION SECURITY"
         title="Security"
-        description="Run a guided developer security test, inspect expert web-testing evidence, review static source findings, or scan for leaked secrets and vulnerable dependencies. Active operations remain authorization-gated and scope-bounded."
+        description="Run a guided developer security test, inspect expert web-testing evidence, review static source findings, scan for leaked secrets and vulnerable dependencies, or benchmark the analyzers against pinned public datasets. Active operations remain authorization-gated and scope-bounded."
       />
       <div className="ws-security-tabs" role="tablist" aria-label="Security workspace mode">
         <button role="tab" aria-selected={mode === "developer"} className={mode === "developer" ? "active" : ""} onClick={() => setMode("developer")}>
@@ -29,6 +30,9 @@ export function SecurityPage() {
         <button role="tab" aria-selected={mode === "supply"} className={mode === "supply" ? "active" : ""} onClick={() => setMode("supply")}>
           Secrets &amp; Dependencies
         </button>
+        <button role="tab" aria-selected={mode === "benchmark"} className={mode === "benchmark" ? "active" : ""} onClick={() => setMode("benchmark")}>
+          Dataset Benchmarks
+        </button>
       </div>
       {mode === "developer" ? (
         <GuidedSecurityOperator/>
@@ -36,6 +40,8 @@ export function SecurityPage() {
         <AuthorizedWebSecurityPanel/>
       ) : mode === "supply" ? (
         <SupplyChainPanel/>
+      ) : mode === "benchmark" ? (
+        <DatasetBenchmarkPanel/>
       ) : (
         <StaticSecurityPanel/>
       )}

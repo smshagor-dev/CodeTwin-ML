@@ -2009,3 +2009,20 @@ html[data-theme="dark"] .ws-security-fix-warning {
 .ws-consent { padding-left: 24px; color: var(--ws-muted); }
 .ws-security-layout.ws-supply-layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
 @media (max-width: 1100px) { .ws-security-layout.ws-supply-layout { grid-template-columns: minmax(0, 1fr); } }
+
+.ws-benchmark-toolbar { flex-wrap: wrap; }
+.ws-benchmark-toolbar .ws-advisory-path { flex: 1 1 320px; padding-left: 0; }
+.ws-benchmark-toolbar input, .ws-benchmark-toolbar select { font-size: 12px; }
+.ws-benchmark-limit { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ws-muted); }
+.ws-benchmark-limit input { width: 96px; padding: 8px 10px; }
+.ws-benchmark-hint code { overflow-wrap: anywhere; }
+.ws-benchmark-datasets { display: grid; gap: 8px; }
+.ws-benchmark-datasets label { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--ws-border); border-radius: 9px; }
+.ws-benchmark-datasets label input { width: auto; }
+.ws-benchmark-datasets label span { display: grid; gap: 2px; min-width: 0; }
+.ws-benchmark-datasets label strong { font-size: 11px; }
+.ws-benchmark-datasets label small { color: var(--ws-muted); font-size: 10px; overflow-wrap: anywhere; }
+.ws-benchmark-datasets label.ws-disabled { opacity: 0.6; }
+.ws-benchmark-export { display: flex; gap: 6px; }
+.ws-link-button { background: none; border: 0; padding: 0; color: inherit; text-align: left; cursor: pointer; }
+.ws-link-button:hover strong { text-decoration: underline; }
