@@ -594,6 +594,11 @@ fn language_spec(path: &Path) -> Option<LanguageSpec> {
             language: tree_sitter_cpp::LANGUAGE.into(),
             definitions_query: tree_sitter_cpp::TAGS_QUERY,
         }),
+        "java" => Some(LanguageSpec {
+            name: "Java",
+            language: tree_sitter_java::LANGUAGE.into(),
+            definitions_query: tree_sitter_java::TAGS_QUERY,
+        }),
         "php" => Some(LanguageSpec {
             name: "PHP",
             language: tree_sitter_php::LANGUAGE_PHP.into(),
@@ -705,6 +710,11 @@ mod tests {
             (
                 "sample.php",
                 "<?php function add($a, $b) { return $a + $b; }",
+                "add",
+            ),
+            (
+                "Sample.java",
+                "class Sample { int add(int a, int b) { return a + b; } }",
                 "add",
             ),
         ];
@@ -831,6 +841,32 @@ export const exportedArrow = async () => 3;
             "#include <stdio.h>\nint main(void) { return 0; }\n",
         );
         assert!(c.imports.iter().any(|item| item.raw_specifier == "stdio.h"));
+        let java = parse_fixture(
+            "App.java",
+            "package app;\nimport java.util.List;\nimport java.io.*;\nimport static org.junit.Assert.assertTrue;\nclass App {}\n",
+        );
+        assert!(java
+            .imports
+            .iter()
+            .any(|item| item.kind == "import" && item.raw_specifier == "java.util.List"));
+        assert!(java
+            .imports
+            .iter()
+            .any(|item| item.raw_specifier == "java.io.*"));
+        assert!(java.imports.iter().any(|item| {
+            item.kind == "static_import" && item.raw_specifier == "org.junit.Assert.assertTrue"
+        }));
+        let classes = parse_fixture(
+            "Shop.java",
+            "public class Shop { interface Cart {} enum Size { S } Shop() {} void checkout() {} }",
+        );
+        for name in ["Shop", "Cart", "checkout"] {
+            assert!(
+                classes.symbols.iter().any(|symbol| symbol.name == name),
+                "{name}: {:?}",
+                classes.symbols
+            );
+        }
     }
 
     #[test]

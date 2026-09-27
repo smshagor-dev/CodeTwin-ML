@@ -17,6 +17,7 @@ tree-sitter-go.workspace = true
 tree-sitter-c.workspace = true
 tree-sitter-cpp.workspace = true
 tree-sitter-php.workspace = true
+tree-sitter-java.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
