@@ -212,7 +212,7 @@ export function TestingPage() {
         eyebrow="QA / SANDBOX"
         title="Testing"
         description="Discover tests passively, then create an immutable execution plan. Test code runs only when the strict sandbox capability floor is available and the exact plan is explicitly approved."
-        actions={<div className="ws-header-tools"><ProjectSelect projects={projects} value={activeProjectId} onChange={setActiveProjectId}/><button className="ws-button ws-button-primary" onClick={() => void runQaDiscovery().then(() => activeProjectId && load(activeProjectId))} disabled={!activeProjectId || operation !== null}><Icon name="testing"/>{operation?.kind === "testing" ? "Discovering…" : "Discover Tests"}</button></div>}
+        actions={<div className="ws-header-tools"><ProjectSelect projects={projects} value={activeProjectId} onChange={setActiveProjectId}/><button className="ws-button ws-button-primary" onClick={() => void runQaDiscovery().then(() => (activeProjectId ? load(activeProjectId) : undefined))} disabled={!activeProjectId || operation !== null}><Icon name="testing"/>{operation?.kind === "testing" ? "Discovering…" : "Discover Tests"}</button></div>}
       />
 
       <div className="ws-limitation-banner">
