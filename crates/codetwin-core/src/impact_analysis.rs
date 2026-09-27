@@ -59,7 +59,7 @@ impl<'a> ImpactAnalysisService<'a> {
         let connection = self.database.connection();
         let root = connection
             .query_row(
-                "SELECT id, project_id, relative_path, COALESCE(relative_path_identity, relative_path), language, content_hash, byte_size, ast_root_kind, parse_state, is_active\
+                "SELECT id, project_id, relative_path, COALESCE(relative_path_identity, relative_path), language, content_hash, byte_size, ast_root_kind, parse_state, is_active \
                  FROM files WHERE id = ?1 AND is_active = 1",
                 [file_id],
                 map_file,
@@ -79,13 +79,13 @@ impl<'a> ImpactAnalysisService<'a> {
         let mut truncated = false;
 
         let mut statement = connection.prepare(
-            "SELECT ir.id, ir.source_file_id, ir.raw_specifier, f.relative_path, f.language\
-             FROM import_references ir\
-             JOIN files f ON f.id = ir.source_file_id\
-             WHERE ir.project_id = ?1\
-               AND ir.resolved_target_file_id = ?2\
-               AND ir.resolution_state = 'resolved_local'\
-               AND f.is_active = 1\
+            "SELECT ir.id, ir.source_file_id, ir.raw_specifier, f.relative_path, f.language \
+             FROM import_references ir \
+             JOIN files f ON f.id = ir.source_file_id \
+             WHERE ir.project_id = ?1 \
+               AND ir.resolved_target_file_id = ?2 \
+               AND ir.resolution_state = 'resolved_local' \
+               AND f.is_active = 1 \
              ORDER BY f.relative_path, ir.start_line, ir.start_column, ir.id",
         )?;
 
@@ -203,7 +203,10 @@ mod tests {
         let files = ProjectQueryService::new(&database)
             .list_files(&summary.project_id, Some("a.ts"), 10)
             .expect("files");
-        let root = files.iter().find(|file| file.relative_path == "a.ts").expect("a file");
+        let root = files
+            .iter()
+            .find(|file| file.relative_path == "a.ts")
+            .expect("a file");
 
         let report = ImpactAnalysisService::new(&database)
             .analyze_file(&root.id, 8, 500)

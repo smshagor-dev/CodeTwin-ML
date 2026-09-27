@@ -443,16 +443,14 @@ fn validate_policy(policy: &SandboxPolicy) -> Result<(), PlanError> {
     Ok(())
 }
 
-fn missing_capabilities(
-    policy: &SandboxPolicy,
-    capabilities: &SandboxCapabilities,
-) -> Vec<String> {
+fn missing_capabilities(policy: &SandboxPolicy, capabilities: &SandboxCapabilities) -> Vec<String> {
     let mut reasons = Vec::new();
     if policy.require_process_isolation && !capabilities.process_isolation {
         reasons.push("process isolation is not enforced by the selected backend".to_string());
     }
     if policy.require_filesystem_isolation && !capabilities.filesystem_isolation {
-        reasons.push("filesystem/write isolation is not enforced by the selected backend".to_string());
+        reasons
+            .push("filesystem/write isolation is not enforced by the selected backend".to_string());
     }
     if policy.require_network_isolation && !capabilities.network_isolation {
         reasons.push("network isolation is not enforced by the selected backend".to_string());
@@ -604,6 +602,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)] // reads as "default, minus each floor"
     fn relaxed_policy_cannot_bypass_execution_capability_floor() {
         let mut policy = SandboxPolicy::default();
         policy.require_process_isolation = false;
@@ -624,13 +623,12 @@ mod tests {
         )
         .expect("relaxed plan");
         plan.status = ExecutionPlanStatus::Approved;
-        let result = execute_approved_plan(
-            &plan,
-            ".",
-            &[],
-            &std::sync::atomic::AtomicBool::new(false),
-        );
-        assert!(matches!(result, Err(super::BackendExecutionError::PlanBlocked)));
+        let result =
+            execute_approved_plan(&plan, ".", &[], &std::sync::atomic::AtomicBool::new(false));
+        assert!(matches!(
+            result,
+            Err(super::BackendExecutionError::PlanBlocked)
+        ));
     }
 
     #[test]

@@ -149,10 +149,10 @@ impl<'a> MlInferenceStore<'a> {
 
         let tx = self.database.connection().unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO analysis_runs(\
-               id, project_id, status, analyzer_version, started_at, finished_at, configuration_json,\
-               run_kind, query_version, config_fingerprint\
-             ) VALUES (?1, ?2, 'completed', ?3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?4,\
+            "INSERT INTO analysis_runs( \
+               id, project_id, status, analyzer_version, started_at, finished_at, configuration_json, \
+               run_kind, query_version, config_fingerprint \
+             ) VALUES (?1, ?2, 'completed', ?3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?4, \
                        'ml_inference', ?5, ?6)",
             params![
                 run_id,
@@ -164,10 +164,10 @@ impl<'a> MlInferenceStore<'a> {
             ],
         )?;
         tx.execute(
-            "INSERT INTO ml_inference_records(\
-               id, project_id, run_id, action, source_file_id, source_content_hash, input_sha256,\
-               input_utf8_bytes, preprocessing, model_id, model_version, backend, package_digest,\
-               prediction_label, prediction_confidence, scores_json, runtime_json, evaluation_provenance_json\
+            "INSERT INTO ml_inference_records( \
+               id, project_id, run_id, action, source_file_id, source_content_hash, input_sha256, \
+               input_utf8_bytes, preprocessing, model_id, model_version, backend, package_digest, \
+               prediction_label, prediction_confidence, scores_json, runtime_json, evaluation_provenance_json \
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 record_id,
@@ -192,17 +192,18 @@ impl<'a> MlInferenceStore<'a> {
         )?;
         tx.commit()?;
 
-        self.get(&record_id)?.ok_or_else(|| MlInferenceError::InferenceNotFound(record_id))
+        self.get(&record_id)?
+            .ok_or_else(|| MlInferenceError::InferenceNotFound(record_id))
     }
 
     pub fn get(&self, record_id: &str) -> Result<Option<MlInferenceRecord>, MlInferenceError> {
         self.database
             .connection()
             .query_row(
-                "SELECT id, project_id, run_id, action, source_file_id, source_content_hash,\
-                        input_sha256, input_utf8_bytes, preprocessing, model_id, model_version, backend,\
-                        package_digest, prediction_label, prediction_confidence, scores_json, runtime_json,\
-                        evaluation_provenance_json, created_at\
+                "SELECT id, project_id, run_id, action, source_file_id, source_content_hash, \
+                        input_sha256, input_utf8_bytes, preprocessing, model_id, model_version, backend, \
+                        package_digest, prediction_label, prediction_confidence, scores_json, runtime_json, \
+                        evaluation_provenance_json, created_at \
                  FROM ml_inference_records WHERE id = ?1",
                 [record_id],
                 map_inference_row,
@@ -220,12 +221,12 @@ impl<'a> MlInferenceStore<'a> {
         ensure_project(self.database.connection(), project_id)?;
         let limit = bounded(limit, MAX_HISTORY_QUERY);
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, run_id, action, source_file_id, source_content_hash,\
-                    input_sha256, input_utf8_bytes, preprocessing, model_id, model_version, backend,\
-                    package_digest, prediction_label, prediction_confidence, scores_json, runtime_json,\
-                    evaluation_provenance_json, created_at\
-             FROM ml_inference_records\
-             WHERE project_id = ?1 AND (?2 IS NULL OR action = ?2)\
+            "SELECT id, project_id, run_id, action, source_file_id, source_content_hash, \
+                    input_sha256, input_utf8_bytes, preprocessing, model_id, model_version, backend, \
+                    package_digest, prediction_label, prediction_confidence, scores_json, runtime_json, \
+                    evaluation_provenance_json, created_at \
+             FROM ml_inference_records \
+             WHERE project_id = ?1 AND (?2 IS NULL OR action = ?2) \
              ORDER BY created_at DESC, id DESC LIMIT ?3",
         )?;
         let rows = statement.query_map(params![project_id, action, limit], map_inference_row)?;
@@ -247,8 +248,10 @@ impl<'a> MlInferenceStore<'a> {
                 relationship.to_owned(),
             ));
         }
-        let inference_project = project_for_inference(self.database.connection(), inference_record_id)?
-            .ok_or_else(|| MlInferenceError::InferenceNotFound(inference_record_id.to_owned()))?;
+        let inference_project =
+            project_for_inference(self.database.connection(), inference_record_id)?.ok_or_else(
+                || MlInferenceError::InferenceNotFound(inference_record_id.to_owned()),
+            )?;
         let finding_project = project_for_finding(self.database.connection(), finding_id)?
             .ok_or_else(|| MlInferenceError::FindingNotFound(finding_id.to_owned()))?;
         if inference_project != project_id || finding_project != project_id {
@@ -260,16 +263,16 @@ impl<'a> MlInferenceStore<'a> {
             &[project_id, inference_record_id, finding_id, relationship],
         );
         self.database.connection().execute(
-            "INSERT INTO ml_finding_links(id, project_id, inference_record_id, finding_id, relationship)\
-             VALUES (?1, ?2, ?3, ?4, ?5)\
+            "INSERT INTO ml_finding_links(id, project_id, inference_record_id, finding_id, relationship) \
+             VALUES (?1, ?2, ?3, ?4, ?5) \
              ON CONFLICT(project_id, inference_record_id, finding_id, relationship) DO NOTHING",
             params![id, project_id, inference_record_id, finding_id, relationship],
         )?;
         self.database
             .connection()
             .query_row(
-                "SELECT id, project_id, inference_record_id, finding_id, relationship, created_at\
-                 FROM ml_finding_links\
+                "SELECT id, project_id, inference_record_id, finding_id, relationship, created_at \
+                 FROM ml_finding_links \
                  WHERE project_id = ?1 AND inference_record_id = ?2 AND finding_id = ?3 AND relationship = ?4",
                 params![project_id, inference_record_id, finding_id, relationship],
                 |row| {
@@ -292,20 +295,23 @@ impl<'a> MlInferenceStore<'a> {
         limit: usize,
     ) -> Result<Vec<MlFindingLinkRecord>, MlInferenceError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, inference_record_id, finding_id, relationship, created_at\
-             FROM ml_finding_links WHERE finding_id = ?1\
+            "SELECT id, project_id, inference_record_id, finding_id, relationship, created_at \
+             FROM ml_finding_links WHERE finding_id = ?1 \
              ORDER BY created_at DESC, id DESC LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![finding_id, bounded(limit, MAX_HISTORY_QUERY)], |row| {
-            Ok(MlFindingLinkRecord {
-                id: row.get(0)?,
-                project_id: row.get(1)?,
-                inference_record_id: row.get(2)?,
-                finding_id: row.get(3)?,
-                relationship: row.get(4)?,
-                created_at: row.get(5)?,
-            })
-        })?;
+        let rows = statement.query_map(
+            params![finding_id, bounded(limit, MAX_HISTORY_QUERY)],
+            |row| {
+                Ok(MlFindingLinkRecord {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    inference_record_id: row.get(2)?,
+                    finding_id: row.get(3)?,
+                    relationship: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            },
+        )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 }
@@ -351,7 +357,10 @@ fn validate_observation(observation: &MlInferenceObservation) -> Result<(), MlIn
     let mut sum = 0.0;
     let mut selected_score = None;
     for score in &observation.scores {
-        if score.label.is_empty() || score.label.len() > MAX_LABEL_BYTES || !labels.insert(&score.label) {
+        if score.label.is_empty()
+            || score.label.len() > MAX_LABEL_BYTES
+            || !labels.insert(&score.label)
+        {
             return Err(MlInferenceError::InvalidObservation(
                 "score labels must be unique bounded non-empty strings".to_owned(),
             ));
@@ -431,7 +440,11 @@ fn validate_source(
 }
 
 fn validate_sha256(name: &str, value: &str) -> Result<(), MlInferenceError> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
         return Err(MlInferenceError::InvalidObservation(format!(
             "{name} must be a lowercase SHA-256 hex digest"
         )));
@@ -568,8 +581,14 @@ mod tests {
             prediction_label: "review".to_owned(),
             prediction_confidence: 0.8,
             scores: vec![
-                MlScore { label: "safe".to_owned(), score: 0.2 },
-                MlScore { label: "review".to_owned(), score: 0.8 },
+                MlScore {
+                    label: "safe".to_owned(),
+                    score: 0.2,
+                },
+                MlScore {
+                    label: "review".to_owned(),
+                    score: 0.8,
+                },
             ],
             runtime: json!({"engine":"onnxruntime","provider":"CPUExecutionProvider"}),
             evaluation_provenance: json!({"status":"passed","datasets":[]}),
@@ -581,10 +600,18 @@ mod tests {
         let db = Database::open_in_memory().expect("open db");
         insert_project(&db, "project-1");
         let store = MlInferenceStore::new(&db);
-        let record = store.record("project-1", &observation()).expect("record inference");
+        let record = store
+            .record("project-1", &observation())
+            .expect("record inference");
         assert_eq!(record.prediction_label, "review");
         assert_eq!(record.input_sha256, "a".repeat(64));
-        assert_eq!(store.history("project-1", Some("security_analysis"), 50).expect("history").len(), 1);
+        assert_eq!(
+            store
+                .history("project-1", Some("security_analysis"), 50)
+                .expect("history")
+                .len(),
+            1
+        );
 
         let columns: Vec<String> = db
             .connection()
@@ -594,7 +621,9 @@ mod tests {
             .expect("columns")
             .collect::<Result<Vec<_>, _>>()
             .expect("collect");
-        assert!(!columns.iter().any(|column| column == "source_text" || column == "input_text"));
+        assert!(!columns
+            .iter()
+            .any(|column| column == "source_text" || column == "input_text"));
     }
 
     #[test]
@@ -603,7 +632,7 @@ mod tests {
         insert_project(&db, "project-1");
         db.connection()
             .execute(
-                "INSERT INTO files(id, project_id, relative_path, language, content_hash, byte_size, relative_path_identity, is_active)\
+                "INSERT INTO files(id, project_id, relative_path, language, content_hash, byte_size, relative_path_identity, is_active) \
                  VALUES ('file-1','project-1','src/a.ts','typescript',?1,10,'src/a.ts',1)",
                 ["c".repeat(64)],
             )
@@ -622,10 +651,12 @@ mod tests {
         let db = Database::open_in_memory().expect("open db");
         insert_project(&db, "project-1");
         let store = MlInferenceStore::new(&db);
-        let inference = store.record("project-1", &observation()).expect("record inference");
+        let inference = store
+            .record("project-1", &observation())
+            .expect("record inference");
         db.connection()
             .execute(
-                "INSERT INTO findings(id, project_id, run_id, category, severity, confidence, title, description, status, fingerprint)\
+                "INSERT INTO findings(id, project_id, run_id, category, severity, confidence, title, description, status, fingerprint) \
                  VALUES ('finding-1','project-1',?1,'security','medium',0.95,'deterministic','evidence','open','fp-1')",
                 [&inference.run_id],
             )
@@ -643,6 +674,12 @@ mod tests {
             .expect("finding");
         assert_eq!(status, "open");
         assert_eq!(confidence, 0.95);
-        assert_eq!(store.links_for_finding("finding-1", 20).expect("links").len(), 1);
+        assert_eq!(
+            store
+                .links_for_finding("finding-1", 20)
+                .expect("links")
+                .len(),
+            1
+        );
     }
 }

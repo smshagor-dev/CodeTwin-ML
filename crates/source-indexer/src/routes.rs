@@ -26,6 +26,11 @@ pub fn extract_routes(
         }
         "Python" => {
             let (mut routes, mut mounts) = extract_fastapi_routes(source, root);
+            // `@app.get(...)` is valid in both FastAPI and Flask 2+. Routers bound to
+            // `Flask(...)`/`Blueprint(...)` belong to the Flask extractor, which also
+            // captures their request inputs.
+            let (flask_routers, _) = flask_router_prefixes(source, root);
+            routes.retain(|route| !flask_routers.contains_key(&route.router_name));
             let (flask_routes, flask_mounts, flask_inputs) = extract_flask_routes(source, root);
             let (django_routes, django_inputs) = extract_django_routes(source, root);
             routes.extend(flask_routes);
@@ -91,8 +96,11 @@ pub fn extract_routes(
             && left.start_line == right.start_line
     });
     handler_inputs.sort_by(|left, right| {
-        (&left.handler_name, left.start_line, left.end_line)
-            .cmp(&(&right.handler_name, right.start_line, right.end_line))
+        (&left.handler_name, left.start_line, left.end_line).cmp(&(
+            &right.handler_name,
+            right.start_line,
+            right.end_line,
+        ))
     });
     let mut merged_handler_inputs: Vec<IndexedHandlerInput> = Vec::new();
     for mut input in handler_inputs {
@@ -339,7 +347,11 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
     };
     let type_models = typescript_object_models(source, handler);
     if source.contains("next/headers") {
-        parameters.extend(nextjs_server_context_parameters(source, handler, function_text));
+        parameters.extend(nextjs_server_context_parameters(
+            source,
+            handler,
+            function_text,
+        ));
     }
     let Some(request_name) = request_parameter_name(source, handler) else {
         return parameters;
@@ -409,7 +421,10 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
         }
 
         let form_marker = format!("{request_name}.formData(");
-        if value.contains(&form_marker) && name_node.kind() == "identifier" && is_identifier(name_text) {
+        if value.contains(&form_marker)
+            && name_node.kind() == "identifier"
+            && is_identifier(name_text)
+        {
             form_variables.push(name_text.to_string());
         }
         if value == format!("{request_name}.nextUrl.searchParams")
@@ -439,7 +454,9 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
             };
             if let Some((object, property)) = value.split_once('.') {
                 if !property.contains('.')
-                    && json_variables.iter().any(|candidate| candidate == object.trim())
+                    && json_variables
+                        .iter()
+                        .any(|candidate| candidate == object.trim())
                     && is_identifier(property.trim())
                 {
                     parameters.push(route_parameter(property.trim(), "json"));
@@ -504,10 +521,7 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
     parameters
 }
 
-fn typescript_object_models(
-    source: &str,
-    handler: Node<'_>,
-) -> BTreeMap<String, Vec<String>> {
+fn typescript_object_models(source: &str, handler: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let mut root = handler;
     while let Some(parent) = root.parent() {
         root = parent;
@@ -517,7 +531,10 @@ fn typescript_object_models(
     let mut parents = BTreeMap::<String, Vec<String>>::new();
 
     walk(root, &mut |node| {
-        if !matches!(node.kind(), "interface_declaration" | "type_alias_declaration") {
+        if !matches!(
+            node.kind(),
+            "interface_declaration" | "type_alias_declaration"
+        ) {
             return;
         }
         let Some(name) = node
@@ -590,7 +607,10 @@ fn typescript_object_models(
                 continue;
             }
             let parent_names = parents.get(name).cloned().unwrap_or_default();
-            if !parent_names.iter().all(|parent| resolved.contains_key(parent)) {
+            if !parent_names
+                .iter()
+                .all(|parent| resolved.contains_key(parent))
+            {
                 continue;
             }
             let mut fields = Vec::new();
@@ -619,7 +639,12 @@ fn typescript_object_models(
 
 fn typescript_type_alias_parents(type_value: &str) -> Option<Vec<String>> {
     let type_value = type_value.trim();
-    if type_value.starts_with('{') && type_value.ends_with('}') {
+    // A single object literal. `{ a } | { b }` and `{ a } & { b }` also start with `{`
+    // and end with `}`, so require exactly one top-level term.
+    let single_term = typescript_top_level_type_parts(type_value, '|')
+        .is_some_and(|parts| parts.len() == 1)
+        && typescript_top_level_type_parts(type_value, '&').is_some_and(|parts| parts.len() == 1);
+    if single_term && type_value.starts_with('{') && type_value.ends_with('}') {
         return Some(Vec::new());
     }
     if is_identifier(type_value) {
@@ -738,10 +763,7 @@ fn typescript_interface_parents(raw: &str) -> Option<Vec<String>> {
     }
 }
 
-fn typescript_property_belongs_directly_to_model(
-    property: Node<'_>,
-    model: Node<'_>,
-) -> bool {
+fn typescript_property_belongs_directly_to_model(property: Node<'_>, model: Node<'_>) -> bool {
     let mut current = property;
     while let Some(parent) = current.parent() {
         if parent.start_byte() == model.start_byte() && parent.end_byte() == model.end_byte() {
@@ -755,10 +777,7 @@ fn typescript_property_belongs_directly_to_model(
     false
 }
 
-fn typescript_direct_json_assertion_model(
-    value: &str,
-    request_name: &str,
-) -> Option<String> {
+fn typescript_direct_json_assertion_model(value: &str, request_name: &str) -> Option<String> {
     let (expression, type_name) = value.rsplit_once(" as ")?;
     let type_name = type_name.trim().trim_end_matches(';').trim();
     if !is_identifier(type_name) {
@@ -773,9 +792,7 @@ fn typescript_direct_json_assertion_model(
         }
         expression = stripped;
     }
-    let Some(rest) = expression.strip_prefix("await ") else {
-        return None;
-    };
+    let rest = expression.strip_prefix("await ")?;
     expression = rest.trim();
     for _ in 0..4 {
         let stripped = typescript_strip_balanced_outer_parentheses(expression);
@@ -935,7 +952,10 @@ fn nextjs_server_context_parameters(
 
 fn javascript_object_pattern_fields(value: &str) -> Vec<String> {
     let value = value.trim();
-    let Some(inner) = value.strip_prefix('{').and_then(|value| value.strip_suffix('}')) else {
+    let Some(inner) = value
+        .strip_prefix('{')
+        .and_then(|value| value.strip_suffix('}'))
+    else {
         return Vec::new();
     };
     let mut fields = Vec::new();
@@ -1042,10 +1062,7 @@ fn extract_express_routes(
     (routes, mounts)
 }
 
-fn javascript_handler_inputs(
-    source: &str,
-    root: Node<'_>,
-) -> Vec<IndexedHandlerInput> {
+fn javascript_handler_inputs(source: &str, root: Node<'_>) -> Vec<IndexedHandlerInput> {
     let mut output = Vec::new();
     for (handler_name, node) in javascript_handlers(source, root) {
         let mut parameters = express_handler_parameters(source, node);
@@ -1088,7 +1105,8 @@ fn javascript_handlers<'a>(source: &str, root: Node<'a>) -> BTreeMap<String, Nod
     walk(root, &mut |node| match node.kind() {
         "function_declaration" => {
             if let (Some(name), Some(_body)) = (
-                node.child_by_field_name("name").and_then(|value| text(source, value)),
+                node.child_by_field_name("name")
+                    .and_then(|value| text(source, value)),
                 node.child_by_field_name("body"),
             ) {
                 handlers.insert(name.to_string(), node);
@@ -1385,9 +1403,8 @@ fn extract_django_routes(
                 .iter()
                 .any(|parameter| parameter.location == "form");
             let request_content_type = if has_json && has_form {
-                parameters.retain(|parameter| {
-                    !matches!(parameter.location.as_str(), "json" | "form")
-                });
+                parameters
+                    .retain(|parameter| !matches!(parameter.location.as_str(), "json" | "form"));
                 None
             } else if has_json {
                 Some("application/json".to_string())
@@ -1547,10 +1564,7 @@ fn django_handler_parameters(source: &str, function: Node<'_>) -> Vec<IndexedRou
     parameters
 }
 
-fn django_handler_methods(
-    source: &str,
-    root: Node<'_>,
-) -> BTreeMap<String, Vec<String>> {
+fn django_handler_methods(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let mut output = BTreeMap::new();
     walk(root, &mut |node| {
         if node.kind() != "decorated_definition" {
@@ -1617,11 +1631,7 @@ fn django_path_handler_name(call_tail: &str) -> Option<String> {
     let close_relative = after_open.find(quote)?;
     let after_literal = &after_open[close_relative + quote.len_utf8()..];
     let after_comma = after_literal.trim_start().strip_prefix(',')?.trim_start();
-    let candidate = after_comma
-        .split([',', ')'])
-        .next()
-        .unwrap_or("")
-        .trim();
+    let candidate = after_comma.split([',', ')']).next().unwrap_or("").trim();
     if is_identifier(candidate) {
         Some(candidate.to_string())
     } else {
@@ -1826,7 +1836,11 @@ fn marker_quoted_subscripts(value: &str, marker: &str) -> Vec<String> {
     while let Some(relative) = value[offset..].find(marker) {
         let start = offset + relative + marker.len();
         let tail = value[start..].trim_start();
-        let Some(quote) = tail.chars().next().filter(|value| matches!(value, '"' | '\'')) else {
+        let Some(quote) = tail
+            .chars()
+            .next()
+            .filter(|value| matches!(value, '"' | '\''))
+        else {
             offset = start;
             continue;
         };
@@ -1897,8 +1911,8 @@ fn flask_router_prefixes(
         let Some(child) = child else {
             return;
         };
-        let explicit_prefix = keyword_string(value, "url_prefix")
-            .map(|value| normalize_path(&value));
+        let explicit_prefix =
+            keyword_string(value, "url_prefix").map(|value| normalize_path(&value));
         if let Some(prefix) = explicit_prefix.as_ref() {
             if prefixes.contains_key(child) {
                 prefixes.insert(child.to_string(), prefix.clone());
@@ -1946,7 +1960,11 @@ fn parse_flask_decorator(
             methods
                 .into_iter()
                 .map(|method| method.to_ascii_uppercase())
-                .filter(|method| HTTP_METHODS.iter().any(|known| known.eq_ignore_ascii_case(method)))
+                .filter(|method| {
+                    HTTP_METHODS
+                        .iter()
+                        .any(|known| known.eq_ignore_ascii_case(method))
+                })
                 .collect()
         };
         if methods.is_empty() {
@@ -1955,11 +1973,7 @@ fn parse_flask_decorator(
         return Some((router.to_string(), methods, path));
     }
     if HTTP_METHODS.contains(&method.to_ascii_lowercase().as_str()) {
-        return Some((
-            router.to_string(),
-            vec![method.to_ascii_uppercase()],
-            path,
-        ));
+        return Some((router.to_string(), vec![method.to_ascii_uppercase()], path));
     }
     None
 }
@@ -1996,6 +2010,13 @@ fn extract_laravel_routes(
         let end = node.end_position();
 
         if matches!(method.as_str(), "resource" | "apiresource") {
+            // `Route::resource(...)->parameters(...)` is visited twice: the inner call
+            // lacks the chained overrides, so let the outermost chained call expand it.
+            if node.parent().is_some_and(|parent| {
+                parent.kind().contains("call") && parent.start_byte() == node.start_byte()
+            }) {
+                return;
+            }
             let base = combine_paths(group_prefix.as_deref(), &path);
             let Some(parameter) = laravel_effective_resource_parameter(value, &base) else {
                 return;
@@ -2157,10 +2178,7 @@ fn laravel_handler_inputs(source: &str, root: Node<'_>) -> Vec<IndexedHandlerInp
     output
 }
 
-fn laravel_form_request_inputs(
-    source: &str,
-    root: Node<'_>,
-) -> Vec<IndexedHandlerInput> {
+fn laravel_form_request_inputs(source: &str, root: Node<'_>) -> Vec<IndexedHandlerInput> {
     let mut output = Vec::new();
     walk(root, &mut |node| {
         if node.kind() != "class_declaration" {
@@ -2207,10 +2225,11 @@ fn laravel_form_request_inputs(
         let Some(rules_text) = text(source, rules_method) else {
             return;
         };
-        let mut parameters: Vec<IndexedRouteParameter> = php_top_level_return_array_keys(rules_text)
-            .into_iter()
-            .map(|name| route_parameter(&name, "body"))
-            .collect();
+        let mut parameters: Vec<IndexedRouteParameter> =
+            php_top_level_return_array_keys(rules_text)
+                .into_iter()
+                .map(|name| route_parameter(&name, "body"))
+                .collect();
         normalize_parameters(&mut parameters);
         if parameters.is_empty() {
             return;
@@ -2368,8 +2387,12 @@ fn laravel_request_parameters(method_text: &str) -> Vec<IndexedRouteParameter> {
         }
     }
 
-    let has_json = parameters.iter().any(|parameter| parameter.location == "json");
-    let has_form = parameters.iter().any(|parameter| parameter.location == "form");
+    let has_json = parameters
+        .iter()
+        .any(|parameter| parameter.location == "json");
+    let has_form = parameters
+        .iter()
+        .any(|parameter| parameter.location == "form");
     let validation_location = match (has_json, has_form) {
         (true, false) => "json",
         (false, true) => "form",
@@ -2445,10 +2468,7 @@ fn laravel_request_variables(method_text: &str) -> Vec<String> {
     variables.dedup();
     variables
 }
-fn laravel_effective_resource_parameter(
-    call_text: &str,
-    path: &str,
-) -> Option<String> {
+fn laravel_effective_resource_parameter(call_text: &str, path: &str) -> Option<String> {
     let default = laravel_resource_parameter(path)?;
     if !call_text.contains("->parameters(") {
         return Some(default);
@@ -2464,17 +2484,10 @@ fn laravel_effective_resource_parameter(
     if resource.is_empty() {
         return None;
     }
-    Some(
-        mappings
-            .get(resource)
-            .cloned()
-            .unwrap_or(default),
-    )
+    Some(mappings.get(resource).cloned().unwrap_or(default))
 }
 
-fn laravel_static_resource_parameter_map(
-    call_text: &str,
-) -> Option<BTreeMap<String, String>> {
+fn laravel_static_resource_parameter_map(call_text: &str) -> Option<BTreeMap<String, String>> {
     let marker = "->parameters(";
     let index = call_text.find(marker)?;
     let tail = &call_text[index + marker.len()..];
@@ -2517,11 +2530,7 @@ fn php_exact_quoted_string(value: &str) -> Option<String> {
 }
 
 fn laravel_resource_parameter(path: &str) -> Option<String> {
-    let segment = path
-        .trim_matches('/')
-        .rsplit('/')
-        .next()?
-        .trim();
+    let segment = path.trim_matches('/').rsplit('/').next()?.trim();
     if segment.is_empty() || segment.starts_with('{') {
         return None;
     }
@@ -2572,12 +2581,25 @@ fn laravel_ancestor_prefix(source: &str, node: Node<'_>) -> Option<String> {
 }
 
 fn laravel_chain_prefix(value: &str) -> Option<String> {
-    if let Some(index) = value.find("->prefix(") {
-        return first_quoted_string(&value[index + "->prefix(".len()..])
-            .map(|prefix| normalize_path(&prefix));
+    // Only inspect this group's own chain head (`Route::prefix('api')->...->group(`),
+    // never the closure body, which may contain nested groups with their own prefixes.
+    if let Some(group_index) = value.find("->group(") {
+        let head = &value[..group_index];
+        for marker in ["::prefix(", "->prefix("] {
+            if let Some(index) = head.find(marker) {
+                return first_quoted_string(&head[index + marker.len()..])
+                    .map(|prefix| normalize_path(&prefix));
+            }
+        }
+        return None;
     }
     if value.contains("Route::group(") {
-        let compact = value.split_whitespace().collect::<String>();
+        let head_end = ["function", "fn(", "fn ("]
+            .iter()
+            .filter_map(|marker| value.find(marker))
+            .min()
+            .unwrap_or(value.len());
+        let compact = value[..head_end].split_whitespace().collect::<String>();
         for quote in ['\'', '"'] {
             let marker = format!("{quote}prefix{quote}=>{quote}");
             if let Some(index) = compact.find(&marker) {
@@ -2674,7 +2696,11 @@ fn extract_go_routes(
         };
 
         let handler_name = go_route_handler_reference(value);
-        let full_path = combine_paths(prefixes.get(router).map(String::as_str), &path);
+        let router_prefix = prefixes.get(router).cloned().unwrap_or_default();
+        let full_path = combine_paths(
+            (!router_prefix.is_empty()).then_some(router_prefix.as_str()),
+            &path,
+        );
         let mut parameters = path_parameters(&full_path);
         if let Some(name) = handler_name.as_ref() {
             if let Some(handler) = handler_parameters.get(name) {
@@ -2694,6 +2720,7 @@ fn extract_go_routes(
         routes.push(IndexedRoute {
             framework: framework.to_string(),
             router_name: router.to_string(),
+            router_prefix,
             http_method,
             path_template: full_path,
             handler_name,
@@ -2830,11 +2857,7 @@ fn go_handler_parameters(
             "header",
             header_models,
         ),
-        (
-            &[".ShouldBindUri(", ".BindUri("][..],
-            "path",
-            path_models,
-        ),
+        (&[".ShouldBindUri(", ".BindUri("][..], "path", path_models),
     ] {
         if let Some(model) = go_explicit_binding_model(body, markers) {
             if let Some(fields) = models.get(&model) {
@@ -2847,11 +2870,7 @@ fn go_handler_parameters(
     parameters
 }
 
-fn go_tagged_models(
-    source: &str,
-    root: Node<'_>,
-    tag_name: &str,
-) -> BTreeMap<String, Vec<String>> {
+fn go_tagged_models(source: &str, root: Node<'_>, tag_name: &str) -> BTreeMap<String, Vec<String>> {
     let mut own_fields = BTreeMap::<String, Vec<String>>::new();
     let mut embedded_types = BTreeMap::<String, Vec<String>>::new();
 
@@ -2877,10 +2896,7 @@ fn go_tagged_models(
         }
         own_fields.insert(name.to_string(), go_struct_tag_fields(raw, tag_name));
         if tag_name == "json" {
-            embedded_types.insert(
-                name.to_string(),
-                go_json_untagged_embedded_types(raw),
-            );
+            embedded_types.insert(name.to_string(), go_json_untagged_embedded_types(raw));
         }
     });
 
@@ -3293,6 +3309,7 @@ fn go_group_prefixes(
                 parent_router: parent.clone(),
                 mounted_binding: child.clone(),
                 prefix: prefix.clone(),
+                prefix_mode: "prepend".to_string(),
                 start_line: *start_line,
                 end_line: *end_line,
             });
@@ -3389,6 +3406,7 @@ fn extract_rust_routes(
                 routes.push(IndexedRoute {
                     framework: "axum".to_string(),
                     router_name: "Router".to_string(),
+                    router_prefix: String::new(),
                     http_method: method,
                     path_template: full_path.clone(),
                     handler_name,
@@ -3416,7 +3434,10 @@ fn extract_rust_attribute_routes(
         if !trimmed.starts_with("#[") {
             continue;
         }
-        let inner = trimmed.trim_start_matches("#[").trim_end_matches(']').trim();
+        let inner = trimmed
+            .trim_start_matches("#[")
+            .trim_end_matches(']')
+            .trim();
         let Some(open) = inner.find('(') else {
             continue;
         };
@@ -3438,6 +3459,7 @@ fn extract_rust_attribute_routes(
         routes.push(IndexedRoute {
             framework: framework.to_string(),
             router_name: "attribute".to_string(),
+            router_prefix: String::new(),
             http_method: method.to_ascii_uppercase(),
             path_template: full_path,
             handler_name,
@@ -3814,9 +3836,8 @@ fn rust_struct_flatten_types(raw: &str) -> Vec<String> {
             attribute.push(' ');
             attribute.push_str(line);
             if line.ends_with(']') {
-                flatten_next =
-                    rust_serde_has_flag(attribute, "flatten")
-                        && !rust_serde_skips_deserialization(attribute);
+                flatten_next = rust_serde_has_flag(attribute, "flatten")
+                    && !rust_serde_skips_deserialization(attribute);
                 serde_attribute = None;
             }
             continue;
@@ -3825,8 +3846,7 @@ fn rust_struct_flatten_types(raw: &str) -> Vec<String> {
         if line.starts_with("#[serde(") {
             if line.ends_with(']') {
                 flatten_next =
-                    rust_serde_has_flag(line, "flatten")
-                        && !rust_serde_skips_deserialization(line);
+                    rust_serde_has_flag(line, "flatten") && !rust_serde_skips_deserialization(line);
             } else {
                 serde_attribute = Some(line.to_string());
             }
@@ -3865,9 +3885,7 @@ fn rust_struct_flatten_types(raw: &str) -> Vec<String> {
 fn rust_preceding_serde_has_flag(source: &str, struct_row: usize, flag: &str) -> bool {
     rust_preceding_attributes(source, struct_row)
         .into_iter()
-        .any(|attribute| {
-            attribute.starts_with("#[serde(") && rust_serde_has_flag(&attribute, flag)
-        })
+        .any(|attribute| attribute.starts_with("#[serde(") && rust_serde_has_flag(&attribute, flag))
 }
 
 fn rust_preceding_serde_rename_all(source: &str, struct_row: usize) -> Option<String> {
@@ -4041,10 +4059,7 @@ fn rust_apply_serde_rename_all(field: &str, rule: &str) -> Option<String> {
     if words.is_empty() {
         return None;
     }
-    let lower_words: Vec<String> = words
-        .iter()
-        .map(|word| word.to_ascii_lowercase())
-        .collect();
+    let lower_words: Vec<String> = words.iter().map(|word| word.to_ascii_lowercase()).collect();
 
     let value = match rule {
         "lowercase" => lower_words.join(""),
@@ -4056,10 +4071,7 @@ fn rust_apply_serde_rename_all(field: &str, rule: &str) -> Option<String> {
         "camelCase" => {
             let mut iter = lower_words.iter();
             let first = iter.next()?.clone();
-            first
-                + &iter
-                    .map(|word| rust_capitalize(word))
-                    .collect::<String>()
+            first + &iter.map(|word| rust_capitalize(word)).collect::<String>()
         }
         "snake_case" => lower_words.join("_"),
         "SCREAMING_SNAKE_CASE" => lower_words.join("_").to_ascii_uppercase(),
@@ -4123,8 +4135,7 @@ fn rust_apply_field_serde_attribute(
 }
 
 fn rust_serde_skips_deserialization(attribute: &str) -> bool {
-    rust_serde_has_flag(attribute, "skip")
-        || rust_serde_has_flag(attribute, "skip_deserializing")
+    rust_serde_has_flag(attribute, "skip") || rust_serde_has_flag(attribute, "skip_deserializing")
 }
 
 fn rust_serde_has_flag(attribute: &str, flag: &str) -> bool {
@@ -4178,7 +4189,9 @@ fn rust_serde_aliases(attribute: &str) -> Vec<String> {
         let index = offset + relative;
         if index > 0 {
             let previous = attribute[..index].chars().next_back();
-            if previous.is_some_and(|character| character == '_' || character.is_ascii_alphanumeric()) {
+            if previous
+                .is_some_and(|character| character == '_' || character.is_ascii_alphanumeric())
+            {
                 offset = index + marker.len();
                 continue;
             }
@@ -4305,7 +4318,9 @@ fn rust_generic_models(value: &str, marker: &str) -> Vec<String> {
     for (index, _) in value.match_indices(marker) {
         if index > 0 {
             let previous = value[..index].chars().next_back();
-            if previous.is_some_and(|character| character == '_' || character.is_ascii_alphanumeric()) {
+            if previous
+                .is_some_and(|character| character == '_' || character.is_ascii_alphanumeric())
+            {
                 continue;
             }
         }
@@ -4457,18 +4472,24 @@ fn axum_method_handlers(value: &str) -> BTreeMap<String, String> {
         for (index, _) in lower.match_indices(&needle) {
             if index > 0 {
                 let previous = lower[..index].chars().next_back();
-                if previous.is_some_and(|character| character == '_' || character.is_ascii_alphanumeric()) {
+                if previous
+                    .is_some_and(|character| character == '_' || character.is_ascii_alphanumeric())
+                {
                     continue;
                 }
             }
             let tail = value[index + needle.len()..].trim_start();
             let candidate = tail
-                .split(|character: char| character == ')' || character == ',' || character.is_whitespace())
+                .split(|character: char| {
+                    character == ')' || character == ',' || character.is_whitespace()
+                })
                 .next()
                 .unwrap_or("")
                 .trim();
             if is_identifier(candidate) {
-                handlers.entry(method.to_ascii_uppercase()).or_insert_with(|| candidate.to_string());
+                handlers
+                    .entry(method.to_ascii_uppercase())
+                    .or_insert_with(|| candidate.to_string());
                 break;
             }
         }
@@ -4483,9 +4504,7 @@ fn contains_method_call(value: &str, method: &str) -> bool {
             return true;
         }
         let previous = value[..index].chars().next_back();
-        previous.is_some_and(|character| {
-            !(character == '_' || character.is_ascii_alphanumeric())
-        })
+        previous.is_some_and(|character| !(character == '_' || character.is_ascii_alphanumeric()))
     })
 }
 fn keyword_direct_string(value: &str, keyword: &str) -> Option<String> {
@@ -4557,11 +4576,7 @@ fn pydantic_field_input_aliases(
     }
 
     if keyword_value_tail(line, "alias").is_some() {
-        return Some(
-            keyword_direct_string(line, "alias")
-                .into_iter()
-                .collect(),
-        );
+        return Some(keyword_direct_string(line, "alias").into_iter().collect());
     }
 
     None
@@ -4632,9 +4647,7 @@ fn pydantic_static_alias_choices(value: &str) -> Option<Vec<String>> {
 fn keyword_direct_identifier(value: &str, keyword: &str) -> Option<String> {
     let tail = keyword_value_tail(value, keyword)?;
     let token = tail
-        .split(|character: char| {
-            character == ',' || character == ')' || character.is_whitespace()
-        })
+        .split(|character: char| character == ',' || character == ')' || character.is_whitespace())
         .next()
         .unwrap_or("")
         .trim();
@@ -4645,10 +4658,7 @@ fn keyword_direct_identifier(value: &str, keyword: &str) -> Option<String> {
     }
 }
 
-fn pydantic_local_alias_constants(
-    source: &str,
-    root: Node<'_>,
-) -> BTreeMap<String, Vec<String>> {
+fn pydantic_local_alias_constants(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let mut aliases = BTreeMap::new();
     walk(root, &mut |node| {
         if node.kind() != "assignment" || !python_assignment_is_module_level(node) {
@@ -4722,10 +4732,7 @@ fn pydantic_apply_alias_generator(field: &str, generator: &str) -> Option<String
     if words.is_empty() {
         return None;
     }
-    let lower: Vec<String> = words
-        .iter()
-        .map(|word| word.to_ascii_lowercase())
-        .collect();
+    let lower: Vec<String> = words.iter().map(|word| word.to_ascii_lowercase()).collect();
     match generator {
         "to_pascal" => Some(lower.iter().map(|word| rust_capitalize(word)).collect()),
         "to_camel" => {
@@ -4998,11 +5005,10 @@ fn static_string(source: &str, node: Node<'_>) -> Option<String> {
     let raw = text(source, node)?.trim();
     match node.kind() {
         "string" => strip_quotes(raw),
-        "template_string" if !raw.contains("${") => {
-            raw.strip_prefix('\u{0060}')
-                .and_then(|value| value.strip_suffix('\u{0060}'))
-                .map(ToString::to_string)
-        }
+        "template_string" if !raw.contains("${") => raw
+            .strip_prefix('\u{0060}')
+            .and_then(|value| value.strip_suffix('\u{0060}'))
+            .map(ToString::to_string),
         _ => None,
     }
 }
@@ -5090,11 +5096,7 @@ fn path_parameters(path: &str) -> Vec<IndexedRouteParameter> {
     let mut values = Vec::new();
     for segment in path.split('/') {
         if let Some(name) = segment.strip_prefix(':') {
-            let name = name
-                .split(['?', '(', '.'])
-                .next()
-                .unwrap_or(name)
-                .trim();
+            let name = name.split(['?', '(', '.']).next().unwrap_or(name).trim();
             if is_identifier(name) {
                 values.push(route_parameter(name, "path"));
             }
@@ -5111,7 +5113,11 @@ fn path_parameters(path: &str) -> Vec<IndexedRouteParameter> {
         }
         if segment.starts_with('<') && segment.ends_with('>') && segment.len() > 2 {
             let inner = &segment[1..segment.len() - 1];
-            let name = inner.rsplit_once(':').map(|(_, name)| name).unwrap_or(inner).trim();
+            let name = inner
+                .rsplit_once(':')
+                .map(|(_, name)| name)
+                .unwrap_or(inner)
+                .trim();
             if is_identifier(name) {
                 values.push(route_parameter(name, "path"));
             }
@@ -5128,9 +5134,8 @@ fn route_parameter(name: &str, location: &str) -> IndexedRouteParameter {
 }
 
 fn normalize_parameters(parameters: &mut Vec<IndexedRouteParameter>) {
-    parameters.sort_by(|left, right| {
-        (&left.location, &left.name).cmp(&(&right.location, &right.name))
-    });
+    parameters
+        .sort_by(|left, right| (&left.location, &left.name).cmp(&(&right.location, &right.name)));
     parameters.dedup_by(|left, right| left.location == right.location && left.name == right.name);
     parameters.truncate(256);
 }
@@ -5189,7 +5194,10 @@ fn annotation_contains_type(annotation: &str, type_name: &str) -> bool {
 }
 
 fn is_function_like(node: Node<'_>) -> bool {
-    matches!(node.kind(), "arrow_function" | "function_expression" | "function")
+    matches!(
+        node.kind(),
+        "arrow_function" | "function_expression" | "function"
+    )
 }
 
 fn is_identifier(value: &str) -> bool {
@@ -5202,7 +5210,11 @@ fn is_identifier(value: &str) -> bool {
 }
 
 fn collect_identifiers(source: &str, node: Node<'_>, callback: &mut impl FnMut(&str)) {
-    if node.kind() == "identifier" {
+    // Destructuring shorthand (`const { email } = req.body`) uses a dedicated node kind.
+    if matches!(
+        node.kind(),
+        "identifier" | "shorthand_property_identifier_pattern"
+    ) {
         if let Some(value) = text(source, node) {
             callback(value.trim());
         }
@@ -5219,7 +5231,7 @@ fn named_children(node: Node<'_>) -> Vec<Node<'_>> {
         .collect()
 }
 
-fn walk(node: Node<'_>, callback: &mut impl FnMut(Node<'_>)) {
+fn walk<'tree>(node: Node<'tree>, callback: &mut impl FnMut(Node<'tree>)) {
     callback(node);
     for child in named_children(node) {
         walk(child, callback);
@@ -5382,24 +5394,31 @@ export async function GET() {
             .find(|route| route.framework == "nextjs" && route.http_method == "GET")
             .expect("GET route");
         for field in ["session", "csrf-token"] {
-            assert!(route.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "cookie"
-            }));
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "cookie" }));
         }
         for field in ["X-Tenant", "X-Trace"] {
-            assert!(route.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "header"
-            }));
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "header" }));
         }
-        assert!(!route.parameters.iter().any(|parameter| parameter.name == "secret"));
+        assert!(!route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "secret"));
         assert!(handler_inputs.iter().any(|input| {
             input.handler_name == "GET"
-                && input.parameters.iter().any(|parameter| {
-                    parameter.name == "session" && parameter.location == "cookie"
-                })
-                && input.parameters.iter().any(|parameter| {
-                    parameter.name == "X-Tenant" && parameter.location == "header"
-                })
+                && input
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "session" && parameter.location == "cookie")
+                && input
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "X-Tenant" && parameter.location == "header")
         }));
     }
     #[test]
@@ -5466,11 +5485,15 @@ export async function HEAD(request: Request) {
                 .find(|route| route.framework == "nextjs" && route.http_method == method)
                 .expect("typed assertion route");
             for field in ["email", "profile", "role"] {
-                assert!(route.parameters.iter().any(|parameter| {
-                    parameter.name == field && parameter.location == "json"
-                }));
+                assert!(route
+                    .parameters
+                    .iter()
+                    .any(|parameter| { parameter.name == field && parameter.location == "json" }));
             }
-            assert!(!route.parameters.iter().any(|parameter| parameter.name == "displayName"));
+            assert!(!route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == "displayName"));
         }
 
         for method in ["PATCH", "DELETE", "OPTIONS", "HEAD"] {
@@ -5550,11 +5573,15 @@ export async function OPTIONS(request: Request) {
             .find(|route| route.framework == "nextjs" && route.http_method == "POST")
             .expect("POST route");
         for field in ["email", "profile"] {
-            assert!(post.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(post
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
-        assert!(!post.parameters.iter().any(|parameter| parameter.name == "displayName"));
+        assert!(!post
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "displayName"));
 
         for method in ["PUT", "PATCH", "DELETE", "OPTIONS"] {
             let route = routes
@@ -5641,20 +5668,25 @@ export async function OPTIONS(request: Request) {
             .find(|route| route.framework == "nextjs" && route.http_method == "POST")
             .expect("POST route");
         for field in ["email", "profile", "auditId", "role"] {
-            assert!(post.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(post
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
-        assert!(!post.parameters.iter().any(|parameter| parameter.name == "displayName"));
+        assert!(!post
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "displayName"));
 
         let put = routes
             .iter()
             .find(|route| route.framework == "nextjs" && route.http_method == "PUT")
             .expect("PUT route");
         for field in ["first", "second"] {
-            assert!(put.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(put
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
 
         for method in ["PATCH", "DELETE", "OPTIONS"] {
@@ -5735,12 +5767,16 @@ export async function PATCH(request: Request) {
             .find(|route| route.framework == "nextjs" && route.http_method == "POST")
             .expect("POST route");
         for field in ["email", "profile", "auditId", "role"] {
-            assert!(post.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(post
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
         for nested in ["displayName", "timezone"] {
-            assert!(!post.parameters.iter().any(|parameter| parameter.name == nested));
+            assert!(!post
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == nested));
         }
 
         let put = routes
@@ -5748,8 +5784,7 @@ export async function PATCH(request: Request) {
             .find(|route| route.framework == "nextjs" && route.http_method == "PUT")
             .expect("PUT route");
         assert!(!put.parameters.iter().any(|parameter| {
-            matches!(parameter.name.as_str(), "localOnly" | "email")
-                && parameter.location == "json"
+            matches!(parameter.name.as_str(), "localOnly" | "email") && parameter.location == "json"
         }));
 
         let patch = routes
@@ -5818,20 +5853,25 @@ export async function DELETE(request: Request) {
             .find(|route| route.framework == "nextjs" && route.http_method == "POST")
             .expect("POST route");
         for field in ["email", "displayName", "x-client-id"] {
-            assert!(post.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(post
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
-        assert_eq!(post.request_content_type.as_deref(), Some("application/json"));
+        assert_eq!(
+            post.request_content_type.as_deref(),
+            Some("application/json")
+        );
 
         let put = routes
             .iter()
             .find(|route| route.framework == "nextjs" && route.http_method == "PUT")
             .expect("PUT route");
         for field in ["timezone", "locale"] {
-            assert!(put.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(put
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
 
         let patch = routes
@@ -5846,10 +5886,14 @@ export async function DELETE(request: Request) {
             .iter()
             .find(|route| route.framework == "nextjs" && route.http_method == "DELETE")
             .expect("DELETE route");
-        assert!(!delete.parameters.iter().any(|parameter| {
-            matches!(parameter.name.as_str(), "email" | "displayName" | "admin")
-                && parameter.location == "json"
-        }));
+        // Same-file interface inheritance is resolved (see
+        // resolves_local_typescript_interface_inheritance_without_promoting_nested_fields).
+        for field in ["email", "displayName", "x-client-id", "admin"] {
+            assert!(delete
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
+        }
 
         assert!(handler_inputs.iter().any(|input| {
             input.handler_name == "POST"
@@ -5915,51 +5959,64 @@ export const PATCH = async (request: Request) => {
             .expect("GET route");
         assert_eq!(get.handler_name.as_deref(), Some("GET"));
         for field in ["q", "page"] {
-            assert!(get.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "query"
-            }));
+            assert!(get
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "query" }));
         }
-        assert!(get.parameters.iter().any(|parameter| {
-            parameter.name == "X-Tenant" && parameter.location == "header"
-        }));
+        assert!(get
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "X-Tenant" && parameter.location == "header" }));
         for field in ["session", "csrf-token"] {
-            assert!(get.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "cookie"
-            }));
+            assert!(get
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "cookie" }));
         }
-        assert!(!get.parameters.iter().any(|parameter| parameter.name == "secret"));
-        assert!(get.parameters.iter().any(|parameter| {
-            parameter.name == "id" && parameter.location == "path"
-        }));
+        assert!(!get
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "secret"));
+        assert!(get
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "id" && parameter.location == "path" }));
 
         let post = routes
             .iter()
             .find(|route| route.framework == "nextjs" && route.http_method == "POST")
             .expect("POST route");
         for field in ["email", "password"] {
-            assert!(post.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(post
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
-        assert_eq!(post.request_content_type.as_deref(), Some("application/json"));
+        assert_eq!(
+            post.request_content_type.as_deref(),
+            Some("application/json")
+        );
 
         let put = routes
             .iter()
             .find(|route| route.framework == "nextjs" && route.http_method == "PUT")
             .expect("PUT route");
         for field in ["displayName", "timezone"] {
-            assert!(put.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(put
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
 
         let patch = routes
             .iter()
             .find(|route| route.framework == "nextjs" && route.http_method == "PATCH")
             .expect("PATCH route");
-        assert!(patch.parameters.iter().any(|parameter| {
-            parameter.name == "avatar" && parameter.location == "form"
-        }));
+        assert!(patch
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "avatar" && parameter.location == "form" }));
         assert_eq!(
             patch.request_content_type.as_deref(),
             Some("application/x-www-form-urlencoded")
@@ -5967,12 +6024,14 @@ export const PATCH = async (request: Request) => {
 
         assert!(handler_inputs.iter().any(|input| {
             input.handler_name == "GET"
-                && input.parameters.iter().any(|parameter| {
-                    parameter.name == "X-Tenant" && parameter.location == "header"
-                })
-                && input.parameters.iter().any(|parameter| {
-                    parameter.name == "session" && parameter.location == "cookie"
-                })
+                && input
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "X-Tenant" && parameter.location == "header")
+                && input
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "session" && parameter.location == "cookie")
                 && input.parameters.iter().any(|parameter| {
                     parameter.name == "csrf-token" && parameter.location == "cookie"
                 })
@@ -5994,25 +6053,23 @@ export { create as POST };
             .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, handler_inputs) = extract_routes(
-            "TypeScript",
-            "app/users/route.ts",
-            source,
-            tree.root_node(),
-        );
+        let (routes, _mounts, handler_inputs) =
+            extract_routes("TypeScript", "app/users/route.ts", source, tree.root_node());
         let route = routes
             .iter()
             .find(|route| route.framework == "nextjs" && route.http_method == "POST")
             .expect("named re-export route");
         assert_eq!(route.handler_name.as_deref(), Some("create"));
-        assert!(route.parameters.iter().any(|parameter| {
-            parameter.name == "email" && parameter.location == "json"
-        }));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "email" && parameter.location == "json" }));
         assert!(handler_inputs.iter().any(|input| {
             input.handler_name == "create"
-                && input.parameters.iter().any(|parameter| {
-                    parameter.name == "email" && parameter.location == "json"
-                })
+                && input
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "email" && parameter.location == "json")
         }));
     }
     #[test]
@@ -6034,16 +6091,41 @@ auth.post("/login/:tenant", login);
             .set_language(&tree_sitter_javascript::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, handler_inputs) = extract_routes("JavaScript", "src/server.js", source, tree.root_node());
-        let route = routes.iter().find(|value| value.path_template == "/api/login/:tenant").expect("route");
+        let (routes, _mounts, handler_inputs) =
+            extract_routes("JavaScript", "src/server.js", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|value| value.path_template == "/api/login/:tenant")
+            .expect("route");
         assert_eq!(route.http_method, "POST");
-        assert!(route.parameters.iter().any(|value| value.name == "tenant" && value.location == "path"));
-        assert!(route.parameters.iter().any(|value| value.name == "email" && value.location == "json"));
-        assert!(route.parameters.iter().any(|value| value.name == "password" && value.location == "json"));
-        assert!(route.parameters.iter().any(|value| value.name == "next" && value.location == "query"));
-        let handler = handler_inputs.iter().find(|value| value.handler_name == "login").expect("handler");
-        assert!(handler.parameters.iter().any(|value| value.name == "email" && value.location == "json"));
-        assert!(handler.parameters.iter().any(|value| value.name == "next" && value.location == "query"));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|value| value.name == "tenant" && value.location == "path"));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|value| value.name == "email" && value.location == "json"));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|value| value.name == "password" && value.location == "json"));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|value| value.name == "next" && value.location == "query"));
+        let handler = handler_inputs
+            .iter()
+            .find(|value| value.handler_name == "login")
+            .expect("handler");
+        assert!(handler
+            .parameters
+            .iter()
+            .any(|value| value.name == "email" && value.location == "json"));
+        assert!(handler
+            .parameters
+            .iter()
+            .any(|value| value.name == "next" && value.location == "query"));
     }
 
     #[test]
@@ -6057,8 +6139,12 @@ app.use("/api/auth", authRouter);
             .set_language(&tree_sitter_javascript::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (_routes, mounts, _handler_inputs) = extract_routes("JavaScript", "src/server.js", source, tree.root_node());
-        let mount = mounts.iter().find(|value| value.mounted_binding == "authRouter").expect("mount");
+        let (_routes, mounts, _handler_inputs) =
+            extract_routes("JavaScript", "src/server.js", source, tree.root_node());
+        let mount = mounts
+            .iter()
+            .find(|value| value.mounted_binding == "authRouter")
+            .expect("mount");
         assert_eq!(mount.prefix, "/api/auth");
         assert_eq!(mount.framework, "express");
     }
@@ -6118,31 +6204,40 @@ def update_user(user_id):
             ("X-Trace", "header"),
             ("session", "cookie"),
         ] {
-            assert!(get.parameters.iter().any(|parameter| {
-                parameter.name == name && parameter.location == location
-            }));
+            assert!(get
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == name && parameter.location == location }));
         }
-        assert!(!get.parameters.iter().any(|parameter| parameter.name == "secret"));
+        assert!(!get
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "secret"));
 
         let post = routes
             .iter()
             .find(|route| route.framework == "flask" && route.http_method == "POST")
             .expect("Flask POST route");
         for field in ["email", "timezone", "displayName"] {
-            assert!(post.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(post
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
-        assert_eq!(post.request_content_type.as_deref(), Some("application/json"));
+        assert_eq!(
+            post.request_content_type.as_deref(),
+            Some("application/json")
+        );
 
         let patch = routes
             .iter()
             .find(|route| route.framework == "flask" && route.http_method == "PATCH")
             .expect("Flask PATCH route");
         for field in ["email", "csrf"] {
-            assert!(patch.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "form"
-            }));
+            assert!(patch
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "form" }));
         }
         assert_eq!(
             patch.request_content_type.as_deref(),
@@ -6151,9 +6246,10 @@ def update_user(user_id):
 
         assert!(handler_inputs.iter().any(|input| {
             input.handler_name == "create_user"
-                && input.parameters.iter().any(|parameter| {
-                    parameter.name == "email" && parameter.location == "json"
-                })
+                && input
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "email" && parameter.location == "json")
         }));
     }
     #[test]
@@ -6223,21 +6319,29 @@ urlpatterns = [
 
         let user = routes
             .iter()
-            .find(|route| route.framework == "django" && route.http_method == "GET" && route.path_template == "/users/<int:id>/")
+            .find(|route| {
+                route.framework == "django"
+                    && route.http_method == "GET"
+                    && route.path_template == "/users/<int:id>/"
+            })
             .expect("django GET route");
         assert_eq!(user.handler_name.as_deref(), Some("user"));
-        assert!(user.parameters.iter().any(|parameter| {
-            parameter.name == "id" && parameter.location == "path"
-        }));
-        assert!(user.parameters.iter().any(|parameter| {
-            parameter.name == "q" && parameter.location == "query"
-        }));
-        assert!(user.parameters.iter().any(|parameter| {
-            parameter.name == "X-Tenant" && parameter.location == "header"
-        }));
-        assert!(user.parameters.iter().any(|parameter| {
-            parameter.name == "session" && parameter.location == "cookie"
-        }));
+        assert!(user
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "id" && parameter.location == "path" }));
+        assert!(user
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "q" && parameter.location == "query" }));
+        assert!(user
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "X-Tenant" && parameter.location == "header" }));
+        assert!(user
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "session" && parameter.location == "cookie" }));
         assert!(!user.parameters.iter().any(|parameter| {
             parameter.name == "should_not_probe" && parameter.location == "form"
         }));
@@ -6261,9 +6365,10 @@ urlpatterns = [
                         && route.path_template == "/users/<int:id>/update/"
                 })
                 .expect("django write route");
-            assert!(route.parameters.iter().any(|parameter| {
-                parameter.name == "email" && parameter.location == "form"
-            }));
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == "email" && parameter.location == "form" }));
             assert!(route.parameters.iter().any(|parameter| {
                 parameter.name == "X-Admin" && parameter.location == "header"
             }));
@@ -6281,13 +6386,15 @@ urlpatterns = [
             })
             .expect("django JSON route");
         for field in ["email", "timezone"] {
-            assert!(json_route.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(json_route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
-        assert!(!json_route.parameters.iter().any(|parameter| {
-            parameter.name == "secret" && parameter.location == "json"
-        }));
+        assert!(!json_route
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "secret" && parameter.location == "json" }));
         assert_eq!(
             json_route.request_content_type.as_deref(),
             Some("application/json")
@@ -6301,13 +6408,16 @@ urlpatterns = [
                     && route.path_template == "/ambiguous/"
             })
             .expect("django ambiguous body route");
-        assert!(!ambiguous.parameters.iter().any(|parameter| {
-            matches!(parameter.location.as_str(), "json" | "form")
-        }));
+        assert!(!ambiguous
+            .parameters
+            .iter()
+            .any(|parameter| { matches!(parameter.location.as_str(), "json" | "form") }));
         assert!(ambiguous.request_content_type.is_none());
 
         assert!(!routes.iter().any(|route| route.path_template == "/plain/"));
-        assert!(!routes.iter().any(|route| route.path_template == "/external/"));
+        assert!(!routes
+            .iter()
+            .any(|route| route.path_template == "/external/"));
         assert!(handler_inputs.iter().any(|input| {
             input.handler_name == "user"
                 && input.parameters.iter().any(|parameter| {
@@ -6316,12 +6426,14 @@ urlpatterns = [
         }));
         assert!(handler_inputs.iter().any(|input| {
             input.handler_name == "ambiguous_body"
-                && input.parameters.iter().any(|parameter| {
-                    parameter.name == "jsonEmail" && parameter.location == "json"
-                })
-                && input.parameters.iter().any(|parameter| {
-                    parameter.name == "formEmail" && parameter.location == "form"
-                })
+                && input
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "jsonEmail" && parameter.location == "json")
+                && input
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "formEmail" && parameter.location == "form")
         }));
     }
     #[test]
@@ -6347,7 +6459,8 @@ app.register_blueprint(api, url_prefix = "/api")
             .set_language(&tree_sitter_python::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, mounts, _handler_inputs) = extract_routes("Python", "app.py", source, tree.root_node());
+        let (routes, mounts, _handler_inputs) =
+            extract_routes("Python", "app.py", source, tree.root_node());
         assert!(routes.iter().any(|route| {
             route.framework == "flask"
                 && route.http_method == "GET"
@@ -6406,16 +6519,27 @@ class StoreUserRequest extends FormRequest
             .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (_routes, _mounts, inputs) =
-            extract_routes("PHP", "app/Http/Requests/StoreUserRequest.php", source, tree.root_node());
+        let (_routes, _mounts, inputs) = extract_routes(
+            "PHP",
+            "app/Http/Requests/StoreUserRequest.php",
+            source,
+            tree.root_node(),
+        );
         let request = inputs
             .iter()
             .find(|input| input.handler_name == "StoreUserRequest")
             .expect("FormRequest evidence");
-        for field in ["email", "password", "profile.name", "items.*.sku", "metadata"] {
-            assert!(request.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "body"
-            }));
+        for field in [
+            "email",
+            "password",
+            "profile.name",
+            "items.*.sku",
+            "metadata",
+        ] {
+            assert!(request
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "body" }));
         }
         assert!(!request
             .parameters
@@ -6469,41 +6593,51 @@ class UserController
             .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (_routes, _mounts, inputs) =
-            extract_routes("PHP", "app/Http/Controllers/UserController.php", source, tree.root_node());
+        let (_routes, _mounts, inputs) = extract_routes(
+            "PHP",
+            "app/Http/Controllers/UserController.php",
+            source,
+            tree.root_node(),
+        );
 
         let ambiguous = inputs
             .iter()
             .find(|input| input.handler_name == "ambiguous")
             .expect("ambiguous handler");
         for field in ["email", "profile.name"] {
-            assert!(ambiguous.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "body"
-            }));
+            assert!(ambiguous
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "body" }));
         }
 
         let json = inputs
             .iter()
             .find(|input| input.handler_name == "json")
             .expect("json handler");
-        assert!(json.parameters.iter().any(|parameter| {
-            parameter.name == "password" && parameter.location == "json"
-        }));
+        assert!(json
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "password" && parameter.location == "json" }));
 
         let form = inputs
             .iter()
             .find(|input| input.handler_name == "form")
             .expect("form handler");
-        assert!(form.parameters.iter().any(|parameter| {
-            parameter.name == "email" && parameter.location == "form"
-        }));
-
-        let dynamic = inputs
+        assert!(form
+            .parameters
             .iter()
-            .find(|input| input.handler_name == "dynamic");
-        assert!(dynamic.is_none() || !dynamic.unwrap().parameters.iter().any(|parameter| {
-            parameter.name == "secret"
-        }));
+            .any(|parameter| { parameter.name == "email" && parameter.location == "form" }));
+
+        let dynamic = inputs.iter().find(|input| input.handler_name == "dynamic");
+        assert!(
+            dynamic.is_none()
+                || !dynamic
+                    .unwrap()
+                    .parameters
+                    .iter()
+                    .any(|parameter| { parameter.name == "secret" })
+        );
     }
     #[test]
     fn extracts_laravel_controller_request_inputs() {
@@ -6562,30 +6696,37 @@ class UserController
             ("session", "cookie"),
             ("csrf", "form"),
         ] {
-            assert!(store.parameters.iter().any(|parameter| {
-                parameter.name == name && parameter.location == location
-            }));
+            assert!(store
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == name && parameter.location == location }));
         }
 
         let show = handler_inputs
             .iter()
             .find(|input| input.handler_name == "show")
             .expect("show handler inputs");
-        assert!(show.parameters.iter().any(|parameter| {
-            parameter.name == "expand" && parameter.location == "query"
-        }));
+        assert!(show
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "expand" && parameter.location == "query" }));
 
         let update = handler_inputs
             .iter()
             .find(|input| input.handler_name == "update")
             .expect("update handler inputs");
-        assert!(update.parameters.iter().any(|parameter| {
-            parameter.name == "email" && parameter.location == "json"
-        }));
-        assert!(update.parameters.iter().any(|parameter| {
-            parameter.name == "user" && parameter.location == "path"
-        }));
-        assert!(!update.parameters.iter().any(|parameter| parameter.name == "ignored"));
+        assert!(update
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "email" && parameter.location == "json" }));
+        assert!(update
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "user" && parameter.location == "path" }));
+        assert!(!update
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "ignored"));
     }
     #[test]
     fn applies_static_laravel_resource_parameter_overrides() {
@@ -6601,8 +6742,7 @@ Route::apiResource('/people', PersonController::class)
             .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) =
-            extract_routes("PHP", "routes/api.php", source, tree.root_node());
+        let (routes, _, _) = extract_routes("PHP", "routes/api.php", source, tree.root_node());
 
         assert!(routes.iter().any(|route| {
             route.framework == "laravel"
@@ -6637,12 +6777,10 @@ Route::resource('/people', PersonController::class)
             .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) =
-            extract_routes("PHP", "routes/web.php", source, tree.root_node());
+        let (routes, _, _) = extract_routes("PHP", "routes/web.php", source, tree.root_node());
 
         assert!(!routes.iter().any(|route| {
-            route.framework == "laravel"
-                && route.path_template.starts_with("/people")
+            route.framework == "laravel" && route.path_template.starts_with("/people")
         }));
     }
 
@@ -6661,12 +6799,8 @@ Route::prefix('api')->group(function () {
             .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, _handler_inputs) = extract_routes(
-            "PHP",
-            "routes/api.php",
-            source,
-            tree.root_node(),
-        );
+        let (routes, _mounts, _handler_inputs) =
+            extract_routes("PHP", "routes/api.php", source, tree.root_node());
 
         for (method, path) in [
             ("GET", "/api/photos"),
@@ -6707,7 +6841,9 @@ Route::prefix('api')->group(function () {
         );
         let photo_update = routes
             .iter()
-            .find(|route| route.http_method == "PATCH" && route.path_template == "/api/photos/{photo}")
+            .find(|route| {
+                route.http_method == "PATCH" && route.path_template == "/api/photos/{photo}"
+            })
             .expect("photo update route");
         assert_eq!(
             photo_update.handler_name.as_deref(),
@@ -6731,12 +6867,8 @@ Route::prefix('api')->group(function () {
             .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, _handler_inputs) = extract_routes(
-            "PHP",
-            "routes/api.php",
-            source,
-            tree.root_node(),
-        );
+        let (routes, _mounts, _handler_inputs) =
+            extract_routes("PHP", "routes/api.php", source, tree.root_node());
         let route = routes
             .iter()
             .find(|route| {
@@ -6763,12 +6895,8 @@ Route::group(['prefix' => 'admin'], function () {
             .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, _handler_inputs) = extract_routes(
-            "PHP",
-            "routes/web.php",
-            source,
-            tree.root_node(),
-        );
+        let (routes, _mounts, _handler_inputs) =
+            extract_routes("PHP", "routes/web.php", source, tree.root_node());
         assert!(routes.iter().any(|route| {
             route.framework == "laravel"
                 && route.http_method == "POST"
@@ -6789,7 +6917,8 @@ Route::post('/login', [AuthController::class, 'login']);
             .set_language(&tree_sitter_php::LANGUAGE_PHP.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, _handler_inputs) = extract_routes("PHP", "routes/web.php", source, tree.root_node());
+        let (routes, _mounts, _handler_inputs) =
+            extract_routes("PHP", "routes/web.php", source, tree.root_node());
         let user = routes
             .iter()
             .find(|route| {
@@ -6891,44 +7020,58 @@ func routes(r *gin.Engine) {
             .find(|route| route.http_method == "POST" && route.path_template == "/users")
             .expect("create route");
         for field in ["email", "traceId", "actor", "displayName"] {
-            assert!(create.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(create
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
         for wrapper in ["Audit", "Profile"] {
-            assert!(!create.parameters.iter().any(|parameter| parameter.name == wrapper));
+            assert!(!create
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == wrapper));
         }
 
         let tagged = routes
             .iter()
             .find(|route| route.http_method == "PUT" && route.path_template == "/tagged")
             .expect("tagged route");
-        assert!(tagged.parameters.iter().any(|parameter| {
-            parameter.name == "own" && parameter.location == "json"
-        }));
+        assert!(tagged
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "own" && parameter.location == "json" }));
         for excluded in ["audit", "traceId", "actor"] {
-            assert!(!tagged.parameters.iter().any(|parameter| parameter.name == excluded));
+            assert!(!tagged
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == excluded));
         }
 
         let unknown = routes
             .iter()
             .find(|route| route.http_method == "PATCH" && route.path_template == "/unknown")
             .expect("unknown route");
-        assert!(unknown.parameters.iter().any(|parameter| {
-            parameter.name == "own" && parameter.location == "json"
-        }));
-        assert!(!unknown.parameters.iter().any(|parameter| parameter.name == "ImportedPayload"));
+        assert!(unknown
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "own" && parameter.location == "json" }));
+        assert!(!unknown
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "ImportedPayload"));
 
         let cycle = routes
             .iter()
             .find(|route| route.http_method == "POST" && route.path_template == "/cycle")
             .expect("cycle route");
-        assert!(cycle.parameters.iter().any(|parameter| {
-            parameter.name == "a" && parameter.location == "json"
-        }));
-        assert!(!cycle.parameters.iter().any(|parameter| {
-            parameter.name == "b" && parameter.location == "json"
-        }));
+        assert!(cycle
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "a" && parameter.location == "json" }));
+        assert!(!cycle
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "b" && parameter.location == "json" }));
     }
 
     #[test]
@@ -6973,38 +7116,50 @@ func routes(r *gin.Engine) {
             .set_language(&tree_sitter_go::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, handler_inputs) =
-            extract_routes("Go", "main.go", source, tree.root_node());
+        let (routes, _, handler_inputs) = extract_routes("Go", "main.go", source, tree.root_node());
 
         let create = routes
             .iter()
             .find(|route| route.http_method == "POST" && route.path_template == "/users")
             .expect("create route");
         for field in ["email", "password", "DisplayName"] {
-            assert!(create.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(create
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
-        assert!(!create.parameters.iter().any(|parameter| parameter.name == "Ignored"));
-        assert!(!create.parameters.iter().any(|parameter| parameter.name == "private"));
-        assert_eq!(create.request_content_type.as_deref(), Some("application/json"));
+        assert!(!create
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "Ignored"));
+        assert!(!create
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "private"));
+        assert_eq!(
+            create.request_content_type.as_deref(),
+            Some("application/json")
+        );
 
         let update = routes
             .iter()
             .find(|route| route.http_method == "PUT" && route.path_template == "/users/:id")
             .expect("update route");
-        assert!(update.parameters.iter().any(|parameter| {
-            parameter.name == "email" && parameter.location == "json"
-        }));
-        assert!(update.parameters.iter().any(|parameter| {
-            parameter.name == "id" && parameter.location == "path"
-        }));
+        assert!(update
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "email" && parameter.location == "json" }));
+        assert!(update
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "id" && parameter.location == "path" }));
 
         assert!(handler_inputs.iter().any(|input| {
             input.handler_name == "decodeUser"
-                && input.parameters.iter().any(|parameter| {
-                    parameter.name == "password" && parameter.location == "json"
-                })
+                && input
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "password" && parameter.location == "json")
         }));
     }
 
@@ -7039,8 +7194,14 @@ func routes(e *echo.Echo) {
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
         let (routes, _, _) = extract_routes("Go", "echo.go", source, tree.root_node());
-        let route = routes.iter().find(|route| route.framework == "echo").expect("echo");
-        assert!(!route.parameters.iter().any(|parameter| parameter.location == "json"));
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "echo")
+            .expect("echo");
+        assert!(!route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.location == "json"));
     }
     #[test]
     fn maps_gin_typed_binding_struct_tags() {
@@ -7087,32 +7248,41 @@ func routes(r *gin.Engine) {
             .set_language(&tree_sitter_go::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, handler_inputs) =
-            extract_routes("Go", "main.go", source, tree.root_node());
+        let (routes, _, handler_inputs) = extract_routes("Go", "main.go", source, tree.root_node());
         let route = routes
             .iter()
             .find(|route| route.framework == "gin" && route.http_method == "GET")
             .expect("gin route");
 
         for field in ["q", "page"] {
-            assert!(route.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "query"
-            }));
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "query" }));
         }
-        assert!(route.parameters.iter().any(|parameter| {
-            parameter.name == "X-Tenant" && parameter.location == "header"
-        }));
-        assert!(route.parameters.iter().any(|parameter| {
-            parameter.name == "id" && parameter.location == "path"
-        }));
-        assert!(!route.parameters.iter().any(|parameter| parameter.name == "Ignored"));
-        assert!(!route.parameters.iter().any(|parameter| parameter.name == "email"));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "X-Tenant" && parameter.location == "header" }));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "id" && parameter.location == "path" }));
+        assert!(!route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "Ignored"));
+        assert!(!route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "email"));
 
         assert!(handler_inputs.iter().any(|input| {
             input.handler_name == "show"
-                && input.parameters.iter().any(|parameter| {
-                    parameter.name == "X-Tenant" && parameter.location == "header"
-                })
+                && input
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "X-Tenant" && parameter.location == "header")
         }));
     }
     #[test]
@@ -7148,35 +7318,39 @@ func routes(r *gin.Engine) {
             .set_language(&tree_sitter_go::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, handler_inputs) =
-            extract_routes("Go", "main.go", source, tree.root_node());
+        let (routes, _, handler_inputs) = extract_routes("Go", "main.go", source, tree.root_node());
 
         let show = routes
             .iter()
             .find(|route| route.http_method == "GET" && route.path_template == "/users/:id")
             .expect("gin GET route");
         assert_eq!(show.handler_name.as_deref(), Some("showUser"));
-        assert!(show.parameters.iter().any(|parameter| {
-            parameter.name == "id" && parameter.location == "path"
-        }));
-        assert!(show.parameters.iter().any(|parameter| {
-            parameter.name == "expand" && parameter.location == "query"
-        }));
-        assert!(show.parameters.iter().any(|parameter| {
-            parameter.name == "locale" && parameter.location == "query"
-        }));
-        assert!(show.parameters.iter().any(|parameter| {
-            parameter.name == "X-Token" && parameter.location == "header"
-        }));
+        assert!(show
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "id" && parameter.location == "path" }));
+        assert!(show
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "expand" && parameter.location == "query" }));
+        assert!(show
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "locale" && parameter.location == "query" }));
+        assert!(show
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "X-Token" && parameter.location == "header" }));
 
         let create = routes
             .iter()
             .find(|route| route.http_method == "POST" && route.path_template == "/users")
             .expect("gin POST route");
         assert_eq!(create.handler_name.as_deref(), Some("createUser"));
-        assert!(create.parameters.iter().any(|parameter| {
-            parameter.name == "email" && parameter.location == "form"
-        }));
+        assert!(create
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "email" && parameter.location == "form" }));
         assert_eq!(
             create.request_content_type.as_deref(),
             Some("application/x-www-form-urlencoded")
@@ -7212,9 +7386,18 @@ func routes(e *echo.Echo) { e.POST("/login/:tenant", login) }
             .expect("language");
         let tree = parser.parse(echo, None).expect("tree");
         let (routes, _, _) = extract_routes("Go", "echo.go", echo, tree.root_node());
-        let route = routes.iter().find(|route| route.framework == "echo").expect("echo");
-        assert!(route.parameters.iter().any(|parameter| parameter.name == "next" && parameter.location == "query"));
-        assert!(route.parameters.iter().any(|parameter| parameter.name == "csrf" && parameter.location == "form"));
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "echo")
+            .expect("echo");
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "next" && parameter.location == "query"));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "csrf" && parameter.location == "form"));
 
         let chi = r#"
 package main
@@ -7229,9 +7412,18 @@ func routes(r chi.Router) { r.Get("/items/{id}", show) }
 "#;
         let tree = parser.parse(chi, None).expect("tree");
         let (routes, _, _) = extract_routes("Go", "chi.go", chi, tree.root_node());
-        let route = routes.iter().find(|route| route.framework == "chi").expect("chi");
-        assert!(route.parameters.iter().any(|parameter| parameter.name == "id" && parameter.location == "path"));
-        assert!(route.parameters.iter().any(|parameter| parameter.name == "q" && parameter.location == "query"));
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "chi")
+            .expect("chi");
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "id" && parameter.location == "path"));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "q" && parameter.location == "query"));
 
         let stdlib = r#"
 package main
@@ -7248,10 +7440,22 @@ func routes(mux *http.ServeMux) { mux.HandleFunc("GET /users/{id}", user) }
 "#;
         let tree = parser.parse(stdlib, None).expect("tree");
         let (routes, _, _) = extract_routes("Go", "main.go", stdlib, tree.root_node());
-        let route = routes.iter().find(|route| route.framework == "go-stdlib").expect("stdlib");
-        assert!(route.parameters.iter().any(|parameter| parameter.name == "id" && parameter.location == "path"));
-        assert!(route.parameters.iter().any(|parameter| parameter.name == "q" && parameter.location == "query"));
-        assert!(!route.parameters.iter().any(|parameter| parameter.name == "secret"));
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "go-stdlib")
+            .expect("stdlib");
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "id" && parameter.location == "path"));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "q" && parameter.location == "query"));
+        assert!(!route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "secret"));
     }
 
     #[test]
@@ -7439,20 +7643,23 @@ fn app() -> Router {
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) =
-            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        let (routes, _, _) = extract_routes("Rust", "src/main.rs", source, tree.root_node());
         let route = routes
             .iter()
             .find(|route| route.framework == "axum" && route.http_method == "POST")
             .expect("axum route");
 
         for field in ["displayName", "emailAddress", "trace_id"] {
-            assert!(route.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
         for excluded in ["display_name", "email_address", "internalNote", "metadata"] {
-            assert!(!route.parameters.iter().any(|parameter| parameter.name == excluded));
+            assert!(!route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == excluded));
         }
     }
 
@@ -7512,41 +7719,50 @@ fn app() -> Router {
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) =
-            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        let (routes, _, _) = extract_routes("Rust", "src/main.rs", source, tree.root_node());
 
         let create = routes
             .iter()
             .find(|route| route.http_method == "POST" && route.path_template == "/users")
             .expect("create route");
         for field in ["email", "traceId", "actor"] {
-            assert!(create.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(create
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
-        assert!(!create.parameters.iter().any(|parameter| parameter.name == "audit"));
+        assert!(!create
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "audit"));
 
         let update = routes
             .iter()
             .find(|route| route.http_method == "PUT" && route.path_template == "/users/{id}")
             .expect("update route");
-        assert!(update.parameters.iter().any(|parameter| {
-            parameter.name == "own" && parameter.location == "json"
-        }));
+        assert!(update
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "own" && parameter.location == "json" }));
         for unknown in ["external", "traceId", "actor"] {
-            assert!(!update.parameters.iter().any(|parameter| parameter.name == unknown));
+            assert!(!update
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == unknown));
         }
 
         let patch = routes
             .iter()
             .find(|route| route.http_method == "PATCH" && route.path_template == "/users/{id}")
             .expect("patch route");
-        assert!(patch.parameters.iter().any(|parameter| {
-            parameter.name == "a" && parameter.location == "json"
-        }));
-        assert!(!patch.parameters.iter().any(|parameter| {
-            parameter.name == "b" && parameter.location == "json"
-        }));
+        assert!(patch
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "a" && parameter.location == "json" }));
+        assert!(!patch
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "b" && parameter.location == "json" }));
     }
 
     #[test]
@@ -7575,19 +7791,25 @@ fn app() -> Router {
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) =
-            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        let (routes, _, _) = extract_routes("Rust", "src/main.rs", source, tree.root_node());
         let route = routes
             .iter()
             .find(|route| route.framework == "axum" && route.http_method == "POST")
             .expect("axum route");
         for field in ["displayName", "accountId", "email_address"] {
-            assert!(route.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
-        assert!(!route.parameters.iter().any(|parameter| parameter.name == "display_name"));
-        assert!(!route.parameters.iter().any(|parameter| parameter.name == "account_id"));
+        assert!(!route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "display_name"));
+        assert!(!route
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "account_id"));
     }
     #[test]
     fn resolves_local_serde_transparent_struct_wrappers_conservatively() {
@@ -7653,8 +7875,7 @@ fn app() -> Router {
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) =
-            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        let (routes, _, _) = extract_routes("Rust", "src/main.rs", source, tree.root_node());
 
         for path in ["/wrapped", "/double", "/named"] {
             let route = routes
@@ -7662,11 +7883,15 @@ fn app() -> Router {
                 .find(|route| route.http_method == "POST" && route.path_template == path)
                 .expect("transparent route");
             for field in ["email", "displayName"] {
-                assert!(route.parameters.iter().any(|parameter| {
-                    parameter.name == field && parameter.location == "json"
-                }));
+                assert!(route
+                    .parameters
+                    .iter()
+                    .any(|parameter| { parameter.name == field && parameter.location == "json" }));
             }
-            assert!(!route.parameters.iter().any(|parameter| parameter.name == "value"));
+            assert!(!route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == "value"));
         }
 
         for path in ["/external", "/cycle", "/plain"] {
@@ -7720,17 +7945,17 @@ fn app() -> Router {
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) =
-            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        let (routes, _, _) = extract_routes("Rust", "src/main.rs", source, tree.root_node());
         let route = routes
             .iter()
             .find(|route| route.framework == "axum" && route.http_method == "POST")
             .expect("axum route");
 
         for field in ["displayName", "incomingEmail", "accountId", "requestToken"] {
-            assert!(route.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
 
         for excluded in [
@@ -7743,7 +7968,10 @@ fn app() -> Router {
             "token",
             "token_out",
         ] {
-            assert!(!route.parameters.iter().any(|parameter| parameter.name == excluded));
+            assert!(!route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == excluded));
         }
     }
 
@@ -7788,8 +8016,7 @@ fn app() -> Router {
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) =
-            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        let (routes, _, _) = extract_routes("Rust", "src/main.rs", source, tree.root_node());
         let route = routes
             .iter()
             .find(|route| route.framework == "axum" && route.http_method == "POST")
@@ -7810,9 +8037,10 @@ fn app() -> Router {
             "legacyTraceId",
             "trace",
         ] {
-            assert!(route.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
 
         for excluded in [
@@ -7825,7 +8053,10 @@ fn app() -> Router {
             "ignoredDeserializeAlias",
             "trace_id",
         ] {
-            assert!(!route.parameters.iter().any(|parameter| parameter.name == excluded));
+            assert!(!route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == excluded));
         }
     }
 
@@ -7866,35 +8097,37 @@ fn app() -> Router {
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) =
-            extract_routes("Rust", "src/main.rs", source, tree.root_node());
+        let (routes, _, _) = extract_routes("Rust", "src/main.rs", source, tree.root_node());
 
         let list = routes
             .iter()
             .find(|route| route.http_method == "GET" && route.path_template == "/users")
             .expect("list route");
         for field in ["q", "page"] {
-            assert!(list.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "query"
-            }));
+            assert!(list
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "query" }));
         }
 
         let create = routes
             .iter()
             .find(|route| route.http_method == "POST" && route.path_template == "/users")
             .expect("create route");
-        assert!(create.parameters.iter().any(|parameter| {
-            parameter.name == "email" && parameter.location == "json"
-        }));
+        assert!(create
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "email" && parameter.location == "json" }));
 
         for path in ["/vector", "/tuple", "/result"] {
             let route = routes
                 .iter()
                 .find(|route| route.path_template == path)
                 .expect("opaque wrapper route");
-            assert!(!route.parameters.iter().any(|parameter| {
-                matches!(parameter.name.as_str(), "email" | "q" | "page")
-            }));
+            assert!(!route
+                .parameters
+                .iter()
+                .any(|parameter| { matches!(parameter.name.as_str(), "email" | "q" | "page") }));
         }
     }
 
@@ -7950,38 +8183,51 @@ fn app() -> Router {
             .find(|route| route.http_method == "GET" && route.path_template == "/users")
             .expect("axum list route");
         assert_eq!(list.handler_name.as_deref(), Some("list"));
-        assert!(list.parameters.iter().any(|parameter| {
-            parameter.name == "pageSize" && parameter.location == "query"
-        }));
-        assert!(list.parameters.iter().any(|parameter| {
-            parameter.name == "q" && parameter.location == "query"
-        }));
-        assert!(list.parameters.iter().any(|parameter| {
-            parameter.name == "X-Tenant" && parameter.location == "header"
-        }));
+        assert!(list
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "pageSize" && parameter.location == "query" }));
+        assert!(list
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "q" && parameter.location == "query" }));
+        assert!(list
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "X-Tenant" && parameter.location == "header" }));
 
         let update = routes
             .iter()
             .find(|route| route.http_method == "POST" && route.path_template == "/users/{id}")
             .expect("axum update route");
         assert_eq!(update.handler_name.as_deref(), Some("update"));
-        assert!(update.parameters.iter().any(|parameter| {
-            parameter.name == "id" && parameter.location == "path"
-        }));
-        assert!(update.parameters.iter().any(|parameter| {
-            parameter.name == "email" && parameter.location == "json"
-        }));
-        assert!(update.parameters.iter().any(|parameter| {
-            parameter.name == "displayName" && parameter.location == "json"
-        }));
-        assert!(!update.parameters.iter().any(|parameter| parameter.name == "ignored"));
-        assert_eq!(update.request_content_type.as_deref(), Some("application/json"));
+        assert!(update
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "id" && parameter.location == "path" }));
+        assert!(update
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "email" && parameter.location == "json" }));
+        assert!(update
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "displayName" && parameter.location == "json" }));
+        assert!(!update
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "ignored"));
+        assert_eq!(
+            update.request_content_type.as_deref(),
+            Some("application/json")
+        );
 
         assert!(handler_inputs.iter().any(|input| {
             input.handler_name == "list"
-                && input.parameters.iter().any(|parameter| {
-                    parameter.name == "X-Tenant" && parameter.location == "header"
-                })
+                && input
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == "X-Tenant" && parameter.location == "header")
         }));
     }
 
@@ -8008,11 +8254,23 @@ async fn login(form: web::Form<LoginForm>) {
             .expect("language");
         let tree = parser.parse(actix, None).expect("tree");
         let (routes, _, _) = extract_routes("Rust", "src/actix.rs", actix, tree.root_node());
-        let login = routes.iter().find(|route| route.framework == "actix-web").expect("actix route");
+        let login = routes
+            .iter()
+            .find(|route| route.framework == "actix-web")
+            .expect("actix route");
         assert_eq!(login.handler_name.as_deref(), Some("login"));
-        assert!(login.parameters.iter().any(|parameter| parameter.name == "email" && parameter.location == "form"));
-        assert!(login.parameters.iter().any(|parameter| parameter.name == "csrf" && parameter.location == "form"));
-        assert_eq!(login.request_content_type.as_deref(), Some("application/x-www-form-urlencoded"));
+        assert!(login
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "email" && parameter.location == "form"));
+        assert!(login
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "csrf" && parameter.location == "form"));
+        assert_eq!(
+            login.request_content_type.as_deref(),
+            Some("application/x-www-form-urlencoded")
+        );
 
         let rocket = r#"
 use rocket::{get, post};
@@ -8041,16 +8299,28 @@ fn create(body: Json<CreateItem>) {
             .find(|route| route.framework == "rocket" && route.http_method == "GET")
             .expect("rocket search route");
         assert_eq!(search.path_template, "/search");
-        assert!(search.parameters.iter().any(|parameter| parameter.name == "page" && parameter.location == "query"));
-        assert!(search.parameters.iter().any(|parameter| parameter.name == "q" && parameter.location == "query"));
+        assert!(search
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "page" && parameter.location == "query"));
+        assert!(search
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "q" && parameter.location == "query"));
 
         let create = routes
             .iter()
             .find(|route| route.framework == "rocket" && route.http_method == "POST")
             .expect("rocket create route");
         assert_eq!(create.handler_name.as_deref(), Some("create"));
-        assert!(create.parameters.iter().any(|parameter| parameter.name == "name" && parameter.location == "json"));
-        assert_eq!(create.request_content_type.as_deref(), Some("application/json"));
+        assert!(create
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "name" && parameter.location == "json"));
+        assert_eq!(
+            create.request_content_type.as_deref(),
+            Some("application/json")
+        );
     }
     #[test]
     fn extracts_actix_and_rocket_attribute_routes() {
@@ -8194,20 +8464,23 @@ async def create_user(payload: CreateUser):
             .set_language(&tree_sitter_python::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) =
-            extract_routes("Python", "app.py", source, tree.root_node());
+        let (routes, _, _) = extract_routes("Python", "app.py", source, tree.root_node());
         let route = routes
             .iter()
             .find(|route| route.framework == "fastapi" && route.path_template == "/users")
             .expect("fastapi route");
 
         for field in ["displayName", "accountId", "email_address"] {
-            assert!(route.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
         for field in ["display_name", "account_id", "_private"] {
-            assert!(!route.parameters.iter().any(|parameter| parameter.name == field));
+            assert!(!route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == field));
         }
     }
     #[test]
@@ -8251,22 +8524,30 @@ async def create_user(
             .set_language(&tree_sitter_python::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _, _) =
-            extract_routes("Python", "app.py", source, tree.root_node());
+        let (routes, _, _) = extract_routes("Python", "app.py", source, tree.root_node());
         let route = routes
             .iter()
             .find(|route| route.framework == "fastapi" && route.path_template == "/users")
             .expect("fastapi route");
 
         for field in ["displayName", "accountId"] {
-            assert!(route.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
-        for field in ["first", "second", "singleKey", "username", "emailAddress", "externalId"] {
-            assert!(route.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "json"
-            }));
+        for field in [
+            "first",
+            "second",
+            "singleKey",
+            "username",
+            "emailAddress",
+            "externalId",
+        ] {
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
         }
         for field in [
             "ignored_choice",
@@ -8279,15 +8560,20 @@ async def create_user(
             "user",
             "email",
         ] {
-            assert!(!route.parameters.iter().any(|parameter| parameter.name == field));
+            assert!(!route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == field));
         }
-        assert!(route.parameters.iter().any(|parameter| {
-            parameter.name == "q" && parameter.location == "query"
-        }));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "q" && parameter.location == "query" }));
         for field in ["username", "emailAddress"] {
-            assert!(route.parameters.iter().any(|parameter| {
-                parameter.name == field && parameter.location == "query"
-            }));
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "query" }));
         }
         assert!(!route.parameters.iter().any(|parameter| {
             matches!(parameter.name.as_str(), "search_alt" | "dynamic_param")
@@ -8296,19 +8582,22 @@ async def create_user(
         assert!(route.parameters.iter().any(|parameter| {
             parameter.name == "x-tenant-id" && parameter.location == "header"
         }));
-        assert!(route.parameters.iter().any(|parameter| {
-            parameter.name == "externalId" && parameter.location == "header"
-        }));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "externalId" && parameter.location == "header" }));
         assert!(!route.parameters.iter().any(|parameter| {
             matches!(parameter.name.as_str(), "client_header" | "client-header")
                 && parameter.location == "header"
         }));
-        assert!(route.parameters.iter().any(|parameter| {
-            parameter.name == "raw_header" && parameter.location == "header"
-        }));
-        assert!(route.parameters.iter().any(|parameter| {
-            parameter.name == "session-id" && parameter.location == "cookie"
-        }));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "raw_header" && parameter.location == "header" }));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|parameter| { parameter.name == "session-id" && parameter.location == "cookie" }));
     }
     #[test]
     fn preserves_explicit_trailing_slash_in_indexed_routes() {
@@ -8357,12 +8646,28 @@ app.include_router(router)
             .set_language(&tree_sitter_python::LANGUAGE.into())
             .expect("language");
         let tree = parser.parse(source, None).expect("tree");
-        let (routes, _mounts, _handler_inputs) = extract_routes("Python", "app.py", source, tree.root_node());
-        let route = routes.iter().find(|value| value.path_template == "/api/login/{tenant}").expect("route");
+        let (routes, _mounts, _handler_inputs) =
+            extract_routes("Python", "app.py", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|value| value.path_template == "/api/login/{tenant}")
+            .expect("route");
         assert_eq!(route.http_method, "POST");
-        assert!(route.parameters.iter().any(|value| value.name == "tenant" && value.location == "path"));
-        assert!(route.parameters.iter().any(|value| value.name == "email" && value.location == "json"));
-        assert!(route.parameters.iter().any(|value| value.name == "password" && value.location == "json"));
-        assert!(route.parameters.iter().any(|value| value.name == "next" && value.location == "query"));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|value| value.name == "tenant" && value.location == "path"));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|value| value.name == "email" && value.location == "json"));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|value| value.name == "password" && value.location == "json"));
+        assert!(route
+            .parameters
+            .iter()
+            .any(|value| value.name == "next" && value.location == "query"));
     }
 }

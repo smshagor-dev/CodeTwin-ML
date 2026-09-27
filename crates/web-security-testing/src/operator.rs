@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::{atomic::AtomicBool, Arc};
 
@@ -129,7 +129,6 @@ struct OperationSpec<'a> {
     skip_reason: Option<&'a str>,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApprovedExecutionPolicy {
     pub selected_categories: BTreeSet<String>,
@@ -188,10 +187,15 @@ pub fn preflight(
 ) -> Result<GuidedPreflight, ScanError> {
     let policy = ScopePolicy::new(config.scope.clone())?;
     let pinned = policy.resolve_and_pin(policy.target())?;
-    let port = policy
-        .target()
-        .port_or_known_default()
-        .unwrap_or(if policy.target().scheme() == "https" { 443 } else { 80 });
+    let port =
+        policy
+            .target()
+            .port_or_known_default()
+            .unwrap_or(if policy.target().scheme() == "https" {
+                443
+            } else {
+                80
+            });
     Ok(GuidedPreflight {
         authorized_target: policy.target().to_string(),
         resolved_address: pinned.ip().to_string(),
@@ -204,7 +208,8 @@ pub fn preflight(
         https_behavior: if policy.target().scheme() == "https" {
             "HTTPS required; redirects may not downgrade to HTTP.".to_string()
         } else {
-            "HTTP target explicitly configured; HTTPS downgrade protection is not applicable.".to_string()
+            "HTTP target explicitly configured; HTTPS downgrade protection is not applicable."
+                .to_string()
         },
         redirect_limit: policy.config().redirect_limit,
         max_requests: policy.config().max_requests,
@@ -242,8 +247,7 @@ pub fn prepare_guided_security_with_seeds(
     environment: SecurityEnvironment,
     cancelled: Arc<AtomicBool>,
 ) -> Result<GuidedPreparation, ScanError> {
-    let authentication_available = has_auth(primary_auth)
-        || secondary_auth.is_some_and(has_auth);
+    let authentication_available = has_auth(primary_auth) || secondary_auth.is_some_and(has_auth);
     let preflight = preflight(config, authentication_available)?;
 
     let mut mapping_config = config.clone();
@@ -290,7 +294,11 @@ pub fn build_application_map(endpoints: &[EndpointObservation]) -> ApplicationMa
             .and_then(|mut parts| parts.find(|part| !part.is_empty()))
             .map(title_case)
             .unwrap_or_else(|| "Root".to_string());
-        let content_type = endpoint.content_type.as_deref().unwrap_or("").to_ascii_lowercase();
+        let content_type = endpoint
+            .content_type
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase();
         let is_page = endpoint.method == "GET" && content_type.contains("text/html");
         let is_form = endpoint.source == "form";
         let is_api = endpoint.source == "openapi"
@@ -323,7 +331,9 @@ pub fn build_application_map(endpoints: &[EndpointObservation]) -> ApplicationMa
         .into_iter()
         .map(|(label, mut routes)| {
             routes.sort_by(|left, right| {
-                left.url.cmp(&right.url).then(left.method.cmp(&right.method))
+                left.url
+                    .cmp(&right.url)
+                    .then(left.method.cmp(&right.method))
             });
             ApplicationGroup { label, routes }
         })
@@ -357,13 +367,17 @@ pub fn build_test_plan(
                 category: "passive_analysis",
                 risk: OperationRisk::SAFE,
                 selected: true,
-                reason: "Review response headers, cookies, cache behavior and passive security signals.",
+                reason:
+                    "Review response headers, cookies, cache behavior and passive security signals.",
                 skip_reason: None,
             },
         );
 
         if endpoint.source == "form"
-            && matches!(endpoint.method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE")
+            && matches!(
+                endpoint.method.as_str(),
+                "POST" | "PUT" | "PATCH" | "DELETE"
+            )
             && config.checks.csrf
         {
             push_operation(
@@ -518,7 +532,8 @@ pub fn build_test_plan(
             }
         }
 
-        if endpoint.method == "GET" && (config.checks.cors || config.checks.method_misconfiguration) {
+        if endpoint.method == "GET" && (config.checks.cors || config.checks.method_misconfiguration)
+        {
             push_operation(
                 &mut operations,
                 OperationSpec {
@@ -533,7 +548,10 @@ pub fn build_test_plan(
             );
         }
 
-        if config.checks.access_control && secondary_auth_available && looks_object_specific(endpoint) {
+        if config.checks.access_control
+            && secondary_auth_available
+            && looks_object_specific(endpoint)
+        {
             let selected = !matches!(environment, SecurityEnvironment::AuthorizedProduction);
             push_operation(
                 &mut operations,
@@ -549,7 +567,6 @@ pub fn build_test_plan(
             );
         }
     }
-
 
     operations.sort_by(|left, right| {
         left.endpoint_url
@@ -576,8 +593,14 @@ pub fn build_test_plan(
 
     GuidedTestPlan {
         endpoint_count: endpoints.len(),
-        form_count: endpoints.iter().filter(|item| item.source == "form").count(),
-        parameter_count: endpoints.iter().map(|item| item.parameter_names.len()).sum(),
+        form_count: endpoints
+            .iter()
+            .filter(|item| item.source == "form")
+            .count(),
+        parameter_count: endpoints
+            .iter()
+            .map(|item| item.parameter_names.len())
+            .sum(),
         selected_count: operations.iter().filter(|item| item.selected).count(),
         skipped_count: operations.iter().filter(|item| !item.selected).count(),
         counts_by_category,
@@ -591,9 +614,7 @@ pub(crate) fn check_applicable(
     parameter: &str,
     category: &str,
 ) -> bool {
-    let Some(location) =
-        single_parameter_location(&endpoint.parameter_locations, parameter)
-    else {
+    let Some(location) = single_parameter_location(&endpoint.parameter_locations, parameter) else {
         return false;
     };
     match category {
@@ -617,9 +638,17 @@ pub(crate) fn check_applicable(
 
 pub(crate) fn looks_redirect_parameter(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    ["next", "url", "redirect", "redirect_uri", "return", "return_to", "callback"]
-        .iter()
-        .any(|value| lower == *value || lower.contains(value))
+    [
+        "next",
+        "url",
+        "redirect",
+        "redirect_uri",
+        "return",
+        "return_to",
+        "callback",
+    ]
+    .iter()
+    .any(|value| lower == *value || lower.contains(value))
 }
 
 pub(crate) fn looks_path_parameter(name: &str) -> bool {
@@ -631,9 +660,11 @@ pub(crate) fn looks_path_parameter(name: &str) -> bool {
 
 pub(crate) fn looks_url_parameter(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    ["url", "uri", "endpoint", "webhook", "callback", "image", "avatar", "feed"]
-        .iter()
-        .any(|value| lower.contains(value))
+    [
+        "url", "uri", "endpoint", "webhook", "callback", "image", "avatar", "feed",
+    ]
+    .iter()
+    .any(|value| lower.contains(value))
 }
 
 pub(crate) fn looks_object_specific(endpoint: &EndpointObservation) -> bool {
@@ -642,16 +673,17 @@ pub(crate) fn looks_object_specific(endpoint: &EndpointObservation) -> bool {
     };
     if endpoint.parameter_names.iter().any(|name| {
         let lower = name.to_ascii_lowercase();
-        ["id", "user", "account", "order", "document", "file", "record"]
-            .iter()
-            .any(|needle| lower.contains(needle))
+        [
+            "id", "user", "account", "order", "document", "file", "record",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
     }) {
         return true;
     }
-    url.path_segments()
-        .into_iter()
-        .flatten()
-        .any(|segment| segment.len() >= 2 && segment.chars().all(|character| character.is_ascii_digit()))
+    url.path_segments().into_iter().flatten().any(|segment| {
+        segment.len() >= 2 && segment.chars().all(|character| character.is_ascii_digit())
+    })
 }
 
 fn mutation_policy(
@@ -681,7 +713,8 @@ fn mutation_policy(
             OperationRisk::CAUTION,
             false,
             Some(if production {
-                "State-changing active probes are disabled by default for authorized production.".to_string()
+                "State-changing active probes are disabled by default for authorized production."
+                    .to_string()
             } else {
                 "Safe mode: state-changing active probes were not enabled.".to_string()
             }),
@@ -699,13 +732,10 @@ fn xss_candidate(endpoint: &EndpointObservation, location: &str) -> bool {
     }
     endpoint.source == "form"
         || (location == "form" && endpoint.source.starts_with("source_route:"))
-        || endpoint
-            .content_type
-            .as_deref()
-            .is_some_and(|value| {
-                let value = value.to_ascii_lowercase();
-                value.contains("text/html") || value.contains("application/xhtml")
-            })
+        || endpoint.content_type.as_deref().is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("text/html") || value.contains("application/xhtml")
+        })
         || (endpoint.content_type.is_none() && endpoint.method == "GET")
 }
 
@@ -760,14 +790,13 @@ fn title_case(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
 
     use super::{
         apply_approved_execution_policy, build_test_plan, ApprovedExecutionPolicy, OperationRisk,
         SecurityEnvironment,
     };
+    use crate::{CheckConfig, EndpointObservation, ParameterLocations, ScanConfig, ScopeConfig};
     use std::collections::BTreeSet;
-    use crate::{CheckConfig, EndpointObservation, ScanConfig, ScopeConfig};
 
     fn config() -> ScanConfig {
         ScanConfig {
@@ -794,7 +823,13 @@ mod tests {
         }
     }
 
-    fn endpoint(method: &str, source: &str, url: &str, parameter: &str, location: &str) -> EndpointObservation {
+    fn endpoint(
+        method: &str,
+        source: &str,
+        url: &str,
+        parameter: &str,
+        location: &str,
+    ) -> EndpointObservation {
         EndpointObservation {
             url: url.into(),
             route_template: None,
@@ -808,7 +843,14 @@ mod tests {
             )]),
             response_header_names: vec![],
             cookie_names: vec![],
-            content_type: Some(if source == "openapi" { "application/json" } else { "text/html" }.into()),
+            content_type: Some(
+                if source == "openapi" {
+                    "application/json"
+                } else {
+                    "text/html"
+                }
+                .into(),
+            ),
             status_code: Some(200),
             redirect_to: None,
         }
@@ -821,10 +863,7 @@ mod tests {
         source.scope.allow_non_idempotent_methods = true;
         source.scope.enable_timing_probes = true;
         let policy = ApprovedExecutionPolicy {
-            selected_categories: BTreeSet::from([
-                "xss".to_string(),
-                "http_policy".to_string(),
-            ]),
+            selected_categories: BTreeSet::from(["xss".to_string(), "http_policy".to_string()]),
             state_changing_selected: false,
         };
 
@@ -854,12 +893,7 @@ mod tests {
             "username",
             "form",
         )];
-        let plan = build_test_plan(
-            &source,
-            &endpoints,
-            false,
-            SecurityEnvironment::Staging,
-        );
+        let plan = build_test_plan(&source, &endpoints, false, SecurityEnvironment::Staging);
         assert!(plan.operations.iter().any(|item| {
             item.category == "xss"
                 && item.parameter_name.as_deref() == Some("username")
@@ -870,13 +904,36 @@ mod tests {
     #[test]
     fn planner_does_not_blindly_run_every_check() {
         let endpoints = vec![
-            endpoint("GET", "html", "http://localhost:3000/search?q=a", "q", "query"),
-            endpoint("GET", "openapi", "http://localhost:3000/api/items?id=1", "id", "query"),
+            endpoint(
+                "GET",
+                "html",
+                "http://localhost:3000/search?q=a",
+                "q",
+                "query",
+            ),
+            endpoint(
+                "GET",
+                "openapi",
+                "http://localhost:3000/api/items?id=1",
+                "id",
+                "query",
+            ),
         ];
         let plan = build_test_plan(&config(), &endpoints, true, SecurityEnvironment::Staging);
-        assert!(plan.operations.iter().any(|item| item.category == "xss" && item.endpoint_url.contains("/search")));
-        assert!(plan.operations.iter().any(|item| item.category == "api_validation" && item.endpoint_url.contains("/api/items")));
-        assert!(!plan.operations.iter().any(|item| item.category == "open_redirect" && item.parameter_name.as_deref() == Some("q")));
+        assert!(plan
+            .operations
+            .iter()
+            .any(|item| item.category == "xss" && item.endpoint_url.contains("/search")));
+        assert!(plan
+            .operations
+            .iter()
+            .any(|item| item.category == "api_validation"
+                && item.endpoint_url.contains("/api/items")));
+        assert!(!plan
+            .operations
+            .iter()
+            .any(|item| item.category == "open_redirect"
+                && item.parameter_name.as_deref() == Some("q")));
     }
 
     #[test]
@@ -890,12 +947,7 @@ mod tests {
             "q",
             "query",
         )];
-        let plan = build_test_plan(
-            &source,
-            &endpoints,
-            false,
-            SecurityEnvironment::Staging,
-        );
+        let plan = build_test_plan(&source, &endpoints, false, SecurityEnvironment::Staging);
         assert!(!plan
             .operations
             .iter()
@@ -912,9 +964,10 @@ mod tests {
             "form",
         )];
         let plan = build_test_plan(&config(), &endpoints, false, SecurityEnvironment::Staging);
-        assert!(plan.operations.iter().any(|item| {
-            item.risk == OperationRisk::CAUTION && !item.selected
-        }));
+        assert!(plan
+            .operations
+            .iter()
+            .any(|item| { item.risk == OperationRisk::CAUTION && !item.selected }));
     }
 
     #[test]
@@ -927,8 +980,9 @@ mod tests {
             "path",
         )];
         let plan = build_test_plan(&config(), &endpoints, false, SecurityEnvironment::Staging);
-        assert!(plan.operations.iter().any(|item| {
-            item.risk == OperationRisk::RESTRICTED && !item.selected
-        }));
+        assert!(plan
+            .operations
+            .iter()
+            .any(|item| { item.risk == OperationRisk::RESTRICTED && !item.selected }));
     }
 }

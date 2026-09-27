@@ -1,8 +1,6 @@
 use std::fs;
 
-use codetwin_core::{
-    deterministic_id, Database, RepairApplicationService, VerifiedRepairService,
-};
+use codetwin_core::{deterministic_id, Database, RepairApplicationService, VerifiedRepairService};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
@@ -38,7 +36,7 @@ fn fixture() -> Fixture {
         .expect("project");
     db.connection()
         .execute(
-            "INSERT INTO files(id, project_id, relative_path, relative_path_identity, content_hash, byte_size, is_active)\
+            "INSERT INTO files(id, project_id, relative_path, relative_path_identity, content_hash, byte_size, is_active) \
              VALUES (?1, ?2, 'src/main.rs', 'src/main.rs', ?3, 4, 1)",
             rusqlite::params![&file_id, &project_id, hash(b"old\n")],
         )
@@ -89,9 +87,7 @@ fn approved_plan_applies_and_rolls_back_without_commands() {
         .expect("plan");
     assert_eq!(plan.status, "applied");
 
-    let items = service
-        .application_items(&applied.id, 10)
-        .expect("items");
+    let items = service.application_items(&applied.id, 10).expect("items");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].state, "applied");
     assert_eq!(items[0].backup_content_hash, hash(b"old\n"));
@@ -158,7 +154,11 @@ fn rollback_refuses_to_overwrite_a_post_apply_manual_edit() {
         b"after-apply-user-edit\n"
     );
     assert_eq!(
-        service.get_run(&applied.id).expect("run").expect("run").status,
+        service
+            .get_run(&applied.id)
+            .expect("run")
+            .expect("run")
+            .status,
         "applied"
     );
 }
@@ -216,9 +216,7 @@ fn interrupted_application_recovers_exact_proposed_bytes_from_verified_backup() 
         .as_deref()
         .is_some_and(|message| message.contains("restored every affected path")));
 
-    let items = service
-        .application_items(&applied.id, 10)
-        .expect("items");
+    let items = service.application_items(&applied.id, 10).expect("items");
     assert_eq!(items[0].state, "rolled_back");
     let plan = VerifiedRepairService::new(&fixture.db)
         .get_plan(&fixture.repair_id)

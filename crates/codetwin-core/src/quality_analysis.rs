@@ -144,8 +144,8 @@ impl<'a> CodeQualityService<'a> {
         );
 
         self.database.connection().execute(
-            "INSERT INTO analysis_runs(\
-               id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint\
+            "INSERT INTO analysis_runs( \
+               id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint \
              ) VALUES (?1, ?2, 'running', ?3, CURRENT_TIMESTAMP, ?4, 'code_quality', ?5, ?6)",
             params![
                 run_id,
@@ -199,20 +199,19 @@ impl<'a> CodeQualityService<'a> {
     ) -> Result<Vec<QualityFindingRecord>, QualityAnalysisError> {
         let limit = bounded(limit, MAX_FINDINGS_QUERY);
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, run_id, COALESCE(sub_category, ''), severity, confidence, title, description,\
-                    file_id, symbol_id, source_start_line, source_end_line, status, fingerprint, rule_version,\
-                    first_seen, last_seen, resolved_at\
-             FROM findings\
-             WHERE project_id = ?1 AND analyzer_key = ?2 AND (?3 IS NULL OR status = ?3)\
-             ORDER BY CASE severity\
-                        WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3\
-                        WHEN 'low' THEN 2 ELSE 1 END DESC,\
-                      status, last_seen DESC, id\
+            "SELECT id, project_id, run_id, COALESCE(sub_category, ''), severity, confidence, title, description, \
+                    file_id, symbol_id, source_start_line, source_end_line, status, fingerprint, rule_version, \
+                    first_seen, last_seen, resolved_at \
+             FROM findings \
+             WHERE project_id = ?1 AND analyzer_key = ?2 AND (?3 IS NULL OR status = ?3) \
+             ORDER BY CASE severity \
+                        WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 \
+                        WHEN 'low' THEN 2 ELSE 1 END DESC, \
+                      status, last_seen DESC, id \
              LIMIT ?4",
         )?;
-        let rows = statement.query_map(
-            params![project_id, ANALYZER_KEY, status, limit],
-            |row| {
+        let rows =
+            statement.query_map(params![project_id, ANALYZER_KEY, status, limit], |row| {
                 Ok(QualityFindingRecord {
                     id: row.get(0)?,
                     project_id: row.get(1)?,
@@ -233,8 +232,7 @@ impl<'a> CodeQualityService<'a> {
                     last_seen: row.get(16)?,
                     resolved_at: row.get(17)?,
                 })
-            },
-        )?;
+            })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -244,10 +242,10 @@ impl<'a> CodeQualityService<'a> {
         limit: usize,
     ) -> Result<Vec<FindingEvidenceRecord>, QualityAnalysisError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json\
-             FROM finding_evidence\
-             WHERE finding_id = ?1\
-             ORDER BY COALESCE(uri, ''), COALESCE(line_start, 0), id\
+            "SELECT id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json \
+             FROM finding_evidence \
+             WHERE finding_id = ?1 \
+             ORDER BY COALESCE(uri, ''), COALESCE(line_start, 0), id \
              LIMIT ?2",
         )?;
         let rows = statement.query_map(
@@ -274,15 +272,15 @@ impl<'a> CodeQualityService<'a> {
         limit: usize,
     ) -> Result<Vec<QualityRunRecord>, QualityAnalysisError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT a.id, a.project_id, a.status, a.started_at, a.finished_at, a.duration_ms,\
-                    COALESCE(q.rules_evaluated, 0), COALESCE(q.observations, 0),\
-                    COALESCE(q.findings_opened, 0), COALESCE(q.findings_refreshed, 0),\
-                    COALESCE(q.findings_resolved, 0), COALESCE(q.oversized_definitions, 0),\
-                    COALESCE(q.deep_declarations, 0), COALESCE(q.high_fan_out_files, 0),\
-                    COALESCE(q.dependency_cycles, 0)\
-             FROM analysis_runs a\
-             LEFT JOIN quality_run_metrics q ON q.run_id = a.id\
-             WHERE a.project_id = ?1 AND a.run_kind = 'code_quality'\
+            "SELECT a.id, a.project_id, a.status, a.started_at, a.finished_at, a.duration_ms, \
+                    COALESCE(q.rules_evaluated, 0), COALESCE(q.observations, 0), \
+                    COALESCE(q.findings_opened, 0), COALESCE(q.findings_refreshed, 0), \
+                    COALESCE(q.findings_resolved, 0), COALESCE(q.oversized_definitions, 0), \
+                    COALESCE(q.deep_declarations, 0), COALESCE(q.high_fan_out_files, 0), \
+                    COALESCE(q.dependency_cycles, 0) \
+             FROM analysis_runs a \
+             LEFT JOIN quality_run_metrics q ON q.run_id = a.id \
+             WHERE a.project_id = ?1 AND a.run_kind = 'code_quality' \
              ORDER BY a.started_at DESC, a.id DESC LIMIT ?2",
         )?;
         let rows = statement.query_map(
@@ -415,12 +413,12 @@ fn load_symbols(
     project_id: &str,
 ) -> Result<Vec<ActiveSymbol>, QualityAnalysisError> {
     let mut statement = connection.prepare(
-        "SELECT s.id, s.file_id, s.kind, s.name, s.qualified_name, s.parent_symbol_id,\
-                s.start_line, s.end_line, f.relative_path\
-         FROM symbols s\
-         JOIN files f ON f.id = s.file_id\
-         WHERE s.project_id = ?1 AND s.is_active = 1 AND f.is_active = 1\
-         ORDER BY f.relative_path, s.start_line, s.start_column, s.id\
+        "SELECT s.id, s.file_id, s.kind, s.name, s.qualified_name, s.parent_symbol_id, \
+                s.start_line, s.end_line, f.relative_path \
+         FROM symbols s \
+         JOIN files f ON f.id = s.file_id \
+         WHERE s.project_id = ?1 AND s.is_active = 1 AND f.is_active = 1 \
+         ORDER BY f.relative_path, s.start_line, s.start_column, s.id \
          LIMIT ?2",
     )?;
     let rows = statement.query_map(
@@ -451,16 +449,16 @@ fn load_resolved_imports(
     project_id: &str,
 ) -> Result<Vec<ImportEdge>, QualityAnalysisError> {
     let mut statement = connection.prepare(
-        "SELECT i.id, i.source_file_id, i.resolved_target_file_id,\
-                source.relative_path, target.relative_path, i.raw_specifier,\
-                i.start_line, i.end_line\
-         FROM import_references i\
-         JOIN files source ON source.id = i.source_file_id\
-         JOIN files target ON target.id = i.resolved_target_file_id\
-         WHERE i.project_id = ?1 AND i.resolution_state = 'resolved_local'\
-           AND i.resolved_target_file_id IS NOT NULL\
-           AND source.is_active = 1 AND target.is_active = 1\
-         ORDER BY source.relative_path, target.relative_path, i.start_line, i.id\
+        "SELECT i.id, i.source_file_id, i.resolved_target_file_id, \
+                source.relative_path, target.relative_path, i.raw_specifier, \
+                i.start_line, i.end_line \
+         FROM import_references i \
+         JOIN files source ON source.id = i.source_file_id \
+         JOIN files target ON target.id = i.resolved_target_file_id \
+         WHERE i.project_id = ?1 AND i.resolution_state = 'resolved_local' \
+           AND i.resolved_target_file_id IS NOT NULL \
+           AND source.is_active = 1 AND target.is_active = 1 \
+         ORDER BY source.relative_path, target.relative_path, i.start_line, i.id \
          LIMIT ?2",
     )?;
     let rows = statement.query_map(
@@ -559,12 +557,7 @@ fn collect_deep_declarations(
 ) {
     let parent_by_id: BTreeMap<&str, Option<&str>> = symbols
         .iter()
-        .map(|symbol| {
-            (
-                symbol.id.as_str(),
-                symbol.parent_symbol_id.as_deref(),
-            )
-        })
+        .map(|symbol| (symbol.id.as_str(), symbol.parent_symbol_id.as_deref()))
         .collect();
 
     for symbol in symbols {
@@ -618,10 +611,7 @@ fn collect_deep_declarations(
     }
 }
 
-fn declaration_depth(
-    symbol_id: &str,
-    parent_by_id: &BTreeMap<&str, Option<&str>>,
-) -> usize {
+fn declaration_depth(symbol_id: &str, parent_by_id: &BTreeMap<&str, Option<&str>>) -> usize {
     let mut current = symbol_id;
     let mut seen = BTreeSet::new();
     let mut depth = 0usize;
@@ -747,7 +737,11 @@ fn collect_dependency_cycles(
             "quality-finding",
             &[project_id, RULE_DEPENDENCY_CYCLE, &joined_members],
         );
-        let severity = if component.len() >= 6 { "high" } else { "medium" };
+        let severity = if component.len() >= 6 {
+            "high"
+        } else {
+            "medium"
+        };
         let preview = paths.iter().take(6).cloned().collect::<Vec<_>>().join(", ");
         let evidence = internal_edges
             .iter()
@@ -910,39 +904,37 @@ fn persist_observations(
 
     let transaction = connection.unchecked_transaction()?;
     transaction.execute(
-        "UPDATE findings SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, last_run_id = ?2\
+        "UPDATE findings SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, last_run_id = ?2 \
          WHERE project_id = ?1 AND analyzer_key = ?3 AND status = 'open'",
         params![project_id, run_id, ANALYZER_KEY],
     )?;
 
     for observation in &collected.observations {
-        let finding_id = existing
-            .get(observation.fingerprint.as_str())
-            .map_or_else(
-                || {
-                    deterministic_id(
-                        "finding",
-                        &[project_id, ANALYZER_KEY, &observation.fingerprint],
-                    )
-                },
-                |finding| finding.id.clone(),
-            );
+        let finding_id = existing.get(observation.fingerprint.as_str()).map_or_else(
+            || {
+                deterministic_id(
+                    "finding",
+                    &[project_id, ANALYZER_KEY, &observation.fingerprint],
+                )
+            },
+            |finding| finding.id.clone(),
+        );
         transaction.execute(
-            "INSERT INTO findings(\
-               id, project_id, run_id, category, sub_category, severity, confidence, title, description,\
-               file_id, symbol_id, source_start_line, source_end_line, status, fingerprint, rule_version,\
-               model_version, first_seen, last_seen, analyzer_key, last_run_id, resolved_at\
-             ) VALUES (\
-               ?1, ?2, ?3, 'quality', ?4, ?5, 1.0, ?6, ?7, ?8, ?9, ?10, ?11, 'open', ?12, ?13,\
-               NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?14, ?3, NULL\
-             )\
-             ON CONFLICT(project_id, fingerprint) DO UPDATE SET\
-               run_id = excluded.run_id, category = excluded.category, sub_category = excluded.sub_category,\
-               severity = excluded.severity, confidence = excluded.confidence, title = excluded.title,\
-               description = excluded.description, file_id = excluded.file_id, symbol_id = excluded.symbol_id,\
-               source_start_line = excluded.source_start_line, source_end_line = excluded.source_end_line,\
-               status = 'open', rule_version = excluded.rule_version, model_version = NULL,\
-               last_seen = CURRENT_TIMESTAMP, analyzer_key = excluded.analyzer_key,\
+            "INSERT INTO findings( \
+               id, project_id, run_id, category, sub_category, severity, confidence, title, description, \
+               file_id, symbol_id, source_start_line, source_end_line, status, fingerprint, rule_version, \
+               model_version, first_seen, last_seen, analyzer_key, last_run_id, resolved_at \
+             ) VALUES ( \
+               ?1, ?2, ?3, 'quality', ?4, ?5, 1.0, ?6, ?7, ?8, ?9, ?10, ?11, 'open', ?12, ?13, \
+               NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?14, ?3, NULL \
+             ) \
+             ON CONFLICT(project_id, fingerprint) DO UPDATE SET \
+               run_id = excluded.run_id, category = excluded.category, sub_category = excluded.sub_category, \
+               severity = excluded.severity, confidence = excluded.confidence, title = excluded.title, \
+               description = excluded.description, file_id = excluded.file_id, symbol_id = excluded.symbol_id, \
+               source_start_line = excluded.source_start_line, source_end_line = excluded.source_end_line, \
+               status = 'open', rule_version = excluded.rule_version, model_version = NULL, \
+               last_seen = CURRENT_TIMESTAMP, analyzer_key = excluded.analyzer_key, \
                last_run_id = excluded.last_run_id, resolved_at = NULL",
             params![
                 finding_id,
@@ -971,8 +963,8 @@ fn persist_observations(
                 &[&finding_id, observation.rule_id, &evidence.key],
             );
             transaction.execute(
-                "INSERT INTO finding_evidence(\
-                   id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json\
+                "INSERT INTO finding_evidence( \
+                   id, finding_id, evidence_type, uri, line_start, line_end, summary, metadata_json \
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     evidence_id,
@@ -990,9 +982,9 @@ fn persist_observations(
 
     let rules_evaluated = quality_rules().len();
     transaction.execute(
-        "INSERT INTO quality_run_metrics(\
-           run_id, rules_evaluated, observations, findings_opened, findings_refreshed, findings_resolved,\
-           oversized_definitions, deep_declarations, high_fan_out_files, dependency_cycles\
+        "INSERT INTO quality_run_metrics( \
+           run_id, rules_evaluated, observations, findings_opened, findings_refreshed, findings_resolved, \
+           oversized_definitions, deep_declarations, high_fan_out_files, dependency_cycles \
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             run_id,
@@ -1007,12 +999,7 @@ fn persist_observations(
             to_i64(collected.counts.dependency_cycles),
         ],
     )?;
-    finish_run(
-        &transaction,
-        run_id,
-        AnalysisStatus::Completed,
-        duration_ms,
-    )?;
+    finish_run(&transaction, run_id, AnalysisStatus::Completed, duration_ms)?;
     transaction.commit()?;
 
     Ok(QualityRunSummary {
@@ -1037,8 +1024,8 @@ fn load_existing_findings(
     project_id: &str,
 ) -> Result<BTreeMap<String, ExistingFinding>, rusqlite::Error> {
     let mut statement = connection.prepare(
-        "SELECT fingerprint, id, status FROM findings\
-         WHERE project_id = ?1 AND analyzer_key = ?2\
+        "SELECT fingerprint, id, status FROM findings \
+         WHERE project_id = ?1 AND analyzer_key = ?2 \
          ORDER BY fingerprint",
     )?;
     let rows = statement.query_map(params![project_id, ANALYZER_KEY], |row| {
@@ -1053,10 +1040,7 @@ fn load_existing_findings(
     rows.collect()
 }
 
-fn ensure_project(
-    connection: &Connection,
-    project_id: &str,
-) -> Result<(), QualityAnalysisError> {
+fn ensure_project(connection: &Connection, project_id: &str) -> Result<(), QualityAnalysisError> {
     let exists: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?1)",
         [project_id],
@@ -1078,8 +1062,8 @@ fn finish_run(
     duration_ms: u64,
 ) -> Result<(), rusqlite::Error> {
     connection.execute(
-        "UPDATE analysis_runs\
-         SET status = ?2, finished_at = CURRENT_TIMESTAMP, duration_ms = ?3\
+        "UPDATE analysis_runs \
+         SET status = ?2, finished_at = CURRENT_TIMESTAMP, duration_ms = ?3 \
          WHERE id = ?1",
         params![
             run_id,
@@ -1095,8 +1079,9 @@ fn quality_rules() -> Vec<QualityRuleRecord> {
         QualityRuleRecord {
             id: RULE_OVERSIZED_DEFINITION.to_string(),
             title: "Oversized definition".to_string(),
-            description: "Flags persisted definition symbols whose source range is unusually large."
-                .to_string(),
+            description:
+                "Flags persisted definition symbols whose source range is unusually large."
+                    .to_string(),
             threshold: format!(">= {LARGE_DEFINITION_LINES} lines"),
         },
         QualityRuleRecord {
@@ -1110,8 +1095,8 @@ fn quality_rules() -> Vec<QualityRuleRecord> {
         QualityRuleRecord {
             id: RULE_HIGH_FAN_OUT.to_string(),
             title: "High local dependency fan-out".to_string(),
-            description:
-                "Flags files with many distinct resolved-local import targets.".to_string(),
+            description: "Flags files with many distinct resolved-local import targets."
+                .to_string(),
             threshold: format!(">= {HIGH_FAN_OUT} local targets"),
         },
         QualityRuleRecord {
@@ -1178,11 +1163,7 @@ fn optional_usize(value: Option<i64>) -> Option<usize> {
 }
 
 fn conversion_error(column: usize, message: String) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(
-        column,
-        rusqlite::types::Type::Text,
-        message.into(),
-    )
+    rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, message.into())
 }
 
 #[cfg(test)]
@@ -1226,7 +1207,7 @@ mod tests {
             .collect();
         assert_eq!(declaration_depth("a", &parent_by_id), 0);
         assert_eq!(declaration_depth("b", &parent_by_id), 1);
-        assert!(DEEP_DECLARATION_DEPTH > 1);
+        const _: () = assert!(DEEP_DECLARATION_DEPTH > 1);
     }
 
     #[test]

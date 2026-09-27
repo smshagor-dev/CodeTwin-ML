@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -17,10 +17,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    deterministic_id, graph_edge_id, graph_node_id, is_windows_path_identity,
-    normalize_relative_path, AnalysisStatus, Database, LanguageServerConfigService,
-    SemanticConfigError, SemanticEnrichmentRequest, SemanticRunSummary, SemanticServerRun,
-    SemanticServerStatus, SemanticSymbolState,
+    deterministic_id, graph_edge_id, is_windows_path_identity, normalize_relative_path,
+    AnalysisStatus, Database, LanguageServerConfigService, SemanticConfigError,
+    SemanticEnrichmentRequest, SemanticRunSummary, SemanticServerRun, SemanticServerStatus,
+    SemanticSymbolState,
 };
 
 const SEMANTIC_ANALYZER_VERSION: &str = "lsp-semantic-v1";
@@ -94,8 +94,8 @@ impl<'a> SemanticEnrichmentService<'a> {
         let config_fingerprint = semantic_config_fingerprint(&configuration_json, &configs)?;
 
         self.database.connection().execute(
-            "INSERT INTO analysis_runs(\
-               id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint\
+            "INSERT INTO analysis_runs( \
+               id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint \
              ) VALUES (?1, ?2, 'running', ?3, CURRENT_TIMESTAMP, ?4, 'lsp_semantic', ?5, ?6)",
             params![
                 run_id,
@@ -108,13 +108,7 @@ impl<'a> SemanticEnrichmentService<'a> {
         )?;
 
         let execution = self.execute_run(
-            &project,
-            &run_id,
-            &kinds,
-            &configs,
-            limits,
-            cancelled,
-            started,
+            &project, &run_id, &kinds, &configs, limits, cancelled, started,
         );
         match execution {
             Ok(summary) => Ok(summary),
@@ -247,12 +241,8 @@ impl<'a> SemanticEnrichmentService<'a> {
             AnalysisStatus::Failed
         };
 
-        let graph_counts = persist_provider_outputs(
-            self.database.connection(),
-            project,
-            run_id,
-            &outputs,
-        )?;
+        let graph_counts =
+            persist_provider_outputs(self.database.connection(), project, run_id, &outputs)?;
         for run in &mut server_runs {
             run.graph_edges_materialized = graph_counts
                 .per_provider
@@ -331,6 +321,7 @@ struct FileSnapshot {
 #[derive(Debug, Clone)]
 struct ActiveSymbol {
     id: String,
+    #[allow(dead_code)] // kept for Debug output of active symbols
     file_id: String,
     name: String,
     start_line: usize,
@@ -444,22 +435,26 @@ fn process_provider(
             output.run.errors += 1;
             remember_error(
                 &mut output.run.error,
-                format!("{} changed or became unreadable after indexing", file.relative_path),
+                format!(
+                    "{} changed or became unreadable after indexing",
+                    file.relative_path
+                ),
             );
             continue;
         };
         snapshots.insert(file.id.clone(), snapshot.clone());
-        let uri = match server.open_document(&snapshot.absolute_path, &file.language, &snapshot.text) {
-            Ok(uri) => uri,
-            Err(error) => {
-                close_documents(server, &open_documents);
-                return Ok(ProviderResult::Failed(failed_server_run(
-                    kind,
-                    &output.run,
-                    error,
-                )));
-            }
-        };
+        let uri =
+            match server.open_document(&snapshot.absolute_path, &file.language, &snapshot.text) {
+                Ok(uri) => uri,
+                Err(error) => {
+                    close_documents(server, &open_documents);
+                    return Ok(ProviderResult::Failed(failed_server_run(
+                        kind,
+                        &output.run,
+                        error,
+                    )));
+                }
+            };
         open_documents.insert(uri.clone());
         *remaining_files = remaining_files.saturating_sub(1);
         output.run.files_processed += 1;
@@ -528,7 +523,8 @@ fn process_provider(
             if output.states.contains_key(&symbol.id) {
                 continue;
             }
-            let Some(document_symbol) = match_document_symbol(symbol, &document_symbols, &snapshot.text)
+            let Some(document_symbol) =
+                match_document_symbol(symbol, &document_symbols, &snapshot.text)
             else {
                 output.states.insert(
                     symbol.id.clone(),
@@ -543,32 +539,33 @@ fn process_provider(
                 continue;
             };
             output.run.symbols_matched += 1;
-            let references = match server.references(&uri, &document_symbol.selection_range.start, false) {
-                Ok(references) => references,
-                Err(error) if fatal_lsp_error(&error) => {
-                    close_documents(server, &open_documents);
-                    return Ok(ProviderResult::Failed(failed_server_run(
-                        kind,
-                        &output.run,
-                        error,
-                    )));
-                }
-                Err(error) => {
-                    output.run.errors += 1;
-                    remember_error(&mut output.run.error, error.to_string());
-                    output.states.insert(
-                        symbol.id.clone(),
-                        StateObservation {
-                            symbol_id: symbol.id.clone(),
-                            state: SemanticSymbolState::Error,
-                            reference_locations: 0,
-                            definitions_resolved: 0,
-                            last_error: Some(error.to_string()),
-                        },
-                    );
-                    continue;
-                }
-            };
+            let references =
+                match server.references(&uri, &document_symbol.selection_range.start, false) {
+                    Ok(references) => references,
+                    Err(error) if fatal_lsp_error(&error) => {
+                        close_documents(server, &open_documents);
+                        return Ok(ProviderResult::Failed(failed_server_run(
+                            kind,
+                            &output.run,
+                            error,
+                        )));
+                    }
+                    Err(error) => {
+                        output.run.errors += 1;
+                        remember_error(&mut output.run.error, error.to_string());
+                        output.states.insert(
+                            symbol.id.clone(),
+                            StateObservation {
+                                symbol_id: symbol.id.clone(),
+                                state: SemanticSymbolState::Error,
+                                reference_locations: 0,
+                                definitions_resolved: 0,
+                                last_error: Some(error.to_string()),
+                            },
+                        );
+                        continue;
+                    }
+                };
             let references: Vec<LspLocation> = references
                 .into_iter()
                 .take(limits.max_references_per_symbol)
@@ -592,7 +589,8 @@ fn process_provider(
                     reference,
                     &mut snapshots,
                     &mut open_documents,
-                )? else {
+                )?
+                else {
                     continue;
                 };
                 let occurrence_range = match range_to_source(&occurrence.text, &reference.range) {
@@ -626,10 +624,12 @@ fn process_provider(
                         &definition,
                         &mut snapshots,
                         &mut open_documents,
-                    )? else {
+                    )?
+                    else {
                         continue;
                     };
-                    let Some(target_range) = range_to_source(&target.text, &definition.range) else {
+                    let Some(target_range) = range_to_source(&target.text, &definition.range)
+                    else {
                         continue;
                     };
                     local_definitions += 1;
@@ -755,7 +755,8 @@ fn process_import_references(
                 &definition,
                 snapshots,
                 open_documents,
-            )? else {
+            )?
+            else {
                 continue;
             };
             if target.file.id == snapshot.file.id {
@@ -912,8 +913,8 @@ fn load_provider_files(
         LanguageServerKind::RustAnalyzer => "language = 'Rust'",
     };
     let sql = format!(
-        "SELECT id, relative_path, COALESCE(language, ''), content_hash\
-         FROM files WHERE project_id = ?1 AND is_active = 1 AND {language_clause}\
+        "SELECT id, relative_path, COALESCE(language, ''), content_hash \
+         FROM files WHERE project_id = ?1 AND is_active = 1 AND {language_clause} \
          ORDER BY relative_path LIMIT ?2"
     );
     let mut statement = connection.prepare(&sql)?;
@@ -938,8 +939,8 @@ fn load_symbols_for_file(
     limit: usize,
 ) -> Result<Vec<ActiveSymbol>, rusqlite::Error> {
     let mut statement = connection.prepare(
-        "SELECT id, file_id, name, start_line, start_column, end_line, end_column\
-         FROM symbols WHERE file_id = ?1 AND is_active = 1\
+        "SELECT id, file_id, name, start_line, start_column, end_line, end_column \
+         FROM symbols WHERE file_id = ?1 AND is_active = 1 \
          ORDER BY start_line, start_column, end_line, end_column, name LIMIT ?2",
     )?;
     let rows = statement.query_map(params![file_id, to_i64(limit)], |row| {
@@ -966,8 +967,8 @@ fn load_unresolved_imports(
     limit: usize,
 ) -> Result<Vec<ImportReference>, rusqlite::Error> {
     let mut statement = connection.prepare(
-        "SELECT id, start_line, start_column FROM import_references\
-         WHERE source_file_id = ?1 AND resolution_state <> 'resolved_local'\
+        "SELECT id, start_line, start_column FROM import_references \
+         WHERE source_file_id = ?1 AND resolution_state <> 'resolved_local' \
          ORDER BY start_line, start_column, id LIMIT ?2",
     )?;
     let rows = statement.query_map(params![file_id, to_i64(limit)], |row| {
@@ -1061,7 +1062,7 @@ fn location_snapshot(
     };
     let file = connection
         .query_row(
-            "SELECT id, relative_path, COALESCE(language, ''), content_hash FROM files\
+            "SELECT id, relative_path, COALESCE(language, ''), content_hash FROM files \
              WHERE project_id = ?1 AND is_active = 1 AND relative_path_identity = ?2 LIMIT 1",
             params![project.id, identity],
             |row| {
@@ -1095,7 +1096,11 @@ fn location_snapshot(
     };
     if !open_documents.contains(&location.uri) {
         let opened_uri = server
-            .open_document(&snapshot.absolute_path, &snapshot.file.language, &snapshot.text)
+            .open_document(
+                &snapshot.absolute_path,
+                &snapshot.file.language,
+                &snapshot.text,
+            )
             .map_err(lsp_as_io)?;
         open_documents.insert(opened_uri);
     }
@@ -1131,11 +1136,8 @@ fn map_position_to_symbol(
         if cache.len() >= MAX_SNAPSHOT_CACHE_FILES {
             return Ok(None);
         }
-        let symbols = load_symbols_for_file(
-            connection,
-            &snapshot.file.id,
-            MAX_SYMBOLS_PER_MAPPING_FILE,
-        )?;
+        let symbols =
+            load_symbols_for_file(connection, &snapshot.file.id, MAX_SYMBOLS_PER_MAPPING_FILE)?;
         cache.insert(snapshot.file.id.clone(), symbols);
     }
     let Some((line, column)) = lsp_position_to_source(&snapshot.text, position) else {
@@ -1245,28 +1247,28 @@ fn invalidate_semantics_for_file(
     file_id: &str,
 ) -> Result<(), rusqlite::Error> {
     connection.execute(
-        "UPDATE graph_edges SET is_active = 0, updated_at = CURRENT_TIMESTAMP\
-         WHERE id IN (\
-           SELECT graph_edge_id FROM semantic_relations\
-           WHERE graph_edge_id IS NOT NULL AND (occurrence_file_id = ?1 OR target_file_id = ?1)\
-           UNION\
-           SELECT graph_edge_id FROM semantic_import_resolutions\
-           WHERE graph_edge_id IS NOT NULL AND (source_file_id = ?1 OR target_file_id = ?1)\
+        "UPDATE graph_edges SET is_active = 0, updated_at = CURRENT_TIMESTAMP \
+         WHERE id IN ( \
+           SELECT graph_edge_id FROM semantic_relations \
+           WHERE graph_edge_id IS NOT NULL AND (occurrence_file_id = ?1 OR target_file_id = ?1) \
+           UNION \
+           SELECT graph_edge_id FROM semantic_import_resolutions \
+           WHERE graph_edge_id IS NOT NULL AND (source_file_id = ?1 OR target_file_id = ?1) \
          )",
         [file_id],
     )?;
     connection.execute(
-        "UPDATE semantic_relations SET is_active = 0, updated_at = CURRENT_TIMESTAMP\
+        "UPDATE semantic_relations SET is_active = 0, updated_at = CURRENT_TIMESTAMP \
          WHERE occurrence_file_id = ?1 OR target_file_id = ?1",
         [file_id],
     )?;
     connection.execute(
-        "UPDATE semantic_import_resolutions SET is_active = 0, updated_at = CURRENT_TIMESTAMP\
+        "UPDATE semantic_import_resolutions SET is_active = 0, updated_at = CURRENT_TIMESTAMP \
          WHERE source_file_id = ?1 OR target_file_id = ?1",
         [file_id],
     )?;
     connection.execute(
-        "UPDATE semantic_symbol_states SET state = 'stale', updated_at = CURRENT_TIMESTAMP\
+        "UPDATE semantic_symbol_states SET state = 'stale', updated_at = CURRENT_TIMESTAMP \
          WHERE symbol_id IN (SELECT id FROM symbols WHERE file_id = ?1)",
         [file_id],
     )?;
@@ -1290,18 +1292,18 @@ fn persist_provider_outputs(
         let provider = output.run.kind.as_str();
         for state in output.states.values() {
             transaction.execute(
-                "UPDATE semantic_relations SET is_active = 0, updated_at = CURRENT_TIMESTAMP\
+                "UPDATE semantic_relations SET is_active = 0, updated_at = CURRENT_TIMESTAMP \
                  WHERE provider_kind = ?1 AND subject_symbol_id = ?2",
                 params![provider, state.symbol_id],
             )?;
             transaction.execute(
-                "INSERT INTO semantic_symbol_states(\
-                   symbol_id, project_id, run_id, provider_kind, state, reference_locations, definitions_resolved, last_error, updated_at\
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, CURRENT_TIMESTAMP)\
-                 ON CONFLICT(symbol_id) DO UPDATE SET\
-                   project_id = excluded.project_id, run_id = excluded.run_id, provider_kind = excluded.provider_kind,\
-                   state = excluded.state, reference_locations = excluded.reference_locations,\
-                   definitions_resolved = excluded.definitions_resolved, last_error = excluded.last_error,\
+                "INSERT INTO semantic_symbol_states( \
+                   symbol_id, project_id, run_id, provider_kind, state, reference_locations, definitions_resolved, last_error, updated_at \
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, CURRENT_TIMESTAMP) \
+                 ON CONFLICT(symbol_id) DO UPDATE SET \
+                   project_id = excluded.project_id, run_id = excluded.run_id, provider_kind = excluded.provider_kind, \
+                   state = excluded.state, reference_locations = excluded.reference_locations, \
+                   definitions_resolved = excluded.definitions_resolved, last_error = excluded.last_error, \
                    updated_at = CURRENT_TIMESTAMP",
                 params![
                     state.symbol_id,
@@ -1317,27 +1319,27 @@ fn persist_provider_outputs(
         }
         for import_id in &output.processed_import_ids {
             transaction.execute(
-                "UPDATE semantic_import_resolutions SET is_active = 0, updated_at = CURRENT_TIMESTAMP\
+                "UPDATE semantic_import_resolutions SET is_active = 0, updated_at = CURRENT_TIMESTAMP \
                  WHERE provider_kind = ?1 AND import_reference_id = ?2",
                 params![provider, import_id],
             )?;
         }
         for relation in output.relations.values() {
             transaction.execute(
-                "INSERT INTO semantic_relations(\
-                   id, project_id, run_id, subject_symbol_id, occurrence_file_id, container_symbol_id, target_file_id, target_symbol_id,\
-                   relationship, occurrence_start_line, occurrence_start_column, occurrence_end_line, occurrence_end_column,\
-                   target_start_line, target_start_column, target_end_line, target_end_column, provider_kind, server_name, server_version,\
-                   occurrence_content_hash, target_content_hash, graph_edge_id, created_at, updated_at, is_active\
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'reference_definition', ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
-                 ON CONFLICT(\
-                   project_id, relationship, occurrence_file_id, occurrence_start_line, occurrence_start_column, occurrence_end_line, occurrence_end_column,\
-                   target_file_id, target_start_line, target_start_column, target_end_line, target_end_column\
-                 ) DO UPDATE SET\
-                   id = excluded.id, run_id = excluded.run_id, subject_symbol_id = excluded.subject_symbol_id,\
-                   container_symbol_id = excluded.container_symbol_id, target_symbol_id = excluded.target_symbol_id,\
-                   provider_kind = excluded.provider_kind, server_name = excluded.server_name, server_version = excluded.server_version,\
-                   occurrence_content_hash = excluded.occurrence_content_hash, target_content_hash = excluded.target_content_hash,\
+                "INSERT INTO semantic_relations( \
+                   id, project_id, run_id, subject_symbol_id, occurrence_file_id, container_symbol_id, target_file_id, target_symbol_id, \
+                   relationship, occurrence_start_line, occurrence_start_column, occurrence_end_line, occurrence_end_column, \
+                   target_start_line, target_start_column, target_end_line, target_end_column, provider_kind, server_name, server_version, \
+                   occurrence_content_hash, target_content_hash, graph_edge_id, created_at, updated_at, is_active \
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'reference_definition', ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) \
+                 ON CONFLICT( \
+                   project_id, relationship, occurrence_file_id, occurrence_start_line, occurrence_start_column, occurrence_end_line, occurrence_end_column, \
+                   target_file_id, target_start_line, target_start_column, target_end_line, target_end_column \
+                 ) DO UPDATE SET \
+                   id = excluded.id, run_id = excluded.run_id, subject_symbol_id = excluded.subject_symbol_id, \
+                   container_symbol_id = excluded.container_symbol_id, target_symbol_id = excluded.target_symbol_id, \
+                   provider_kind = excluded.provider_kind, server_name = excluded.server_name, server_version = excluded.server_version, \
+                   occurrence_content_hash = excluded.occurrence_content_hash, target_content_hash = excluded.target_content_hash, \
                    graph_edge_id = NULL, updated_at = CURRENT_TIMESTAMP, is_active = 1",
                 params![
                     relation.id,
@@ -1366,16 +1368,16 @@ fn persist_provider_outputs(
         }
         for import in output.imports.values() {
             transaction.execute(
-                "INSERT INTO semantic_import_resolutions(\
-                   id, project_id, run_id, import_reference_id, source_file_id, target_file_id, provider_kind,\
-                   target_start_line, target_start_column, target_end_line, target_end_column, source_content_hash, target_content_hash,\
-                   graph_edge_id, created_at, updated_at, is_active\
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
-                 ON CONFLICT(import_reference_id, target_file_id) DO UPDATE SET\
-                   id = excluded.id, run_id = excluded.run_id, provider_kind = excluded.provider_kind,\
-                   target_start_line = excluded.target_start_line, target_start_column = excluded.target_start_column,\
-                   target_end_line = excluded.target_end_line, target_end_column = excluded.target_end_column,\
-                   source_content_hash = excluded.source_content_hash, target_content_hash = excluded.target_content_hash,\
+                "INSERT INTO semantic_import_resolutions( \
+                   id, project_id, run_id, import_reference_id, source_file_id, target_file_id, provider_kind, \
+                   target_start_line, target_start_column, target_end_line, target_end_column, source_content_hash, target_content_hash, \
+                   graph_edge_id, created_at, updated_at, is_active \
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) \
+                 ON CONFLICT(import_reference_id, target_file_id) DO UPDATE SET \
+                   id = excluded.id, run_id = excluded.run_id, provider_kind = excluded.provider_kind, \
+                   target_start_line = excluded.target_start_line, target_start_column = excluded.target_start_column, \
+                   target_end_line = excluded.target_end_line, target_end_column = excluded.target_end_column, \
+                   source_content_hash = excluded.source_content_hash, target_content_hash = excluded.target_content_hash, \
                    graph_edge_id = NULL, updated_at = CURRENT_TIMESTAMP, is_active = 1",
                 params![
                     import.id,
@@ -1413,7 +1415,7 @@ fn materialize_semantic_graph(
     run_id: &str,
 ) -> Result<GraphCounts, rusqlite::Error> {
     connection.execute(
-        "UPDATE graph_edges SET is_active = 0, updated_at = CURRENT_TIMESTAMP\
+        "UPDATE graph_edges SET is_active = 0, updated_at = CURRENT_TIMESTAMP \
          WHERE project_id = ?1 AND relationship IN ('SYMBOL_REFERENCES_SYMBOL','FILE_IMPORTS_FILE_LSP')",
         [project_id],
     )?;
@@ -1428,19 +1430,19 @@ fn materialize_semantic_graph(
 
     let mut relation_groups = BTreeMap::<(String, String), EdgeGroup>::new();
     let mut statement = connection.prepare(
-        "SELECT r.id, source_node.id, target_node.id, r.provider_kind\
-         FROM semantic_relations r\
-         JOIN files occurrence_file ON occurrence_file.id = r.occurrence_file_id\
-         JOIN files target_file ON target_file.id = r.target_file_id\
-         JOIN symbols source_symbol ON source_symbol.id = r.container_symbol_id\
-         JOIN symbols target_symbol ON target_symbol.id = r.target_symbol_id\
-         JOIN graph_nodes source_node ON source_node.project_id = r.project_id AND source_node.node_type = 'SYMBOL' AND source_node.external_key = source_symbol.id\
-         JOIN graph_nodes target_node ON target_node.project_id = r.project_id AND target_node.node_type = 'SYMBOL' AND target_node.external_key = target_symbol.id\
-         WHERE r.project_id = ?1 AND r.is_active = 1\
-           AND occurrence_file.is_active = 1 AND target_file.is_active = 1\
-           AND source_symbol.is_active = 1 AND target_symbol.is_active = 1\
-           AND source_node.is_active = 1 AND target_node.is_active = 1\
-           AND occurrence_file.content_hash = r.occurrence_content_hash\
+        "SELECT r.id, source_node.id, target_node.id, r.provider_kind \
+         FROM semantic_relations r \
+         JOIN files occurrence_file ON occurrence_file.id = r.occurrence_file_id \
+         JOIN files target_file ON target_file.id = r.target_file_id \
+         JOIN symbols source_symbol ON source_symbol.id = r.container_symbol_id \
+         JOIN symbols target_symbol ON target_symbol.id = r.target_symbol_id \
+         JOIN graph_nodes source_node ON source_node.project_id = r.project_id AND source_node.node_type = 'SYMBOL' AND source_node.external_key = source_symbol.id \
+         JOIN graph_nodes target_node ON target_node.project_id = r.project_id AND target_node.node_type = 'SYMBOL' AND target_node.external_key = target_symbol.id \
+         WHERE r.project_id = ?1 AND r.is_active = 1 \
+           AND occurrence_file.is_active = 1 AND target_file.is_active = 1 \
+           AND source_symbol.is_active = 1 AND target_symbol.is_active = 1 \
+           AND source_node.is_active = 1 AND target_node.is_active = 1 \
+           AND occurrence_file.content_hash = r.occurrence_content_hash \
            AND target_file.content_hash = r.target_content_hash",
     )?;
     let rows = statement.query_map([project_id], |row| {
@@ -1495,16 +1497,16 @@ fn materialize_semantic_graph(
 
     let mut import_groups = BTreeMap::<(String, String), EdgeGroup>::new();
     let mut statement = connection.prepare(
-        "SELECT r.id, source_node.id, target_node.id, r.provider_kind\
-         FROM semantic_import_resolutions r\
-         JOIN files source_file ON source_file.id = r.source_file_id\
-         JOIN files target_file ON target_file.id = r.target_file_id\
-         JOIN graph_nodes source_node ON source_node.project_id = r.project_id AND source_node.node_type = 'FILE' AND source_node.external_key = source_file.id\
-         JOIN graph_nodes target_node ON target_node.project_id = r.project_id AND target_node.node_type = 'FILE' AND target_node.external_key = target_file.id\
-         WHERE r.project_id = ?1 AND r.is_active = 1\
-           AND source_file.is_active = 1 AND target_file.is_active = 1\
-           AND source_node.is_active = 1 AND target_node.is_active = 1\
-           AND source_file.content_hash = r.source_content_hash\
+        "SELECT r.id, source_node.id, target_node.id, r.provider_kind \
+         FROM semantic_import_resolutions r \
+         JOIN files source_file ON source_file.id = r.source_file_id \
+         JOIN files target_file ON target_file.id = r.target_file_id \
+         JOIN graph_nodes source_node ON source_node.project_id = r.project_id AND source_node.node_type = 'FILE' AND source_node.external_key = source_file.id \
+         JOIN graph_nodes target_node ON target_node.project_id = r.project_id AND target_node.node_type = 'FILE' AND target_node.external_key = target_file.id \
+         WHERE r.project_id = ?1 AND r.is_active = 1 \
+           AND source_file.is_active = 1 AND target_file.is_active = 1 \
+           AND source_node.is_active = 1 AND target_node.is_active = 1 \
+           AND source_file.content_hash = r.source_content_hash \
            AND target_file.content_hash = r.target_content_hash",
     )?;
     let rows = statement.query_map([project_id], |row| {
@@ -1568,11 +1570,11 @@ fn upsert_semantic_edge(
     run_id: &str,
 ) -> Result<(), rusqlite::Error> {
     connection.execute(
-        "INSERT INTO graph_edges(\
-           id, project_id, source_node_id, target_node_id, relationship, metadata_json, last_index_run_id, created_at, updated_at, is_active\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
-         ON CONFLICT(project_id, source_node_id, target_node_id, relationship) DO UPDATE SET\
-           metadata_json = excluded.metadata_json, last_index_run_id = excluded.last_index_run_id,\
+        "INSERT INTO graph_edges( \
+           id, project_id, source_node_id, target_node_id, relationship, metadata_json, last_index_run_id, created_at, updated_at, is_active \
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) \
+         ON CONFLICT(project_id, source_node_id, target_node_id, relationship) DO UPDATE SET \
+           metadata_json = excluded.metadata_json, last_index_run_id = excluded.last_index_run_id, \
            updated_at = CURRENT_TIMESTAMP, is_active = 1",
         params![
             edge_id,
@@ -1618,15 +1620,15 @@ fn persist_run_metrics(
     summary: &SemanticRunSummary,
 ) -> Result<(), rusqlite::Error> {
     connection.execute(
-        "INSERT INTO semantic_run_metrics(\
-           run_id, files_processed, symbols_processed, symbols_matched, reference_locations, definitions_resolved,\
-           relations_persisted, graph_edges_materialized, imports_upgraded, errors\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)\
-         ON CONFLICT(run_id) DO UPDATE SET\
-           files_processed = excluded.files_processed, symbols_processed = excluded.symbols_processed,\
-           symbols_matched = excluded.symbols_matched, reference_locations = excluded.reference_locations,\
-           definitions_resolved = excluded.definitions_resolved, relations_persisted = excluded.relations_persisted,\
-           graph_edges_materialized = excluded.graph_edges_materialized, imports_upgraded = excluded.imports_upgraded,\
+        "INSERT INTO semantic_run_metrics( \
+           run_id, files_processed, symbols_processed, symbols_matched, reference_locations, definitions_resolved, \
+           relations_persisted, graph_edges_materialized, imports_upgraded, errors \
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+         ON CONFLICT(run_id) DO UPDATE SET \
+           files_processed = excluded.files_processed, symbols_processed = excluded.symbols_processed, \
+           symbols_matched = excluded.symbols_matched, reference_locations = excluded.reference_locations, \
+           definitions_resolved = excluded.definitions_resolved, relations_persisted = excluded.relations_persisted, \
+           graph_edges_materialized = excluded.graph_edges_materialized, imports_upgraded = excluded.imports_upgraded, \
            errors = excluded.errors",
         params![
             summary.run_id,
@@ -1716,8 +1718,7 @@ mod tests {
     use lsp_enrichment::{LanguageServerKind, LspPosition, LspRange};
 
     use super::{
-        byte_position_to_lsp, range_to_source, selected_kinds, utf16_column_to_byte,
-        ActiveSymbol,
+        byte_position_to_lsp, range_to_source, selected_kinds, utf16_column_to_byte, ActiveSymbol,
     };
 
     #[test]

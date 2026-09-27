@@ -237,9 +237,8 @@ fn copy_snapshotted_inputs(
 ) -> Result<Vec<DetachedWorkspaceFile>, WorkspaceError> {
     let mut files = Vec::with_capacity(snapshots.len());
     for snapshot in snapshots {
-        crate::validate_target(&snapshot.relative_path).map_err(|_| {
-            WorkspaceError::SnapshotVerification(snapshot.relative_path.clone())
-        })?;
+        crate::validate_target(&snapshot.relative_path)
+            .map_err(|_| WorkspaceError::SnapshotVerification(snapshot.relative_path.clone()))?;
         let source = source_root.join(&snapshot.relative_path);
         let source_metadata = fs::symlink_metadata(&source)?;
         if source_metadata.file_type().is_symlink() || !source_metadata.is_file() {
@@ -290,10 +289,7 @@ pub(crate) fn create_unique_workspace(parent: &Path) -> Result<PathBuf, Workspac
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
-        let name = format!(
-            "{WORKSPACE_PREFIX}{}-{nanos}-{attempt}",
-            std::process::id()
-        );
+        let name = format!("{WORKSPACE_PREFIX}{}-{nanos}-{attempt}", std::process::id());
         let candidate = parent.join(name);
         match fs::create_dir(&candidate) {
             Ok(()) => return Ok(candidate),
@@ -307,10 +303,7 @@ pub(crate) fn create_unique_workspace(parent: &Path) -> Result<PathBuf, Workspac
     )))
 }
 
-pub(crate) fn canonical_directory(
-    path: &Path,
-    source: bool,
-) -> Result<PathBuf, WorkspaceError> {
+pub(crate) fn canonical_directory(path: &Path, source: bool) -> Result<PathBuf, WorkspaceError> {
     let canonical = fs::canonicalize(path).map_err(|error| {
         if source {
             WorkspaceError::InvalidSourceRoot(format!("{}: {error}", path.display()))
@@ -322,7 +315,9 @@ pub(crate) fn canonical_directory(
         return if source {
             Err(WorkspaceError::InvalidSourceRoot(path_text(&canonical)))
         } else {
-            Err(WorkspaceError::InvalidWorkspaceParent(path_text(&canonical)))
+            Err(WorkspaceError::InvalidWorkspaceParent(path_text(
+                &canonical,
+            )))
         };
     }
     Ok(canonical)
@@ -384,8 +379,11 @@ mod tests {
         let source = temp_directory("workspace-source");
         let parent = temp_directory("workspace-parent");
         fs::create_dir_all(source.join("tests")).expect("tests");
-        fs::write(source.join("tests/test_api.py"), "def test_ok():\n    assert True\n")
-            .expect("source");
+        fs::write(
+            source.join("tests/test_api.py"),
+            "def test_ok():\n    assert True\n",
+        )
+        .expect("source");
         let targets = vec!["tests/test_api.py".to_string()];
         let snapshots = snapshot_execution_inputs(&source, &targets).expect("snapshots");
         let workspace =
@@ -396,7 +394,10 @@ mod tests {
         assert!(workspace.project_manifest_sha256.is_none());
         verify_detached_workspace(&workspace).expect("verify");
         let staged = std::path::Path::new(&workspace.inputs_path).join("tests/test_api.py");
-        assert!(fs::metadata(staged).expect("metadata").permissions().readonly());
+        assert!(fs::metadata(staged)
+            .expect("metadata")
+            .permissions()
+            .readonly());
         cleanup_detached_workspace(&workspace).expect("cleanup");
         let _ = fs::remove_dir_all(source);
         let _ = fs::remove_dir_all(parent);

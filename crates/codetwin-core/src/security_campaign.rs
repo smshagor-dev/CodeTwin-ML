@@ -206,6 +206,7 @@ pub struct SecurityRemediationDebtView {
 struct AnalysisNode {
     finding_id: String,
     severity: String,
+    #[allow(dead_code)] // kept for Debug output of analysis nodes
     confidence: String,
     category: String,
     endpoint_url: String,
@@ -302,19 +303,25 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 "SELECT project_id,target_url,status,scope_json,authorization_confirmed
                  FROM web_security_scans WHERE id=?1",
                 [&scan_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()?;
         let (scan_project_id, target_url, scan_status, scope_json, scan_authorized) = scan
             .ok_or_else(|| {
-                SecurityRemediationCampaignError::Scope(
-                    "campaign scan no longer exists".into(),
-                )
+                SecurityRemediationCampaignError::Scope("campaign scan no longer exists".into())
             })?;
         if scan_authorized != 1
             || scan_status != "completed"
             || scan_project_id.as_deref() != Some(project_id.as_str())
-            || target_url != session_target
+            || !same_target_url(&target_url, &session_target)
         {
             return Err(SecurityRemediationCampaignError::Scope(
                 "campaign session, project, target and completed scan must match exactly".into(),
@@ -515,7 +522,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             }
         }
 
-        nodes.sort_by(|left, right| priority(left).cmp(&priority(right)));
+        nodes.sort_by_key(priority);
         let position = nodes
             .iter()
             .enumerate()
@@ -645,9 +652,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                     order_reason: order_reason(node, &depends_on, &expected),
                     depends_on,
                     expected_affected: expected,
-                    shared_root_primary_finding_id: shared_primary
-                        .get(&node.finding_id)
-                        .cloned(),
+                    shared_root_primary_finding_id: shared_primary.get(&node.finding_id).cloned(),
                 }
             })
             .collect::<Vec<_>>();
@@ -700,6 +705,15 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 ],
             )?;
         }
+        // UNIQUE(campaign_id, ordinal) is checked per row, so reordering in place
+        // (e.g. swapping 1 and 2) would collide. Park the current ordinals in a
+        // disjoint range first; CHECK(ordinal >= 1) rules out negative values.
+        tx.execute(
+            "UPDATE security_remediation_campaign_findings
+             SET ordinal=ordinal+1000000
+             WHERE campaign_id=?1",
+            params![campaign_id],
+        )?;
         for item in &plan_items {
             let node = nodes
                 .iter()
@@ -769,7 +783,9 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         self.assert_plan_integrity(&campaign)?;
         if expected_plan_hash != plan_hash
             || expected_plan_hash.len() != 64
-            || !expected_plan_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || !expected_plan_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
         {
             return Err(SecurityRemediationCampaignError::State(
                 "campaign plan changed since review".into(),
@@ -880,7 +896,8 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             let Some(attempt) = fix.get_attempt(attempt_id)? else {
                 continue;
             };
-            if attempt.status == "approved" && fix.assert_application_allowed(&attempt.id).is_err() {
+            if attempt.status == "approved" && fix.assert_application_allowed(&attempt.id).is_err()
+            {
                 stale_attempts.push(attempt.id);
                 self.set_finding_state(campaign_id, &finding.finding_id, "BLOCKED")?;
             }
@@ -1070,10 +1087,8 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             for dependency_id in &finding.depends_on {
                 let dependency = self.require_finding(campaign_id, dependency_id)?;
                 if dependency.status != "VERIFIED" {
-                    unsatisfied_dependencies.push((
-                        dependency.finding_id.clone(),
-                        dependency.status.clone(),
-                    ));
+                    unsatisfied_dependencies
+                        .push((dependency.finding_id.clone(), dependency.status.clone()));
                 }
             }
             if !unsatisfied_dependencies.is_empty() {
@@ -1116,10 +1131,8 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 .iter()
                 .filter_map(|dependency_id| {
                     let dependency = evidence_map.get(dependency_id)?;
-                    (dependency.status != "VERIFIED").then_some((
-                        dependency.finding_id.clone(),
-                        dependency.status.clone(),
-                    ))
+                    (dependency.status != "VERIFIED")
+                        .then_some((dependency.finding_id.clone(), dependency.status.clone()))
                 })
                 .collect::<Vec<_>>();
             if !unsatisfied_dependencies.is_empty() && finding.status != "BLOCKED" {
@@ -1214,10 +1227,8 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 "begin final campaign verification before recording completion evidence".into(),
             ));
         }
-        let missing = self.completion_retest_missing(
-            campaign_id,
-            campaign.completion_retest_floor_rowid,
-        )?;
+        let missing =
+            self.completion_retest_missing(campaign_id, campaign.completion_retest_floor_rowid)?;
         if !missing.is_empty() {
             return Err(SecurityRemediationCampaignError::State(format!(
                 "final campaign verification is incomplete; {} selected finding(s) have no fresh persisted targeted retest evidence: {}",
@@ -1268,13 +1279,12 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 "campaign completion requires a fresh bounded verification pass covering every selected finding".into(),
             ));
         }
-        let missing = self.completion_retest_missing(
-            campaign_id,
-            campaign.completion_retest_floor_rowid,
-        )?;
+        let missing =
+            self.completion_retest_missing(campaign_id, campaign.completion_retest_floor_rowid)?;
         if !missing.is_empty() {
             return Err(SecurityRemediationCampaignError::State(
-                "campaign completion verification evidence is incomplete or no longer available".into(),
+                "campaign completion verification evidence is incomplete or no longer available"
+                    .into(),
             ));
         }
         let persisted_hashes: BTreeMap<String, String> =
@@ -1383,7 +1393,8 @@ impl<'a> SecurityRemediationCampaignService<'a> {
     pub fn findings(
         &self,
         campaign_id: &str,
-    ) -> Result<Vec<SecurityRemediationCampaignFindingRecord>, SecurityRemediationCampaignError> {
+    ) -> Result<Vec<SecurityRemediationCampaignFindingRecord>, SecurityRemediationCampaignError>
+    {
         let mut statement = self.database.connection().prepare(
             "SELECT campaign_id,finding_id,ordinal,status,eligibility,severity,confidence,category,
                     endpoint_url,source_file_id,source_symbol_id,root_file_id,root_symbol_id,
@@ -1394,8 +1405,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
              WHERE campaign_id=?1 ORDER BY ordinal",
         )?;
         let rows = statement.query_map([campaign_id], map_campaign_finding)?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn relationships(
@@ -1420,8 +1430,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 created_at: row.get(7)?,
             })
         })?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn events(
@@ -1448,8 +1457,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 })
             },
         )?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn summary(
@@ -1717,10 +1725,8 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 .iter()
                 .filter_map(|dependency_id| {
                     let dependency = by_id.get(dependency_id)?;
-                    (dependency.status != "VERIFIED").then_some(format!(
-                        "{}:{}",
-                        dependency.finding_id, dependency.status
-                    ))
+                    (dependency.status != "VERIFIED")
+                        .then_some(format!("{}:{}", dependency.finding_id, dependency.status))
                 })
                 .collect::<Vec<_>>();
             if !unsatisfied.is_empty() {
@@ -1760,7 +1766,9 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 attempt_id: None,
                 allowed: false,
                 blocking_findings: Vec::new(),
-                reason: "No campaign-linked applied Fix & Verify attempt is available to roll back.".into(),
+                reason:
+                    "No campaign-linked applied Fix & Verify attempt is available to roll back."
+                        .into(),
             });
         };
         let fix = SecurityFixService::new(self.database);
@@ -1786,15 +1794,19 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         let all = self.findings(campaign_id)?;
         let mut blocking = Vec::new();
         for dependent in all {
-            if dependent.finding_id == finding_id || !dependent.depends_on.iter().any(|id| id == finding_id) {
+            if dependent.finding_id == finding_id
+                || !dependent.depends_on.iter().any(|id| id == finding_id)
+            {
                 continue;
             }
-            let dependent_applied = if let Some(dependent_attempt_id) = dependent.active_attempt_id.as_deref() {
-                fix.get_attempt(dependent_attempt_id)?
-                    .is_some_and(|value| value.application_run_id.is_some() && value.status != "rolled_back")
-            } else {
-                false
-            };
+            let dependent_applied =
+                if let Some(dependent_attempt_id) = dependent.active_attempt_id.as_deref() {
+                    fix.get_attempt(dependent_attempt_id)?.is_some_and(|value| {
+                        value.application_run_id.is_some() && value.status != "rolled_back"
+                    })
+                } else {
+                    false
+                };
             if dependent_applied
                 || matches!(
                     dependent.status.as_str(),
@@ -1849,13 +1861,11 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         }
 
         let fix = SecurityFixService::new(self.database);
-        let attempt = fix
-            .get_attempt(expected_attempt_id)?
-            .ok_or_else(|| {
-                SecurityRemediationCampaignError::State(
-                    "campaign-linked Fix & Verify attempt no longer exists".into(),
-                )
-            })?;
+        let attempt = fix.get_attempt(expected_attempt_id)?.ok_or_else(|| {
+            SecurityRemediationCampaignError::State(
+                "campaign-linked Fix & Verify attempt no longer exists".into(),
+            )
+        })?;
         if attempt.finding_id != finding_id {
             return Err(SecurityRemediationCampaignError::State(
                 "campaign rollback finding/attempt identity mismatch".into(),
@@ -1899,13 +1909,11 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             ));
         }
 
-        let refreshed_attempt = fix
-            .get_attempt(expected_attempt_id)?
-            .ok_or_else(|| {
-                SecurityRemediationCampaignError::State(
-                    "campaign-linked Fix & Verify attempt no longer exists".into(),
-                )
-            })?;
+        let refreshed_attempt = fix.get_attempt(expected_attempt_id)?.ok_or_else(|| {
+            SecurityRemediationCampaignError::State(
+                "campaign-linked Fix & Verify attempt no longer exists".into(),
+            )
+        })?;
         if refreshed_attempt.status == "rolled_back" {
             return Ok(expected_attempt_id.to_string());
         }
@@ -1964,13 +1972,9 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                     serde_json::from_str::<serde_json::Value>(&event.detail_json)
                         .ok()
                         .is_some_and(|detail| {
-                            detail
-                                .get("attempt_id")
-                                .and_then(serde_json::Value::as_str)
+                            detail.get("attempt_id").and_then(serde_json::Value::as_str)
                                 == Some(attempt_id)
-                                && detail
-                                    .get("finding_id")
-                                    .and_then(serde_json::Value::as_str)
+                                && detail.get("finding_id").and_then(serde_json::Value::as_str)
                                     == Some(finding_id.as_str())
                         })
                 });
@@ -1995,13 +1999,11 @@ impl<'a> SecurityRemediationCampaignService<'a> {
         attempt_id: &str,
     ) -> Result<Vec<(String, String)>, SecurityRemediationCampaignError> {
         let fix = SecurityFixService::new(self.database);
-        let attempt = fix
-            .get_attempt(attempt_id)?
-            .ok_or_else(|| {
-                SecurityRemediationCampaignError::State(
-                    "security fix attempt not found while resolving campaign membership".into(),
-                )
-            })?;
+        let attempt = fix.get_attempt(attempt_id)?.ok_or_else(|| {
+            SecurityRemediationCampaignError::State(
+                "security fix attempt not found while resolving campaign membership".into(),
+            )
+        })?;
         let mut statement = self.database.connection().prepare(
             "SELECT cf.campaign_id,cf.finding_id
              FROM security_remediation_campaign_findings cf
@@ -2019,12 +2021,9 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                )
              ORDER BY c.created_at,cf.ordinal,cf.campaign_id",
         )?;
-        let rows = statement.query_map(
-            params![attempt.finding_id, attempt_id],
-            |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            },
-        )?;
+        let rows = statement.query_map(params![attempt.finding_id, attempt_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -2112,22 +2111,25 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 "campaign event limit reached".into(),
             ));
         }
-        self.database.connection().query_row(
-            "SELECT id,campaign_id,sequence,event_type,message,detail_json,created_at
+        self.database
+            .connection()
+            .query_row(
+                "SELECT id,campaign_id,sequence,event_type,message,detail_json,created_at
              FROM security_remediation_campaign_events WHERE id=?1",
-            [&id],
-            |row| {
-                Ok(SecurityRemediationCampaignEventRecord {
-                    id: row.get(0)?,
-                    campaign_id: row.get(1)?,
-                    sequence: to_usize(row.get(2)?),
-                    event_type: row.get(3)?,
-                    message: row.get(4)?,
-                    detail_json: row.get(5)?,
-                    created_at: row.get(6)?,
-                })
-            },
-        ).map_err(Into::into)
+                [&id],
+                |row| {
+                    Ok(SecurityRemediationCampaignEventRecord {
+                        id: row.get(0)?,
+                        campaign_id: row.get(1)?,
+                        sequence: to_usize(row.get(2)?),
+                        event_type: row.get(3)?,
+                        message: row.get(4)?,
+                        detail_json: row.get(5)?,
+                        created_at: row.get(6)?,
+                    })
+                },
+            )
+            .map_err(Into::into)
     }
 
     fn analysis_nodes(
@@ -2236,8 +2238,9 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             return Ok(());
         }
 
-        let persisted =
-            serde_json::from_str::<BTreeMap<String, String>>(&campaign.completion_source_hashes_json);
+        let persisted = serde_json::from_str::<BTreeMap<String, String>>(
+            &campaign.completion_source_hashes_json,
+        );
         let stale = match persisted {
             Ok(persisted) => match self.completion_source_snapshot(campaign_id) {
                 Ok(current) => current != persisted,
@@ -2318,10 +2321,7 @@ impl<'a> SecurityRemediationCampaignService<'a> {
              ORDER BY rp.relative_path",
         )?;
         let rows = statement.query_map([campaign_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })?;
         let referenced = rows.collect::<Result<Vec<_>, _>>()?;
         drop(statement);
@@ -2434,10 +2434,25 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 "SELECT project_id,target_url,environment,scan_id,authorization_confirmed
                  FROM guided_security_sessions WHERE id=?1",
                 [&campaign.session_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()?;
-        let Some((session_project, session_target, session_environment, session_scan, session_authorized)) = session else {
+        let Some((
+            session_project,
+            session_target,
+            session_environment,
+            session_scan,
+            session_authorized,
+        )) = session
+        else {
             return Err(SecurityRemediationCampaignError::Scope(
                 "campaign guided security session no longer exists".into(),
             ));
@@ -2449,10 +2464,19 @@ impl<'a> SecurityRemediationCampaignService<'a> {
                 "SELECT project_id,target_url,status,scope_json,authorization_confirmed
                  FROM web_security_scans WHERE id=?1",
                 [&campaign.scan_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()?;
-        let Some((scan_project, scan_target, scan_status, scan_scope, scan_authorized)) = scan else {
+        let Some((scan_project, scan_target, scan_status, scan_scope, scan_authorized)) = scan
+        else {
             return Err(SecurityRemediationCampaignError::Scope(
                 "campaign security scan no longer exists".into(),
             ));
@@ -2462,14 +2486,15 @@ impl<'a> SecurityRemediationCampaignService<'a> {
             || scan_status != "completed"
             || session_project.as_deref() != Some(campaign.project_id.as_str())
             || scan_project.as_deref() != Some(campaign.project_id.as_str())
-            || session_target != campaign.target_url
-            || scan_target != campaign.target_url
+            || !same_target_url(&session_target, &campaign.target_url)
+            || !same_target_url(&scan_target, &campaign.target_url)
             || session_environment != campaign.environment
             || session_scan.as_deref() != Some(campaign.scan_id.as_str())
             || scan_scope != campaign.scope_json
         {
             return Err(SecurityRemediationCampaignError::Scope(
-                "campaign project, authorized target, environment, scan or scope binding changed".into(),
+                "campaign project, authorized target, environment, scan or scope binding changed"
+                    .into(),
             ));
         }
         Ok(())
@@ -2606,27 +2631,15 @@ fn map_campaign_finding(
 ) -> rusqlite::Result<SecurityRemediationCampaignFindingRecord> {
     let eligibility_text: String = row.get(4)?;
     let eligibility = FixEligibility::parse(&eligibility_text).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            4,
-            rusqlite::types::Type::Text,
-            Box::new(error),
-        )
+        rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(error))
     })?;
     let depends_on_json: String = row.get(15)?;
     let expected_json: String = row.get(16)?;
     let depends_on = serde_json::from_str(&depends_on_json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            15,
-            rusqlite::types::Type::Text,
-            Box::new(error),
-        )
+        rusqlite::Error::FromSqlConversionFailure(15, rusqlite::types::Type::Text, Box::new(error))
     })?;
     let expected_affected = serde_json::from_str(&expected_json).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            16,
-            rusqlite::types::Type::Text,
-            Box::new(error),
-        )
+        rusqlite::Error::FromSqlConversionFailure(16, rusqlite::types::Type::Text, Box::new(error))
     })?;
     Ok(SecurityRemediationCampaignFindingRecord {
         campaign_id: row.get(0)?,
@@ -2724,7 +2737,10 @@ fn shared_root_key(node: &AnalysisNode) -> Option<String> {
     {
         return Some(format!("symbol:{symbol_id}:{}", node.category));
     }
-    let file_id = node.root_file_id.as_ref().or(node.source_file_id.as_ref())?;
+    let file_id = node
+        .root_file_id
+        .as_ref()
+        .or(node.source_file_id.as_ref())?;
     let remediation = node
         .remediation
         .split_whitespace()
@@ -2845,11 +2861,8 @@ fn random_id(
     connection: &rusqlite::Connection,
     prefix: &str,
 ) -> Result<String, SecurityRemediationCampaignError> {
-    let random: String = connection.query_row(
-        "SELECT lower(hex(randomblob(16)))",
-        [],
-        |row| row.get(0),
-    )?;
+    let random: String =
+        connection.query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))?;
     Ok(format!("{prefix}_{random}"))
 }
 
@@ -2859,6 +2872,19 @@ fn to_i64(value: usize) -> i64 {
 
 fn to_usize(value: i64) -> usize {
     usize::try_from(value).unwrap_or_default()
+}
+
+/// Compares authorized targets as URLs, as guided security does: scans store the
+/// normalized form (`http://host:3000/`) while sessions may store the raw input.
+/// Unparseable targets never match.
+fn same_target_url(left: &str, right: &str) -> bool {
+    let normalize = |raw: &str| {
+        url::Url::parse(raw.trim()).ok().map(|mut url| {
+            url.set_fragment(None);
+            url.to_string()
+        })
+    };
+    matches!((normalize(left), normalize(right)), (Some(left), Some(right)) if left == right)
 }
 
 #[cfg(test)]
@@ -3023,9 +3049,14 @@ mod tests {
         assert_eq!(approved.status, "APPROVED");
         let fix_attempts: i64 = database
             .connection()
-            .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM security_fix_attempts", [], |row| {
+                row.get(0)
+            })
             .expect("attempt count");
-        assert_eq!(fix_attempts, 0, "campaign approval cannot pre-authorize code patches");
+        assert_eq!(
+            fix_attempts, 0,
+            "campaign approval cannot pre-authorize code patches"
+        );
     }
 
     #[test]
@@ -3112,12 +3143,18 @@ mod tests {
                 })
                 .expect("create persistent campaign");
             campaign_id = campaign.id.clone();
-            let analyzed = service.analyze(&campaign.id).expect("analyze persistent campaign");
+            let analyzed = service
+                .analyze(&campaign.id)
+                .expect("analyze persistent campaign");
             service
                 .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("hash"))
                 .expect("approve persistent campaign");
-            service.start(&campaign.id).expect("start persistent campaign");
-            let paused = service.pause(&campaign.id).expect("pause persistent campaign");
+            service
+                .start(&campaign.id)
+                .expect("start persistent campaign");
+            let paused = service
+                .pause(&campaign.id)
+                .expect("pause persistent campaign");
             assert_eq!(paused.status, "PAUSED");
         }
 
@@ -3221,25 +3258,34 @@ mod tests {
             .expect("create");
         let analyzed = service.analyze(&campaign.id).expect("analyze");
         service
-            .approve_plan(&campaign.id, analyzed.plan_hash.as_deref().expect("plan hash"))
+            .approve_plan(
+                &campaign.id,
+                analyzed.plan_hash.as_deref().expect("plan hash"),
+            )
             .expect("approve");
 
-        assert!(database
-            .connection()
-            .execute(
-                "UPDATE security_remediation_campaign_findings
+        assert!(
+            database
+                .connection()
+                .execute(
+                    "UPDATE security_remediation_campaign_findings
                  SET ordinal=99 WHERE campaign_id=?1 AND finding_id=?2",
-                params![campaign.id, finding_a],
-            )
-            .is_err(), "approved finding order must be immutable");
-        assert!(database
-            .connection()
-            .execute(
-                "UPDATE security_remediation_campaigns
+                    params![campaign.id, finding_a],
+                )
+                .is_err(),
+            "approved finding order must be immutable"
+        );
+        assert!(
+            database
+                .connection()
+                .execute(
+                    "UPDATE security_remediation_campaigns
                  SET plan_json='{}' WHERE id=?1",
-                [&campaign.id],
-            )
-            .is_err(), "approved plan payload must be immutable");
+                    [&campaign.id],
+                )
+                .is_err(),
+            "approved plan payload must be immutable"
+        );
     }
 
     #[test]
@@ -3302,7 +3348,9 @@ mod tests {
                 params![finding_a, session_id],
             )
             .expect("post-campaign retest");
-        service.sync(&campaign.id).expect("sync post-campaign retest");
+        service
+            .sync(&campaign.id)
+            .expect("sync post-campaign retest");
         assert_eq!(
             service
                 .findings(&campaign.id)
@@ -3326,21 +3374,27 @@ mod tests {
             })
             .expect("create");
 
-        assert!(database
-            .connection()
-            .execute(
-                "UPDATE security_remediation_campaigns SET status='COMPLETED' WHERE id=?1",
-                [&campaign.id],
-            )
-            .is_err(), "draft campaign cannot jump directly to completed");
-        assert!(database
-            .connection()
-            .execute(
-                "UPDATE security_remediation_campaign_findings
+        assert!(
+            database
+                .connection()
+                .execute(
+                    "UPDATE security_remediation_campaigns SET status='COMPLETED' WHERE id=?1",
+                    [&campaign.id],
+                )
+                .is_err(),
+            "draft campaign cannot jump directly to completed"
+        );
+        assert!(
+            database
+                .connection()
+                .execute(
+                    "UPDATE security_remediation_campaign_findings
                  SET status='VERIFIED' WHERE campaign_id=?1 AND finding_id=?2",
-                params![campaign.id, finding_a],
-            )
-            .is_err(), "VERIFIED requires persisted post-campaign security evidence");
+                    params![campaign.id, finding_a],
+                )
+                .is_err(),
+            "VERIFIED requires persisted post-campaign security evidence"
+        );
 
         let event = service
             .events(&campaign.id, 20)
@@ -3348,22 +3402,28 @@ mod tests {
             .into_iter()
             .next()
             .expect("created event");
-        assert!(database
-            .connection()
-            .execute(
-                "INSERT INTO security_remediation_campaign_events(
+        assert!(
+            database
+                .connection()
+                .execute(
+                    "INSERT INTO security_remediation_campaign_events(
                     id,campaign_id,sequence,event_type,message,detail_json
                  ) VALUES ('duplicate-campaign-event',?1,?2,'duplicate','duplicate','{}')",
-                params![campaign.id, to_i64(event.sequence)],
-            )
-            .is_err(), "event sequence must be unique");
-        assert!(database
-            .connection()
-            .execute(
-                "DELETE FROM security_remediation_campaign_events WHERE id=?1",
-                [&event.id],
-            )
-            .is_err(), "campaign event history must be append-only");
+                    params![campaign.id, to_i64(event.sequence)],
+                )
+                .is_err(),
+            "event sequence must be unique"
+        );
+        assert!(
+            database
+                .connection()
+                .execute(
+                    "DELETE FROM security_remediation_campaign_events WHERE id=?1",
+                    [&event.id],
+                )
+                .is_err(),
+            "campaign event history must be append-only"
+        );
     }
 
     #[test]
@@ -3501,7 +3561,7 @@ mod tests {
         database
             .connection()
             .execute_batch(
-                "INSERT INTO web_security_scans(
+                r#"INSERT INTO web_security_scans(
                     id,project_id,target_url,status,phase,authorization_confirmed,
                     scope_json,config_json,auth_metadata_json
                  ) VALUES (
@@ -3556,7 +3616,7 @@ mod tests {
                     'security_headers','medium','Likely','http://127.0.0.1:33001',
                     'http://127.0.0.1:33001/failed','GET',
                     'Partial scan observation','fixture','fixture','fixture','fixture','[]'
-                 );",
+                 );"#,
             )
             .expect("verification window findings");
 
@@ -3580,7 +3640,10 @@ mod tests {
                 .iter()
                 .filter(|item| {
                     item.comparison_status == "NEWLY_OBSERVED_DURING_VERIFICATION"
-                        && item.title.to_ascii_lowercase().contains("header observation")
+                        && item
+                            .title
+                            .to_ascii_lowercase()
+                            .contains("header observation")
                 })
                 .count(),
             1,
@@ -3669,18 +3732,22 @@ mod tests {
                      ) VALUES (
                         ?1,?2,'campaign-session','campaign-project',?3,
                         'MANUAL_REMEDIATION','sql_injection','still_vulnerable',
-                        '[]','{}','{}','STILL_VULNERABLE'
+                        '[]',?4,?5,'STILL_VULNERABLE'
                      )",
                     params![
                         format!("campaign-limit-attempt-{attempt_number}"),
                         finding_a,
-                        attempt_number
+                        attempt_number,
+                        r#"{"category":"sql_injection","change_summary":"fixture","rationale":"fixture","likely_files":[],"expected_behavior":"fixture","compatibility_risks":[],"prohibited_shortcuts":[],"regression_test_suggestion":"fixture"}"#,
+                        r#"{"targeted":[],"full_suite_optional":false,"qa_execution_available":false,"qa_execution_reason":"fixture","security_retest":"fixture","regression_test_proposal":"fixture","regression_generation_status":"fixture","regression_generation_reason":"fixture"}"#
                     ],
                 )
                 .expect("persist unresolved fix attempt");
         }
 
-        service.sync(&campaign.id).expect("sync attempt-limit state");
+        service
+            .sync(&campaign.id)
+            .expect("sync attempt-limit state");
         assert_eq!(
             service
                 .findings(&campaign.id)
@@ -3730,7 +3797,9 @@ mod tests {
             })
             .expect("null-session retest");
 
-        service.sync(&campaign.id).expect("sync null-session evidence");
+        service
+            .sync(&campaign.id)
+            .expect("sync null-session evidence");
         let member = service
             .findings(&campaign.id)
             .expect("findings")
@@ -3794,7 +3863,11 @@ mod tests {
             .expect("approve");
         service.start(&campaign.id).expect("start");
         service
-            .skip_finding(&campaign.id, &finding_a, "deferred for session-bound completion test")
+            .skip_finding(
+                &campaign.id,
+                &finding_a,
+                "deferred for session-bound completion test",
+            )
             .expect("skip");
         service
             .begin_completion_verification(&campaign.id)
@@ -3897,7 +3970,11 @@ mod tests {
         assert_eq!(approved.status, "APPROVED");
         service.start(&campaign.id).expect("start");
         service
-            .skip_finding(&campaign.id, "campaign-finding-a", "Deferred for manual review.")
+            .skip_finding(
+                &campaign.id,
+                "campaign-finding-a",
+                "Deferred for manual review.",
+            )
             .expect("skip");
         assert!(service.complete(&campaign.id).is_err());
         service

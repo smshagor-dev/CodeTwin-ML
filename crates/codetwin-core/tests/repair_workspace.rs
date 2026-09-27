@@ -26,8 +26,8 @@ fn seed_disk_project() -> (TempDir, Database, String, String) {
         .expect("project");
     db.connection()
         .execute(
-            "INSERT INTO files(\
-               id, project_id, relative_path, relative_path_identity, language, content_hash, byte_size, is_active\
+            "INSERT INTO files( \
+               id, project_id, relative_path, relative_path_identity, language, content_hash, byte_size, is_active \
              ) VALUES (?1, ?2, 'src/main.rs', 'src/main.rs', 'rust', ?3, ?4, 1)",
             rusqlite::params![file_id, project_id, hash(bytes), bytes.len() as i64],
         )
@@ -80,22 +80,24 @@ fn lists_project_findings_with_status_filter() {
     let (_temp, db, project_id, file_id) = seed_disk_project();
     db.connection()
         .execute(
-            "INSERT INTO analysis_runs(id, project_id, status, analyzer_version, run_kind)\
+            "INSERT INTO analysis_runs(id, project_id, status, analyzer_version, run_kind) \
              VALUES ('repair-workspace-run', ?1, 'completed', 'repair-workspace-test', 'code_quality')",
             [&project_id],
         )
         .expect("run");
     db.connection()
         .execute(
-            "INSERT INTO findings(\
-               id, project_id, run_id, category, severity, title, description, file_id, source_start_line, source_end_line, status, fingerprint, analyzer_key\
+            "INSERT INTO findings( \
+               id, project_id, run_id, category, severity, title, description, file_id, source_start_line, source_end_line, status, fingerprint, analyzer_key \
              ) VALUES ('repair-workspace-finding', ?1, 'repair-workspace-run', 'quality', 'high', 'Repair me', 'Evidence-backed finding', ?2, 1, 1, 'open', 'repair-workspace-fingerprint', 'code_quality')",
             rusqlite::params![project_id, file_id],
         )
         .expect("finding");
 
     let service = RepairWorkspaceQueryService::new(&db);
-    let open = service.list_findings(&project_id, Some("open"), 20).expect("open");
+    let open = service
+        .list_findings(&project_id, Some("open"), 20)
+        .expect("open");
     assert_eq!(open.len(), 1);
     assert_eq!(open[0].title, "Repair me");
     assert_eq!(open[0].analyzer_key.as_deref(), Some("code_quality"));

@@ -142,10 +142,7 @@ fn javascript_resolution_candidates(base: &str) -> Vec<String> {
     candidates
 }
 
-fn php_resolution_candidates(
-    specifier: &str,
-    php_psr4_roots: &[PhpPsr4Root],
-) -> Vec<String> {
+fn php_resolution_candidates(specifier: &str, php_psr4_roots: &[PhpPsr4Root]) -> Vec<String> {
     let raw = specifier
         .split_once(" as ")
         .map(|(qualified, _)| qualified)
@@ -199,10 +196,7 @@ fn php_resolution_candidates(
     candidates
 }
 
-fn python_relative_import_base(
-    source_relative_path: &str,
-    specifier: &str,
-) -> Option<String> {
+fn python_relative_import_base(source_relative_path: &str, specifier: &str) -> Option<String> {
     let normalized_source = normalize_relative_path(source_relative_path, false)?;
     let parent = normalized_source
         .rsplit_once('/')
@@ -212,7 +206,10 @@ fn python_relative_import_base(
         .filter(|component| !component.is_empty())
         .collect();
 
-    let dot_count = specifier.chars().take_while(|character| *character == '.').count();
+    let dot_count = specifier
+        .chars()
+        .take_while(|character| *character == '.')
+        .count();
     if dot_count == 0 {
         return None;
     }
@@ -276,8 +273,15 @@ mod tests {
             ("src/nested/main.ts", "../../shared", "shared/index.tsx"),
         ] {
             let resolved = resolve_import(source, "TypeScript", specifier, &available, false);
-            assert_eq!(resolved.state, ImportResolutionState::ResolvedLocal, "{specifier}");
-            assert_eq!(resolved.target_file_id.as_deref(), Some(&format!("id:{expected}")));
+            assert_eq!(
+                resolved.state,
+                ImportResolutionState::ResolvedLocal,
+                "{specifier}"
+            );
+            assert_eq!(
+                resolved.target_file_id.as_deref(),
+                Some(format!("id:{expected}").as_str())
+            );
         }
     }
 
@@ -285,16 +289,13 @@ mod tests {
     fn resolves_python_relative_modules_and_packages() {
         let available = BTreeMap::from([
             ("app/users.py".to_string(), "users-file".to_string()),
-            ("app/shared/routes/__init__.py".to_string(), "routes-package".to_string()),
+            (
+                "app/shared/routes/__init__.py".to_string(),
+                "routes-package".to_string(),
+            ),
         ]);
 
-        let direct = resolve_import(
-            "app/main.py",
-            "Python",
-            ".users",
-            &available,
-            false,
-        );
+        let direct = resolve_import("app/main.py", "Python", ".users", &available, false);
         assert_eq!(direct.state, ImportResolutionState::ResolvedLocal);
         assert_eq!(direct.target_file_id.as_deref(), Some("users-file"));
 
@@ -330,7 +331,10 @@ mod tests {
             false,
         );
         assert_eq!(controller.state, ImportResolutionState::ResolvedLocal);
-        assert_eq!(controller.target_file_id.as_deref(), Some("user-controller"));
+        assert_eq!(
+            controller.target_file_id.as_deref(),
+            Some("user-controller")
+        );
 
         let aliased = resolve_import(
             "routes/api.php",

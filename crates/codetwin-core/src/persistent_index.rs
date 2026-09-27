@@ -14,9 +14,8 @@ use thiserror::Error;
 use crate::{
     deterministic_id, file_id, graph_edge_id, graph_node_id, is_windows_path_identity,
     normalize_path_identity, normalize_relative_path, project_id, resolve_import_with_php_psr4,
-    PhpPsr4Root,
-    symbol_fingerprint, AnalysisStatus, Database, GraphSummary, ImportResolutionState, IndexDelta,
-    IndexSummary, ProjectRecord,
+    symbol_fingerprint, AnalysisStatus, Database, GraphSummary, IndexDelta, IndexSummary,
+    PhpPsr4Root, ProjectRecord,
 };
 
 const DEFAULT_CONFIG_JSON: &str = "{}";
@@ -156,8 +155,8 @@ impl<'a> ProjectIndexService<'a> {
         let run_id = new_run_id(&project.id);
 
         self.database.connection().execute(
-            "INSERT INTO analysis_runs(\
-               id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint\
+            "INSERT INTO analysis_runs( \
+               id, project_id, status, analyzer_version, started_at, configuration_json, run_kind, query_version, config_fingerprint \
              ) VALUES (?1, ?2, 'running', ?3, CURRENT_TIMESTAMP, ?4, 'source_index', ?5, ?6)",
             params![
                 run_id,
@@ -170,11 +169,9 @@ impl<'a> ProjectIndexService<'a> {
         )?;
 
         let index_result = match cancelled {
-            Some(cancelled) => source_indexer::index_project_with_cancel(
-                &root,
-                &known_hashes,
-                cancelled,
-            ),
+            Some(cancelled) => {
+                source_indexer::index_project_with_cancel(&root, &known_hashes, cancelled)
+            }
             None => source_indexer::index_project(&root, &known_hashes),
         };
         let result = match index_result {
@@ -224,8 +221,8 @@ fn open_project(connection: &Connection, root: &Path) -> Result<ProjectRecord, I
 
     let existing_id: Option<String> = connection
         .query_row(
-            "SELECT id FROM projects\
-             WHERE path_identity = ?1 OR root_path = ?2\
+            "SELECT id FROM projects \
+             WHERE path_identity = ?1 OR root_path = ?2 \
              ORDER BY CASE WHEN path_identity = ?1 THEN 0 ELSE 1 END LIMIT 1",
             params![path_identity, root_path],
             |row| row.get(0),
@@ -234,18 +231,18 @@ fn open_project(connection: &Connection, root: &Path) -> Result<ProjectRecord, I
     let id = existing_id.unwrap_or_else(|| project_id(&path_identity));
 
     connection.execute(
-        "INSERT INTO projects(id, root_path, display_name, path_identity, git_remote, last_opened_at)\
-         VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)\
-         ON CONFLICT(id) DO UPDATE SET\
-           root_path = excluded.root_path, display_name = excluded.display_name,\
-           path_identity = excluded.path_identity, git_remote = excluded.git_remote,\
+        "INSERT INTO projects(id, root_path, display_name, path_identity, git_remote, last_opened_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP) \
+         ON CONFLICT(id) DO UPDATE SET \
+           root_path = excluded.root_path, display_name = excluded.display_name, \
+           path_identity = excluded.path_identity, git_remote = excluded.git_remote, \
            last_opened_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP",
         params![id, root_path, display_name, path_identity, git_remote],
     )?;
 
     connection
         .query_row(
-            "SELECT id, display_name, root_path, path_identity, git_remote, last_opened_at, last_indexed_at\
+            "SELECT id, display_name, root_path, path_identity, git_remote, last_opened_at, last_indexed_at \
              FROM projects WHERE id = ?1",
             [&id],
             |row| {
@@ -269,7 +266,7 @@ fn load_known_hashes(
     analysis_fingerprint: &str,
 ) -> Result<BTreeMap<String, String>, rusqlite::Error> {
     let mut statement = connection.prepare(
-        "SELECT relative_path, content_hash FROM files\
+        "SELECT relative_path, content_hash FROM files \
          WHERE project_id = ?1 AND is_active = 1 AND analysis_fingerprint = ?2",
     )?;
     let rows = statement.query_map(params![project_id, analysis_fingerprint], |row| {
@@ -335,34 +332,10 @@ fn persist_index_result(
             &indexed.symbols,
             &mut delta,
         )?;
-        persist_handler_inputs(
-            &transaction,
-            &project.id,
-            &stable_file_id,
-            run_id,
-            indexed,
-        )?;
-        persist_routes(
-            &transaction,
-            &project.id,
-            &stable_file_id,
-            run_id,
-            indexed,
-        )?;
-        persist_route_mounts(
-            &transaction,
-            &project.id,
-            &stable_file_id,
-            run_id,
-            indexed,
-        )?;
-        persist_imports(
-            &transaction,
-            &project.id,
-            &stable_file_id,
-            run_id,
-            indexed,
-        )?;
+        persist_handler_inputs(&transaction, &project.id, &stable_file_id, run_id, indexed)?;
+        persist_routes(&transaction, &project.id, &stable_file_id, run_id, indexed)?;
+        persist_route_mounts(&transaction, &project.id, &stable_file_id, run_id, indexed)?;
+        persist_imports(&transaction, &project.id, &stable_file_id, run_id, indexed)?;
     }
 
     for unchanged in &result.unchanged_files {
@@ -380,9 +353,9 @@ fn persist_index_result(
         if touched.contains(identity) {
             continue;
         }
-        match regular_file_state(Path::new(&project.root_path), &file.relative_path)? {
-            Some(false) => deactivate_file(&transaction, &file.id, run_id, &mut delta)?,
-            Some(true) | None => {}
+        if let Some(false) = regular_file_state(Path::new(&project.root_path), &file.relative_path)?
+        {
+            deactivate_file(&transaction, &file.id, run_id, &mut delta)?
         }
     }
 
@@ -423,7 +396,7 @@ fn load_active_files(
     case_insensitive: bool,
 ) -> Result<BTreeMap<String, ExistingFile>, IndexServiceError> {
     let mut statement = connection.prepare(
-        "SELECT id, relative_path, relative_path_identity, content_hash\
+        "SELECT id, relative_path, relative_path_identity, content_hash \
          FROM files WHERE project_id = ?1 AND is_active = 1",
     )?;
     let rows = statement.query_map([project_id], |row| {
@@ -464,15 +437,15 @@ fn persist_file(
     indexed: &IndexedFile,
 ) -> Result<(), rusqlite::Error> {
     connection.execute(
-        "INSERT INTO files(\
-           id, project_id, relative_path, relative_path_identity, language, content_hash, byte_size, indexed_at,\
-           ast_root_kind, parse_state, analysis_fingerprint, last_index_run_id, created_at, updated_at, is_active\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, ?8, ?9, ?10, ?11, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
-         ON CONFLICT(id) DO UPDATE SET\
-           relative_path = excluded.relative_path, relative_path_identity = excluded.relative_path_identity,\
-           language = excluded.language, content_hash = excluded.content_hash, byte_size = excluded.byte_size,\
-           indexed_at = CURRENT_TIMESTAMP, ast_root_kind = excluded.ast_root_kind, parse_state = excluded.parse_state,\
-           analysis_fingerprint = excluded.analysis_fingerprint, last_index_run_id = excluded.last_index_run_id,\
+        "INSERT INTO files( \
+           id, project_id, relative_path, relative_path_identity, language, content_hash, byte_size, indexed_at, \
+           ast_root_kind, parse_state, analysis_fingerprint, last_index_run_id, created_at, updated_at, is_active \
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, ?8, ?9, ?10, ?11, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) \
+         ON CONFLICT(id) DO UPDATE SET \
+           relative_path = excluded.relative_path, relative_path_identity = excluded.relative_path_identity, \
+           language = excluded.language, content_hash = excluded.content_hash, byte_size = excluded.byte_size, \
+           indexed_at = CURRENT_TIMESTAMP, ast_root_kind = excluded.ast_root_kind, parse_state = excluded.parse_state, \
+           analysis_fingerprint = excluded.analysis_fingerprint, last_index_run_id = excluded.last_index_run_id, \
            updated_at = CURRENT_TIMESTAMP, is_active = 1",
         params![
             stable_file_id,
@@ -521,7 +494,7 @@ fn persist_symbols(
         .collect();
 
     connection.execute(
-        "UPDATE symbols SET is_active = 0, updated_at = CURRENT_TIMESTAMP\
+        "UPDATE symbols SET is_active = 0, updated_at = CURRENT_TIMESTAMP \
          WHERE file_id = ?1 AND is_active = 1",
         [stable_file_id],
     )?;
@@ -540,15 +513,15 @@ fn persist_symbols(
             Some(_) => {}
         }
         connection.execute(
-            "INSERT INTO symbols(\
-               id, file_id, project_id, kind, name, qualified_name, start_line, start_column, end_line, end_column, signature,\
-               parent_symbol_id, fingerprint, last_index_run_id, created_at, updated_at, is_active\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?1, ?13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
-             ON CONFLICT(id) DO UPDATE SET\
-               file_id = excluded.file_id, project_id = excluded.project_id, kind = excluded.kind, name = excluded.name,\
-               qualified_name = excluded.qualified_name, start_line = excluded.start_line, start_column = excluded.start_column,\
-               end_line = excluded.end_line, end_column = excluded.end_column, signature = excluded.signature,\
-               parent_symbol_id = excluded.parent_symbol_id, last_index_run_id = excluded.last_index_run_id,\
+            "INSERT INTO symbols( \
+               id, file_id, project_id, kind, name, qualified_name, start_line, start_column, end_line, end_column, signature, \
+               parent_symbol_id, fingerprint, last_index_run_id, created_at, updated_at, is_active \
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?1, ?13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) \
+             ON CONFLICT(id) DO UPDATE SET \
+               file_id = excluded.file_id, project_id = excluded.project_id, kind = excluded.kind, name = excluded.name, \
+               qualified_name = excluded.qualified_name, start_line = excluded.start_line, start_column = excluded.start_column, \
+               end_line = excluded.end_line, end_column = excluded.end_column, signature = excluded.signature, \
+               parent_symbol_id = excluded.parent_symbol_id, last_index_run_id = excluded.last_index_run_id, \
                updated_at = CURRENT_TIMESTAMP, is_active = 1",
             params![
                 symbol.fingerprint,
@@ -607,7 +580,10 @@ fn prepare_symbols<'a>(
             let fingerprint = if *occurrence == 0 {
                 overload
             } else {
-                deterministic_id("symbol-overload-occurrence", &[&overload, &occurrence.to_string()])
+                deterministic_id(
+                    "symbol-overload-occurrence",
+                    &[&overload, &occurrence.to_string()],
+                )
             };
             *occurrence += 1;
             fingerprint
@@ -651,7 +627,7 @@ fn load_active_symbols(
     file_id: &str,
 ) -> Result<BTreeMap<String, ExistingSymbol>, rusqlite::Error> {
     let mut statement = connection.prepare(
-        "SELECT fingerprint, start_line, start_column, end_line, end_column, signature, parent_symbol_id\
+        "SELECT fingerprint, start_line, start_column, end_line, end_column, signature, parent_symbol_id \
          FROM symbols WHERE file_id = ?1 AND is_active = 1 AND fingerprint IS NOT NULL",
     )?;
     let rows = statement.query_map([file_id], |row| {
@@ -759,10 +735,10 @@ fn persist_routes(
         );
         let parameter_names = parameter_names_from_indexed(&route.parameters);
         let parameter_locations = parameter_locations_from_indexed(&route.parameters);
-        let parameter_names_json = serde_json::to_string(&parameter_names)
-            .unwrap_or_else(|_| "[]".to_string());
-        let parameter_locations_json = serde_json::to_string(&parameter_locations)
-            .unwrap_or_else(|_| "{}".to_string());
+        let parameter_names_json =
+            serde_json::to_string(&parameter_names).unwrap_or_else(|_| "[]".to_string());
+        let parameter_locations_json =
+            serde_json::to_string(&parameter_locations).unwrap_or_else(|_| "{}".to_string());
         let symbol_id: Option<String> = route.handler_name.as_deref().and_then(|handler| {
             connection
                 .query_row(
@@ -922,12 +898,12 @@ fn persist_imports(
                 &reference.end_column.to_string(),
             ],
         );
-        let bindings_json = serde_json::to_string(&reference.bindings)
-            .unwrap_or_else(|_| "[]".to_string());
+        let bindings_json =
+            serde_json::to_string(&reference.bindings).unwrap_or_else(|_| "[]".to_string());
         connection.execute(
-            "INSERT INTO import_references(\
-               id, project_id, source_file_id, raw_specifier, kind, start_line, start_column, end_line, end_column,\
-               resolution_state, resolved_target_file_id, last_index_run_id, bindings_json\
+            "INSERT INTO import_references( \
+               id, project_id, source_file_id, raw_specifier, kind, start_line, start_column, end_line, end_column, \
+               resolution_state, resolved_target_file_id, last_index_run_id, bindings_json \
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'observed', NULL, ?10, ?11)",
             params![
                 id,
@@ -981,12 +957,12 @@ fn deactivate_file(
         params![file_id, run_id],
     )?;
     connection.execute(
-        "UPDATE symbols SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP\
+        "UPDATE symbols SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP \
          WHERE file_id = ?1 AND is_active = 1",
         params![file_id, run_id],
     )?;
     connection.execute(
-        "UPDATE files SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP\
+        "UPDATE files SET is_active = 0, last_index_run_id = ?2, updated_at = CURRENT_TIMESTAMP \
          WHERE id = ?1 AND is_active = 1",
         params![file_id, run_id],
     )?;
@@ -1003,8 +979,8 @@ fn resolve_all_imports(
     let file_map = load_file_identity_map(connection, &project.id, case_insensitive)?;
     let php_psr4_roots = load_composer_psr4_roots(Path::new(&project.root_path));
     let mut statement = connection.prepare(
-        "SELECT i.id, f.relative_path, COALESCE(f.language, ''), i.raw_specifier\
-         FROM import_references i JOIN files f ON f.id = i.source_file_id\
+        "SELECT i.id, f.relative_path, COALESCE(f.language, ''), i.raw_specifier \
+         FROM import_references i JOIN files f ON f.id = i.source_file_id \
          WHERE i.project_id = ?1 AND f.is_active = 1",
     )?;
     let rows = statement.query_map([&project.id], |row| {
@@ -1031,7 +1007,7 @@ fn resolve_all_imports(
             &php_psr4_roots,
         );
         connection.execute(
-            "UPDATE import_references SET resolution_state = ?2, resolved_target_file_id = ?3, updated_at = CURRENT_TIMESTAMP\
+            "UPDATE import_references SET resolution_state = ?2, resolved_target_file_id = ?3, updated_at = CURRENT_TIMESTAMP \
              WHERE id = ?1",
             params![id, resolved.state.as_str(), resolved.target_file_id],
         )?;
@@ -1100,8 +1076,7 @@ fn load_composer_psr4_roots(root: &Path) -> Vec<PhpPsr4Root> {
     }
 
     roots.sort_by(|left, right| {
-        (&left.namespace_prefix, &left.directory)
-            .cmp(&(&right.namespace_prefix, &right.directory))
+        (&left.namespace_prefix, &left.directory).cmp(&(&right.namespace_prefix, &right.directory))
     });
     roots.dedup();
     roots
@@ -1175,7 +1150,8 @@ fn resolve_imported_route_handlers(
         framework,
         locations_json,
         current_content_type,
-    ) in routes {
+    ) in routes
+    {
         let (binding_name, member_name) = split_handler_reference(&handler_reference);
         let Some((_, target_file_id, binding)) = bindings.iter().find(|(source, _, binding)| {
             source == &route_file_id && binding.local_name == binding_name
@@ -1218,10 +1194,10 @@ fn resolve_imported_route_handlers(
              WHERE file_id=?1 AND is_active=1 AND name=?2
              ORDER BY start_line LIMIT 2",
         )?;
-        let symbol_rows = symbol_statement.query_map(
-            params![target_file_id, target_handler_name],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
-        )?;
+        let symbol_rows = symbol_statement
+            .query_map(params![target_file_id, target_handler_name], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?;
         let symbols = symbol_rows.collect::<Result<Vec<_>, _>>()?;
         let (handler_symbol_id, handler_signature) = if symbols.len() == 1 {
             (Some(symbols[0].0.clone()), symbols[0].1.clone())
@@ -1254,17 +1230,9 @@ fn resolve_imported_route_handlers(
         }
 
         let parameter_names: Vec<String> = locations.keys().cloned().collect();
-        let inferred_content_type = if locations
-            .values()
-            .flatten()
-            .any(|value| value == "json")
-        {
+        let inferred_content_type = if locations.values().flatten().any(|value| value == "json") {
             Some("application/json".to_string())
-        } else if locations
-            .values()
-            .flatten()
-            .any(|value| value == "form")
-        {
+        } else if locations.values().flatten().any(|value| value == "form") {
             Some("application/x-www-form-urlencoded".to_string())
         } else {
             current_content_type.clone()
@@ -1435,7 +1403,7 @@ fn load_file_identity_map(
     case_insensitive: bool,
 ) -> Result<BTreeMap<String, String>, IndexServiceError> {
     let mut statement = connection.prepare(
-        "SELECT id, relative_path, relative_path_identity FROM files\
+        "SELECT id, relative_path, relative_path_identity FROM files \
          WHERE project_id = ?1 AND is_active = 1",
     )?;
     let rows = statement.query_map([project_id], |row| {
@@ -1464,14 +1432,14 @@ fn materialize_graph(
     run_id: &str,
 ) -> Result<(), rusqlite::Error> {
     connection.execute(
-        "UPDATE graph_edges SET is_active = 0, updated_at = CURRENT_TIMESTAMP\
-         WHERE project_id = ?1 AND relationship IN (\
-           'PROJECT_CONTAINS_FILE','FILE_DEFINES_SYMBOL','SYMBOL_PARENT_OF_SYMBOL','FILE_IMPORTS_FILE'\
+        "UPDATE graph_edges SET is_active = 0, updated_at = CURRENT_TIMESTAMP \
+         WHERE project_id = ?1 AND relationship IN ( \
+           'PROJECT_CONTAINS_FILE','FILE_DEFINES_SYMBOL','SYMBOL_PARENT_OF_SYMBOL','FILE_IMPORTS_FILE' \
          )",
         [project_id],
     )?;
     connection.execute(
-        "UPDATE graph_nodes SET is_active = 0, updated_at = CURRENT_TIMESTAMP\
+        "UPDATE graph_nodes SET is_active = 0, updated_at = CURRENT_TIMESTAMP \
          WHERE project_id = ?1 AND node_type IN ('FILE','SYMBOL')",
         [project_id],
     )?;
@@ -1489,7 +1457,7 @@ fn materialize_graph(
     )?;
 
     let mut file_statement = connection.prepare(
-        "SELECT id, relative_path, language FROM files\
+        "SELECT id, relative_path, language FROM files \
          WHERE project_id = ?1 AND is_active = 1 ORDER BY relative_path",
     )?;
     let rows = file_statement.query_map([project_id], |row| {
@@ -1533,7 +1501,7 @@ fn materialize_graph(
     }
 
     let mut symbol_statement = connection.prepare(
-        "SELECT id, file_id, name, kind, parent_symbol_id FROM symbols\
+        "SELECT id, file_id, name, kind, parent_symbol_id FROM symbols \
          WHERE project_id = ?1 AND is_active = 1 ORDER BY file_id, start_line, start_column, name",
     )?;
     let rows = symbol_statement.query_map([project_id], |row| {
@@ -1587,7 +1555,7 @@ fn materialize_graph(
     }
 
     let mut import_statement = connection.prepare(
-        "SELECT source_file_id, resolved_target_file_id FROM import_references\
+        "SELECT source_file_id, resolved_target_file_id FROM import_references \
          WHERE project_id = ?1 AND resolution_state = 'resolved_local' AND resolved_target_file_id IS NOT NULL",
     )?;
     let rows = import_statement.query_map([project_id], |row| {
@@ -1624,11 +1592,11 @@ fn upsert_graph_node(
     run_id: &str,
 ) -> Result<(), rusqlite::Error> {
     connection.execute(
-        "INSERT INTO graph_nodes(\
-           id, project_id, node_type, external_key, label, metadata_json, last_index_run_id, created_at, updated_at, is_active\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
-         ON CONFLICT(project_id, node_type, external_key) DO UPDATE SET\
-           label = excluded.label, metadata_json = excluded.metadata_json, last_index_run_id = excluded.last_index_run_id,\
+        "INSERT INTO graph_nodes( \
+           id, project_id, node_type, external_key, label, metadata_json, last_index_run_id, created_at, updated_at, is_active \
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) \
+         ON CONFLICT(project_id, node_type, external_key) DO UPDATE SET \
+           label = excluded.label, metadata_json = excluded.metadata_json, last_index_run_id = excluded.last_index_run_id, \
            updated_at = CURRENT_TIMESTAMP, is_active = 1",
         params![id, project_id, node_type, external_key, label, metadata_json, run_id],
     )?;
@@ -1645,17 +1613,20 @@ fn upsert_graph_edge(
 ) -> Result<(), rusqlite::Error> {
     let id = graph_edge_id(project_id, source_node_id, target_node_id, relationship);
     connection.execute(
-        "INSERT INTO graph_edges(\
-           id, project_id, source_node_id, target_node_id, relationship, metadata_json, last_index_run_id, created_at, updated_at, is_active\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, '{}', ?6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)\
-         ON CONFLICT(project_id, source_node_id, target_node_id, relationship) DO UPDATE SET\
+        "INSERT INTO graph_edges( \
+           id, project_id, source_node_id, target_node_id, relationship, metadata_json, last_index_run_id, created_at, updated_at, is_active \
+         ) VALUES (?1, ?2, ?3, ?4, ?5, '{}', ?6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1) \
+         ON CONFLICT(project_id, source_node_id, target_node_id, relationship) DO UPDATE SET \
            last_index_run_id = excluded.last_index_run_id, updated_at = CURRENT_TIMESTAMP, is_active = 1",
         params![id, project_id, source_node_id, target_node_id, relationship, run_id],
     )?;
     Ok(())
 }
 
-fn graph_summary(connection: &Connection, project_id: &str) -> Result<GraphSummary, rusqlite::Error> {
+fn graph_summary(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<GraphSummary, rusqlite::Error> {
     let node_count: i64 = connection.query_row(
         "SELECT COUNT(*) FROM graph_nodes WHERE project_id = ?1 AND is_active = 1",
         [project_id],
@@ -1679,10 +1650,10 @@ fn finish_run(
     duration_ms: u64,
 ) -> Result<(), rusqlite::Error> {
     connection.execute(
-        "UPDATE analysis_runs SET\
-           status = 'completed', finished_at = CURRENT_TIMESTAMP,\
-           files_scanned = ?2, files_added = ?3, files_modified = ?4, files_unchanged = ?5, files_deleted = ?6,\
-           symbols_added = ?7, symbols_updated = ?8, symbols_removed = ?9, parse_errors = ?10, skipped_files = ?11,\
+        "UPDATE analysis_runs SET \
+           status = 'completed', finished_at = CURRENT_TIMESTAMP, \
+           files_scanned = ?2, files_added = ?3, files_modified = ?4, files_unchanged = ?5, files_deleted = ?6, \
+           symbols_added = ?7, symbols_updated = ?8, symbols_removed = ?9, parse_errors = ?10, skipped_files = ?11, \
            duration_ms = ?12 WHERE id = ?1",
         params![
             run_id,
@@ -1734,7 +1705,11 @@ fn read_origin_remote(root: &Path) -> Option<String> {
         return None;
     }
     let config_path = git_dir.join("config");
-    if !fs::symlink_metadata(&config_path).ok()?.file_type().is_file() {
+    if !fs::symlink_metadata(&config_path)
+        .ok()?
+        .file_type()
+        .is_file()
+    {
         return None;
     }
     let config = fs::read_to_string(config_path).ok()?;
@@ -1794,7 +1769,7 @@ fn to_usize(value: i64) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
+    use std::fs;
 
     use tempfile::tempdir;
 
@@ -1823,18 +1798,15 @@ mod tests {
         .expect("composer");
 
         let roots = load_composer_psr4_roots(repository.path());
+        assert!(roots
+            .iter()
+            .any(|root| { root.namespace_prefix == "Domain\\" && root.directory == "src/Domain" }));
         assert!(roots.iter().any(|root| {
-            root.namespace_prefix == "Domain\\"
-                && root.directory == "src/Domain"
+            root.namespace_prefix == "Domain\\" && root.directory == "missing-root"
         }));
-        assert!(roots.iter().any(|root| {
-            root.namespace_prefix == "Domain\\"
-                && root.directory == "missing-root"
-        }));
-        assert!(roots.iter().any(|root| {
-            root.namespace_prefix == "Spec\\"
-                && root.directory == "tests/Spec"
-        }));
+        assert!(roots
+            .iter()
+            .any(|root| { root.namespace_prefix == "Spec\\" && root.directory == "tests/Spec" }));
     }
 
     #[test]
@@ -1849,10 +1821,15 @@ mod tests {
         let database = Database::open_in_memory().expect("database");
         let service = ProjectIndexService::new(&database);
         let first = service.open_project(repository.path()).expect("first open");
-        let second = service.open_project(repository.path()).expect("second open");
+        let second = service
+            .open_project(repository.path())
+            .expect("second open");
         assert_eq!(first.id, second.id);
         assert_eq!(first.path_identity, second.path_identity);
-        assert_eq!(first.git_remote.as_deref(), Some("https://example.test/repository.git"));
+        assert_eq!(
+            first.git_remote.as_deref(),
+            Some("https://example.test/repository.git")
+        );
         let count: i64 = database
             .connection()
             .query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))
@@ -1876,7 +1853,9 @@ mod tests {
         let database = Database::open_in_memory().expect("database");
         let service = ProjectIndexService::new(&database);
 
-        let first = service.index_project(repository.path()).expect("first index");
+        let first = service
+            .index_project(repository.path())
+            .expect("first index");
         assert_eq!(first.delta.files_added, 2);
         assert!(first.delta.symbols_added >= 3);
         let import_edges: i64 = database
@@ -1898,7 +1877,9 @@ mod tests {
         assert_eq!(import_edges, 1);
         assert!(parent_edges >= 1);
 
-        let second = service.index_project(repository.path()).expect("second index");
+        let second = service
+            .index_project(repository.path())
+            .expect("second index");
         assert_eq!(second.delta.files_unchanged, 2);
         assert_eq!(second.graph_node_count, first.graph_node_count);
         assert_eq!(second.graph_edge_count, first.graph_edge_count);
@@ -1908,7 +1889,9 @@ mod tests {
             "export class Service { execute() { return 2; } }",
         )
         .expect("modify");
-        let third = service.index_project(repository.path()).expect("modified index");
+        let third = service
+            .index_project(repository.path())
+            .expect("modified index");
         assert_eq!(third.delta.files_modified, 1);
         assert!(third.delta.symbols_added >= 1);
         assert!(third.delta.symbols_removed >= 1);
@@ -1923,7 +1906,9 @@ mod tests {
         assert_eq!(import_edges, 0);
 
         fs::remove_file(repository.path().join("util.ts")).expect("delete util");
-        let fourth = service.index_project(repository.path()).expect("delete index");
+        let fourth = service
+            .index_project(repository.path())
+            .expect("delete index");
         assert_eq!(fourth.delta.files_deleted, 1);
         let active_util: i64 = database
             .connection()
@@ -2016,8 +2001,7 @@ mod tests {
         fs::create_dir_all(repository.path().join("routes")).expect("routes dir");
         fs::create_dir_all(repository.path().join("app/Http/Controllers"))
             .expect("controllers dir");
-        fs::create_dir_all(repository.path().join("app/Http/Requests"))
-            .expect("requests dir");
+        fs::create_dir_all(repository.path().join("app/Http/Requests")).expect("requests dir");
 
         fs::write(
             repository.path().join("routes/api.php"),
@@ -2031,7 +2015,9 @@ Route::post('/users', [Users::class, 'store']);
         .expect("routes source");
 
         fs::write(
-            repository.path().join("app/Http/Controllers/UserController.php"),
+            repository
+                .path()
+                .join("app/Http/Controllers/UserController.php"),
             r#"<?php
 namespace App\Http\Controllers;
 
@@ -2049,13 +2035,17 @@ class UserController
         .expect("controller source");
 
         fs::write(
-            repository.path().join("app/Http/Controllers/AdminController.php"),
-            "<?php namespace App\Http\Controllers; class AdminController {}",
+            repository
+                .path()
+                .join("app/Http/Controllers/AdminController.php"),
+            r"<?php namespace App\Http\Controllers; class AdminController {}",
         )
         .expect("admin source");
 
         fs::write(
-            repository.path().join("app/Http/Requests/StoreUserRequest.php"),
+            repository
+                .path()
+                .join("app/Http/Requests/StoreUserRequest.php"),
             r#"<?php
 namespace App\Http\Requests;
 
@@ -2075,8 +2065,10 @@ class StoreUserRequest extends FormRequest
         .expect("request source");
 
         fs::write(
-            repository.path().join("app/Http/Requests/UpdateUserRequest.php"),
-            "<?php namespace App\Http\Requests; class UpdateUserRequest {}",
+            repository
+                .path()
+                .join("app/Http/Requests/UpdateUserRequest.php"),
+            r"<?php namespace App\Http\Requests; class UpdateUserRequest {}",
         )
         .expect("unused request source");
 
@@ -2161,8 +2153,7 @@ class StoreUserRequest extends FormRequest
         fs::create_dir_all(repository.path().join("routes")).expect("routes dir");
         fs::create_dir_all(repository.path().join("app/Http/Controllers"))
             .expect("controllers dir");
-        fs::create_dir_all(repository.path().join("app/Http/Requests"))
-            .expect("requests dir");
+        fs::create_dir_all(repository.path().join("app/Http/Requests")).expect("requests dir");
 
         fs::write(
             repository.path().join("routes/api.php"),
@@ -2177,7 +2168,9 @@ Route::post('/users/json', [UserController::class, 'storeJson']);
         .expect("routes source");
 
         fs::write(
-            repository.path().join("app/Http/Controllers/UserController.php"),
+            repository
+                .path()
+                .join("app/Http/Controllers/UserController.php"),
             r#"<?php
 namespace App\Http\Controllers;
 
@@ -2201,7 +2194,9 @@ class UserController
         .expect("controller source");
 
         fs::write(
-            repository.path().join("app/Http/Requests/StoreUserRequest.php"),
+            repository
+                .path()
+                .join("app/Http/Requests/StoreUserRequest.php"),
             r#"<?php
 namespace App\Http\Requests;
 
@@ -2289,12 +2284,8 @@ class StoreUserRequest extends FormRequest
     fn laravel_route_resolves_controller_inputs_across_files() {
         let repository = tempdir().expect("repository");
         fs::create_dir_all(repository.path().join("routes")).expect("routes dir");
-        fs::create_dir_all(
-            repository
-                .path()
-                .join("app/Http/Controllers"),
-        )
-        .expect("controllers dir");
+        fs::create_dir_all(repository.path().join("app/Http/Controllers"))
+            .expect("controllers dir");
         fs::write(
             repository.path().join("routes/api.php"),
             r#"<?php
@@ -2383,7 +2374,11 @@ class UserController
     #[test]
     fn parse_errors_are_persisted_in_run_metrics() {
         let repository = tempdir().expect("repository");
-        fs::write(repository.path().join("broken.ts"), "export function broken(").expect("broken");
+        fs::write(
+            repository.path().join("broken.ts"),
+            "export function broken(",
+        )
+        .expect("broken");
         let database = Database::open_in_memory().expect("database");
         let summary = ProjectIndexService::new(&database)
             .index_project(repository.path())
@@ -2401,7 +2396,11 @@ class UserController
         service.index_project(repository.path()).expect("first");
         let old_hash: String = database
             .connection()
-            .query_row("SELECT content_hash FROM files WHERE is_active = 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT content_hash FROM files WHERE is_active = 1",
+                [],
+                |row| row.get(0),
+            )
             .expect("old hash");
         database
             .connection()
@@ -2413,7 +2412,11 @@ class UserController
         assert!(service.index_project(repository.path()).is_err());
         let current_hash: String = database
             .connection()
-            .query_row("SELECT content_hash FROM files WHERE is_active = 1", [], |row| row.get(0))
+            .query_row(
+                "SELECT content_hash FROM files WHERE is_active = 1",
+                [],
+                |row| row.get(0),
+            )
             .expect("current hash");
         assert_eq!(current_hash, old_hash);
         let latest_status: String = database

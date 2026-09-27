@@ -1,7 +1,7 @@
 const MAX_ACTIVE_PAYLOAD_BYTES: usize = 512;
 
 pub fn validate_active_payload(payload: &str) -> Result<(), &'static str> {
-    if payload.as_bytes().len() > MAX_ACTIVE_PAYLOAD_BYTES {
+    if payload.len() > MAX_ACTIVE_PAYLOAD_BYTES {
         return Err("payload exceeds the bounded active-probe size");
     }
     if payload.contains('\0') {

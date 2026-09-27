@@ -42,8 +42,8 @@ impl<'a> ProjectQueryService<'a> {
         if let Some(search) = search {
             let pattern = format!("%{}%", escape_like(search));
             let mut statement = connection.prepare(
-                "SELECT id, project_id, relative_path, COALESCE(relative_path_identity, relative_path), language, content_hash, byte_size, ast_root_kind, parse_state, is_active\
-                 FROM files WHERE project_id = ?1 AND is_active = 1 AND relative_path LIKE ?2 ESCAPE '\\'\
+                "SELECT id, project_id, relative_path, COALESCE(relative_path_identity, relative_path), language, content_hash, byte_size, ast_root_kind, parse_state, is_active \
+                 FROM files WHERE project_id = ?1 AND is_active = 1 AND relative_path LIKE ?2 ESCAPE '\\' \
                  ORDER BY relative_path LIMIT ?3",
             )?;
             let rows = statement.query_map(params![project_id, pattern, limit], map_file)?;
@@ -52,8 +52,8 @@ impl<'a> ProjectQueryService<'a> {
             }
         } else {
             let mut statement = connection.prepare(
-                "SELECT id, project_id, relative_path, COALESCE(relative_path_identity, relative_path), language, content_hash, byte_size, ast_root_kind, parse_state, is_active\
-                 FROM files WHERE project_id = ?1 AND is_active = 1\
+                "SELECT id, project_id, relative_path, COALESCE(relative_path_identity, relative_path), language, content_hash, byte_size, ast_root_kind, parse_state, is_active \
+                 FROM files WHERE project_id = ?1 AND is_active = 1 \
                  ORDER BY relative_path LIMIT ?2",
             )?;
             let rows = statement.query_map(params![project_id, limit], map_file)?;
@@ -68,7 +68,7 @@ impl<'a> ProjectQueryService<'a> {
         self.database
             .connection()
             .query_row(
-                "SELECT id, project_id, relative_path, COALESCE(relative_path_identity, relative_path), language, content_hash, byte_size, ast_root_kind, parse_state, is_active\
+                "SELECT id, project_id, relative_path, COALESCE(relative_path_identity, relative_path), language, content_hash, byte_size, ast_root_kind, parse_state, is_active \
                  FROM files WHERE id = ?1 AND is_active = 1",
                 [file_id],
                 map_file,
@@ -83,11 +83,14 @@ impl<'a> ProjectQueryService<'a> {
         limit: usize,
     ) -> Result<Vec<SymbolRecord>, QueryServiceError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, file_id, kind, name, qualified_name, parent_symbol_id, fingerprint, start_line, start_column, end_line, end_column\
-             FROM symbols WHERE file_id = ?1 AND is_active = 1\
+            "SELECT id, project_id, file_id, kind, name, qualified_name, parent_symbol_id, fingerprint, start_line, start_column, end_line, end_column \
+             FROM symbols WHERE file_id = ?1 AND is_active = 1 \
              ORDER BY start_line, start_column, name LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![file_id, bounded_limit(limit, MAX_QUERY_LIMIT)], map_symbol)?;
+        let rows = statement.query_map(
+            params![file_id, bounded_limit(limit, MAX_QUERY_LIMIT)],
+            map_symbol,
+        )?;
         let mut records = Vec::new();
         for row in rows {
             records.push(row?);
@@ -105,20 +108,20 @@ impl<'a> ProjectQueryService<'a> {
         let prefix = format!("{escaped}%");
         let substring = format!("%{escaped}%");
         let mut statement = self.database.connection().prepare(
-            "SELECT s.id, s.project_id, s.file_id, s.kind, s.name, s.qualified_name, s.parent_symbol_id, s.fingerprint,\
-                    s.start_line, s.start_column, s.end_line, s.end_column\
-             FROM symbols s JOIN files f ON f.id = s.file_id\
-             WHERE s.project_id = ?1 AND s.is_active = 1 AND f.is_active = 1\
-               AND (\
-                 (?2 = 'exact' AND (s.name = ?3 OR COALESCE(s.qualified_name, '') = ?3)) OR\
-                 (?2 = 'prefix' AND (s.name LIKE ?4 ESCAPE '\\' OR COALESCE(s.qualified_name, '') LIKE ?4 ESCAPE '\\')) OR\
-                 (?2 = 'substring' AND (s.name LIKE ?5 ESCAPE '\\' OR COALESCE(s.qualified_name, '') LIKE ?5 ESCAPE '\\'))\
-               )\
-               AND (?6 IS NULL OR s.kind = ?6)\
-               AND (?7 IS NULL OR f.language = ?7)\
-               AND (?8 IS NULL OR f.relative_path = ?8)\
-               AND (?9 = 0 OR s.qualified_name IS NOT NULL)\
-             ORDER BY s.name, f.relative_path, s.start_line, s.start_column\
+            "SELECT s.id, s.project_id, s.file_id, s.kind, s.name, s.qualified_name, s.parent_symbol_id, s.fingerprint, \
+                    s.start_line, s.start_column, s.end_line, s.end_column \
+             FROM symbols s JOIN files f ON f.id = s.file_id \
+             WHERE s.project_id = ?1 AND s.is_active = 1 AND f.is_active = 1 \
+               AND ( \
+                 (?2 = 'exact' AND (s.name = ?3 OR COALESCE(s.qualified_name, '') = ?3)) OR \
+                 (?2 = 'prefix' AND (s.name LIKE ?4 ESCAPE '\\' OR COALESCE(s.qualified_name, '') LIKE ?4 ESCAPE '\\')) OR \
+                 (?2 = 'substring' AND (s.name LIKE ?5 ESCAPE '\\' OR COALESCE(s.qualified_name, '') LIKE ?5 ESCAPE '\\')) \
+               ) \
+               AND (?6 IS NULL OR s.kind = ?6) \
+               AND (?7 IS NULL OR f.language = ?7) \
+               AND (?8 IS NULL OR f.relative_path = ?8) \
+               AND (?9 = 0 OR s.qualified_name IS NOT NULL) \
+             ORDER BY s.name, f.relative_path, s.start_line, s.start_column \
              LIMIT ?10",
         )?;
         let rows = statement.query_map(
@@ -147,7 +150,7 @@ impl<'a> ProjectQueryService<'a> {
         self.database
             .connection()
             .query_row(
-                "SELECT id, project_id, file_id, kind, name, qualified_name, parent_symbol_id, fingerprint, start_line, start_column, end_line, end_column\
+                "SELECT id, project_id, file_id, kind, name, qualified_name, parent_symbol_id, fingerprint, start_line, start_column, end_line, end_column \
                  FROM symbols WHERE id = ?1 AND is_active = 1",
                 [symbol_id],
                 map_symbol,
@@ -184,9 +187,9 @@ impl<'a> ProjectQueryService<'a> {
             return Ok(None);
         };
         let mut statement = connection.prepare(
-            "SELECT id, project_id, source_node_id, target_node_id, relationship, metadata_json\
-             FROM graph_edges\
-             WHERE project_id = ?1 AND is_active = 1 AND (source_node_id = ?2 OR target_node_id = ?2)\
+            "SELECT id, project_id, source_node_id, target_node_id, relationship, metadata_json \
+             FROM graph_edges \
+             WHERE project_id = ?1 AND is_active = 1 AND (source_node_id = ?2 OR target_node_id = ?2) \
              ORDER BY relationship, id LIMIT ?3",
         )?;
         let rows = statement.query_map(
@@ -248,9 +251,9 @@ impl<'a> ProjectQueryService<'a> {
         limit: usize,
     ) -> Result<Vec<IndexRunRecord>, QueryServiceError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, status, analyzer_version, query_version, config_fingerprint, started_at, finished_at, duration_ms,\
-                    files_scanned, files_added, files_modified, files_unchanged, files_deleted, symbols_added, symbols_updated, symbols_removed, parse_errors, skipped_files\
-             FROM analysis_runs WHERE project_id = ?1 AND run_kind = 'source_index'\
+            "SELECT id, project_id, status, analyzer_version, query_version, config_fingerprint, started_at, finished_at, duration_ms, \
+                    files_scanned, files_added, files_modified, files_unchanged, files_deleted, symbols_added, symbols_updated, symbols_removed, parse_errors, skipped_files \
+             FROM analysis_runs WHERE project_id = ?1 AND run_kind = 'source_index' \
              ORDER BY started_at DESC, id DESC LIMIT ?2",
         )?;
         let rows = statement.query_map(params![project_id, bounded_limit(limit, 100)], |row| {
@@ -300,7 +303,7 @@ impl<'a> ProjectQueryService<'a> {
         limit: i64,
     ) -> Result<Vec<ImportReferenceRecord>, QueryServiceError> {
         let sql = format!(
-            "SELECT id, project_id, source_file_id, raw_specifier, kind, start_line, start_column, end_line, end_column, resolution_state, resolved_target_file_id\
+            "SELECT id, project_id, source_file_id, raw_specifier, kind, start_line, start_column, end_line, end_column, resolution_state, resolved_target_file_id \
              FROM import_references WHERE {clause} ORDER BY source_file_id, start_line, start_column LIMIT ?2"
         );
         let mut statement = self.database.connection().prepare(&sql)?;
@@ -384,7 +387,7 @@ fn get_graph_node(
 ) -> Result<Option<GraphNodeRecord>, rusqlite::Error> {
     connection
         .query_row(
-            "SELECT id, project_id, node_type, external_key, label, metadata_json\
+            "SELECT id, project_id, node_type, external_key, label, metadata_json \
              FROM graph_nodes WHERE id = ?1 AND is_active = 1",
             [node_id],
             |row| {
@@ -473,7 +476,9 @@ mod tests {
         let graph = queries.graph_summary(&summary.project_id).expect("graph");
         assert_eq!(graph.node_count, summary.graph_node_count);
         assert_eq!(graph.edge_count, summary.graph_edge_count);
-        let history = queries.index_history(&summary.project_id, 10).expect("history");
+        let history = queries
+            .index_history(&summary.project_id, 10)
+            .expect("history");
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].id, summary.run_id);
     }

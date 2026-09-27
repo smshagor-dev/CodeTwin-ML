@@ -1,4 +1,7 @@
-use std::{fs, path::{Component, Path}};
+use std::{
+    fs,
+    path::{Component, Path},
+};
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -77,8 +80,8 @@ impl<'a> RepairWorkspaceQueryService<'a> {
             .database
             .connection()
             .query_row(
-                "SELECT f.id, f.project_id, f.relative_path, f.language, f.content_hash, f.byte_size, p.root_path\
-                 FROM files f JOIN projects p ON p.id=f.project_id\
+                "SELECT f.id, f.project_id, f.relative_path, f.language, f.content_hash, f.byte_size, p.root_path \
+                 FROM files f JOIN projects p ON p.id=f.project_id \
                  WHERE f.id=?1 AND f.is_active=1",
                 [file_id],
                 |row| {
@@ -95,7 +98,8 @@ impl<'a> RepairWorkspaceQueryService<'a> {
             )
             .optional()?
             .ok_or_else(|| RepairWorkspaceError::FileNotFound(file_id.to_owned()))?;
-        let (file_id, project_id, relative_path, language, expected_hash, stored_size, root_path) = row;
+        let (file_id, project_id, relative_path, language, expected_hash, stored_size, root_path) =
+            row;
         if stored_size < 0 || stored_size as u64 > MAX_SOURCE_BYTES {
             return Err(RepairWorkspaceError::SourceTooLarge);
         }
@@ -160,11 +164,12 @@ impl<'a> RepairWorkspaceQueryService<'a> {
         if !exists {
             return Err(RepairWorkspaceError::ProjectNotFound(project_id.to_owned()));
         }
-        let limit = i64::try_from(limit.clamp(1, MAX_FINDINGS_QUERY)).unwrap_or(MAX_FINDINGS_QUERY as i64);
+        let limit =
+            i64::try_from(limit.clamp(1, MAX_FINDINGS_QUERY)).unwrap_or(MAX_FINDINGS_QUERY as i64);
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, analyzer_key, category, severity, title, status, file_id, source_start_line, source_end_line, last_seen\
-             FROM findings WHERE project_id=?1 AND (?2 IS NULL OR status=?2)\
-             ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, last_seen DESC, id\
+            "SELECT id, project_id, analyzer_key, category, severity, title, status, file_id, source_start_line, source_end_line, last_seen \
+             FROM findings WHERE project_id=?1 AND (?2 IS NULL OR status=?2) \
+             ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, last_seen DESC, id \
              LIMIT ?3",
         )?;
         let rows = statement.query_map(params![project_id, status, limit], |row| {

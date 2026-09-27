@@ -22,7 +22,8 @@ fn requires_explicit_project_trust_before_validating_or_spawning() {
         false,
         Duration::from_millis(100),
     )
-    .expect_err("untrusted project must be rejected");
+    .err()
+    .expect("untrusted project must be rejected");
     assert!(matches!(error, LspError::TrustRequired));
 }
 
@@ -35,7 +36,8 @@ fn rejects_relative_executable_paths() {
         true,
         Duration::from_millis(100),
     )
-    .expect_err("relative executable must be rejected");
+    .err()
+    .expect("relative executable must be rejected");
     assert!(matches!(error, LspError::RelativeExecutable(_)));
 }
 
@@ -52,6 +54,7 @@ fn rejects_executables_stored_inside_the_analyzed_project() {
         true,
         Duration::from_millis(100),
     )
-    .expect_err("project-local executable must be rejected");
+    .err()
+    .expect("project-local executable must be rejected");
     assert!(matches!(error, LspError::ExecutableInsideProject(_)));
 }

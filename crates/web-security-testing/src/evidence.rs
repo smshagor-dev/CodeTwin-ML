@@ -5,10 +5,28 @@ use url::Url;
 use crate::{EvidenceObservation, ObservedResponse};
 
 const SENSITIVE_KEYS: &[&str] = &[
-    "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key",
-    "api-key", "apikey", "password", "passwd", "secret", "token", "access_token",
-    "refresh_token", "session", "sessionid", "email", "phone", "telephone", "ssn",
-    "social_security", "date_of_birth", "dob",
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "api-key",
+    "apikey",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "access_token",
+    "refresh_token",
+    "session",
+    "sessionid",
+    "email",
+    "phone",
+    "telephone",
+    "ssn",
+    "social_security",
+    "date_of_birth",
+    "dob",
 ];
 
 pub fn redact_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
@@ -91,9 +109,7 @@ fn evidence_body_excerpt(response: &ObservedResponse) -> Option<String> {
         || content_type.contains("xml")
         || content_type.contains("javascript")
         || content_type == "application/x-www-form-urlencoded";
-    textual.then(|| {
-        redact_body_with_secrets(&response.body, &response.redaction_secrets)
-    })
+    textual.then(|| redact_body_with_secrets(&response.body, &response.redaction_secrets))
 }
 
 pub fn redact_body_with_secrets(body: &[u8], secrets: &[String]) -> String {
@@ -162,9 +178,9 @@ fn redact_map(map: &mut Map<String, Value>) {
 }
 
 fn is_sensitive_name(name: &str) -> bool {
-    let normalized = name.to_ascii_lowercase().replace('-', "").replace('_', "");
+    let normalized = name.to_ascii_lowercase().replace(['-', '_'], "");
     SENSITIVE_KEYS.iter().any(|candidate| {
-        normalized.contains(&candidate.to_ascii_lowercase().replace('-', "").replace('_', ""))
+        normalized.contains(&candidate.to_ascii_lowercase().replace(['-', '_'], ""))
     })
 }
 
@@ -220,7 +236,10 @@ fn redact_prefixed_token(input: &str, prefix: &str, keep_prefix: bool) -> String
         while end < input.len() {
             let byte = input.as_bytes()[end];
             if byte.is_ascii_whitespace()
-                || matches!(byte, b'"' | b'\'' | b'<' | b'>' | b',' | b';' | b'&' | b')' | b']')
+                || matches!(
+                    byte,
+                    b'"' | b'\'' | b'<' | b'>' | b',' | b';' | b'&' | b')' | b']'
+                )
             {
                 break;
             }
@@ -238,14 +257,17 @@ fn redact_jwt_like_tokens(input: &str) -> String {
         let trimmed = part.trim_end_matches(char::is_whitespace);
         let suffix = &part[trimmed.len()..];
         let core = trimmed.trim_matches(|character: char| {
-            matches!(character, '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';')
+            matches!(
+                character,
+                '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+            )
         });
         let jwt_like = core.len() >= 32
             && core.starts_with("eyJ")
             && core.matches('.').count() == 2
-            && core
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'));
+            && core.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+            });
         if jwt_like {
             let prefix_len = trimmed.find(core).unwrap_or(0);
             output.push_str(&trimmed[..prefix_len]);
@@ -262,14 +284,16 @@ fn redact_jwt_like_tokens(input: &str) -> String {
 fn truncate(value: &str, max: usize) -> String {
     let mut chars = value.chars();
     let prefix: String = chars.by_ref().take(max).collect();
-    if chars.next().is_some() { format!("{prefix}…") } else { prefix }
+    if chars.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        redact_body, redact_body_with_secrets, redact_headers, response_evidence,
-    };
+    use super::{redact_body, redact_body_with_secrets, redact_headers, response_evidence};
     use crate::ObservedResponse;
     use url::Url;
 
@@ -300,7 +324,10 @@ mod tests {
 
         let echoed = redact_body_with_secrets(
             b"debug echo raw-primary-secret and custom-secret",
-            &["raw-primary-secret".to_string(), "custom-secret".to_string()],
+            &[
+                "raw-primary-secret".to_string(),
+                "custom-secret".to_string(),
+            ],
         );
         assert!(!echoed.contains("raw-primary-secret"));
         assert!(!echoed.contains("custom-secret"));

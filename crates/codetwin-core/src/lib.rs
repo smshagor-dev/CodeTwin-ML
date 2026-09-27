@@ -1,8 +1,8 @@
 pub mod database_analysis;
 pub mod db;
 pub mod domain;
-pub mod identity;
 pub mod guided_security;
+pub mod identity;
 pub mod impact_analysis;
 pub mod import_resolver;
 pub mod ml_inference;
@@ -24,8 +24,8 @@ pub mod semantic_query;
 pub mod semantic_resolution;
 pub mod semantic_service;
 pub mod symbol_reference;
-pub mod workspace;
 pub mod web_security;
+pub mod workspace;
 
 pub use database_analysis::{
     DatabaseAnalysisError, DatabaseAnalysisService, DatabaseArtifactRecord, DatabaseFindingRecord,
@@ -38,21 +38,24 @@ pub use domain::{
     IndexRunRecord, IndexSummary, ProjectRecord, SourceFileRecord, SymbolRecord, SymbolSearchMode,
     SymbolSearchQuery,
 };
+pub use guided_security::{
+    GuidedActivityRecord, GuidedFixPreparation, GuidedPlanItemInput, GuidedPlanItemRecord,
+    GuidedRetestInput, GuidedRetestRecord, GuidedRiskEdge, GuidedRiskGraph, GuidedRiskNode,
+    GuidedScanComparison, GuidedSecurityError, GuidedSecurityScorecard,
+    GuidedSecuritySessionRecord, GuidedSecurityStore, GuidedSessionCreate, GuidedSourceCandidate,
+    PreparationCompletion,
+};
 pub use identity::{
     deterministic_id, file_id, graph_edge_id, graph_node_id, is_windows_path_identity,
     normalize_path_identity, normalize_path_text, normalize_relative_path, project_id,
     symbol_fingerprint,
 };
-pub use guided_security::{
-    GuidedActivityRecord, GuidedFixPreparation, GuidedPlanItemInput, GuidedPlanItemRecord,
-    GuidedRetestRecord, GuidedRiskEdge, GuidedRiskGraph, GuidedRiskNode, GuidedScanComparison,
-    GuidedRetestInput, GuidedSecurityError, GuidedSecurityScorecard, GuidedSecuritySessionRecord,
-    GuidedSecurityStore, GuidedSessionCreate, GuidedSourceCandidate, PreparationCompletion,
-};
 pub use impact_analysis::{
     ImpactAnalysisError, ImpactAnalysisService, ImpactReport, ImpactedFileRecord,
 };
-pub use import_resolver::{resolve_import, resolve_import_with_php_psr4, PhpPsr4Root, ResolvedImport};
+pub use import_resolver::{
+    resolve_import, resolve_import_with_php_psr4, PhpPsr4Root, ResolvedImport,
+};
 pub use lsp_enrichment::{LanguageServerConfig, LanguageServerKind};
 pub use ml_inference::{
     MlFindingLinkRecord, MlInferenceError, MlInferenceObservation, MlInferenceRecord,
@@ -96,9 +99,9 @@ pub use security_campaign::{
     SecurityRemediationCampaignError, SecurityRemediationCampaignEventRecord,
     SecurityRemediationCampaignFindingRecord, SecurityRemediationCampaignPlan,
     SecurityRemediationCampaignRecord, SecurityRemediationCampaignService,
-    SecurityRemediationCampaignSummary, SecurityRemediationDebtView,
-    SecurityRemediationPlanItem, SecurityRemediationRegressionTracking,
-    SecurityRemediationRelationshipRecord, SecurityRemediationRollbackAssessment,
+    SecurityRemediationCampaignSummary, SecurityRemediationDebtView, SecurityRemediationPlanItem,
+    SecurityRemediationRegressionTracking, SecurityRemediationRelationshipRecord,
+    SecurityRemediationRollbackAssessment,
 };
 pub use security_fix::{
     FixEligibility, FixEligibilityAssessment, FixStrategy, MultiFindingOverlap, PatchReview,
@@ -129,8 +132,8 @@ pub use workspace::{
 };
 
 pub use web_security::{
-    AuthorizedWebSecurityStore, WebEndpointInput, WebEndpointRecord, WebEvidenceInput,
-    WebEvidenceRecord, WebFindingFilter, WebFindingInput, WebFindingRecord, WebScanCreate,
-    SourceRouteRecord, WebScanRecord, WebSecurityStoreError, WebSourceCorrelation,
+    AuthorizedWebSecurityStore, SourceRouteRecord, WebEndpointInput, WebEndpointRecord,
+    WebEvidenceInput, WebEvidenceRecord, WebFindingFilter, WebFindingInput, WebFindingRecord,
+    WebScanCreate, WebScanRecord, WebSecurityStoreError, WebSourceCorrelation,
     WebSourceEndpointLinkRecord,
 };

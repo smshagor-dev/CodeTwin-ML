@@ -89,7 +89,9 @@ impl FixEligibility {
             "GUIDED_FIX_CANDIDATE" => Ok(Self::GuidedFixCandidate),
             "MANUAL_REMEDIATION" => Ok(Self::ManualRemediation),
             "INSUFFICIENT_EVIDENCE" => Ok(Self::InsufficientEvidence),
-            _ => Err(SecurityFixError::State(format!("unknown eligibility {value}"))),
+            _ => Err(SecurityFixError::State(format!(
+                "unknown eligibility {value}"
+            ))),
         }
     }
 }
@@ -357,12 +359,9 @@ pub(crate) fn contains_sensitive_text(value: &str) -> bool {
         return true;
     }
     value.split_whitespace().any(|part| {
-        let token = part.trim_matches(|ch: char| {
-            !ch.is_ascii_alphanumeric() && !matches!(ch, '-' | '_' | '.')
-        });
-        token.starts_with("eyJ")
-            && token.split('.').count() == 3
-            && token.len() >= 24
+        let token = part
+            .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && !matches!(ch, '-' | '_' | '.'));
+        token.starts_with("eyJ") && token.split('.').count() == 3 && token.len() >= 24
     })
 }
 

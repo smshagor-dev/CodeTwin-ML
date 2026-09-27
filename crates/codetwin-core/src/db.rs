@@ -14,7 +14,8 @@ const MIGRATION_0008: &str = include_str!("../migrations/0008_database_analysis.
 const MIGRATION_0009: &str = include_str!("../migrations/0009_runtime_reliability.sql");
 const MIGRATION_0010: &str = include_str!("../migrations/0010_ml_inference_provenance.sql");
 const MIGRATION_0011: &str = include_str!("../migrations/0011_verified_repair_workflow.sql");
-const MIGRATION_0012: &str = include_str!("../migrations/0012_repair_transactional_application.sql");
+const MIGRATION_0012: &str =
+    include_str!("../migrations/0012_repair_transactional_application.sql");
 const MIGRATION_0013: &str = include_str!("../migrations/0013_qa_test_discovery.sql");
 const MIGRATION_0014: &str = include_str!("../migrations/0014_qa_test_execution.sql");
 const MIGRATION_0015: &str = include_str!("../migrations/0015_qa_execution_manifest_binding.sql");
@@ -138,7 +139,9 @@ mod tests {
         let db = Database::open_in_memory().expect("open db");
         let count: i64 = db
             .connection()
-            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .expect("query migrations");
         assert_eq!(count, 23);
         for version in [10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23] {
@@ -266,11 +269,14 @@ mod tests {
             [],
             |row| row.get(0),
         ).expect("web security tables");
-        let migration: i64 = upgraded.connection().query_row(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = 18",
-            [],
-            |row| row.get(0),
-        ).expect("migration 18");
+        let migration: i64 = upgraded
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 18",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migration 18");
         assert_eq!(tables, 4);
         assert_eq!(migration, 1);
     }
@@ -453,7 +459,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("schema-19 data preserved");
-        assert_eq!(tables, 4);
+        assert_eq!(tables, 3);
         assert_eq!(migration, 1);
         assert_eq!(preserved, 5);
         drop(upgraded);
@@ -651,7 +657,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("route template column");
-        assert_eq!(tables, 3);
+        assert_eq!(tables, 4);
         assert_eq!(migration, 1);
         assert_eq!(migration_23, 1);
         assert_eq!(route_prefix_column, 1);
@@ -708,7 +714,9 @@ mod tests {
             )
             .expect("security fix attempt schema");
         assert!(attempt_sql.contains("'AUTO_FIX_CANDIDATE','GUIDED_FIX_CANDIDATE','MANUAL_REMEDIATION','INSUFFICIENT_EVIDENCE'"));
-        assert!(attempt_sql.contains("'FIX_VERIFIED','STILL_VULNERABLE','UNABLE_TO_VERIFY','REGRESSION_DETECTED'"));
+        assert!(attempt_sql.contains(
+            "'FIX_VERIFIED','STILL_VULNERABLE','UNABLE_TO_VERIFY','REGRESSION_DETECTED'"
+        ));
         assert!(attempt_sql.contains("UNIQUE(finding_id, attempt_number)"));
         assert!(attempt_sql.contains("approved_safety_class"));
         assert!(attempt_sql.contains("caution_acknowledged"));
@@ -886,8 +894,11 @@ mod tests {
             .expect("guided session schema");
         assert!(session_sql.contains("'local','development','staging','authorized_production'"));
         assert!(session_sql.contains("'quick','standard','deep','custom'"));
-        assert!(session_sql.contains("'preparing','awaiting_approval','approved','running','completed','failed','cancelled'"));
-        assert!(session_sql.contains("scan_id TEXT UNIQUE REFERENCES web_security_scans(id) ON DELETE SET NULL"));
+        assert!(session_sql.contains(
+            "'preparing','awaiting_approval','approved','running','completed','failed','cancelled'"
+        ));
+        assert!(session_sql
+            .contains("scan_id TEXT UNIQUE REFERENCES web_security_scans(id) ON DELETE SET NULL"));
         assert!(session_sql.contains("authorization_confirmed = 1"));
 
         let retest_sql: String = db
@@ -990,7 +1001,10 @@ mod tests {
         assert!(linked_scan.is_none());
 
         db.connection()
-            .execute("DELETE FROM guided_security_sessions WHERE id='session-fk'", [])
+            .execute(
+                "DELETE FROM guided_security_sessions WHERE id='session-fk'",
+                [],
+            )
             .expect("delete guided session");
         let plan_count: i64 = db
             .connection()
@@ -1226,14 +1240,14 @@ mod tests {
         let trigger_count: i64 = db
             .connection()
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN (\
-                 'qa_execution_approval_requires_manifest',\
-                 'qa_execution_approved_manifest_immutable',\
-                 'qa_execution_run_manifest_matches_plan',\
-                 'qa_execution_approval_requires_external_surface',\
-                 'qa_execution_approved_external_surface_immutable',\
-                 'qa_execution_plan_spec_immutable',\
-                 'qa_execution_approved_provenance_immutable',\
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ( \
+                 'qa_execution_approval_requires_manifest', \
+                 'qa_execution_approved_manifest_immutable', \
+                 'qa_execution_run_manifest_matches_plan', \
+                 'qa_execution_approval_requires_external_surface', \
+                 'qa_execution_approved_external_surface_immutable', \
+                 'qa_execution_plan_spec_immutable', \
+                 'qa_execution_approved_provenance_immutable', \
                  'qa_execution_run_external_surface_matches_plan')",
                 [],
                 |row| row.get(0),

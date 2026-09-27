@@ -45,29 +45,25 @@ impl MlSidecarContainment {
     fn attach_and_resume(child: &mut Child) -> Result<Self, String> {
         #[cfg(windows)]
         {
-            use std::{
-                mem::size_of,
-                os::windows::io::AsRawHandle,
-            };
+            use std::{mem::size_of, os::windows::io::AsRawHandle};
             use windows_sys::Win32::{
                 Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
                 System::{
                     Diagnostics::ToolHelp::{
-                        CreateToolhelp32Snapshot, Thread32First, Thread32Next, THREADENTRY32,
-                        TH32CS_SNAPTHREAD,
+                        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
+                        THREADENTRY32,
                     },
                     JobObjects::{
                         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicUIRestrictions,
                         JobObjectExtendedLimitInformation, SetInformationJobObject,
                         JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
                         JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
-                        JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
-                        JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_JOB_TIME,
-                        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_UILIMIT_DESKTOP,
-                        JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
-                        JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES,
-                        JOB_OBJECT_UILIMIT_READCLIPBOARD, JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
-                        JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
+                        JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_JOB_MEMORY,
+                        JOB_OBJECT_LIMIT_JOB_TIME, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                        JOB_OBJECT_UILIMIT_DESKTOP, JOB_OBJECT_UILIMIT_DISPLAYSETTINGS,
+                        JOB_OBJECT_UILIMIT_EXITWINDOWS, JOB_OBJECT_UILIMIT_GLOBALATOMS,
+                        JOB_OBJECT_UILIMIT_HANDLES, JOB_OBJECT_UILIMIT_READCLIPBOARD,
+                        JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS, JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
                     },
                     Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME},
                 },
@@ -228,10 +224,7 @@ impl MlSidecarContainment {
             use std::os::windows::io::AsRawHandle;
             use windows_sys::Win32::{
                 Foundation::{HANDLE, WAIT_OBJECT_0},
-                System::{
-                    JobObjects::TerminateJobObject,
-                    Threading::WaitForSingleObject,
-                },
+                System::{JobObjects::TerminateJobObject, Threading::WaitForSingleObject},
             };
             unsafe {
                 TerminateJobObject(self.job, 1);
@@ -493,9 +486,7 @@ pub(crate) async fn ml_sidecar_identity(
 }
 
 #[tauri::command]
-pub(crate) async fn ml_sidecar_health(
-    config: MlSidecarConfig,
-) -> Result<MlSidecarStatus, String> {
+pub(crate) async fn ml_sidecar_health(config: MlSidecarConfig) -> Result<MlSidecarStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let validated = validate_sidecar(&config)?;
         let health = sidecar_request(&validated, "health", json!({}))?;
@@ -521,8 +512,7 @@ pub(crate) async fn ml_sidecar_capabilities(config: MlSidecarConfig) -> Result<V
         if let Some(object) = capabilities.as_object_mut() {
             object.insert(
                 "desktop_containment".to_string(),
-                serde_json::to_value(ml_containment_status())
-                    .map_err(|error| error.to_string())?,
+                serde_json::to_value(ml_containment_status()).map_err(|error| error.to_string())?,
             );
         }
         Ok(capabilities)
@@ -564,7 +554,10 @@ pub(crate) async fn run_ml_file_inference(
     config: MlSidecarConfig,
     state: tauri::State<'_, AppState>,
 ) -> Result<MlInferenceRecord, String> {
-    if state.ml_running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    if state
+        .ml_running
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
         return Err("ML inference is already running".to_string());
     }
 
@@ -613,17 +606,25 @@ pub(crate) async fn run_ml_file_generation(
     config: MlSidecarConfig,
     state: tauri::State<'_, AppState>,
 ) -> Result<Value, String> {
-    if state.ml_running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    if state
+        .ml_running
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
         return Err("ML inference is already running".to_string());
     }
 
     let instruction = instruction.trim().to_string();
     if instruction.is_empty() {
-        state.ml_running.store(false, std::sync::atomic::Ordering::SeqCst);
+        state
+            .ml_running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         return Err("generation instruction must not be empty".to_string());
     }
-    if instruction.as_bytes().len() > MAX_GENERATION_INSTRUCTION_BYTES || instruction.contains('\0') {
-        state.ml_running.store(false, std::sync::atomic::Ordering::SeqCst);
+    if instruction.as_bytes().len() > MAX_GENERATION_INSTRUCTION_BYTES || instruction.contains('\0')
+    {
+        state
+            .ml_running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         return Err(format!(
             "generation instruction must be UTF-8 text up to {MAX_GENERATION_INSTRUCTION_BYTES} bytes"
         ));
@@ -720,20 +721,24 @@ pub(crate) fn list_ml_finding_links(
 
 fn validate_sidecar(config: &MlSidecarConfig) -> Result<ValidatedSidecar, String> {
     let validated = inspect_sidecar_identity(config)?;
-    let expected_python = config
-        .python_executable_sha256
-        .as_deref()
-        .ok_or_else(|| "Python executable SHA-256 pin is required; inspect and trust the sidecar first".to_string())?;
-    let expected_sidecar = config
-        .sidecar_digest
-        .as_deref()
-        .ok_or_else(|| "ML sidecar source digest pin is required; inspect and trust the sidecar first".to_string())?;
+    let expected_python = config.python_executable_sha256.as_deref().ok_or_else(|| {
+        "Python executable SHA-256 pin is required; inspect and trust the sidecar first".to_string()
+    })?;
+    let expected_sidecar = config.sidecar_digest.as_deref().ok_or_else(|| {
+        "ML sidecar source digest pin is required; inspect and trust the sidecar first".to_string()
+    })?;
     validate_sha256_pin(expected_python, "Python executable SHA-256")?;
     validate_sha256_pin(expected_sidecar, "ML sidecar digest")?;
-    if !validated.python_executable_sha256.eq_ignore_ascii_case(expected_python) {
+    if !validated
+        .python_executable_sha256
+        .eq_ignore_ascii_case(expected_python)
+    {
         return Err("Python executable SHA-256 no longer matches the trusted pin".to_string());
     }
-    if !validated.sidecar_digest.eq_ignore_ascii_case(expected_sidecar) {
+    if !validated
+        .sidecar_digest
+        .eq_ignore_ascii_case(expected_sidecar)
+    {
         return Err("ML sidecar source digest no longer matches the trusted pin".to_string());
     }
     Ok(validated)
@@ -770,13 +775,17 @@ fn inspect_sidecar_identity(config: &MlSidecarConfig) -> Result<ValidatedSidecar
         let metadata = fs::symlink_metadata(&path)
             .map_err(|_| format!("ML sidecar root is missing {required}"))?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(format!("ML sidecar file must be a regular file: {required}"));
+            return Err(format!(
+                "ML sidecar file must be a regular file: {required}"
+            ));
         }
         let canonical = path
             .canonicalize()
             .map_err(|error| format!("cannot canonicalize {required}: {error}"))?;
         if !canonical.starts_with(&root) {
-            return Err(format!("ML sidecar file escapes configured root: {required}"));
+            return Err(format!(
+                "ML sidecar file escapes configured root: {required}"
+            ));
         }
     }
 
@@ -795,16 +804,14 @@ fn inspect_sidecar_identity(config: &MlSidecarConfig) -> Result<ValidatedSidecar
 
 fn validate_sha256_pin(value: &str, label: &str) -> Result<(), String> {
     if value.len() != 64 || !value.chars().all(|character| character.is_ascii_hexdigit()) {
-        return Err(format!("{label} must be a 64-character hexadecimal SHA-256"));
+        return Err(format!(
+            "{label} must be a 64-character hexadecimal SHA-256"
+        ));
     }
     Ok(())
 }
 
-fn sha256_file(
-    path: &Path,
-    max_bytes: Option<u64>,
-    label: &str,
-) -> Result<(String, u64), String> {
+fn sha256_file(path: &Path, max_bytes: Option<u64>, label: &str) -> Result<(String, u64), String> {
     let mut file = fs::File::open(path)
         .map_err(|error| format!("cannot open {label} for hashing: {error}"))?;
     let mut hasher = Sha256::new();
@@ -874,7 +881,12 @@ fn collect_sidecar_python_files(
     output: &mut Vec<PathBuf>,
 ) -> Result<(), String> {
     let mut entries: Vec<_> = fs::read_dir(directory)
-        .map_err(|error| format!("cannot read ML sidecar directory {}: {error}", directory.display()))?
+        .map_err(|error| {
+            format!(
+                "cannot read ML sidecar directory {}: {error}",
+                directory.display()
+            )
+        })?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("cannot enumerate ML sidecar directory: {error}"))?;
     entries.sort_by_key(|entry| entry.file_name());
@@ -884,13 +896,24 @@ fn collect_sidecar_python_files(
         let name = name.to_string_lossy();
         if matches!(
             name.as_ref(),
-            ".git" | ".venv" | "venv" | "__pycache__" | "node_modules" | "target" | "dist" | "build"
+            ".git"
+                | ".venv"
+                | "venv"
+                | "__pycache__"
+                | "node_modules"
+                | "target"
+                | "dist"
+                | "build"
         ) {
             continue;
         }
         let path = entry.path();
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("cannot inspect ML sidecar entry {}: {error}", path.display()))?;
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!(
+                "cannot inspect ML sidecar entry {}: {error}",
+                path.display()
+            )
+        })?;
         if metadata.file_type().is_symlink() {
             return Err(format!(
                 "ML sidecar source tree contains a symlink: {}",
@@ -904,9 +927,12 @@ fn collect_sidecar_python_files(
         if !metadata.is_file() || path.extension().and_then(|value| value.to_str()) != Some("py") {
             continue;
         }
-        let canonical = path
-            .canonicalize()
-            .map_err(|error| format!("cannot canonicalize sidecar source {}: {error}", path.display()))?;
+        let canonical = path.canonicalize().map_err(|error| {
+            format!(
+                "cannot canonicalize sidecar source {}: {error}",
+                path.display()
+            )
+        })?;
         if !canonical.starts_with(root) {
             return Err(format!(
                 "ML sidecar source escapes configured root: {}",
@@ -924,8 +950,7 @@ fn collect_sidecar_python_files(
 }
 
 fn revalidate_sidecar_identity(sidecar: &ValidatedSidecar) -> Result<(), String> {
-    let (python_hash, _) =
-        sha256_file(&sidecar.python_executable, None, "Python executable")?;
+    let (python_hash, _) = sha256_file(&sidecar.python_executable, None, "Python executable")?;
     if !python_hash.eq_ignore_ascii_case(&sidecar.python_executable_sha256) {
         return Err("Python executable changed during ML request".to_string());
     }
@@ -945,8 +970,8 @@ fn validate_absolute_regular_file(value: &str, label: &str) -> Result<PathBuf, S
     if !input.is_absolute() {
         return Err(format!("{label} must be an absolute path"));
     }
-    let metadata = fs::symlink_metadata(input)
-        .map_err(|error| format!("cannot inspect {label}: {error}"))?;
+    let metadata =
+        fs::symlink_metadata(input).map_err(|error| format!("cannot inspect {label}: {error}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
         return Err(format!("{label} must be a regular file, not a symlink"));
     }
@@ -974,7 +999,9 @@ fn sidecar_request(
     .map_err(|error| error.to_string())?;
     request.push(b'\n');
     if request.len() > MAX_REQUEST_BYTES {
-        return Err(format!("ML sidecar request exceeds {MAX_REQUEST_BYTES} bytes"));
+        return Err(format!(
+            "ML sidecar request exceeds {MAX_REQUEST_BYTES} bytes"
+        ));
     }
 
     let _integrity_locks = MlSidecarIntegrityLocks::acquire(sidecar)?;
@@ -1116,8 +1143,8 @@ fn load_indexed_source(
     let row = database
         .connection()
         .query_row(
-            "SELECT p.root_path, f.relative_path, f.content_hash, f.project_id, f.byte_size\
-             FROM files f JOIN projects p ON p.id = f.project_id\
+            "SELECT p.root_path, f.relative_path, f.content_hash, f.project_id, f.byte_size \
+             FROM files f JOIN projects p ON p.id = f.project_id \
              WHERE f.id = ?1 AND f.is_active = 1",
             [file_id],
             |row| {
@@ -1297,7 +1324,6 @@ fn time_nonce() -> u128 {
         .as_nanos()
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::{fs, path::PathBuf};
@@ -1311,10 +1337,8 @@ mod tests {
 
     impl TestDirectory {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "codetwin-ml-identity-test-{}",
-                time_nonce()
-            ));
+            let path =
+                std::env::temp_dir().join(format!("codetwin-ml-identity-test-{}", time_nonce()));
             fs::create_dir(&path).expect("create test directory");
             Self(path)
         }
@@ -1334,10 +1358,12 @@ mod tests {
         let directory = TestDirectory::new();
         let package = directory.path().join("codetwin_ml");
         fs::create_dir(&package).expect("create package");
-        fs::write(package.join("main.py"), "from codetwin_ml import protocol\n")
-            .expect("main.py");
-        fs::write(package.join("protocol.py"), "PROTOCOL = 1\n")
-            .expect("protocol.py");
+        fs::write(
+            package.join("main.py"),
+            "from codetwin_ml import protocol\n",
+        )
+        .expect("main.py");
+        fs::write(package.join("protocol.py"), "PROTOCOL = 1\n").expect("protocol.py");
         fs::write(package.join("worker.py"), "VALUE = 1\n").expect("worker.py");
 
         let config = MlSidecarConfig {
@@ -1364,7 +1390,10 @@ mod tests {
         let (_directory, config) = test_sidecar();
         let first = inspect_sidecar_identity(&config).expect("first identity");
         let second = inspect_sidecar_identity(&config).expect("second identity");
-        assert_eq!(first.python_executable_sha256, second.python_executable_sha256);
+        assert_eq!(
+            first.python_executable_sha256,
+            second.python_executable_sha256
+        );
         assert_eq!(first.sidecar_digest, second.sidecar_digest);
         assert_eq!(first.code_files, second.code_files);
         assert_eq!(first.code_files.len(), 3);
@@ -1409,11 +1438,8 @@ mod tests {
         let (directory, config) = test_sidecar();
         let outside = directory.path().join("outside.py");
         fs::write(&outside, "VALUE = 2\n").expect("outside source");
-        symlink(
-            &outside,
-            directory.path().join("codetwin_ml/linked.py"),
-        )
-        .expect("create source symlink");
+        symlink(&outside, directory.path().join("codetwin_ml/linked.py"))
+            .expect("create source symlink");
         assert!(inspect_sidecar_identity(&config)
             .expect_err("source symlink must fail")
             .contains("contains a symlink"));

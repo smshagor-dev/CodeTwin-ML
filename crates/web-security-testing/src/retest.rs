@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::{atomic::AtomicBool, Arc};
 
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 use crate::{
     active, insert_parameter_location, passive, query_parameters, AuthContext, CheckConfig,
@@ -67,7 +66,9 @@ pub fn run_targeted_retest(
             responses_observed: 0,
             baseline_status: None,
             verification_completed: false,
-            failure_reason: Some("state-changing targeted retest is disabled by the approved scope".into()),
+            failure_reason: Some(
+                "state-changing targeted retest is disabled by the approved scope".into(),
+            ),
             findings: Vec::new(),
         });
     }
@@ -126,7 +127,10 @@ pub fn run_targeted_retest(
         route_template: request.route_template.clone(),
         method: method.clone(),
         depth: 0,
-        source: if matches!(request.category.as_str(), "api_input_validation" | "api_validation") {
+        source: if matches!(
+            request.category.as_str(),
+            "api_input_validation" | "api_validation"
+        ) {
             "openapi".to_string()
         } else {
             "targeted_retest".to_string()
@@ -215,10 +219,12 @@ pub fn run_targeted_retest(
     let responses_observed = budget.responses_observed();
     let minimum_responses = minimum_responses_for(&request.category);
     let identity_missing = request.category == "access_control" && secondary_auth.is_none();
-    let verification_completed =
-        !identity_missing && responses_observed >= minimum_responses;
+    let verification_completed = !identity_missing && responses_observed >= minimum_responses;
     let failure_reason = if identity_missing {
-        Some("targeted authorization verification requires the approved secondary test identity".into())
+        Some(
+            "targeted authorization verification requires the approved secondary test identity"
+                .into(),
+        )
     } else if verification_completed {
         None
     } else {
@@ -292,12 +298,6 @@ fn checks_for(category: &str) -> CheckConfig {
         _ => {}
     }
     checks
-}
-
-fn normalized_key(url: &Url) -> String {
-    let mut value = url.clone();
-    value.set_fragment(None);
-    value.to_string()
 }
 
 #[cfg(test)]

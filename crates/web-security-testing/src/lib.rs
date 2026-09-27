@@ -1,29 +1,28 @@
 mod active;
 mod discover;
 mod evidence;
+mod operator;
 mod passive;
 mod payload_policy;
-mod operator;
 mod request;
 mod retest;
 mod scope;
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{
-    atomic::AtomicBool,
-    Arc,
-};
+use std::sync::{atomic::AtomicBool, Arc};
 
 use serde::{de, Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-pub use evidence::{body_hash, fingerprint, redact_body, redact_headers, redact_url, response_evidence};
+pub use evidence::{
+    body_hash, fingerprint, redact_body, redact_headers, redact_url, response_evidence,
+};
 pub use operator::{
     apply_approved_execution_policy, build_application_map, build_test_plan, preflight,
-    prepare_guided_security, prepare_guided_security_with_seeds, ApplicationGroup, ApplicationMap, ApplicationRoute,
-    ApplicationSourceHint, ApprovedExecutionPolicy, AuthenticationMode, GuidedPreflight,
-    GuidedPreparation,
-    GuidedTestPlan, OperationRisk, PlannedOperation, SecurityEnvironment, TestingDepth,
+    prepare_guided_security, prepare_guided_security_with_seeds, ApplicationGroup, ApplicationMap,
+    ApplicationRoute, ApplicationSourceHint, ApprovedExecutionPolicy, AuthenticationMode,
+    GuidedPreflight, GuidedPreparation, GuidedTestPlan, OperationRisk, PlannedOperation,
+    SecurityEnvironment, TestingDepth,
 };
 pub use request::{RequestBudget, RequestError, ScopedRequester};
 pub use retest::{run_targeted_retest, TargetedRetestOutcome, TargetedRetestRequest};
@@ -64,11 +63,7 @@ pub fn insert_parameter_location(
     }
 }
 
-pub fn parameter_has_location(
-    locations: &ParameterLocations,
-    name: &str,
-    expected: &str,
-) -> bool {
+pub fn parameter_has_location(locations: &ParameterLocations, name: &str, expected: &str) -> bool {
     locations
         .get(name)
         .is_some_and(|values| values.iter().any(|value| value == expected))
@@ -105,11 +100,7 @@ where
                             "parameter location arrays must contain only strings",
                         ));
                     };
-                    insert_parameter_location(
-                        &mut output,
-                        name.clone(),
-                        location.to_string(),
-                    );
+                    insert_parameter_location(&mut output, name.clone(), location.to_string());
                 }
             }
             _ => {
@@ -195,8 +186,14 @@ pub struct AuthContext {
 impl AuthContext {
     pub fn metadata(&self) -> AuthMetadata {
         AuthMetadata {
-            cookie_supplied: self.cookie_header.as_ref().is_some_and(|value| !value.trim().is_empty()),
-            bearer_supplied: self.bearer_token.as_ref().is_some_and(|value| !value.trim().is_empty()),
+            cookie_supplied: self
+                .cookie_header
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty()),
+            bearer_supplied: self
+                .bearer_token
+                .as_ref()
+                .is_some_and(|value| !value.trim().is_empty()),
             custom_header_names: self
                 .custom_headers
                 .iter()
@@ -310,8 +307,7 @@ pub fn source_endpoint_seed(
     let normalized_template = normalize_route_template(path_template)?;
     let parameter_samples = route_parameter_samples(path_template);
     let deployment_prefix = normalize_deployment_prefix(base.path());
-    let effective_template =
-        apply_deployment_prefix(&deployment_prefix, &normalized_template);
+    let effective_template = apply_deployment_prefix(&deployment_prefix, &normalized_template);
     let materialized_path = materialize_route_path(&effective_template, &parameter_samples)?;
     base.set_path("/");
     base.set_query(None);
@@ -320,11 +316,16 @@ pub fn source_endpoint_seed(
     let mut template_url = base.join(effective_template.trim_start_matches('/')).ok()?;
     let mut discovery_url = base.join(materialized_path.trim_start_matches('/')).ok()?;
     for url in [&mut template_url, &mut discovery_url] {
-        let mut query = url.query_pairs_mut();
-        for name in parameter_names {
-            if parameter_has_location(parameter_locations, name, "query") {
-                query.append_pair(name, "codetwin-test");
+        {
+            let mut query = url.query_pairs_mut();
+            for name in parameter_names {
+                if parameter_has_location(parameter_locations, name, "query") {
+                    query.append_pair(name, "codetwin-test");
+                }
             }
+        }
+        if url.query() == Some("") {
+            url.set_query(None);
         }
     }
 
@@ -381,11 +382,7 @@ fn normalize_route_template(template: &str) -> Option<String> {
             continue;
         }
         if let Some(rest) = segment.strip_prefix(':') {
-            let name = rest
-                .split(['?', '(', '.'])
-                .next()
-                .unwrap_or(rest)
-                .trim();
+            let name = rest.split(['?', '(', '.']).next().unwrap_or(rest).trim();
             if name.is_empty() {
                 return None;
             }
@@ -434,11 +431,7 @@ fn route_parameter_samples(template: &str) -> BTreeMap<String, String> {
     let mut samples = BTreeMap::new();
     for segment in template.trim_matches('/').split('/') {
         if let Some(rest) = segment.strip_prefix(':') {
-            let name = rest
-                .split(['?', '(', '.'])
-                .next()
-                .unwrap_or(rest)
-                .trim();
+            let name = rest.split(['?', '(', '.']).next().unwrap_or(rest).trim();
             if !name.is_empty() {
                 samples.insert(name.to_string(), route_sample_value(segment));
             }
@@ -472,10 +465,7 @@ fn route_sample_value(segment: &str) -> String {
     if lower.contains("uuid") {
         return "00000000-0000-4000-8000-000000000001".to_string();
     }
-    if lower.contains(":float}")
-        || lower.contains(":double}")
-        || lower.starts_with("<float:")
-    {
+    if lower.contains(":float}") || lower.contains(":double}") || lower.starts_with("<float:") {
         return "1.0".to_string();
     }
     if lower.contains(":bool}") || lower.starts_with("<bool:") {
@@ -490,9 +480,7 @@ fn route_sample_value(segment: &str) -> String {
     {
         return "1".to_string();
     }
-    if (lower.contains("[a-f0-9]") || lower.contains("[0-9a-f]"))
-        && lower.contains("{24}")
-    {
+    if (lower.contains("[a-f0-9]") || lower.contains("[0-9a-f]")) && lower.contains("{24}") {
         return "0".repeat(24);
     }
     "codetwin-test".to_string()
@@ -809,7 +797,6 @@ pub(crate) fn headers_map(response: &ObservedResponse) -> HashMap<String, String
         .collect()
 }
 
-
 #[cfg(test)]
 mod source_seed_tests {
     use std::collections::BTreeMap;
@@ -955,7 +942,7 @@ mod source_seed_tests {
 
     #[test]
     fn materializes_flask_converter_routes_with_compatible_values() {
-        let locations = BTreeMap::from([("user_id".to_string(), "path".to_string())]);
+        let locations = BTreeMap::from([("user_id".to_string(), vec!["path".to_string()])]);
 
         let integer = source_endpoint_seed(
             "https://example.test",
@@ -1001,7 +988,7 @@ mod source_seed_tests {
             "source_route:fastapi:app.py:1",
         )
         .expect("seed");
-        assert_eq!(seed.route_template, "/users/{id}/");
+        assert_eq!(seed.url, "https://example.test/users/%7Bid%7D/");
         assert_eq!(
             seed.discovery_url.as_deref(),
             Some("https://example.test/users/codetwin-test/")

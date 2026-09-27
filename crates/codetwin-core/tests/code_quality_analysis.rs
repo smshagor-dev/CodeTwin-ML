@@ -11,8 +11,8 @@ fn persists_evidence_backed_quality_findings_and_history() {
     database
         .connection()
         .execute(
-            "INSERT INTO symbols(\
-               id, file_id, project_id, kind, name, qualified_name, start_line, start_column, end_line, end_column, fingerprint, is_active\
+            "INSERT INTO symbols( \
+               id, file_id, project_id, kind, name, qualified_name, start_line, start_column, end_line, end_column, fingerprint, is_active \
              ) VALUES ('symbol:large', 'file:a', 'project:p', 'function', 'large', 'large', 1, 0, 140, 1, 'fp:large', 1)",
             [],
         )
@@ -29,8 +29,8 @@ fn persists_evidence_backed_quality_findings_and_history() {
         database
             .connection()
             .execute(
-                "INSERT INTO symbols(\
-                   id, file_id, project_id, kind, name, parent_symbol_id, start_line, start_column, end_line, end_column, fingerprint, is_active\
+                "INSERT INTO symbols( \
+                   id, file_id, project_id, kind, name, parent_symbol_id, start_line, start_column, end_line, end_column, fingerprint, is_active \
                  ) VALUES (?1, 'file:a', 'project:p', 'function', ?1, ?2, ?3, 0, ?4, 1, ?5, 1)",
                 params![id, parent, 150 + depth, 160 + depth, format!("fp:{id}")],
             )
@@ -87,8 +87,8 @@ fn refreshes_stable_finding_and_resolves_it_when_evidence_disappears() {
     database
         .connection()
         .execute(
-            "INSERT INTO symbols(\
-               id, file_id, project_id, kind, name, qualified_name, start_line, start_column, end_line, end_column, fingerprint, is_active\
+            "INSERT INTO symbols( \
+               id, file_id, project_id, kind, name, qualified_name, start_line, start_column, end_line, end_column, fingerprint, is_active \
              ) VALUES ('symbol:large', 'file:a', 'project:p', 'function', 'large', 'large', 1, 0, 140, 1, 'fp:large', 1)",
             [],
         )
@@ -168,8 +168,8 @@ fn finds_resolved_local_cycles_and_high_fan_out_without_guessing() {
     database
         .connection()
         .execute(
-            "INSERT INTO import_references(\
-               id, project_id, source_file_id, raw_specifier, kind, start_line, start_column, end_line, end_column, resolution_state\
+            "INSERT INTO import_references( \
+               id, project_id, source_file_id, raw_specifier, kind, start_line, start_column, end_line, end_column, resolution_state \
              ) VALUES ('import:unresolved', 'project:p', 'file:hub', '@alias/missing', 'import', 99, 0, 99, 14, 'unresolved')",
             [],
         )
@@ -213,7 +213,7 @@ fn seed_project(database: &Database) {
     database
         .connection()
         .execute(
-            "INSERT INTO projects(id, root_path, display_name, path_identity)\
+            "INSERT INTO projects(id, root_path, display_name, path_identity) \
              VALUES ('project:p', '/tmp/quality-p', 'quality-p', '/tmp/quality-p')",
             [],
         )
@@ -224,8 +224,8 @@ fn insert_file(database: &Database, id: &str, path: &str) {
     database
         .connection()
         .execute(
-            "INSERT INTO files(\
-               id, project_id, relative_path, relative_path_identity, language, content_hash, byte_size, is_active\
+            "INSERT INTO files( \
+               id, project_id, relative_path, relative_path_identity, language, content_hash, byte_size, is_active \
              ) VALUES (?1, 'project:p', ?2, ?2, 'TypeScript', ?3, 10, 1)",
             params![id, path, format!("hash:{path}")],
         )
@@ -242,9 +242,9 @@ fn insert_import(
     database
         .connection()
         .execute(
-            "INSERT INTO import_references(\
-               id, project_id, source_file_id, raw_specifier, kind, start_line, start_column, end_line, end_column,\
-               resolution_state, resolved_target_file_id\
+            "INSERT INTO import_references( \
+               id, project_id, source_file_id, raw_specifier, kind, start_line, start_column, end_line, end_column, \
+               resolution_state, resolved_target_file_id \
              ) VALUES (?1, 'project:p', ?2, ?3, 'import', 1, 0, 1, 10, 'resolved_local', ?4)",
             params![id, source_file_id, specifier, target_file_id],
         )
