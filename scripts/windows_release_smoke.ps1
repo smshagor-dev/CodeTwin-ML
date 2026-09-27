@@ -16,6 +16,16 @@ function Assert-ValidSignature {
     }
 }
 
+function Get-OptionalProperty {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
 function Get-CodeTwinUninstallEntry {
     $roots = @(
         "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
@@ -26,7 +36,9 @@ function Get-CodeTwinUninstallEntry {
         if (-not (Test-Path $root)) { continue }
         foreach ($key in Get-ChildItem $root -ErrorAction SilentlyContinue) {
             $entry = Get-ItemProperty $key.PSPath -ErrorAction SilentlyContinue
-            if ($null -ne $entry -and [string]$entry.DisplayName -eq "CodeTwin ML") {
+            if ($null -eq $entry) { continue }
+            $displayName = Get-OptionalProperty -Object $entry -Name "DisplayName"
+            if ([string]$displayName -eq "CodeTwin ML") {
                 return $entry
             }
         }
@@ -81,14 +93,16 @@ try {
         throw "Installed CodeTwin ML uninstall registration was not found"
     }
 
-    $uninstaller = Get-CommandExecutable -Command ([string]$entry.UninstallString)
+    $uninstallCommand = Get-OptionalProperty -Object $entry -Name "UninstallString"
+    $uninstaller = Get-CommandExecutable -Command ([string]$uninstallCommand)
     if ([string]::IsNullOrWhiteSpace($uninstaller) -or -not (Test-Path -LiteralPath $uninstaller)) {
         throw "Installed CodeTwin ML uninstaller could not be resolved"
     }
     $installRoot = Split-Path -Parent $uninstaller
 
-    if (-not [string]::IsNullOrWhiteSpace([string]$entry.DisplayIcon)) {
-        $iconExecutable = ([string]$entry.DisplayIcon).Trim()
+    $displayIcon = Get-OptionalProperty -Object $entry -Name "DisplayIcon"
+    if (-not [string]::IsNullOrWhiteSpace([string]$displayIcon)) {
+        $iconExecutable = ([string]$displayIcon).Trim()
         $iconExecutable = $iconExecutable -replace ',\s*-?\d+$', ''
         $iconExecutable = $iconExecutable.Trim('"')
         if (Test-Path -LiteralPath $iconExecutable -PathType Leaf) {
