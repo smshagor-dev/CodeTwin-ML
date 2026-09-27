@@ -38,6 +38,51 @@ def load_release_config(path: Path) -> dict[str, Any]:
     return value
 
 
+def validate_release_source_integrity(
+    catalog: dict[str, Any],
+    release: dict[str, Any],
+) -> None:
+    catalog_by_id = {item["id"]: item for item in catalog["datasets"]}
+    gaps: list[str] = []
+
+    for asset in release["assets"]:
+        dataset_id = asset["dataset_id"]
+        spec = catalog_by_id.get(dataset_id)
+        if spec is None:
+            gaps.append(f"{dataset_id}: missing catalog entry")
+            continue
+
+        revision = spec.get("revision")
+        if (
+            not isinstance(revision, str)
+            or len(revision) != 40
+            or any(character not in "0123456789abcdefABCDEF" for character in revision)
+        ):
+            gaps.append(f"{dataset_id}: source revision must be a full 40-hex commit id")
+
+        for file_spec in spec.get("files", []):
+            relative_path = file_spec.get("path", "<unknown>")
+            size_bytes = file_spec.get("size_bytes")
+            expected_hash = file_spec.get("sha256")
+            if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes <= 0:
+                gaps.append(f"{dataset_id}/{relative_path}: missing positive size_bytes")
+            if (
+                not isinstance(expected_hash, str)
+                or len(expected_hash) != 64
+                or any(character not in "0123456789abcdefABCDEF" for character in expected_hash)
+            ):
+                gaps.append(f"{dataset_id}/{relative_path}: missing 64-hex sha256")
+
+    if gaps:
+        preview = "; ".join(gaps[:16])
+        if len(gaps) > 16:
+            preview += f"; ... and {len(gaps) - 16} more"
+        raise ValueError(
+            "release source integrity metadata is incomplete; resolve pinned upstream "
+            f"metadata before packaging: {preview}"
+        )
+
+
 def write_notice(dataset_root: Path, spec: dict[str, Any], display_name: str) -> None:
     lines = [
         display_name,
@@ -80,6 +125,7 @@ def archive_tree(source_root: Path, archive: Path) -> None:
 def build(output_dir: Path, release_config_path: Path) -> dict[str, Any]:
     release = load_release_config(release_config_path)
     catalog = load_catalog(ROOT / "datasets" / "catalog.json")
+    validate_release_source_integrity(catalog, release)
     catalog_by_id = {item["id"]: item for item in catalog["datasets"]}
     output_dir.mkdir(parents=True, exist_ok=True)
 
