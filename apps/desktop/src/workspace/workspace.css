@@ -2000,3 +2000,12 @@ html[data-theme="dark"] .ws-security-fix-warning {
     flex-direction: column;
   }
 }
+
+.ws-advisory-source { display: grid; gap: 8px; margin: 4px 0 12px; font-size: 12px; }
+.ws-advisory-source label { display: flex; align-items: center; gap: 8px; }
+.ws-advisory-source input[type="radio"], .ws-advisory-source input[type="checkbox"] { width: auto; }
+.ws-advisory-path { display: flex; gap: 8px; padding-left: 24px; }
+.ws-advisory-path input { flex: 1; min-width: 0; padding: 8px 10px; }
+.ws-consent { padding-left: 24px; color: var(--ws-muted); }
+.ws-security-layout.ws-supply-layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+@media (max-width: 1100px) { .ws-security-layout.ws-supply-layout { grid-template-columns: minmax(0, 1fr); } }

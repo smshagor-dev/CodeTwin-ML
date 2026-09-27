@@ -6,6 +6,7 @@ mod repair_commands;
 mod runtime_commands;
 mod security_campaign_commands;
 mod security_fix_commands;
+mod supply_chain_commands;
 mod web_security_commands;
 mod workspace_commands;
 
@@ -88,6 +89,10 @@ use security_fix_commands::{
     list_security_fix_attempts, list_security_fix_events, list_security_fix_validation,
     prepare_security_fix, propose_security_fix_replacement, review_security_fix,
     rollback_security_fix, run_security_fix_validation,
+};
+use supply_chain_commands::{
+    dependency_audit_history, list_dependency_findings, list_dependency_inventory,
+    list_secret_findings, run_dependency_audit, run_secret_scan, secret_scan_history,
 };
 use tauri::Manager;
 use web_security_commands::{
@@ -771,6 +776,13 @@ fn main() {
             list_security_evidence,
             security_history,
             list_security_rules,
+            run_secret_scan,
+            list_secret_findings,
+            secret_scan_history,
+            run_dependency_audit,
+            list_dependency_findings,
+            list_dependency_inventory,
+            dependency_audit_history,
             run_database_analysis,
             list_database_artifacts,
             list_database_findings,

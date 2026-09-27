@@ -1,0 +1,149 @@
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+use codetwin_core::{
+    AdvisorySource, Database, DependencyAuditRunRecord, DependencyAuditService,
+    DependencyAuditSummary, DependencyFindingRecord, DependencyRecord, SecretFindingRecord,
+    SecretScanRunRecord, SecretScanSummary, SecretScanningService,
+};
+use tauri::Manager;
+
+static SECRET_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
+static DEPENDENCY_AUDIT_RUNNING: AtomicBool = AtomicBool::new(false);
+const OSV_API: &str = "https://api.osv.dev";
+
+fn open_database(app: &tauri::AppHandle) -> Result<Database, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
+    Database::open(app_data_dir.join("codetwin.sqlite3")).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn run_secret_scan(
+    project_id: String,
+    app: tauri::AppHandle,
+) -> Result<SecretScanSummary, String> {
+    if SECRET_SCAN_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("a secret scan is already running".to_string());
+    }
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let database = open_database(&app)?;
+        SecretScanningService::new(&database)
+            .scan_project(&project_id)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    SECRET_SCAN_RUNNING.store(false, Ordering::SeqCst);
+    task.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn list_secret_findings(
+    project_id: String,
+    status: Option<String>,
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<SecretFindingRecord>, String> {
+    let database = open_database(&app)?;
+    SecretScanningService::new(&database)
+        .list_findings(&project_id, status.as_deref(), limit)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn secret_scan_history(
+    project_id: String,
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<SecretScanRunRecord>, String> {
+    let database = open_database(&app)?;
+    SecretScanningService::new(&database)
+        .history(&project_id, limit)
+        .map_err(|error| error.to_string())
+}
+
+/// `mode` is `online` (OSV.dev; requires `network_consent`) or `offline` (a local
+/// directory of OSV JSON records; no network).
+#[tauri::command]
+pub async fn run_dependency_audit(
+    project_id: String,
+    mode: String,
+    offline_directory: Option<String>,
+    network_consent: bool,
+    app: tauri::AppHandle,
+) -> Result<DependencyAuditSummary, String> {
+    let source = match mode.as_str() {
+        "online" if network_consent => AdvisorySource::OsvApi {
+            base_url: OSV_API.to_string(),
+        },
+        "online" => {
+            return Err(
+                "online advisory lookup sends package names and versions to api.osv.dev; confirm consent first"
+                    .to_string(),
+            )
+        }
+        "offline" => {
+            let path = offline_directory
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .ok_or_else(|| "choose an absolute path to a local OSV advisory directory".to_string())?;
+            let path = std::fs::canonicalize(&path).map_err(|error| error.to_string())?;
+            AdvisorySource::OfflineDirectory { path }
+        }
+        _ => return Err("unknown advisory mode".to_string()),
+    };
+    if DEPENDENCY_AUDIT_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("a dependency audit is already running".to_string());
+    }
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let database = open_database(&app)?;
+        DependencyAuditService::new(&database)
+            .audit_project(&project_id, &source)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    DEPENDENCY_AUDIT_RUNNING.store(false, Ordering::SeqCst);
+    task.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn list_dependency_findings(
+    project_id: String,
+    status: Option<String>,
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<DependencyFindingRecord>, String> {
+    let database = open_database(&app)?;
+    DependencyAuditService::new(&database)
+        .list_findings(&project_id, status.as_deref(), limit)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn list_dependency_inventory(
+    project_id: String,
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<DependencyRecord>, String> {
+    let database = open_database(&app)?;
+    DependencyAuditService::new(&database)
+        .list_inventory(&project_id, limit)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn dependency_audit_history(
+    project_id: String,
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<DependencyAuditRunRecord>, String> {
+    let database = open_database(&app)?;
+    DependencyAuditService::new(&database)
+        .history(&project_id, limit)
+        .map_err(|error| error.to_string())
+}
