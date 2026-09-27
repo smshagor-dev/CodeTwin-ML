@@ -217,6 +217,9 @@ jobs:
       - name: Install locked frontend dependencies
         run: npm ci --ignore-scripts
 
+      - name: Build release frontend
+        run: npm run build
+
       - name: Verify locked Rust dependency graph
         run: cargo fetch --locked
 
@@ -271,6 +274,9 @@ jobs:
         shell: pwsh
         run: |
           $config = @{
+            build = @{
+              beforeBuildCommand = $null
+            }
             bundle = @{
               targets = @("nsis")
               windows = @{
@@ -297,9 +303,17 @@ jobs:
         id: installer
         shell: pwsh
         run: |
-          $installers = @(Get-ChildItem -Path "apps/desktop/src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" -File)
+          $metadata = cargo metadata --locked --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) {
+            throw "cargo metadata failed while resolving the workspace target directory"
+          }
+          $nsisRoot = Join-Path ([string]$metadata.target_directory) "release\bundle\nsis"
+          if (-not (Test-Path -LiteralPath $nsisRoot -PathType Container)) {
+            throw "NSIS bundle directory was not produced: $nsisRoot"
+          }
+          $installers = @(Get-ChildItem -LiteralPath $nsisRoot -Filter "*-setup.exe" -File)
           if ($installers.Count -ne 1) {
-            throw "Expected exactly one NSIS installer, found $($installers.Count)"
+            throw "Expected exactly one NSIS installer in $nsisRoot, found $($installers.Count)"
           }
           $signature = Get-AuthenticodeSignature -FilePath $installers[0].FullName
           if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
