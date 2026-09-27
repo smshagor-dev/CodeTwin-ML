@@ -21,8 +21,11 @@ header p { margin: 0; color: #8ea0b7; }
 input, textarea, select { width: 100%; background: #0a1017; border: 1px solid #2b3b52; color: white; border-radius: 9px; padding: 12px 14px; }
 textarea { resize: vertical; min-height: 76px; }
 select { width: auto; min-width: 120px; }
-button:not(.nav) { min-height: 40px; background: #2b6df6; color: white; border: 0; border-radius: 9px; padding: 8px 20px; font-weight: 700; }
-button.secondary { background: #1b2737; color: #c7d3e3; border: 1px solid #32445d; }
+/* Legacy button look for the advanced workspaces only. styles.css loads after
+   workspace.css, so an unscoped rule overrode the new workspace's button reset
+   (blue backgrounds, white text on white cards). :where() keeps specificity unchanged. */
+:where(.ws-advanced-shell) button:not(.nav) { min-height: 40px; background: #2b6df6; color: white; border: 0; border-radius: 9px; padding: 8px 20px; font-weight: 700; }
+:where(.ws-advanced-shell) button.secondary { background: #1b2737; color: #c7d3e3; border: 1px solid #32445d; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
 .card h3 { text-transform: capitalize; margin-top: 0; font-size: 14px; }

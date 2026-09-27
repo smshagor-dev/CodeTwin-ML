@@ -491,6 +491,7 @@ html[data-theme="dark"] .ws-summary-icon { background: #202b50; }
 .ws-quick-grid button:hover:not(:disabled) { border-color: #b8c0ed !important; background: var(--ws-surface-soft) !important; }
 .ws-quick-grid button > span { grid-row: 1/3; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; background: #eef2ff; color: #5264df; }
 .ws-quick-grid b { font-size: 11px; }
+.ws-quick-grid b, .ws-quick-grid small { min-width: 0; overflow-wrap: anywhere; }
 .ws-quick-grid small { color: var(--ws-muted); font-size: 9px; line-height: 1.35; }
 
 .ws-activity-list, .ws-history-list, .ws-system-list, .ws-artifact-list { display: grid; gap: 0; padding-top: 5px; }
@@ -813,22 +814,21 @@ html[data-theme="dark"] .ws-file-list button.selected { background: #222b4d !imp
 
 .ws-advanced-shell { min-height: 100vh; background: #090d12; }
 .ws-advanced-bar {
-  position: fixed;
-  left: 12px;
-  top: 12px;
+  /* Sticky in normal flow: a fixed bar covered the legacy pages' own headers. */
+  position: sticky;
+  top: 0;
   z-index: 90;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px;
-  border: 1px solid #26364b;
-  border-radius: 9px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #26364b;
   background: rgba(9,13,18,.95);
   color: #aebdd0;
   font-size: 10px;
   backdrop-filter: blur(10px);
 }
-.ws-advanced-bar button { min-height: 31px; padding: 4px 10px; border: 1px solid #34465f; border-radius: 7px; background: #182232; color: white; }
+.ws-advanced-shell .ws-advanced-bar button { min-height: 31px; padding: 4px 10px; border: 1px solid #34465f; border-radius: 7px; background: #182232; color: white; }
 
 @media (max-width: 1220px) {
   .ws-app { grid-template-columns: 78px minmax(0,1fr); }

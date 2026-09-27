@@ -620,8 +620,7 @@ pub(crate) async fn run_ml_file_generation(
             .store(false, std::sync::atomic::Ordering::SeqCst);
         return Err("generation instruction must not be empty".to_string());
     }
-    if instruction.as_bytes().len() > MAX_GENERATION_INSTRUCTION_BYTES || instruction.contains('\0')
-    {
+    if instruction.len() > MAX_GENERATION_INSTRUCTION_BYTES || instruction.contains('\0') {
         state
             .ml_running
             .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -643,7 +642,7 @@ pub(crate) async fn run_ml_file_generation(
              User instruction:\n{}\n\nSource file (SHA-256 {}):\n{}",
             instruction, source.content_hash, source.text
         );
-        if prompt.as_bytes().len() > MAX_GENERATION_PROMPT_BYTES {
+        if prompt.len() > MAX_GENERATION_PROMPT_BYTES {
             return Err(format!(
                 "combined generation prompt exceeds {MAX_GENERATION_PROMPT_BYTES} bytes"
             ));
