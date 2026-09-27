@@ -5802,6 +5802,126 @@ export async function OPTIONS(request: Request) {
     }
 
     #[test]
+    fn resolves_bounded_local_typescript_utility_request_models() {
+        let source = r#"
+interface BaseUser {
+  email: string;
+  profile: {
+    displayName: string;
+  };
+  role: string;
+  enabled: boolean;
+}
+
+type DraftUser = Partial<BaseUser>;
+type RequiredDraft = Required<DraftUser>;
+type PublicUser = Pick<BaseUser, "email" | "profile">;
+type NoRoleUser = Omit<BaseUser, "role" | "enabled">;
+type ReadonlyUser = Readonly<BaseUser>;
+
+type DynamicPick = Pick<BaseUser, keyof BaseUser>;
+type NestedUtility = Partial<Pick<BaseUser, "email">>;
+type ImportedPick = Pick<ImportedPayload, "email">;
+
+export async function POST(request: Request) {
+  const payload: DraftUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function PUT(request: Request) {
+  const payload: RequiredDraft = await request.json();
+  return Response.json(payload);
+}
+
+export async function PATCH(request: Request) {
+  const payload: PublicUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function DELETE(request: Request) {
+  const payload: NoRoleUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function OPTIONS(request: Request) {
+  const payload: ReadonlyUser = await request.json();
+  return Response.json(payload);
+}
+
+export async function HEAD(request: Request) {
+  const payload: DynamicPick = await request.json();
+  return Response.json(payload);
+}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes(
+            "TypeScript",
+            "src/app/users/route.ts",
+            source,
+            tree.root_node(),
+        );
+
+        for method in ["POST", "PUT", "OPTIONS"] {
+            let route = routes
+                .iter()
+                .find(|route| route.framework == "nextjs" && route.http_method == method)
+                .expect("identity utility route");
+            for field in ["email", "profile", "role", "enabled"] {
+                assert!(route.parameters.iter().any(|parameter| {
+                    parameter.name == field && parameter.location == "json"
+                }));
+            }
+            assert!(!route.parameters.iter().any(|parameter| parameter.name == "displayName"));
+        }
+
+        let patch = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "PATCH")
+            .expect("Pick route");
+        for field in ["email", "profile"] {
+            assert!(patch.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        for field in ["role", "enabled", "displayName"] {
+            assert!(!patch.parameters.iter().any(|parameter| parameter.name == field));
+        }
+
+        let delete = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "DELETE")
+            .expect("Omit route");
+        for field in ["email", "profile"] {
+            assert!(delete.parameters.iter().any(|parameter| {
+                parameter.name == field && parameter.location == "json"
+            }));
+        }
+        for field in ["role", "enabled", "displayName"] {
+            assert!(!delete.parameters.iter().any(|parameter| parameter.name == field));
+        }
+
+        let head = routes
+            .iter()
+            .find(|route| route.framework == "nextjs" && route.http_method == "HEAD")
+            .expect("dynamic utility route");
+        assert!(!head.parameters.iter().any(|parameter| {
+            matches!(
+                parameter.name.as_str(),
+                "email" | "profile" | "role" | "enabled" | "displayName"
+            ) && parameter.location == "json"
+        }));
+
+        let models = typescript_object_models(source, tree.root_node());
+        assert!(!models.contains_key("DynamicPick"));
+        assert!(!models.contains_key("NestedUtility"));
+        assert!(!models.contains_key("ImportedPick"));
+    }
+
+    #[test]
     fn resolves_local_typescript_intersection_models_conservatively() {
         let source = r#"
 interface BaseUser {
