@@ -121,7 +121,15 @@ fn scores_a_labeled_multilanguage_dataset() {
             ),
             Column::Text(
                 "language",
-                vec!["c", "python", "python", "javascript", "java", "c", "python"],
+                vec![
+                    "c",
+                    "python",
+                    "python",
+                    "javascript",
+                    "kotlin",
+                    "c",
+                    "python",
+                ],
             ),
         ],
     );
@@ -148,7 +156,7 @@ fn scores_a_labeled_multilanguage_dataset() {
     let metrics = dataset.vulnerability.as_ref().unwrap();
     assert_eq!(metrics.rows_read, 7);
     assert_eq!(metrics.skipped_unlabeled, 1);
-    assert_eq!(metrics.skipped_unsupported_language.get("Java"), Some(&1));
+    assert_eq!(metrics.skipped_unsupported_language.get("Kotlin"), Some(&1));
     assert_eq!(metrics.evaluated, 5);
     // strcpy and sha1 are caught; the integer function is a miss; eval on a sample labeled
     // safe is a false positive; the plain Python function is a true negative.
@@ -377,7 +385,7 @@ fn unsupported_language_pairs_are_explained() {
         "java",
         &pairs,
         "small/test-00000-of-00001.parquet",
-        serde_json::json!({"task": "repair_pairs", "default_language": "Java"}),
+        serde_json::json!({"task": "repair_pairs", "default_language": "Kotlin"}),
     )]);
     let report = run_benchmark(&catalog, &BenchmarkOptions::new(root.path()));
     let dataset = &report.datasets[0];
@@ -386,5 +394,44 @@ fn unsupported_language_pairs_are_explained() {
         .message
         .as_deref()
         .unwrap()
-        .contains("does not support Java"));
+        .contains("does not support Kotlin"));
+}
+
+#[test]
+fn java_fix_pairs_are_scored() {
+    let root = tempfile::tempdir().unwrap();
+    let pairs = root
+        .path()
+        .join("jpairs/rev1/small/test-00000-of-00001.parquet");
+    write_parquet(
+        &pairs,
+        &[
+            Column::Text(
+                "buggy",
+                vec![
+                    "class T { void f(java.sql.Statement s, String n) throws Exception { s.executeQuery(\"SELECT * FROM u WHERE n = '\" + n + \"'\"); } }",
+                    "class T { int g(int a) { return a + 1; } }",
+                ],
+            ),
+            Column::Text(
+                "fixed",
+                vec![
+                    "class T { void f(java.sql.Connection c, String n) throws Exception { java.sql.PreparedStatement p = c.prepareStatement(\"SELECT * FROM u WHERE n = ?\"); p.setString(1, n); p.executeQuery(); } }",
+                    "class T { int g(int a) { return a + 2; } }",
+                ],
+            ),
+        ],
+    );
+    let catalog = catalog_for(&[(
+        "jpairs",
+        &pairs,
+        "small/test-00000-of-00001.parquet",
+        serde_json::json!({"task": "repair_pairs", "default_language": "Java"}),
+    )]);
+    let report = run_benchmark(&catalog, &BenchmarkOptions::new(root.path()));
+    let metrics = report.datasets[0].repair_pairs.as_ref().unwrap();
+    assert_eq!(metrics.pairs_evaluated, 2);
+    assert_eq!(metrics.pairs_flagged_before, 1);
+    assert_eq!(metrics.pairs_cleared_by_fix, 1);
+    assert!(metrics.skipped_unsupported_language.is_empty());
 }
