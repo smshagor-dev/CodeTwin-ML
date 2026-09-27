@@ -22,7 +22,7 @@ const MAX_PROJECT_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_PROJECT_INDEX_ELAPSED: Duration = Duration::from_secs(120);
 const TYPESCRIPT_DEFINITIONS_QUERY: &str = include_str!("../queries/typescript.scm");
 pub const INDEXER_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const QUERY_VERSION: &str = "definitions-v2-imports-v3-routes-v44-handlers-v34";
+pub const QUERY_VERSION: &str = "definitions-v2-imports-v3-routes-v45-handlers-v34";
 
 #[derive(Debug, Error)]
 pub enum IndexError {
