@@ -138,13 +138,7 @@ fn extract_python(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImport>
             let module = module.trim();
             if !module.is_empty() {
                 let bindings = python_from_bindings(names);
-                push_with_bindings(
-                    imports,
-                    "from_import",
-                    module.to_string(),
-                    node,
-                    bindings,
-                );
+                push_with_bindings(imports, "from_import", module.to_string(), node, bindings);
             }
         }
         _ => {}
@@ -171,23 +165,19 @@ fn extract_rust(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImport>) 
 
 fn extract_go(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImport>) {
     if node.kind() == "import_spec" {
-        if let Some(specifier) = find_descendant(
-            node,
-            &["interpreted_string_literal", "raw_string_literal"],
-        ) {
+        if let Some(specifier) =
+            find_descendant(node, &["interpreted_string_literal", "raw_string_literal"])
+        {
             if let Some(raw) = literal_text(specifier, source) {
                 push(imports, "import", raw, specifier);
             }
         }
         return;
     }
-    if node.kind() == "import_declaration"
-        && find_descendant(node, &["import_spec"]).is_none()
-    {
-        if let Some(specifier) = find_descendant(
-            node,
-            &["interpreted_string_literal", "raw_string_literal"],
-        ) {
+    if node.kind() == "import_declaration" && find_descendant(node, &["import_spec"]).is_none() {
+        if let Some(specifier) =
+            find_descendant(node, &["interpreted_string_literal", "raw_string_literal"])
+        {
             if let Some(raw) = literal_text(specifier, source) {
                 push(imports, "import", raw, specifier);
             }
@@ -213,19 +203,16 @@ fn extract_php(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImport>) {
                     push(imports, "use", raw.to_string(), node);
                 } else {
                     for (specifier, binding) in expanded {
-                        push_with_bindings(
-                            imports,
-                            "use",
-                            specifier,
-                            node,
-                            vec![binding],
-                        );
+                        push_with_bindings(imports, "use", specifier, node, vec![binding]);
                     }
                 }
             }
         }
-        "require_expression" | "require_once_expression" | "include_expression"
-        | "include_once_expression" | "expression_statement" => {
+        "require_expression"
+        | "require_once_expression"
+        | "include_expression"
+        | "include_once_expression"
+        | "expression_statement" => {
             let trimmed = statement.trim().trim_end_matches(';').trim();
             for (keyword, kind) in [
                 ("require_once", "require_once"),
@@ -234,7 +221,11 @@ fn extract_php(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImport>) {
                 ("include", "include"),
             ] {
                 if let Some(rest) = trimmed.strip_prefix(keyword) {
-                    let raw = rest.trim().trim_start_matches('(').trim_end_matches(')').trim();
+                    let raw = rest
+                        .trim()
+                        .trim_start_matches('(')
+                        .trim_end_matches(')')
+                        .trim();
                     let raw = strip_literal_delimiters(raw);
                     if !raw.is_empty() {
                         push(imports, kind, raw, node);
@@ -370,11 +361,7 @@ fn javascript_import_bindings(statement: &str) -> Vec<IndexedImportBinding> {
 
     let mut remaining = clause;
     if !remaining.starts_with('{') {
-        let default = remaining
-            .split(',')
-            .next()
-            .map(str::trim)
-            .unwrap_or("");
+        let default = remaining.split(',').next().map(str::trim).unwrap_or("");
         if is_identifier(default) {
             bindings.push(IndexedImportBinding {
                 local_name: default.to_string(),
@@ -492,7 +479,10 @@ fn strip_literal_delimiters(value: &str) -> String {
     if trimmed.len() >= 2 {
         let first = trimmed.as_bytes()[0] as char;
         let last = trimmed.as_bytes()[trimmed.len() - 1] as char;
-        if matches!((first, last), ('\'', '\'') | ('"', '"') | ('`', '`') | ('<', '>')) {
+        if matches!(
+            (first, last),
+            ('\'', '\'') | ('"', '"') | ('`', '`') | ('<', '>')
+        ) {
             return trimmed[1..trimmed.len() - 1].to_string();
         }
     }

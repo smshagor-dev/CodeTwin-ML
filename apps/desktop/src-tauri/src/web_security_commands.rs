@@ -8,9 +8,9 @@ use std::{
 };
 
 use codetwin_core::{
-    AuthorizedWebSecurityStore, Database, GuidedSecurityStore, WebEndpointInput, WebEndpointRecord,
-    WebEvidenceInput, WebEvidenceRecord, WebFindingFilter, WebFindingInput, WebFindingRecord,
-    SourceRouteRecord, WebScanCreate, WebScanRecord, WebSourceEndpointLinkRecord,
+    AuthorizedWebSecurityStore, Database, GuidedSecurityStore, SourceRouteRecord, WebEndpointInput,
+    WebEndpointRecord, WebEvidenceInput, WebEvidenceRecord, WebFindingFilter, WebFindingInput,
+    WebFindingRecord, WebScanCreate, WebScanRecord, WebSourceEndpointLinkRecord,
 };
 use serde::Deserialize;
 use web_security_testing::{
@@ -71,7 +71,8 @@ pub fn start_web_security_scan(
 ) -> Result<WebScanRecord, String> {
     ScopePolicy::new(request.config.scope.clone()).map_err(|error| error.to_string())?;
 
-    let scope_json = serde_json::to_string(&request.config.scope).map_err(|error| error.to_string())?;
+    let scope_json =
+        serde_json::to_string(&request.config.scope).map_err(|error| error.to_string())?;
     let config_json = serde_json::to_string(&request.config).map_err(|error| error.to_string())?;
     let auth_metadata_json = serde_json::to_string(&serde_json::json!({
         "primary": request.primary_auth.metadata(),
@@ -135,8 +136,7 @@ pub fn start_web_security_scan(
         let mut registry = match state.web_security_cancellations.lock() {
             Ok(registry) => registry,
             Err(_) => {
-                let message =
-                    "web security cancellation registry lock is poisoned".to_string();
+                let message = "web security cancellation registry lock is poisoned".to_string();
                 let _ = with_database(&state, |database| {
                     AuthorizedWebSecurityStore::new(database)
                         .fail_scan(&scan.id, &message)
@@ -161,12 +161,7 @@ pub fn start_web_security_scan(
     let scan_id = scan.id.clone();
     let registry = Arc::clone(&state.web_security_cancellations);
     tauri::async_runtime::spawn_blocking(move || {
-        let result = run_scan_background(
-            database_path,
-            &scan_id,
-            request,
-            Arc::clone(&cancelled),
-        );
+        let result = run_scan_background(database_path, &scan_id, request, Arc::clone(&cancelled));
         if let Ok(mut entries) = registry.lock() {
             entries.remove(&scan_id);
         }
@@ -189,29 +184,30 @@ fn run_scan_background(
     let mut last_guided_phase = String::new();
     let mut execution_config = request.config.clone();
 
-    let preparation_result = (|| -> Result<Vec<web_security_testing::SourceEndpointSeed>, String> {
-        if let Some(session_id) = guided_session_id.as_deref() {
-            let selected_categories = guided
-                .selected_plan_categories(session_id)
-                .map_err(|error| error.to_string())?;
-            let state_changing_selected = guided
-                .has_selected_state_changing(session_id)
-                .map_err(|error| error.to_string())?;
-            execution_config = apply_approved_execution_policy(
-                &execution_config,
-                &ApprovedExecutionPolicy {
-                    selected_categories,
-                    state_changing_selected,
-                },
-            );
-        }
+    let preparation_result =
+        (|| -> Result<Vec<web_security_testing::SourceEndpointSeed>, String> {
+            if let Some(session_id) = guided_session_id.as_deref() {
+                let selected_categories = guided
+                    .selected_plan_categories(session_id)
+                    .map_err(|error| error.to_string())?;
+                let state_changing_selected = guided
+                    .has_selected_state_changing(session_id)
+                    .map_err(|error| error.to_string())?;
+                execution_config = apply_approved_execution_policy(
+                    &execution_config,
+                    &ApprovedExecutionPolicy {
+                        selected_categories,
+                        state_changing_selected,
+                    },
+                );
+            }
 
-        source_endpoint_seeds_for_project(
-            &database,
-            request.project_id.as_deref(),
-            &execution_config.scope.target_url,
-        )
-    })();
+            source_endpoint_seeds_for_project(
+                &database,
+                request.project_id.as_deref(),
+                &execution_config.scope.target_url,
+            )
+        })();
     let source_seeds = match preparation_result {
         Ok(source_seeds) => source_seeds,
         Err(error) => {
@@ -258,12 +254,16 @@ fn run_scan_background(
                         session_id,
                         "phase_changed",
                         phase,
-                        &format!("Guided security execution entered phase {}.", phase.replace('_', " ")),
+                        &format!(
+                            "Guided security execution entered phase {}.",
+                            phase.replace('_', " ")
+                        ),
                         &serde_json::json!({
                             "endpoints_discovered": progress.endpoints_discovered,
                             "requests_performed": progress.requests_performed,
                             "findings_observed": progress.findings_observed,
-                        }).to_string(),
+                        })
+                        .to_string(),
                     );
                 }
             }
@@ -348,7 +348,8 @@ fn run_scan_background(
                         .map_err(|error| error.to_string())?;
                     persisted_findings += 1;
                     if let Some(session_id) = guided_session_id.as_deref() {
-                        let _ = guided.set_finding_lifecycle(&persisted.id, Some(session_id), "open");
+                        let _ =
+                            guided.set_finding_lifecycle(&persisted.id, Some(session_id), "open");
                         let _ = guided.correlate_source_candidates(&persisted.id, 5);
                         let _ = guided.append_activity(
                             session_id,
@@ -380,10 +381,7 @@ fn run_scan_background(
                             session_id,
                             "finding_classified",
                             "verification",
-                            &format!(
-                                "Finding classified as {} confidence.",
-                                persisted.confidence
-                            ),
+                            &format!("Finding classified as {} confidence.", persisted.confidence),
                             &serde_json::json!({
                                 "finding_id": &persisted.id,
                                 "severity": &persisted.severity,
@@ -437,12 +435,7 @@ fn run_scan_background(
                     Ok(())
                 }
                 Err(error) if cancelled.load(Ordering::SeqCst) => {
-                    mark_scan_cancelled(
-                        &store,
-                        &guided,
-                        guided_session_id.as_deref(),
-                        scan_id,
-                    )?;
+                    mark_scan_cancelled(&store, &guided, guided_session_id.as_deref(), scan_id)?;
                     Ok(())
                 }
                 Err(error) => {

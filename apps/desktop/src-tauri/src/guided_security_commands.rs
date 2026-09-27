@@ -3,10 +3,10 @@ use std::sync::{atomic::AtomicBool, Arc};
 
 use codetwin_core::{
     AuthorizedWebSecurityStore, Database, GuidedActivityRecord, GuidedFixPreparation,
-    GuidedPlanItemInput, GuidedPlanItemRecord,
-    GuidedRetestInput, GuidedRetestRecord, GuidedRiskGraph, GuidedScanComparison,
-    GuidedSecurityScorecard, GuidedSecuritySessionRecord, GuidedSecurityStore, GuidedSessionCreate,
-    GuidedSourceCandidate, PreparationCompletion, SecurityFixService,
+    GuidedPlanItemInput, GuidedPlanItemRecord, GuidedRetestInput, GuidedRetestRecord,
+    GuidedRiskGraph, GuidedScanComparison, GuidedSecurityScorecard, GuidedSecuritySessionRecord,
+    GuidedSecurityStore, GuidedSessionCreate, GuidedSourceCandidate, PreparationCompletion,
+    SecurityFixService,
 };
 use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
@@ -15,9 +15,7 @@ use web_security_testing::{
     ScanConfig, SecurityEnvironment, TargetedRetestRequest,
 };
 
-use crate::{
-    web_security_commands::source_endpoint_seeds_for_project, with_database, AppState,
-};
+use crate::{web_security_commands::source_endpoint_seeds_for_project, with_database, AppState};
 
 fn parse_parameter_locations(raw: &str) -> BTreeMap<String, Vec<String>> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
@@ -141,8 +139,8 @@ pub async fn prepare_guided_security_test(
                         }
                     }
                 }
-                let preflight_json =
-                    serde_json::to_string(&prepared.preflight).map_err(|error| error.to_string())?;
+                let preflight_json = serde_json::to_string(&prepared.preflight)
+                    .map_err(|error| error.to_string())?;
                 let map_json = serde_json::to_string(&prepared.application_map)
                     .map_err(|error| error.to_string())?;
                 let plan_json =
@@ -300,11 +298,7 @@ pub fn compare_guided_security_scans(
 ) -> Result<GuidedScanComparison, String> {
     with_database(&state, |database| {
         GuidedSecurityStore::new(database)
-            .compare_scans(
-                session_id.as_deref(),
-                &previous_scan_id,
-                &current_scan_id,
-            )
+            .compare_scans(session_id.as_deref(), &previous_scan_id, &current_scan_id)
             .map_err(|error| error.to_string())
     })
 }
@@ -511,10 +505,7 @@ pub fn list_guided_security_retests(
     })
 }
 
-fn validate_environment_policy(
-    environment: &str,
-    config: &ScanConfig,
-) -> Result<(), String> {
+fn validate_environment_policy(environment: &str, config: &ScanConfig) -> Result<(), String> {
     if environment != "authorized_production" {
         return Ok(());
     }
@@ -525,24 +516,16 @@ fn validate_environment_policy(
         );
     }
     if config.scope.enable_timing_probes {
-        return Err(
-            "authorized production Developer Mode cannot enable timing probes".to_string(),
-        );
+        return Err("authorized production Developer Mode cannot enable timing probes".to_string());
     }
     if config.scope.max_crawl_depth > 2 {
-        return Err(
-            "authorized production Developer Mode is capped at crawl depth 2".to_string(),
-        );
+        return Err("authorized production Developer Mode is capped at crawl depth 2".to_string());
     }
     if config.scope.max_requests > 350 {
-        return Err(
-            "authorized production Developer Mode is capped at 350 requests".to_string(),
-        );
+        return Err("authorized production Developer Mode is capped at 350 requests".to_string());
     }
     if config.scope.concurrency > 2 {
-        return Err(
-            "authorized production Developer Mode is capped at concurrency 2".to_string(),
-        );
+        return Err("authorized production Developer Mode is capped at concurrency 2".to_string());
     }
     if config.scope.timeout_ms > 5_000 {
         return Err(
@@ -566,7 +549,8 @@ fn validate_environment_policy(
     }
     if config.scope.allow_private_networks {
         return Err(
-            "authorized production Developer Mode cannot enable private-network targeting".to_string(),
+            "authorized production Developer Mode cannot enable private-network targeting"
+                .to_string(),
         );
     }
     Ok(())

@@ -114,9 +114,7 @@ pub async fn check_website(
 }
 
 #[tauri::command]
-pub fn workspace_summary(
-    state: tauri::State<'_, AppState>,
-) -> Result<WorkspaceSummary, String> {
+pub fn workspace_summary(state: tauri::State<'_, AppState>) -> Result<WorkspaceSummary, String> {
     with_database(&state, |database| {
         WorkspaceService::new(database)
             .summary()
@@ -150,9 +148,7 @@ pub fn search_workspace(
 }
 
 #[tauri::command]
-pub fn get_app_preferences(
-    state: tauri::State<'_, AppState>,
-) -> Result<AppPreferences, String> {
+pub fn get_app_preferences(state: tauri::State<'_, AppState>) -> Result<AppPreferences, String> {
     with_database(&state, |database| {
         WorkspaceService::new(database)
             .preferences()
@@ -173,9 +169,7 @@ pub fn save_app_preferences(
 }
 
 #[tauri::command]
-pub fn system_status(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<SystemStatusEntry>, String> {
+pub fn system_status(state: tauri::State<'_, AppState>) -> Result<Vec<SystemStatusEntry>, String> {
     with_database(&state, |database| {
         database
             .connection()

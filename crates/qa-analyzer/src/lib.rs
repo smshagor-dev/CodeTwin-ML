@@ -35,11 +35,7 @@ pub fn is_candidate_path(relative_path: &str) -> bool {
 
     if matches!(
         file_name,
-        "package.json"
-            | "pytest.ini"
-            | "pyproject.toml"
-            | "phpunit.xml"
-            | "phpunit.xml.dist"
+        "package.json" | "pytest.ini" | "pyproject.toml" | "phpunit.xml" | "phpunit.xml.dist"
     ) || file_name.starts_with("jest.config.")
         || file_name.starts_with("vitest.config.")
         || file_name.starts_with("playwright.config.")
@@ -48,13 +44,15 @@ pub fn is_candidate_path(relative_path: &str) -> bool {
         return true;
     }
 
-    if matches!(file_name.rsplit_once('.').map(|(_, ext)| ext), Some("js" | "jsx" | "ts" | "tsx"))
-        && (file_name.contains(".test.")
-            || file_name.contains(".spec.")
-            || normalized.contains("/__tests__/")
-            || normalized.starts_with("__tests__/")
-            || normalized.contains("/cypress/e2e/")
-            || normalized.starts_with("cypress/e2e/"))
+    if matches!(
+        file_name.rsplit_once('.').map(|(_, ext)| ext),
+        Some("js" | "jsx" | "ts" | "tsx")
+    ) && (file_name.contains(".test.")
+        || file_name.contains(".spec.")
+        || normalized.contains("/__tests__/")
+        || normalized.starts_with("__tests__/")
+        || normalized.contains("/cypress/e2e/")
+        || normalized.starts_with("cypress/e2e/"))
     {
         return true;
     }
@@ -130,7 +128,12 @@ fn detect_package_manifest(source: &str, detections: &mut BTreeSet<QaDetection>)
         return;
     };
 
-    for section in ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] {
+    for section in [
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ] {
         let Some(map) = value.get(section).and_then(Value::as_object) else {
             continue;
         };
@@ -281,10 +284,23 @@ mod tests {
 
     #[test]
     fn detects_python_rust_go_and_php_tests() {
-        assert!(detect_artifacts("tests/test_api.py", "import pytest").iter().any(|item| item.framework == "pytest"));
-        assert!(detect_artifacts("src/lib.rs", "#[cfg(test)] mod tests { #[test] fn ok() {} }").iter().any(|item| item.framework == "rust_test"));
-        assert!(detect_artifacts("pkg/store_test.go", "package pkg").iter().any(|item| item.framework == "go_test"));
-        assert!(detect_artifacts("tests/UserTest.php", "use PHPUnit\\Framework\\TestCase;").iter().any(|item| item.framework == "phpunit"));
+        assert!(detect_artifacts("tests/test_api.py", "import pytest")
+            .iter()
+            .any(|item| item.framework == "pytest"));
+        assert!(detect_artifacts(
+            "src/lib.rs",
+            "#[cfg(test)] mod tests { #[test] fn ok() {} }"
+        )
+        .iter()
+        .any(|item| item.framework == "rust_test"));
+        assert!(detect_artifacts("pkg/store_test.go", "package pkg")
+            .iter()
+            .any(|item| item.framework == "go_test"));
+        assert!(
+            detect_artifacts("tests/UserTest.php", "use PHPUnit\\Framework\\TestCase;")
+                .iter()
+                .any(|item| item.framework == "phpunit")
+        );
     }
 
     #[test]

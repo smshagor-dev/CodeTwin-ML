@@ -267,11 +267,20 @@ fn split_sql_statements(source: &str) -> Vec<SqlStatement> {
     output
 }
 
-fn push_statement(output: &mut Vec<SqlStatement>, current: &mut String, start_line: usize, end_line: usize) {
+fn push_statement(
+    output: &mut Vec<SqlStatement>,
+    current: &mut String,
+    start_line: usize,
+    end_line: usize,
+) {
     let text = current.trim().to_string();
     current.clear();
     if !text.is_empty() {
-        output.push(SqlStatement { text, start_line, end_line });
+        output.push(SqlStatement {
+            text,
+            start_line,
+            end_line,
+        });
     }
 }
 
@@ -328,7 +337,8 @@ fn is_destructive_statement(tokens: &[String]) -> bool {
     starts_with_tokens(tokens, &["DROP", "TABLE"])
         || starts_with_tokens(tokens, &["DROP", "DATABASE"])
         || starts_with_tokens(tokens, &["TRUNCATE", "TABLE"])
-        || (starts_with_tokens(tokens, &["ALTER", "TABLE"]) && contains_sequence(tokens, &["DROP", "COLUMN"]))
+        || (starts_with_tokens(tokens, &["ALTER", "TABLE"])
+            && contains_sequence(tokens, &["DROP", "COLUMN"]))
 }
 
 fn destructive_label(tokens: &[String]) -> &'static str {
@@ -345,17 +355,26 @@ fn destructive_label(tokens: &[String]) -> &'static str {
 
 fn pragma_foreign_keys_disabled(tokens: &[String]) -> bool {
     starts_with_tokens(tokens, &["PRAGMA", "FOREIGN_KEYS"])
-        && tokens.iter().any(|token| matches!(token.as_str(), "OFF" | "0"))
+        && tokens
+            .iter()
+            .any(|token| matches!(token.as_str(), "OFF" | "0"))
 }
 
 fn starts_with_tokens(tokens: &[String], expected: &[&str]) -> bool {
     tokens.len() >= expected.len()
-        && tokens.iter().take(expected.len()).map(String::as_str).eq(expected.iter().copied())
+        && tokens
+            .iter()
+            .take(expected.len())
+            .map(String::as_str)
+            .eq(expected.iter().copied())
 }
 
 fn contains_sequence(tokens: &[String], expected: &[&str]) -> bool {
     tokens.windows(expected.len()).any(|window| {
-        window.iter().map(String::as_str).eq(expected.iter().copied())
+        window
+            .iter()
+            .map(String::as_str)
+            .eq(expected.iter().copied())
     })
 }
 
@@ -417,8 +436,12 @@ fn brace_delta(line: &str) -> isize {
 
 fn sort_and_dedup(observations: &mut Vec<DatabaseObservation>) {
     observations.sort_by(|left, right| {
-        (left.start_line, left.end_line, &left.rule_id, &left.anchor)
-            .cmp(&(right.start_line, right.end_line, &right.rule_id, &right.anchor))
+        (left.start_line, left.end_line, &left.rule_id, &left.anchor).cmp(&(
+            right.start_line,
+            right.end_line,
+            &right.rule_id,
+            &right.anchor,
+        ))
     });
     observations.dedup_by(|left, right| {
         left.rule_id == right.rule_id
@@ -435,20 +458,32 @@ mod tests {
     #[test]
     fn detects_destructive_and_unscoped_sql() {
         let findings = analyze_sql("-- release\nDELETE FROM audit_log;\nALTER TABLE users DROP COLUMN legacy_token;\nUPDATE users SET active = 1 WHERE id = 7;\n");
-        assert_eq!(findings.iter().filter(|item| item.rule_id == "database.unscoped_data_write").count(), 1);
-        assert!(findings.iter().any(|item| item.rule_id == "database.destructive_migration"));
+        assert_eq!(
+            findings
+                .iter()
+                .filter(|item| item.rule_id == "database.unscoped_data_write")
+                .count(),
+            1
+        );
+        assert!(findings
+            .iter()
+            .any(|item| item.rule_id == "database.destructive_migration"));
     }
 
     #[test]
     fn where_inside_literal_does_not_scope_update() {
         let findings = analyze_sql("UPDATE jobs SET note = 'WHERE id = 1';");
-        assert!(findings.iter().any(|item| item.rule_id == "database.unscoped_data_write"));
+        assert!(findings
+            .iter()
+            .any(|item| item.rule_id == "database.unscoped_data_write"));
     }
 
     #[test]
     fn detects_sqlite_foreign_key_disable() {
         let findings = analyze_sql("PRAGMA foreign_keys = OFF;");
-        assert!(findings.iter().any(|item| item.rule_id == "database.sqlite_foreign_keys_disabled"));
+        assert!(findings
+            .iter()
+            .any(|item| item.rule_id == "database.sqlite_foreign_keys_disabled"));
     }
 
     #[test]

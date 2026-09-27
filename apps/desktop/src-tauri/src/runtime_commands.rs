@@ -9,7 +9,10 @@ use tauri::Manager;
 static RUNTIME_ANALYSIS_RUNNING: AtomicBool = AtomicBool::new(false);
 
 fn open_database(app: &tauri::AppHandle) -> Result<Database, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     std::fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
     Database::open(app_data_dir.join("codetwin.sqlite3")).map_err(|error| error.to_string())
 }

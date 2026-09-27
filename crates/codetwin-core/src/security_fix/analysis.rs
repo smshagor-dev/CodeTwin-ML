@@ -50,9 +50,7 @@ impl<'a> SecurityFixService<'a> {
         }
 
         let Some(project_id) = finding.project_id.as_deref() else {
-            reasons.push(
-                "The finding is not associated with an imported CodeTwin project.".into(),
-            );
+            reasons.push("The finding is not associated with an imported CodeTwin project.".into());
             return Ok(FixEligibilityAssessment {
                 finding_id: finding_id.to_string(),
                 result: FixEligibility::ManualRemediation,
@@ -107,7 +105,8 @@ impl<'a> SecurityFixService<'a> {
             .language
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
-        let bounded_patch = super::patch::propose_bounded_patch(&finding, &snapshot.content).is_some();
+        let bounded_patch =
+            super::patch::propose_bounded_patch(&finding, &snapshot.content).is_some();
 
         let result = if is_configuration_category(&finding.category) {
             if best.confidence >= 0.55 {
@@ -134,7 +133,8 @@ impl<'a> SecurityFixService<'a> {
             FixEligibility::GuidedFixCandidate
         } else {
             reasons.push(
-                "Source correlation or category support is insufficient for a generated edit.".into(),
+                "Source correlation or category support is insufficient for a generated edit."
+                    .into(),
             );
             FixEligibility::ManualRemediation
         };
@@ -177,7 +177,10 @@ impl<'a> SecurityFixService<'a> {
                 .and_then(|symbol_id| self.symbol_range(symbol_id).ok().flatten());
             let mut reasoning = vec![
                 candidate.rationale.clone(),
-                format!("Runtime endpoint: {} {}", finding.method, finding.endpoint_url),
+                format!(
+                    "Runtime endpoint: {} {}",
+                    finding.method, finding.endpoint_url
+                ),
             ];
             if let Some(parameter) = finding.parameter_name.as_deref() {
                 reasoning.push(format!("Affected runtime parameter: {parameter}"));
@@ -425,10 +428,7 @@ impl<'a> SecurityFixService<'a> {
             .ok_or_else(|| SecurityFixError::FindingNotFound(finding_id.to_string()))
     }
 
-    pub(crate) fn next_attempt_number(
-        &self,
-        finding_id: &str,
-    ) -> Result<usize, SecurityFixError> {
+    pub(crate) fn next_attempt_number(&self, finding_id: &str) -> Result<usize, SecurityFixError> {
         let value: i64 = self.database.connection().query_row(
             "SELECT COALESCE(MAX(attempt_number),0)+1 FROM security_fix_attempts WHERE finding_id=?1",
             [finding_id],
@@ -667,12 +667,7 @@ pub(crate) fn is_supported_fix_category(category: &str) -> bool {
 pub(crate) fn is_configuration_category(category: &str) -> bool {
     matches!(
         category,
-        "cors"
-            | "csp"
-            | "hsts"
-            | "security_headers"
-            | "session_cookie"
-            | "sensitive_cache_control"
+        "cors" | "csp" | "hsts" | "security_headers" | "session_cookie" | "sensitive_cache_control"
     )
 }
 

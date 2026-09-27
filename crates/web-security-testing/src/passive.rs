@@ -13,7 +13,11 @@ pub fn analyze_response(
 ) -> Vec<FindingObservation> {
     let mut findings = Vec::new();
     let headers = headers_map(response);
-    let content_type = response.content_type.clone().unwrap_or_default().to_ascii_lowercase();
+    let content_type = response
+        .content_type
+        .clone()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let body = String::from_utf8_lossy(&response.body);
     let body_lower = body.to_ascii_lowercase();
 
@@ -66,7 +70,9 @@ pub fn analyze_response(
                     "low",
                     "Likely",
                     "Cookie may be missing HttpOnly",
-                    &format!("Cookie {cookie_name} was set without an observed HttpOnly attribute."),
+                    &format!(
+                        "Cookie {cookie_name} was set without an observed HttpOnly attribute."
+                    ),
                     "Script-readable session cookies increase the impact of client-side injection.",
                     "Set HttpOnly on session cookies that do not require JavaScript access.",
                     response_evidence("Set-Cookie attributes", &endpoint.method, target, response),
@@ -90,8 +96,13 @@ pub fn analyze_response(
 
         let authenticated = response_header(response, "set-cookie").is_some();
         if authenticated {
-            let cache = headers.get("cache-control").map(String::as_str).unwrap_or("");
-            if !cache.to_ascii_lowercase().contains("no-store") && !cache.to_ascii_lowercase().contains("private") {
+            let cache = headers
+                .get("cache-control")
+                .map(String::as_str)
+                .unwrap_or("");
+            if !cache.to_ascii_lowercase().contains("no-store")
+                && !cache.to_ascii_lowercase().contains("private")
+            {
                 findings.push(simple(
                     target,
                     endpoint,
@@ -197,14 +208,24 @@ pub fn analyze_form(
     hidden_names: &[String],
     checks: &CheckConfig,
 ) -> Vec<FindingObservation> {
-    if !checks.csrf || !matches!(endpoint.method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE") {
+    if !checks.csrf
+        || !matches!(
+            endpoint.method.as_str(),
+            "POST" | "PUT" | "PATCH" | "DELETE"
+        )
+    {
         return Vec::new();
     }
     let token_present = hidden_names.iter().any(|name| {
         let lower = name.to_ascii_lowercase();
-        ["csrf", "xsrf", "requestverificationtoken", "authenticity_token"]
-            .iter()
-            .any(|needle| lower.contains(needle))
+        [
+            "csrf",
+            "xsrf",
+            "requestverificationtoken",
+            "authenticity_token",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
     });
     if token_present {
         return Vec::new();

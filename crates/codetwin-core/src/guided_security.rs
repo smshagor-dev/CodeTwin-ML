@@ -116,7 +116,6 @@ pub struct GuidedRetestInput<'a> {
     pub detail_json: &'a str,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GuidedActivityRecord {
     pub id: String,
@@ -286,8 +285,7 @@ impl<'a> GuidedSecurityStore<'a> {
         &self,
         input: PreparationCompletion<'_>,
     ) -> Result<GuidedSecuritySessionRecord, GuidedSecurityError> {
-        let preflight_value =
-            serde_json::from_str::<serde_json::Value>(input.preflight_json)?;
+        let preflight_value = serde_json::from_str::<serde_json::Value>(input.preflight_json)?;
         let application_map_value =
             serde_json::from_str::<serde_json::Value>(input.application_map_json)?;
         let plan_value = serde_json::from_str::<serde_json::Value>(input.plan_json)?;
@@ -342,7 +340,9 @@ impl<'a> GuidedSecurityStore<'a> {
                     item.risk,
                     i64::from(item.selected),
                     bounded_text(&item.reason, 4_000),
-                    item.skip_reason.as_deref().map(|value| bounded_text(value, 4_000)),
+                    item.skip_reason
+                        .as_deref()
+                        .map(|value| bounded_text(value, 4_000)),
                 ],
             )?;
         }
@@ -512,7 +512,11 @@ impl<'a> GuidedSecurityStore<'a> {
                                   THEN COALESCE(finished_at,CURRENT_TIMESTAMP) ELSE finished_at END,
                  updated_at=CURRENT_TIMESTAMP
              WHERE id=?1",
-            params![session_id, next, last_error.map(|value| bounded_text(value, 2_000))],
+            params![
+                session_id,
+                next,
+                last_error.map(|value| bounded_text(value, 2_000))
+            ],
         )?;
         if matches!(next, "completed" | "failed" | "cancelled") {
             self.append_activity(
@@ -585,9 +589,8 @@ impl<'a> GuidedSecurityStore<'a> {
                       endpoint_url, category
              LIMIT ?2",
         )?;
-        let rows = statement.query_map(
-            params![session_id, bounded_limit(limit) as i64],
-            |row| {
+        let rows =
+            statement.query_map(params![session_id, bounded_limit(limit) as i64], |row| {
                 Ok(GuidedPlanItemRecord {
                     id: row.get(0)?,
                     session_id: row.get(1)?,
@@ -602,8 +605,7 @@ impl<'a> GuidedSecurityStore<'a> {
                     skip_reason: row.get(10)?,
                     created_at: row.get(11)?,
                 })
-            },
-        )?;
+            })?;
         let mut output = Vec::new();
         for row in rows {
             output.push(row?);
@@ -713,9 +715,8 @@ impl<'a> GuidedSecurityStore<'a> {
              FROM guided_security_activity WHERE session_id=?1
              ORDER BY sequence ASC LIMIT ?2",
         )?;
-        let rows = statement.query_map(
-            params![session_id, bounded_limit(limit) as i64],
-            |row| {
+        let rows =
+            statement.query_map(params![session_id, bounded_limit(limit) as i64], |row| {
                 Ok(GuidedActivityRecord {
                     id: row.get(0)?,
                     session_id: row.get(1)?,
@@ -726,8 +727,7 @@ impl<'a> GuidedSecurityStore<'a> {
                     detail_json: row.get(6)?,
                     created_at: row.get(7)?,
                 })
-            },
-        )?;
+            })?;
         let mut output = Vec::new();
         for row in rows {
             output.push(row?);
@@ -752,14 +752,20 @@ impl<'a> GuidedSecurityStore<'a> {
             .flatten()
             .filter(|value| {
                 value.len() >= 2
-                    && value.chars().any(|character| character.is_ascii_alphabetic())
+                    && value
+                        .chars()
+                        .any(|character| character.is_ascii_alphabetic())
                     && !matches!(*value, "api" | "v1" | "v2" | "www")
             })
             .map(|value| value.to_ascii_lowercase())
             .collect();
         let terminal = segments.last().cloned().unwrap_or_default();
         let parent = segments.iter().rev().nth(1).cloned().unwrap_or_default();
-        let parameter = finding.parameter_name.clone().unwrap_or_default().to_ascii_lowercase();
+        let parameter = finding
+            .parameter_name
+            .clone()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         let method = finding.method.to_ascii_lowercase();
 
         let mut statement = self.database.connection().prepare(
@@ -892,7 +898,8 @@ impl<'a> GuidedSecurityStore<'a> {
                     item.score,
                     bounded_text(
                         &if item.reasons.is_empty() {
-                            "Heuristic source correlation from the imported project index.".to_string()
+                            "Heuristic source correlation from the imported project index."
+                                .to_string()
                         } else {
                             item.reasons.join("; ")
                         },
@@ -919,9 +926,8 @@ impl<'a> GuidedSecurityStore<'a> {
              WHERE g.finding_id=?1
              ORDER BY g.rank ASC LIMIT ?2",
         )?;
-        let rows = statement.query_map(
-            params![finding_id, bounded_limit(limit) as i64],
-            |row| {
+        let rows =
+            statement.query_map(params![finding_id, bounded_limit(limit) as i64], |row| {
                 Ok(GuidedSourceCandidate {
                     id: row.get(0)?,
                     finding_id: row.get(1)?,
@@ -934,8 +940,7 @@ impl<'a> GuidedSecurityStore<'a> {
                     rationale: row.get(8)?,
                     created_at: row.get(9)?,
                 })
-            },
-        )?;
+            })?;
         let mut output = Vec::new();
         for row in rows {
             output.push(row?);
@@ -1033,13 +1038,16 @@ impl<'a> GuidedSecurityStore<'a> {
                 .to_string(),
             )?;
         }
-        self.database.connection().query_row(
-            "SELECT id, finding_id, session_id, status, original_confidence,
+        self.database
+            .connection()
+            .query_row(
+                "SELECT id, finding_id, session_id, status, original_confidence,
                     observed_confidence, requests_performed, detail_json, created_at
              FROM guided_security_retests WHERE id=?1",
-            [id],
-            map_retest,
-        ).map_err(Into::into)
+                [id],
+                map_retest,
+            )
+            .map_err(Into::into)
     }
 
     pub fn list_retests(
@@ -1053,10 +1061,8 @@ impl<'a> GuidedSecurityStore<'a> {
              FROM guided_security_retests WHERE finding_id=?1
              ORDER BY created_at DESC, id DESC LIMIT ?2",
         )?;
-        let rows = statement.query_map(
-            params![finding_id, bounded_limit(limit) as i64],
-            map_retest,
-        )?;
+        let rows =
+            statement.query_map(params![finding_id, bounded_limit(limit) as i64], map_retest)?;
         let mut output = Vec::new();
         for row in rows {
             output.push(row?);
@@ -1080,22 +1086,21 @@ impl<'a> GuidedSecurityStore<'a> {
         let previous_keys: BTreeSet<String> = previous.keys().cloned().collect();
         let current_keys: BTreeSet<String> = current.keys().cloned().collect();
 
-        let new_findings: Vec<String> = current_keys
-            .difference(&previous_keys)
-            .cloned()
-            .collect();
-        let resolved_findings: Vec<String> = previous_keys
-            .difference(&current_keys)
-            .cloned()
-            .collect();
-        let persistent_findings: Vec<String> = previous_keys
-            .intersection(&current_keys)
-            .cloned()
-            .collect();
+        let new_findings: Vec<String> = current_keys.difference(&previous_keys).cloned().collect();
+        let resolved_findings: Vec<String> =
+            previous_keys.difference(&current_keys).cloned().collect();
+        let persistent_findings: Vec<String> =
+            previous_keys.intersection(&current_keys).cloned().collect();
         let mut changed_confidence = Vec::new();
         for fingerprint in &persistent_findings {
-            let before = previous.get(fingerprint).map(|value| value.1.clone()).unwrap_or_default();
-            let after = current.get(fingerprint).map(|value| value.1.clone()).unwrap_or_default();
+            let before = previous
+                .get(fingerprint)
+                .map(|value| value.1.clone())
+                .unwrap_or_default();
+            let after = current
+                .get(fingerprint)
+                .map(|value| value.1.clone())
+                .unwrap_or_default();
             if before != after {
                 changed_confidence.push(json!({
                     "fingerprint": fingerprint,
@@ -1177,14 +1182,24 @@ impl<'a> GuidedSecurityStore<'a> {
                 rejected_anomalies: 0,
                 by_severity: BTreeMap::new(),
                 authentication_context_supplied: false,
-                authenticated_endpoints_mapped: mapped_auth_endpoints(&session.application_map_json),
-                planned_authorization_checks: count_plan(self.database, session_id, "access_control")?,
+                authenticated_endpoints_mapped: mapped_auth_endpoints(
+                    &session.application_map_json,
+                ),
+                planned_authorization_checks: count_plan(
+                    self.database,
+                    session_id,
+                    "access_control",
+                )?,
                 authorization_plan_coverage_percent: plan_coverage(
                     self.database,
                     session_id,
                     &["access_control"],
                 )?,
-                planned_api_validation_checks: count_plan(self.database, session_id, "api_validation")?,
+                planned_api_validation_checks: count_plan(
+                    self.database,
+                    session_id,
+                    "api_validation",
+                )?,
                 api_validation_plan_coverage_percent: plan_coverage(
                     self.database,
                     session_id,
@@ -1219,7 +1234,9 @@ impl<'a> GuidedSecurityStore<'a> {
         let mut statement = self.database.connection().prepare(
             "SELECT severity, COUNT(*) FROM web_security_findings WHERE scan_id=?1 GROUP BY severity",
         )?;
-        for row in statement.query_map([scan_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))? {
+        for row in statement.query_map([scan_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })? {
             let (severity, count) = row?;
             by_severity.insert(severity, count as usize);
         }
@@ -1243,7 +1260,8 @@ impl<'a> GuidedSecurityStore<'a> {
             [scan_id],
             |row| row.get(0),
         )?;
-        let auth_value: serde_json::Value = serde_json::from_str(&auth_metadata).unwrap_or_default();
+        let auth_value: serde_json::Value =
+            serde_json::from_str(&auth_metadata).unwrap_or_default();
         let auth_supplied = auth_value
             .pointer("/primary/cookie_supplied")
             .and_then(serde_json::Value::as_bool)
@@ -1302,10 +1320,7 @@ impl<'a> GuidedSecurityStore<'a> {
         })
     }
 
-    pub fn risk_graph(
-        &self,
-        session_id: &str,
-    ) -> Result<GuidedRiskGraph, GuidedSecurityError> {
+    pub fn risk_graph(&self, session_id: &str) -> Result<GuidedRiskGraph, GuidedSecurityError> {
         let session = self
             .get_session(session_id)?
             .ok_or_else(|| GuidedSecurityError::SessionNotFound(session_id.to_string()))?;
@@ -1320,7 +1335,8 @@ impl<'a> GuidedSecurityStore<'a> {
             [scan_id],
             |row| row.get(0),
         )?;
-        let auth_value: serde_json::Value = serde_json::from_str(&auth_metadata).unwrap_or_default();
+        let auth_value: serde_json::Value =
+            serde_json::from_str(&auth_metadata).unwrap_or_default();
         let authenticated = auth_value
             .pointer("/primary/cookie_supplied")
             .and_then(serde_json::Value::as_bool)
@@ -1407,12 +1423,11 @@ impl<'a> GuidedSecurityStore<'a> {
         finding_id: &str,
     ) -> Result<GuidedFixPreparation, GuidedSecurityError> {
         let finding = self.finding_context(finding_id)?;
-        let project_id = finding
-            .project_id
-            .clone()
-            .ok_or_else(|| GuidedSecurityError::InvalidConfig(
+        let project_id = finding.project_id.clone().ok_or_else(|| {
+            GuidedSecurityError::InvalidConfig(
                 "Prepare Fix requires an associated imported CodeTwin project".to_string(),
-            ))?;
+            )
+        })?;
         let candidates = self.correlate_source_candidates(finding_id, 5)?;
         if candidates.is_empty() {
             return Err(GuidedSecurityError::InvalidConfig(
@@ -1471,10 +1486,10 @@ impl<'a> GuidedSecurityStore<'a> {
              ORDER BY updated_at, finding_id
              LIMIT ?2",
         )?;
-        let rows = statement.query_map(
-            params![session_id, bounded_limit(limit) as i64],
-            |row| row.get::<_, String>(0),
-        )?;
+        let rows = statement
+            .query_map(params![session_id, bounded_limit(limit) as i64], |row| {
+                row.get::<_, String>(0)
+            })?;
         let mut output = Vec::new();
         for row in rows {
             output.push(row?);
@@ -1593,31 +1608,34 @@ impl<'a> GuidedSecurityStore<'a> {
     }
 
     fn finding_context(&self, finding_id: &str) -> Result<FindingContext, GuidedSecurityError> {
-        self.database.connection().query_row(
-            "SELECT ws.project_id, gs.id,
+        self.database
+            .connection()
+            .query_row(
+                "SELECT ws.project_id, gs.id,
                     wf.category, wf.confidence, wf.endpoint_url, wf.method,
                     wf.parameter_name, wf.title, wf.description, wf.remediation
              FROM web_security_findings wf
              JOIN web_security_scans ws ON ws.id=wf.scan_id
              LEFT JOIN guided_security_sessions gs ON gs.scan_id=wf.scan_id
              WHERE wf.id=?1",
-            [finding_id],
-            |row| {
-                Ok(FindingContext {
-                    project_id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    category: row.get(2)?,
-                    confidence: row.get(3)?,
-                    endpoint_url: row.get(4)?,
-                    method: row.get(5)?,
-                    parameter_name: row.get(6)?,
-                    title: row.get(7)?,
-                    description: row.get(8)?,
-                    remediation: row.get(9)?,
-                })
-            },
-        ).optional()?
-        .ok_or_else(|| GuidedSecurityError::FindingNotFound(finding_id.to_string()))
+                [finding_id],
+                |row| {
+                    Ok(FindingContext {
+                        project_id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        category: row.get(2)?,
+                        confidence: row.get(3)?,
+                        endpoint_url: row.get(4)?,
+                        method: row.get(5)?,
+                        parameter_name: row.get(6)?,
+                        title: row.get(7)?,
+                        description: row.get(8)?,
+                        remediation: row.get(9)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or_else(|| GuidedSecurityError::FindingNotFound(finding_id.to_string()))
     }
 
     fn random_id(&self, prefix: &str) -> Result<String, GuidedSecurityError> {
@@ -1646,10 +1664,7 @@ fn reject_sensitive_json(
     fn visit(value: &serde_json::Value) -> bool {
         match value {
             serde_json::Value::Object(map) => map.iter().any(|(key, value)| {
-                let normalized = key
-                    .trim()
-                    .to_ascii_lowercase()
-                    .replace('-', "_");
+                let normalized = key.trim().to_ascii_lowercase().replace('-', "_");
                 matches!(
                     normalized.as_str(),
                     "authorization"
@@ -1794,11 +1809,8 @@ fn random_id_from_connection(
     connection: &rusqlite::Connection,
     prefix: &str,
 ) -> Result<String, GuidedSecurityError> {
-    let random: String = connection.query_row(
-        "SELECT lower(hex(randomblob(16)))",
-        [],
-        |row| row.get(0),
-    )?;
+    let random: String =
+        connection.query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))?;
     Ok(format!("{prefix}_{random}"))
 }
 
@@ -1813,7 +1825,11 @@ fn bounded_text(value: &str, max: usize) -> String {
 fn mapped_auth_endpoints(application_map_json: &str) -> usize {
     serde_json::from_str::<serde_json::Value>(application_map_json)
         .ok()
-        .and_then(|value| value.get("authenticated_endpoint_count").and_then(serde_json::Value::as_u64))
+        .and_then(|value| {
+            value
+                .get("authenticated_endpoint_count")
+                .and_then(serde_json::Value::as_u64)
+        })
         .unwrap_or(0) as usize
 }
 
@@ -1825,15 +1841,13 @@ fn plan_coverage(
     let mut total = 0i64;
     let mut selected = 0i64;
     for category in categories {
-        let (category_total, category_selected): (i64, i64) = database
-            .connection()
-            .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN selected=1 THEN 1 ELSE 0 END),0)
+        let (category_total, category_selected): (i64, i64) = database.connection().query_row(
+            "SELECT COUNT(*), COALESCE(SUM(CASE WHEN selected=1 THEN 1 ELSE 0 END),0)
                  FROM guided_security_plan_items
                  WHERE session_id=?1 AND category=?2",
-                params![session_id, category],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
+            params![session_id, category],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
         total += category_total;
         selected += category_selected;
     }
@@ -1857,10 +1871,7 @@ fn count_plan(
     Ok(count.max(0) as usize)
 }
 
-fn count_input_plan(
-    database: &Database,
-    session_id: &str,
-) -> Result<usize, GuidedSecurityError> {
+fn count_input_plan(database: &Database, session_id: &str) -> Result<usize, GuidedSecurityError> {
     let count: i64 = database.connection().query_row(
         "SELECT COUNT(*) FROM guided_security_plan_items
          WHERE session_id=?1 AND selected=1
@@ -1892,9 +1903,7 @@ mod tests {
         GuidedPlanItemInput, GuidedRetestInput, GuidedSecurityStore, GuidedSessionCreate,
         PreparationCompletion,
     };
-    use crate::{
-        AuthorizedWebSecurityStore, Database, WebFindingInput, WebScanCreate,
-    };
+    use crate::{AuthorizedWebSecurityStore, Database, WebFindingInput, WebScanCreate};
 
     fn create() -> GuidedSessionCreate {
         GuidedSessionCreate {
@@ -1971,11 +1980,7 @@ mod tests {
             .expect("prepared");
         assert_eq!(prepared.status, "awaiting_approval");
         assert!(store
-            .assert_execution_allowed(
-                &session.id,
-                "http://localhost:3000",
-                &create().config_json,
-            )
+            .assert_execution_allowed(&session.id, "http://localhost:3000", &create().config_json,)
             .is_err());
         let approved = store.approve_session(&session.id).expect("approved");
         assert_eq!(approved.status, "approved");
@@ -1987,11 +1992,7 @@ mod tests {
         assert!(!selected_categories.contains("sql_injection"));
 
         assert!(store
-            .assert_execution_allowed(
-                &session.id,
-                "http://localhost:3000",
-                &create().config_json,
-            )
+            .assert_execution_allowed(&session.id, "http://localhost:3000", &create().config_json,)
             .is_ok());
         assert!(store
             .assert_execution_allowed(
@@ -2094,11 +2095,8 @@ mod tests {
             )
             .expect("project");
         let store = GuidedSecurityStore::new(&database);
-        let (scan_id, finding_id) = create_scan_with_finding(
-            &database,
-            "http://localhost:3000/search?q=hello",
-            "Likely",
-        );
+        let (scan_id, finding_id) =
+            create_scan_with_finding(&database, "http://localhost:3000/search?q=hello", "Likely");
         database
             .connection()
             .execute(
@@ -2106,10 +2104,12 @@ mod tests {
                 [&scan_id],
             )
             .expect("associate project");
-        let session = store.create_session(&GuidedSessionCreate {
-            project_id: Some("project-fix".into()),
-            ..create()
-        }).expect("session");
+        let session = store
+            .create_session(&GuidedSessionCreate {
+                project_id: Some("project-fix".into()),
+                ..create()
+            })
+            .expect("session");
         store
             .complete_preparation(PreparationCompletion {
                 session_id: &session.id,
@@ -2211,11 +2211,8 @@ mod tests {
     fn finding_lifecycle_and_retest_history_are_persistent() {
         let database = Database::open_in_memory().expect("database");
         let store = GuidedSecurityStore::new(&database);
-        let (scan_id, finding_id) = create_scan_with_finding(
-            &database,
-            "http://localhost:3000/search?q=hello",
-            "Likely",
-        );
+        let (scan_id, finding_id) =
+            create_scan_with_finding(&database, "http://localhost:3000/search?q=hello", "Likely");
         let session = store.create_session(&create()).expect("session");
         store
             .complete_preparation(PreparationCompletion {
@@ -2275,11 +2272,8 @@ mod tests {
     fn retest_before_fix_application_preserves_open_lifecycle() {
         let database = Database::open_in_memory().expect("database");
         let store = GuidedSecurityStore::new(&database);
-        let (_, finding_id) = create_scan_with_finding(
-            &database,
-            "http://localhost:3000/search?q=hello",
-            "Likely",
-        );
+        let (_, finding_id) =
+            create_scan_with_finding(&database, "http://localhost:3000/search?q=hello", "Likely");
         store
             .set_finding_lifecycle(&finding_id, None, "open")
             .expect("open lifecycle");
@@ -2303,7 +2297,10 @@ mod tests {
             )
             .expect("lifecycle");
         assert_eq!(lifecycle, "open");
-        assert_eq!(store.list_retests(&finding_id, 10).expect("history").len(), 1);
+        assert_eq!(
+            store.list_retests(&finding_id, 10).expect("history").len(),
+            1
+        );
     }
 
     #[test]
@@ -2356,7 +2353,17 @@ mod tests {
             )
             .expect("complete second");
         assert_eq!(store.recover_interrupted_sessions().expect("recover"), 1);
-        assert_eq!(store.get_session(&first.id).expect("first").unwrap().status, "failed");
-        assert_eq!(store.get_session(&second.id).expect("second").unwrap().status, "completed");
+        assert_eq!(
+            store.get_session(&first.id).expect("first").unwrap().status,
+            "failed"
+        );
+        assert_eq!(
+            store
+                .get_session(&second.id)
+                .expect("second")
+                .unwrap()
+                .status,
+            "completed"
+        );
     }
 }

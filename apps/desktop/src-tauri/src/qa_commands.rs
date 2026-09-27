@@ -53,7 +53,10 @@ fn hash_trusted_toolchain(value: &str) -> Result<String, String> {
 }
 
 fn open_database(app: &tauri::AppHandle) -> Result<Database, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     std::fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
     Database::open(app_data_dir.join("codetwin.sqlite3")).map_err(|error| error.to_string())
 }
@@ -114,16 +117,13 @@ pub fn qa_discovery_history(
         .map_err(|error| error.to_string())
 }
 
-
 #[tauri::command]
 pub fn qa_toolchain_sha256(path: String) -> Result<String, String> {
     hash_trusted_toolchain(&path)
 }
 
 #[tauri::command]
-pub fn qa_execution_availability(
-    app: tauri::AppHandle,
-) -> Result<QaExecutionAvailability, String> {
+pub fn qa_execution_availability(app: tauri::AppHandle) -> Result<QaExecutionAvailability, String> {
     let database = open_database(&app)?;
     Ok(QaExecutionService::new(&database).availability())
 }

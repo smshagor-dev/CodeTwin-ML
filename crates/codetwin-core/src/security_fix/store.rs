@@ -183,9 +183,7 @@ impl<'a> SecurityFixService<'a> {
             return Err(SecurityFixError::AttemptNotFound(attempt_id.to_string()));
         }
         if !matches!(input.status, "PASS" | "FAIL" | "NOT_EXECUTED") {
-            return Err(SecurityFixError::State(
-                "invalid validation status".into(),
-            ));
+            return Err(SecurityFixError::State("invalid validation status".into()));
         }
         if !matches!(
             input.classification,
@@ -220,16 +218,17 @@ impl<'a> SecurityFixService<'a> {
                 serde_json::to_string(input.targets)?,
                 input.status,
                 input.exit_code,
-                input.duration_ms.and_then(|value| i64::try_from(value).ok()),
+                input
+                    .duration_ms
+                    .and_then(|value| i64::try_from(value).ok()),
                 input.classification,
                 redact_sensitive_summary(input.stdout_summary, 4_096),
                 redact_sensitive_summary(input.stderr_summary, 4_096),
             ],
         )?;
-        self.validation_by_id(&id)?
-            .ok_or_else(|| SecurityFixError::State(
-                "validation result disappeared after persistence".into(),
-            ))
+        self.validation_by_id(&id)?.ok_or_else(|| {
+            SecurityFixError::State("validation result disappeared after persistence".into())
+        })
     }
 
     pub fn complete_validation(
@@ -250,9 +249,9 @@ impl<'a> SecurityFixService<'a> {
         }
 
         let results = self.validation_results(attempt_id, MAX_VALIDATIONS)?;
-        let patch_failure = results.iter().any(|item| {
-            item.status == "FAIL" && item.classification == "PATCH_INTRODUCED_FAILURE"
-        });
+        let patch_failure = results
+            .iter()
+            .any(|item| item.status == "FAIL" && item.classification == "PATCH_INTRODUCED_FAILURE");
         let any_failure = results.iter().any(|item| item.status == "FAIL");
         let any_not_executed = results.iter().any(|item| item.status == "NOT_EXECUTED");
         let any_pass = results.iter().any(|item| item.status == "PASS");
@@ -342,9 +341,7 @@ impl<'a> SecurityFixService<'a> {
                 )
         });
         let (retest_state, status) = match guided_status {
-            "retest_passed" if regression_failure => {
-                ("REGRESSION_DETECTED", "validation_failed")
-            }
+            "retest_passed" if regression_failure => ("REGRESSION_DETECTED", "validation_failed"),
             "retest_passed" => ("FIX_VERIFIED", "fix_verified"),
             "still_vulnerable" => ("STILL_VULNERABLE", "still_vulnerable"),
             "unable_to_verify" => ("UNABLE_TO_VERIFY", "unable_to_verify"),
@@ -465,10 +462,8 @@ impl<'a> SecurityFixService<'a> {
              FROM security_fix_attempts WHERE finding_id=?1
              ORDER BY attempt_number DESC LIMIT ?2",
         )?;
-        let rows = statement.query_map(
-            params![finding_id, bounded_limit(limit, 50)],
-            map_attempt,
-        )?;
+        let rows =
+            statement.query_map(params![finding_id, bounded_limit(limit, 50)], map_attempt)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -671,9 +666,7 @@ fn map_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecurityFixAttemptRe
     })
 }
 
-fn map_validation(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<SecurityFixValidationRecord> {
+fn map_validation(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecurityFixValidationRecord> {
     let target_json: String = row.get(5)?;
     let duration: Option<i64> = row.get(8)?;
     Ok(SecurityFixValidationRecord {
@@ -695,11 +688,7 @@ fn map_validation(
 }
 
 fn sqlite_conversion_error(index: usize, message: String) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(
-        index,
-        rusqlite::types::Type::Text,
-        message.into(),
-    )
+    rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, message.into())
 }
 
 #[cfg(test)]

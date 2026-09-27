@@ -138,7 +138,8 @@ impl<'a> WorkspaceService<'a> {
         if let Some(search) = search {
             let pattern = format!("%{}%", escape_like(search));
             let mut statement = connection.prepare(PROJECT_LIST_SQL_SEARCH)?;
-            let mapped = statement.query_map(params![pattern, limit as i64], map_project_overview)?;
+            let mapped =
+                statement.query_map(params![pattern, limit as i64], map_project_overview)?;
             for row in mapped {
                 rows.push(row?);
             }
@@ -155,11 +156,7 @@ impl<'a> WorkspaceService<'a> {
     pub fn get_project(&self, project_id: &str) -> Result<Option<ProjectOverview>, WorkspaceError> {
         self.database
             .connection()
-            .query_row(
-                PROJECT_GET_SQL,
-                [project_id],
-                map_project_overview,
-            )
+            .query_row(PROJECT_GET_SQL, [project_id], map_project_overview)
             .optional()
             .map_err(Into::into)
     }
@@ -319,20 +316,17 @@ impl<'a> WorkspaceService<'a> {
                FROM web_security_scans s
              ) ORDER BY occurred_at DESC LIMIT ?1",
         )?;
-        let mapped = statement.query_map(
-            [bounded_limit(limit, MAX_LIST_LIMIT) as i64],
-            |row| {
-                Ok(WorkspaceActivity {
-                    id: row.get(0)?,
-                    kind: row.get(1)?,
-                    title: row.get(2)?,
-                    detail: row.get(3)?,
-                    status: row.get(4)?,
-                    occurred_at: row.get(5)?,
-                    project_id: row.get(6)?,
-                })
-            },
-        )?;
+        let mapped = statement.query_map([bounded_limit(limit, MAX_LIST_LIMIT) as i64], |row| {
+            Ok(WorkspaceActivity {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                title: row.get(2)?,
+                detail: row.get(3)?,
+                status: row.get(4)?,
+                occurred_at: row.get(5)?,
+                project_id: row.get(6)?,
+            })
+        })?;
         let mut records = Vec::new();
         for row in mapped {
             records.push(row?);
@@ -564,10 +558,7 @@ pub fn normalize_website_url(raw: &str) -> Result<String, WorkspaceError> {
     Ok(url.to_string())
 }
 
-fn count_query(
-    connection: &rusqlite::Connection,
-    sql: &str,
-) -> Result<usize, rusqlite::Error> {
+fn count_query(connection: &rusqlite::Connection, sql: &str) -> Result<usize, rusqlite::Error> {
     let count: i64 = connection.query_row(sql, [], |row| row.get(0))?;
     Ok(nonnegative_usize(count))
 }
@@ -619,7 +610,10 @@ mod tests {
             display_name: Some("Duplicate".to_string()),
             project_id: None,
         });
-        assert!(matches!(duplicate, Err(WorkspaceError::DuplicateWebsite(_))));
+        assert!(matches!(
+            duplicate,
+            Err(WorkspaceError::DuplicateWebsite(_))
+        ));
 
         let invalid = service.add_website(&WebsiteInput {
             url: "file:///tmp/index.html".to_string(),
@@ -710,36 +704,52 @@ mod tests {
         let project_results = service
             .search(&projects[0].display_name, 20)
             .expect("project search");
-        assert!(project_results.iter().any(|result| result.kind == "project"));
+        assert!(project_results
+            .iter()
+            .any(|result| result.kind == "project"));
         let website_results = service
             .search("Dashboard documentation", 20)
             .expect("website search");
-        assert!(website_results.iter().any(|result| result.kind == "website"));
+        assert!(website_results
+            .iter()
+            .any(|result| result.kind == "website"));
         let file_results = service.search("main.ts", 20).expect("file search");
         assert!(file_results.iter().any(|result| result.kind == "file"));
         let symbol_results = service.search("dashboardValue", 20).expect("symbol search");
         assert!(symbol_results.iter().any(|result| result.kind == "symbol"));
         assert!(service.search("   ", 20).expect("empty search").is_empty());
-        assert!(service.search(&"z".repeat(4096), 20).expect("long search").is_empty());
+        assert!(service
+            .search(&"z".repeat(4096), 20)
+            .expect("long search")
+            .is_empty());
 
         assert!(service
             .remove_project(&summary.project_id)
             .expect("remove project"));
-        assert!(service.list_projects(None, 20).expect("projects").is_empty());
+        assert!(service
+            .list_projects(None, 20)
+            .expect("projects")
+            .is_empty());
         let website_after_project_removal = service
             .get_website(&website.id)
             .expect("website lookup")
             .expect("website remains");
         assert_eq!(website_after_project_removal.project_id, None);
         assert!(service.remove_website(&website.id).expect("remove website"));
-        assert!(service.list_websites(None, 20).expect("websites").is_empty());
+        assert!(service
+            .list_websites(None, 20)
+            .expect("websites")
+            .is_empty());
     }
 
     #[test]
     fn preferences_round_trip_through_settings_table() {
         let database = Database::open_in_memory().expect("database");
         let service = WorkspaceService::new(&database);
-        assert_eq!(service.preferences().expect("defaults"), AppPreferences::default());
+        assert_eq!(
+            service.preferences().expect("defaults"),
+            AppPreferences::default()
+        );
 
         let saved = service
             .save_preferences(&AppPreferences {

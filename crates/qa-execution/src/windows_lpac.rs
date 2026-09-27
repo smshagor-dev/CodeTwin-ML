@@ -11,24 +11,22 @@ use windows_sys::Win32::{
         WAIT_TIMEOUT,
     },
     NetworkManagement::WindowsFirewall::NetworkIsolationGetAppContainerConfig,
+    Security::Isolation::{CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName},
     Security::{
-        CreateWellKnownSid, EqualSid, FreeSid, GetTokenInformation, IsTokenRestricted, PSID,
-        SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
-        TOKEN_APPCONTAINER_INFORMATION, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+        CreateWellKnownSid, EqualSid, FreeSid, GetTokenInformation, IsTokenRestricted,
         TokenAppContainerSid, TokenCapabilities, TokenIntegrityLevel, TokenIsAppContainer,
         TokenIsLessPrivilegedAppContainer, TokenRestrictedSids, WinLowLabelSid,
-        WinWriteRestrictedCodeSid,
-    },
-    Security::Isolation::{
-        CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
+        WinWriteRestrictedCodeSid, PSID, SECURITY_CAPABILITIES, SECURITY_MAX_SID_SIZE,
+        SID_AND_ATTRIBUTES, TOKEN_APPCONTAINER_INFORMATION, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL,
+        TOKEN_QUERY,
     },
     System::{
         Memory::{GetProcessHeap, HeapFree},
         Threading::{
-            CreateProcessAsUserW, DeleteProcThreadAttributeList,
-            InitializeProcThreadAttributeList, OpenProcessToken, TerminateProcess,
-            UpdateProcThreadAttribute, WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED,
-            EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
+            CreateProcessAsUserW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
+            OpenProcessToken, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+            CREATE_NO_WINDOW, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT,
+            LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
             PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
             PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW, STARTUPINFOW,
         },
@@ -189,8 +187,7 @@ impl LpacProfileSid {
             )));
         }
 
-        let derived =
-            unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
+        let derived = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
         if derived < 0 || sid.is_null() {
             return Err(BackendExecutionError::JobSetup(format!(
                 "DeriveAppContainerSidFromAppContainerName failed with HRESULT 0x{:08x}",
@@ -367,9 +364,7 @@ pub(crate) fn assert_lpac_profile_network_isolation(
     Ok(())
 }
 
-fn lpac_profile_has_loopback_exemption(
-    expected_sid: PSID,
-) -> Result<bool, BackendExecutionError> {
+fn lpac_profile_has_loopback_exemption(expected_sid: PSID) -> Result<bool, BackendExecutionError> {
     let mut count = 0u32;
     let mut entries: *mut SID_AND_ATTRIBUTES = std::ptr::null_mut();
     let result = unsafe { NetworkIsolationGetAppContainerConfig(&mut count, &mut entries) };
@@ -419,10 +414,7 @@ fn lpac_profile_has_loopback_exemption(
     Ok(false)
 }
 
-fn token_bool(
-    token: HANDLE,
-    information_class: i32,
-) -> Result<bool, BackendExecutionError> {
+fn token_bool(token: HANDLE, information_class: i32) -> Result<bool, BackendExecutionError> {
     let mut value = 0u32;
     let mut returned = 0u32;
     if unsafe {
@@ -596,12 +588,7 @@ impl ProcThreadAttributeList {
         const ATTRIBUTE_COUNT: u32 = 2;
         let mut bytes = 0usize;
         unsafe {
-            InitializeProcThreadAttributeList(
-                std::ptr::null_mut(),
-                ATTRIBUTE_COUNT,
-                0,
-                &mut bytes,
-            );
+            InitializeProcThreadAttributeList(std::ptr::null_mut(), ATTRIBUTE_COUNT, 0, &mut bytes);
         }
         if bytes == 0 {
             return Err(BackendExecutionError::JobSetup(format!(

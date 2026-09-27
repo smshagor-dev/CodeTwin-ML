@@ -49,7 +49,9 @@ impl ScopePolicy {
             .ok_or_else(|| ScopeError::InvalidTarget("target must contain a hostname".to_string()))?
             .to_ascii_lowercase();
         let target_port = target.port_or_known_default().ok_or_else(|| {
-            ScopeError::InvalidTarget("target scheme must have a known or explicit port".to_string())
+            ScopeError::InvalidTarget(
+                "target scheme must have a known or explicit port".to_string(),
+            )
         })?;
 
         if config.allowed_hostnames.is_empty() {
@@ -84,7 +86,9 @@ impl ScopePolicy {
 
     pub fn credentials_allowed_for(&self, url: &Url) -> bool {
         self.assert_url(url).is_ok()
-            && url.host_str().is_some_and(|host| host.eq_ignore_ascii_case(&self.target_host))
+            && url
+                .host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case(&self.target_host))
             && url.port_or_known_default() == Some(self.target_port)
             && url.scheme() == self.target.scheme()
     }
@@ -97,38 +101,58 @@ impl ScopePolicy {
 
     pub fn assert_url(&self, url: &Url) -> Result<(), ScopeError> {
         if !matches!(url.scheme(), "http" | "https") {
-            return Err(ScopeError::OutsideScope("URL scheme is outside the authorized HTTP(S) scope".to_string()));
+            return Err(ScopeError::OutsideScope(
+                "URL scheme is outside the authorized HTTP(S) scope".to_string(),
+            ));
         }
         if !url.username().is_empty() || url.password().is_some() {
-            return Err(ScopeError::OutsideScope("credentials in URLs are forbidden".to_string()));
+            return Err(ScopeError::OutsideScope(
+                "credentials in URLs are forbidden".to_string(),
+            ));
         }
         let host = url
             .host_str()
-            .ok_or_else(|| ScopeError::OutsideScope("URL is outside the authorized scope".to_string()))?
+            .ok_or_else(|| {
+                ScopeError::OutsideScope("URL is outside the authorized scope".to_string())
+            })?
             .trim_end_matches('.')
             .to_ascii_lowercase();
         if !self.host_allowed(&host) {
-            return Err(ScopeError::OutsideScope("URL host is outside the authorized host scope".to_string()));
+            return Err(ScopeError::OutsideScope(
+                "URL host is outside the authorized host scope".to_string(),
+            ));
         }
-        let port = url.port_or_known_default().ok_or_else(|| ScopeError::OutsideScope(url.to_string()))?;
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| ScopeError::OutsideScope(url.to_string()))?;
         if port != self.target_port {
-            return Err(ScopeError::OutsideScope(format!("port {port} is outside the authorized target port")));
+            return Err(ScopeError::OutsideScope(format!(
+                "port {port} is outside the authorized target port"
+            )));
         }
         if self.target.scheme() == "https" && url.scheme() != "https" {
-            return Err(ScopeError::OutsideScope("HTTPS target cannot downgrade to HTTP".to_string()));
+            return Err(ScopeError::OutsideScope(
+                "HTTPS target cannot downgrade to HTTP".to_string(),
+            ));
         }
         let canonical_path =
             canonicalize_scope_path(url.path()).map_err(ScopeError::OutsideScope)?;
         if !self.path_allowed(&canonical_path) {
-            return Err(ScopeError::OutsideScope("URL path is outside the authorized path scope".to_string()));
+            return Err(ScopeError::OutsideScope(
+                "URL path is outside the authorized path scope".to_string(),
+            ));
         }
         Ok(())
     }
 
     pub fn resolve_and_pin(&self, url: &Url) -> Result<SocketAddr, ScopeError> {
         self.assert_url(url)?;
-        let host = url.host_str().ok_or_else(|| ScopeError::Resolution("URL host is missing".to_string()))?;
-        let port = url.port_or_known_default().ok_or_else(|| ScopeError::Resolution(url.to_string()))?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| ScopeError::Resolution("URL host is missing".to_string()))?;
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| ScopeError::Resolution(url.to_string()))?;
         let addresses: Vec<SocketAddr> = (host, port)
             .to_socket_addrs()
             .map_err(|error| ScopeError::Resolution(error.to_string()))?
@@ -146,23 +170,39 @@ impl ScopePolicy {
         if host == self.target_host {
             return true;
         }
-        if self.config.allowed_hostnames.iter().any(|allowed| host == allowed) {
+        if self
+            .config
+            .allowed_hostnames
+            .iter()
+            .any(|allowed| host == allowed)
+        {
             return true;
         }
-        self.config.allowed_subdomains.iter().any(|root| {
-            host != root && host.ends_with(&format!(".{root}"))
-        })
+        self.config
+            .allowed_subdomains
+            .iter()
+            .any(|root| host != root && host.ends_with(&format!(".{root}")))
     }
 
     fn path_allowed(&self, path: &str) -> bool {
-        let included = self.config.allowed_paths.iter().any(|prefix| path_prefix(path, prefix));
-        let excluded = self.config.excluded_paths.iter().any(|prefix| path_prefix(path, prefix));
+        let included = self
+            .config
+            .allowed_paths
+            .iter()
+            .any(|prefix| path_prefix(path, prefix));
+        let excluded = self
+            .config
+            .excluded_paths
+            .iter()
+            .any(|prefix| path_prefix(path, prefix));
         included && !excluded
     }
 
     fn assert_ip(&self, ip: IpAddr, host: &str) -> Result<(), ScopeError> {
         if is_unroutable(ip) {
-            return Err(ScopeError::NetworkScope(format!("{host} resolved to blocked address {ip}")));
+            return Err(ScopeError::NetworkScope(format!(
+                "{host} resolved to blocked address {ip}"
+            )));
         }
         let local_target = matches!(host, "localhost")
             || host.ends_with(".localhost")
@@ -178,15 +218,22 @@ impl ScopePolicy {
 
 pub fn normalize_url(raw: &str) -> Result<Url, ScopeError> {
     let trimmed = raw.trim();
-    let mut url = Url::parse(trimmed).map_err(|error| ScopeError::InvalidTarget(error.to_string()))?;
+    let mut url =
+        Url::parse(trimmed).map_err(|error| ScopeError::InvalidTarget(error.to_string()))?;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(ScopeError::InvalidTarget("only http:// and https:// are supported".to_string()));
+        return Err(ScopeError::InvalidTarget(
+            "only http:// and https:// are supported".to_string(),
+        ));
     }
     if url.host_str().is_none() {
-        return Err(ScopeError::InvalidTarget("target must contain a hostname".to_string()));
+        return Err(ScopeError::InvalidTarget(
+            "target must contain a hostname".to_string(),
+        ));
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(ScopeError::InvalidTarget("credentials in the target URL are forbidden".to_string()));
+        return Err(ScopeError::InvalidTarget(
+            "credentials in the target URL are forbidden".to_string(),
+        ));
     }
     url.set_fragment(None);
     Ok(url)
@@ -271,7 +318,9 @@ fn hex_value(value: u8) -> Option<u8> {
 }
 
 fn path_prefix(path: &str, prefix: &str) -> bool {
-    prefix == "/" || path == prefix || path.starts_with(&format!("{}/", prefix.trim_end_matches('/')))
+    prefix == "/"
+        || path == prefix
+        || path.starts_with(&format!("{}/", prefix.trim_end_matches('/')))
 }
 
 fn is_unroutable(ip: IpAddr) -> bool {
@@ -326,11 +375,9 @@ fn is_unique_local_v6(ip: Ipv6Addr) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        is_loopback_or_private, is_unroutable, normalize_url, ScopePolicy,
-    };
-    use std::net::IpAddr;
+    use super::{is_loopback_or_private, is_unroutable, normalize_url, ScopePolicy};
     use crate::ScopeConfig;
+    use std::net::IpAddr;
     use url::Url;
 
     fn config() -> ScopeConfig {
@@ -358,12 +405,24 @@ mod tests {
     #[test]
     fn normalizes_and_enforces_paths_and_hosts() {
         let policy = ScopePolicy::new(config()).expect("scope");
-        assert!(policy.normalize_and_assert("http://localhost:8080/app/users?id=1").is_ok());
-        assert!(policy.normalize_and_assert("http://localhost:8080/app/logout").is_err());
-        assert!(policy.normalize_and_assert("http://localhost:8080/%61pp/logout").is_err());
-        assert!(policy.normalize_and_assert("http://localhost:8080/app%2Flogout").is_err());
-        assert!(policy.normalize_and_assert("http://localhost:8080/app/%2e%2e/logout").is_err());
-        assert!(policy.normalize_and_assert("http://example.com:8080/app").is_err());
+        assert!(policy
+            .normalize_and_assert("http://localhost:8080/app/users?id=1")
+            .is_ok());
+        assert!(policy
+            .normalize_and_assert("http://localhost:8080/app/logout")
+            .is_err());
+        assert!(policy
+            .normalize_and_assert("http://localhost:8080/%61pp/logout")
+            .is_err());
+        assert!(policy
+            .normalize_and_assert("http://localhost:8080/app%2Flogout")
+            .is_err());
+        assert!(policy
+            .normalize_and_assert("http://localhost:8080/app/%2e%2e/logout")
+            .is_err());
+        assert!(policy
+            .normalize_and_assert("http://example.com:8080/app")
+            .is_err());
         assert!(normalize_url("file:///tmp/a").is_err());
         let target = policy
             .normalize_and_assert("http://localhost:8080/app/users")

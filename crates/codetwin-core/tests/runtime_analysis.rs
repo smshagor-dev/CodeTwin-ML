@@ -22,7 +22,9 @@ fn runtime_artifacts_and_review_findings_are_persisted() {
         .open_project(root.path())
         .expect("project");
     let service = RuntimeReliabilityService::new(&database);
-    let run = service.analyze_project(&project.id).expect("runtime analysis");
+    let run = service
+        .analyze_project(&project.id)
+        .expect("runtime analysis");
 
     assert!(run.coverage_complete);
     assert_eq!(run.artifacts_analyzed, 2);
@@ -33,10 +35,16 @@ fn runtime_artifacts_and_review_findings_are_persisted() {
     assert_eq!(run.healthchecks_disabled, 1);
     assert_eq!(run.restarts_disabled, 1);
 
-    let artifacts = service.list_artifacts(&project.id, true, 20).expect("artifacts");
+    let artifacts = service
+        .list_artifacts(&project.id, true, 20)
+        .expect("artifacts");
     assert_eq!(artifacts.len(), 2);
-    assert!(artifacts.iter().any(|item| item.artifact_kind == "dockerfile"));
-    assert!(artifacts.iter().any(|item| item.artifact_kind == "docker_compose"));
+    assert!(artifacts
+        .iter()
+        .any(|item| item.artifact_kind == "dockerfile"));
+    assert!(artifacts
+        .iter()
+        .any(|item| item.artifact_kind == "docker_compose"));
 
     let findings = service
         .list_findings(&project.id, Some("open"), 100)
@@ -45,20 +53,25 @@ fn runtime_artifacts_and_review_findings_are_persisted() {
         .iter()
         .find(|item| item.rule_id == "runtime.mutable_container_image")
         .expect("mutable image finding");
-    let evidence = service
-        .finding_evidence(&mutable.id, 20)
-        .expect("evidence");
+    let evidence = service.finding_evidence(&mutable.id, 20).expect("evidence");
     assert_eq!(evidence.len(), 1);
-    assert!(evidence[0].metadata_json.contains("\"live_runtime_observed\":false"));
-    assert!(evidence[0].metadata_json.contains("\"source_executed\":false"));
+    assert!(evidence[0]
+        .metadata_json
+        .contains("\"live_runtime_observed\":false"));
+    assert!(evidence[0]
+        .metadata_json
+        .contains("\"source_executed\":false"));
 }
 
 #[test]
 fn complete_rescan_resolves_disappeared_runtime_finding() {
     let root = tempdir().expect("project");
     let dockerfile = root.path().join("Dockerfile");
-    fs::write(&dockerfile, "FROM node:latest\nHEALTHCHECK CMD node health.js\n")
-        .expect("mutable dockerfile");
+    fs::write(
+        &dockerfile,
+        "FROM node:latest\nHEALTHCHECK CMD node health.js\n",
+    )
+    .expect("mutable dockerfile");
 
     let database = Database::open_in_memory().expect("database");
     let project = ProjectIndexService::new(&database)
@@ -134,13 +147,24 @@ fn deleted_runtime_artifact_becomes_inactive_after_complete_scan() {
         .expect("project");
     let service = RuntimeReliabilityService::new(&database);
     service.analyze_project(&project.id).expect("first run");
-    assert_eq!(service.list_artifacts(&project.id, true, 20).expect("active").len(), 1);
+    assert_eq!(
+        service
+            .list_artifacts(&project.id, true, 20)
+            .expect("active")
+            .len(),
+        1
+    );
 
     fs::remove_file(dockerfile).expect("remove dockerfile");
     let second = service.analyze_project(&project.id).expect("second run");
     assert!(second.coverage_complete);
-    assert!(service.list_artifacts(&project.id, true, 20).expect("active").is_empty());
-    let all = service.list_artifacts(&project.id, false, 20).expect("all artifacts");
+    assert!(service
+        .list_artifacts(&project.id, true, 20)
+        .expect("active")
+        .is_empty());
+    let all = service
+        .list_artifacts(&project.id, false, 20)
+        .expect("all artifacts");
     assert_eq!(all.len(), 1);
     assert!(!all[0].is_active);
 }

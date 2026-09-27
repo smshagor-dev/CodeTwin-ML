@@ -1,15 +1,10 @@
-use std::{
-    path::Path,
-    sync::atomic::Ordering,
-    time::Instant,
-};
+use std::{path::Path, sync::atomic::Ordering, time::Instant};
 
 use codetwin_core::{
     CodeSecurityService, Database, FixEligibilityAssessment, MultiFindingOverlap, PatchReview,
-    RepairApplicationRunRecord, RepairApplicationService,
+    ProjectIndexService, RepairApplicationRunRecord, RepairApplicationService,
     SecurityFixAttemptRecord, SecurityFixEventRecord, SecurityFixPreparation, SecurityFixService,
-    SecurityRemediationCampaignService,
-    SecurityFixValidationRecord, ValidationResultInput, ProjectIndexService,
+    SecurityFixValidationRecord, SecurityRemediationCampaignService, ValidationResultInput,
 };
 use serde::Serialize;
 
@@ -400,7 +395,8 @@ pub(crate) async fn run_security_fix_validation(
                         duration_ms: None,
                         classification: "INFRASTRUCTURE_FAILURE",
                         stdout_summary: "",
-                        stderr_summary: "Static security analysis is already running for this workspace.",
+                        stderr_summary:
+                            "Static security analysis is already running for this workspace.",
                     },
                 )
                 .map_err(|error| error.to_string())?;

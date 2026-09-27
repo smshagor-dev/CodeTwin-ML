@@ -10,17 +10,16 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::{
-    Foundation::{ERROR_ALREADY_EXISTS, ERROR_SUCCESS, HLOCAL, LocalFree},
+    Foundation::{LocalFree, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, HLOCAL},
     Security::{
-        ACL, CONTAINER_INHERIT_ACE, CreateWellKnownSid, DACL_SECURITY_INFORMATION, FreeSid,
-        OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR, PSID, SECURITY_MAX_SID_SIZE,
-        WinWriteRestrictedCodeSid,
         Authorization::{
-            EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, SE_FILE_OBJECT,
-            TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W, SetEntriesInAclW,
-            SetNamedSecurityInfoW,
+            GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W,
+            GRANT_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
         },
+        CreateWellKnownSid, FreeSid,
         Isolation::{CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName},
+        WinWriteRestrictedCodeSid, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+        OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR, PSID, SECURITY_MAX_SID_SIZE,
     },
     Storage::FileSystem::{
         DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_GENERIC_EXECUTE,
@@ -30,9 +29,9 @@ use windows_sys::Win32::{
 
 use crate::{
     validate_approved_external_read_surface_shape, ApprovedExternalReadSurface,
-    BackendExecutionError, DetachedExecutionWorkspace, ExternalReadRootEvidence,
-    TestExecutionPlan, MAX_EXTERNAL_READ_BYTES, MAX_EXTERNAL_READ_DIRECTORIES,
-    MAX_EXTERNAL_READ_FILES, MAX_EXTERNAL_READ_ROOTS,
+    BackendExecutionError, DetachedExecutionWorkspace, ExternalReadRootEvidence, TestExecutionPlan,
+    MAX_EXTERNAL_READ_BYTES, MAX_EXTERNAL_READ_DIRECTORIES, MAX_EXTERNAL_READ_FILES,
+    MAX_EXTERNAL_READ_ROOTS,
 };
 
 const BUNDLE_DIRECTORY_NAME: &str = "lpac-external";
@@ -125,20 +124,14 @@ pub(crate) fn prepare_lpac_execution_bundle(
     workspace: &DetachedExecutionWorkspace,
 ) -> Result<LpacExecutionBundle, BackendExecutionError> {
     validate_approved_external_read_surface_shape(approved).map_err(|error| {
-        BackendExecutionError::JobSetup(format!(
-            "LPAC external bundle approved evidence: {error}"
-        ))
+        BackendExecutionError::JobSetup(format!("LPAC external bundle approved evidence: {error}"))
     })?;
 
     let workspace_root = fs::canonicalize(&workspace.root_path).map_err(|error| {
-        BackendExecutionError::JobSetup(format!(
-            "LPAC external bundle workspace root: {error}"
-        ))
+        BackendExecutionError::JobSetup(format!("LPAC external bundle workspace root: {error}"))
     })?;
     let source_project = fs::canonicalize(&workspace.source_root).map_err(|error| {
-        BackendExecutionError::JobSetup(format!(
-            "LPAC external bundle project root: {error}"
-        ))
+        BackendExecutionError::JobSetup(format!("LPAC external bundle project root: {error}"))
     })?;
     if workspace_root.starts_with(&source_project) {
         return Err(BackendExecutionError::JobSetup(
@@ -168,7 +161,8 @@ fn prepare_bundle_inner(
     workspace: &DetachedExecutionWorkspace,
     bundle_root: &Path,
 ) -> Result<LpacExecutionBundle, BackendExecutionError> {
-    let runner_source = canonical_regular_file(Path::new(&plan.toolchain.executable_path), "runner")?;
+    let runner_source =
+        canonical_regular_file(Path::new(&plan.toolchain.executable_path), "runner")?;
     let expected_runner_hash = plan
         .toolchain
         .sha256
@@ -187,7 +181,8 @@ fn prepare_bundle_inner(
     let mut aggregate_bytes = 0u64;
 
     for (index, evidence) in approved.roots.iter().enumerate() {
-        let source_root = canonical_directory(Path::new(&evidence.canonical_path), "approved root")?;
+        let source_root =
+            canonical_directory(Path::new(&evidence.canonical_path), "approved root")?;
         if !path_text(&source_root).eq_ignore_ascii_case(&evidence.canonical_path) {
             return Err(BackendExecutionError::JobSetup(format!(
                 "LPAC external bundle root canonical path drifted: {}",
@@ -215,8 +210,7 @@ fn prepare_bundle_inner(
             })?;
         enforce_aggregate_bounds(aggregate_files, aggregate_directories, aggregate_bytes)?;
 
-        let destination =
-            bundle_root.join(format!("root-{index:02}-{}", evidence.kind.as_str()));
+        let destination = bundle_root.join(format!("root-{index:02}-{}", evidence.kind.as_str()));
         fs::create_dir(&destination)?;
         copy_tree(&source_root, &destination, &source_before)?;
 
@@ -532,11 +526,8 @@ fn apply_generated_acl_contract(
     let temp = Path::new(&workspace.temp_path);
 
     let read_execute = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
-    let write_directory = FILE_GENERIC_READ
-        | FILE_GENERIC_WRITE
-        | FILE_GENERIC_EXECUTE
-        | FILE_DELETE_CHILD
-        | DELETE;
+    let write_directory =
+        FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | FILE_DELETE_CHILD | DELETE;
 
     grant_sid(workspace_root, appcontainer_sid.sid(), read_execute, true)?;
     grant_sid(inputs, appcontainer_sid.sid(), read_execute, true)?;
@@ -554,7 +545,12 @@ fn apply_generated_acl_contract(
     grant_sid(bundle_root, appcontainer_sid.sid(), read_execute, true)?;
     grant_sid(bundle_root, restricting_sid, read_execute, true)?;
     for copied in copied_roots {
-        grant_sid(&copied.destination, appcontainer_sid.sid(), read_execute, true)?;
+        grant_sid(
+            &copied.destination,
+            appcontainer_sid.sid(),
+            read_execute,
+            true,
+        )?;
         grant_sid(&copied.destination, restricting_sid, read_execute, true)?;
         for directory in &copied.snapshot.directories {
             let path = copied.destination.join(directory);
