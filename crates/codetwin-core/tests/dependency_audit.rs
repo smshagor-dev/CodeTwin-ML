@@ -6,7 +6,9 @@ use std::{
     thread,
 };
 
-use codetwin_core::{AdvisorySource, Database, DependencyAuditService, ProjectIndexService};
+use codetwin_core::{
+    AdvisorySource, Database, DependencyAuditService, ProjectIndexService, SbomError, SbomService,
+};
 use serde_json::json;
 use tempfile::tempdir;
 
@@ -389,4 +391,61 @@ fn offline_audit_covers_maven_gradle_and_nuget() {
     assert_eq!(newtonsoft.fixed_versions, vec!["13.0.1"]);
     // The patched 2.17.1 in the Gradle lockfile is not reported.
     assert!(findings.iter().all(|finding| finding.version != "2.17.1"));
+
+    let export = SbomService::new(&database)
+        .export_cyclonedx(&index.project_id)
+        .expect("sbom");
+    if let Some(path) = std::env::var_os("CODETWIN_SBOM_OUT") {
+        fs::write(path, &export.json).expect("write sbom");
+    }
+    assert_eq!((export.components, export.vulnerabilities), (4, 2));
+    assert_eq!(export.components_without_purl, 0);
+    let sbom: serde_json::Value = serde_json::from_str(&export.json).expect("json");
+    assert_eq!(sbom["bomFormat"], "CycloneDX");
+    assert_eq!(sbom["specVersion"], "1.5");
+    let purls: Vec<&str> = sbom["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|component| component["purl"].as_str().unwrap())
+        .collect();
+    assert!(purls.contains(&"pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1"));
+    assert!(purls.contains(&"pkg:maven/org.apache.logging.log4j/log4j-core@2.17.1"));
+    assert!(purls.contains(&"pkg:nuget/Newtonsoft.Json@12.0.1"));
+    let log4shell = sbom["vulnerabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|vulnerability| vulnerability["id"] == "CVE-2021-44228")
+        .expect("log4shell entry");
+    assert_eq!(log4shell["ratings"][0]["severity"], "critical");
+    assert_eq!(
+        log4shell["affects"][0]["ref"],
+        "pkg:maven/org.apache.logging.log4j/log4j-core@2.14.1"
+    );
+    assert_eq!(log4shell["references"][0]["id"], "GHSA-jfh8-c2jp-5v3q");
+    assert!(log4shell["recommendation"]
+        .as_str()
+        .unwrap()
+        .contains("2.15.0"));
+    // Every vulnerability reference resolves to a component in the same document.
+    for vulnerability in sbom["vulnerabilities"].as_array().unwrap() {
+        for affected in vulnerability["affects"].as_array().unwrap() {
+            assert!(purls.contains(&affected["ref"].as_str().unwrap()));
+        }
+    }
+}
+
+#[test]
+fn sbom_requires_an_inventory() {
+    let project = tempdir().expect("project");
+    fs::write(project.path().join("README.md"), "x\n").expect("readme");
+    let database = Database::open_in_memory().expect("database");
+    let index = ProjectIndexService::new(&database)
+        .index_project(project.path())
+        .expect("index");
+    let error = SbomService::new(&database)
+        .export_cyclonedx(&index.project_id)
+        .expect_err("no inventory");
+    assert!(matches!(error, SbomError::NoInventory));
 }
