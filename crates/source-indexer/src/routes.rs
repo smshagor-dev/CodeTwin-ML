@@ -504,6 +504,39 @@ fn nextjs_handler_parameters(source: &str, handler: Node<'_>) -> Vec<IndexedRout
     parameters
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TypeScriptUtilityModel {
+    Identity { source: String },
+    Pick { source: String, keys: Vec<String> },
+    Omit { source: String, keys: Vec<String> },
+}
+
+impl TypeScriptUtilityModel {
+    fn source(&self) -> &str {
+        match self {
+            Self::Identity { source } | Self::Pick { source, .. } | Self::Omit { source, .. } => {
+                source
+            }
+        }
+    }
+
+    fn apply(&self, fields: &[String]) -> Vec<String> {
+        match self {
+            Self::Identity { .. } => fields.to_vec(),
+            Self::Pick { keys, .. } => fields
+                .iter()
+                .filter(|field| keys.iter().any(|key| key == *field))
+                .cloned()
+                .collect(),
+            Self::Omit { keys, .. } => fields
+                .iter()
+                .filter(|field| !keys.iter().any(|key| key == *field))
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
 fn typescript_object_models(
     source: &str,
     handler: Node<'_>,
@@ -515,6 +548,7 @@ fn typescript_object_models(
 
     let mut own_fields = BTreeMap::<String, Vec<String>>::new();
     let mut parents = BTreeMap::<String, Vec<String>>::new();
+    let mut utilities = BTreeMap::<String, TypeScriptUtilityModel>::new();
 
     walk(root, &mut |node| {
         if !matches!(node.kind(), "interface_declaration" | "type_alias_declaration") {
@@ -534,6 +568,7 @@ fn typescript_object_models(
             return;
         };
 
+        let mut utility = None;
         let parent_names = if node.kind() == "interface_declaration" {
             let Some(parent_names) = typescript_interface_parents(raw) else {
                 return;
@@ -544,10 +579,16 @@ fn typescript_object_models(
                 return;
             };
             let type_value = type_value.trim().trim_end_matches(';').trim();
-            let Some(parent_names) = typescript_type_alias_parents(type_value) else {
-                return;
-            };
-            parent_names
+            if let Some(parsed) = typescript_utility_model(type_value) {
+                let source = parsed.source().to_string();
+                utility = Some(parsed);
+                vec![source]
+            } else {
+                let Some(parent_names) = typescript_type_alias_parents(type_value) else {
+                    return;
+                };
+                parent_names
+            }
         };
 
         let mut fields = Vec::new();
@@ -579,6 +620,9 @@ fn typescript_object_models(
 
         own_fields.insert(name.to_string(), fields);
         parents.insert(name.to_string(), parent_names);
+        if let Some(utility) = utility {
+            utilities.insert(name.to_string(), utility);
+        }
     });
 
     let mut resolved = BTreeMap::<String, Vec<String>>::new();
@@ -593,12 +637,22 @@ fn typescript_object_models(
             if !parent_names.iter().all(|parent| resolved.contains_key(parent)) {
                 continue;
             }
-            let mut fields = Vec::new();
-            for parent in &parent_names {
-                if let Some(parent_fields) = resolved.get(parent) {
-                    fields.extend(parent_fields.iter().cloned());
+
+            let mut fields = if let Some(utility) = utilities.get(name) {
+                let Some(source_fields) = resolved.get(utility.source()) else {
+                    continue;
+                };
+                utility.apply(source_fields)
+            } else {
+                let mut inherited = Vec::new();
+                for parent in &parent_names {
+                    if let Some(parent_fields) = resolved.get(parent) {
+                        inherited.extend(parent_fields.iter().cloned());
+                    }
                 }
-            }
+                inherited
+            };
+
             if let Some(model_fields) = own_fields.get(name) {
                 fields.extend(model_fields.iter().cloned());
             }
@@ -615,6 +669,185 @@ fn typescript_object_models(
         }
     }
     resolved
+}
+
+fn typescript_utility_model(type_value: &str) -> Option<TypeScriptUtilityModel> {
+    let (utility, raw_arguments) = typescript_generic_application(type_value)?;
+    let arguments = typescript_top_level_generic_arguments(raw_arguments)?;
+
+    match utility {
+        "Partial" | "Required" | "Readonly" if arguments.len() == 1 => {
+            let source = arguments[0].trim();
+            is_identifier(source).then(|| TypeScriptUtilityModel::Identity {
+                source: source.to_string(),
+            })
+        }
+        "Pick" | "Omit" if arguments.len() == 2 => {
+            let source = arguments[0].trim();
+            if !is_identifier(source) {
+                return None;
+            }
+            let keys = typescript_literal_key_union(arguments[1])?;
+            if utility == "Pick" {
+                Some(TypeScriptUtilityModel::Pick {
+                    source: source.to_string(),
+                    keys,
+                })
+            } else {
+                Some(TypeScriptUtilityModel::Omit {
+                    source: source.to_string(),
+                    keys,
+                })
+            }
+        }
+        _ => None,
+    }
+}
+
+fn typescript_generic_application(value: &str) -> Option<(&str, &str)> {
+    let value = value.trim();
+    let open = value.find('<')?;
+    let utility = value[..open].trim();
+    if !is_identifier(utility) || !value.ends_with('>') {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (relative, character) in value[open..].char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '"' | '\'' | '`' => quote = Some(character),
+            '<' => depth += 1,
+            '>' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 && open + relative + character.len_utf8() != value.len() {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 || quote.is_some() {
+        return None;
+    }
+    Some((utility, &value[open + 1..value.len() - 1]))
+}
+
+fn typescript_top_level_generic_arguments(value: &str) -> Option<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut angles = 0usize;
+    let mut braces = 0usize;
+    let mut parentheses = 0usize;
+    let mut brackets = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+
+    for (index, character) in value.char_indices() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match character {
+            '"' | '\'' | '`' => quote = Some(character),
+            '<' => angles += 1,
+            '>' => {
+                if angles == 0 {
+                    return None;
+                }
+                angles -= 1;
+            }
+            '{' => braces += 1,
+            '}' => {
+                if braces == 0 {
+                    return None;
+                }
+                braces -= 1;
+            }
+            '(' => parentheses += 1,
+            ')' => {
+                if parentheses == 0 {
+                    return None;
+                }
+                parentheses -= 1;
+            }
+            '[' => brackets += 1,
+            ']' => {
+                if brackets == 0 {
+                    return None;
+                }
+                brackets -= 1;
+            }
+            ',' if angles == 0 && braces == 0 && parentheses == 0 && brackets == 0 => {
+                let part = value[start..index].trim();
+                if part.is_empty() {
+                    return None;
+                }
+                parts.push(part);
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    if quote.is_some() || angles != 0 || braces != 0 || parentheses != 0 || brackets != 0 {
+        return None;
+    }
+    let tail = value[start..].trim();
+    if tail.is_empty() {
+        return None;
+    }
+    parts.push(tail);
+    Some(parts)
+}
+
+fn typescript_literal_key_union(value: &str) -> Option<Vec<String>> {
+    let parts = typescript_top_level_type_parts(value, '|')?;
+    let mut keys = Vec::new();
+    for part in parts {
+        let raw = part.trim();
+        let key = strip_quotes(raw)?;
+        if key.is_empty() || key.len() > 256 {
+            return None;
+        }
+        keys.push(key);
+    }
+    keys.sort();
+    keys.dedup();
+    if keys.is_empty() || keys.len() > 256 {
+        None
+    } else {
+        Some(keys)
+    }
 }
 
 fn typescript_type_alias_parents(type_value: &str) -> Option<Vec<String>> {
