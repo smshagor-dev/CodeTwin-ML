@@ -359,19 +359,24 @@ pub fn build_test_plan(
     let mut operations = Vec::new();
 
     for endpoint in endpoints {
-        push_operation(
-            &mut operations,
-            OperationSpec {
-                endpoint,
-                parameter_name: None,
-                category: "passive_analysis",
-                risk: OperationRisk::SAFE,
-                selected: true,
-                reason:
-                    "Review response headers, cookies, cache behavior and passive security signals.",
-                skip_reason: None,
-            },
-        );
+        // Passive analysis reviews an already-observed response. Endpoints that were
+        // mapped but never requested (e.g. POST forms, which discovery does not submit)
+        // have nothing to review, so do not list work that cannot happen.
+        if endpoint.status_code.is_some() {
+            push_operation(
+                &mut operations,
+                OperationSpec {
+                    endpoint,
+                    parameter_name: None,
+                    category: "passive_analysis",
+                    risk: OperationRisk::SAFE,
+                    selected: true,
+                    reason:
+                        "Review response headers, cookies, cache behavior and passive security signals.",
+                    skip_reason: None,
+                },
+            );
+        }
 
         if endpoint.source == "form"
             && matches!(

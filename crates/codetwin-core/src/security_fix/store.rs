@@ -344,6 +344,11 @@ impl<'a> SecurityFixService<'a> {
             "retest_passed" if regression_failure => ("REGRESSION_DETECTED", "validation_failed"),
             "retest_passed" => ("FIX_VERIFIED", "fix_verified"),
             "still_vulnerable" => ("STILL_VULNERABLE", "still_vulnerable"),
+            // A recorded patch-introduced failure must not be downgraded to "could not
+            // verify" just because the regressed endpoint no longer answers usefully.
+            "unable_to_verify" if regression_failure => {
+                ("REGRESSION_DETECTED", "validation_failed")
+            }
             "unable_to_verify" => ("UNABLE_TO_VERIFY", "unable_to_verify"),
             _ => {
                 return Err(SecurityFixError::State(
@@ -361,6 +366,9 @@ impl<'a> SecurityFixService<'a> {
             &attempt.id,
             "security_retest_completed",
             match retest_state {
+                "REGRESSION_DETECTED" if guided_status == "unable_to_verify" => {
+                    "Runtime verification could not complete and repository validation shows a patch-introduced failure; Fix Verified is withheld."
+                }
                 "FIX_VERIFIED" => {
                     "Original vulnerable runtime behavior was no longer reproducible. Fix Verified."
                 }

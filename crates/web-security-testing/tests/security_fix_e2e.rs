@@ -161,7 +161,9 @@ fn handle_source_backed(mut stream: TcpStream, project_root: &Path) {
             }
         }
         "/api/slow-search" => {
-            thread::sleep(Duration::from_millis(250));
+            // Must exceed the scope's 500ms minimum request timeout (ScopePolicy clamps
+            // lower values), or the "timeout" retest still observes responses.
+            thread::sleep(Duration::from_millis(900));
             handle_search(&mut stream, project_root, &query);
         }
         "/api/render" => handle_render(&mut stream, project_root, &query, false),
@@ -624,6 +626,19 @@ fn targeted_retest_and_sync(
     primary: &AuthContext,
     secondary: Option<&AuthContext>,
 ) {
+    targeted_retest_and_sync_in_session(database, config, finding, primary, secondary, None);
+}
+
+/// Campaign completion only counts retests recorded against the campaign's guided
+/// session, as the desktop command records them.
+fn targeted_retest_and_sync_in_session(
+    database: &Database,
+    config: &ScanConfig,
+    finding: &WebFindingRecord,
+    primary: &AuthContext,
+    secondary: Option<&AuthContext>,
+    session_id: Option<&str>,
+) {
     let retest = run_targeted_retest(
         config,
         primary,
@@ -664,7 +679,7 @@ fn targeted_retest_and_sync(
     GuidedSecurityStore::new(database)
         .record_retest(GuidedRetestInput {
             finding_id: &finding.id,
-            session_id: None,
+            session_id,
             status,
             original_confidence: &finding.confidence,
             observed_confidence,
@@ -1549,13 +1564,15 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
         Arc::new(AtomicBool::new(false)),
     )
     .expect("targeted retest");
-    assert!(retest.verification_completed);
+    // The regressed endpoint answers 500 to everything, so the missing XSS symptom is
+    // not evidence of a fix: targeted retests refuse to verify on unusable baselines.
+    assert!(!retest.verification_completed);
     assert!(!retest.findings.iter().any(|item| item.category == "xss"));
     GuidedSecurityStore::new(&database)
         .record_retest(GuidedRetestInput {
             finding_id: &finding.id,
             session_id: None,
-            status: "retest_passed",
+            status: "unable_to_verify",
             original_confidence: &finding.confidence,
             observed_confidence: None,
             requests_performed: retest.requests_performed,
@@ -1563,7 +1580,7 @@ fn security_fix_regression_is_detected_even_when_xss_symptom_disappears() {
         })
         .expect("persist retest");
     let final_attempt = service
-        .sync_retest_result(&finding.id, "retest_passed")
+        .sync_retest_result(&finding.id, "unable_to_verify")
         .expect("sync")
         .expect("attempt");
     assert_eq!(final_attempt.retest_state, "REGRESSION_DETECTED");
@@ -2281,9 +2298,17 @@ fn remediation_campaign_orchestrates_source_backed_fixes_without_bypassing_fix_v
     campaigns
         .begin_completion_verification(&campaign.id)
         .expect("begin bounded completion verification");
-    targeted_retest_and_sync(&database, &config, sql, &primary, None);
-    targeted_retest_and_sync(&database, &config, xss, &primary, None);
-    targeted_retest_and_sync(&database, &config, idor, &primary, Some(&secondary));
+    let session = Some("campaign-e2e-session");
+    targeted_retest_and_sync_in_session(&database, &config, sql, &primary, None, session);
+    targeted_retest_and_sync_in_session(&database, &config, xss, &primary, None, session);
+    targeted_retest_and_sync_in_session(
+        &database,
+        &config,
+        idor,
+        &primary,
+        Some(&secondary),
+        session,
+    );
     campaigns
         .finalize_completion_verification(&campaign.id)
         .expect("finalize bounded completion verification");

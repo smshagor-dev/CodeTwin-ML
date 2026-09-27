@@ -63,9 +63,9 @@ impl<'a> SecurityFixService<'a> {
             });
         };
 
-        if candidates.is_empty() && is_configuration_category(&finding.category) {
+        if is_configuration_category(&finding.category) {
             if let Some(candidate) = self.configuration_candidate(project_id, &finding.category)? {
-                candidates.push(candidate);
+                prefer_configuration_candidate(&mut candidates, candidate);
             }
         }
 
@@ -159,12 +159,12 @@ impl<'a> SecurityFixService<'a> {
         let mut candidates = GuidedSecurityStore::new(self.database)
             .correlate_source_candidates(finding_id, MAX_ROOT_CAUSES)
             .map_err(|error| SecurityFixError::Guided(error.to_string()))?;
-        if candidates.is_empty() && is_configuration_category(&finding.category) {
+        if is_configuration_category(&finding.category) {
             if let Some(project_id) = finding.project_id.as_deref() {
                 if let Some(candidate) =
                     self.configuration_candidate(project_id, &finding.category)?
                 {
-                    candidates.push(candidate);
+                    prefer_configuration_candidate(&mut candidates, candidate);
                 }
             }
         }
@@ -804,5 +804,22 @@ pub(crate) fn build_strategy(
         compatibility_risks: risks,
         prohibited_shortcuts: prohibited,
         regression_test_suggestion: regression_test_suggestion(&finding.category),
+    }
+}
+
+/// Header/CORS/cookie findings are fixed in configuration, so an in-project
+/// configuration file outranks weaker file-name guesses (which previously kept it from
+/// ever being considered and pushed these findings to manual remediation).
+fn prefer_configuration_candidate(
+    candidates: &mut Vec<crate::GuidedSourceCandidate>,
+    candidate: crate::GuidedSourceCandidate,
+) {
+    if candidates
+        .first()
+        .is_none_or(|best| best.confidence < candidate.confidence)
+    {
+        candidates.insert(0, candidate);
+    } else {
+        candidates.push(candidate);
     }
 }

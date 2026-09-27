@@ -264,7 +264,14 @@ impl<'a> SecurityFixService<'a> {
         }
         let current_hash = patch_hash(&changes);
         let current_files = approved_file_identity(&changes);
-        let current_safety = self.analyze_patch_safety(&attempt, &changes)?;
+        // After approval, an unreadable or drifted source means the reviewed base no
+        // longer exists: report it as a stale approval so callers ask for re-review.
+        let current_safety = self
+            .analyze_patch_safety(&attempt, &changes)
+            .map_err(|error| match error {
+                SecurityFixError::Source(_) => SecurityFixError::StaleApproval,
+                other => other,
+            })?;
         if current_safety.classification != approved_safety
             || current_safety.classification == PatchSafetyClass::Rejected
         {
@@ -682,10 +689,27 @@ fn looks_like_secret(text: &str) -> bool {
     ]
     .iter()
     .any(|needle| lower.contains(needle))
-        && (lower.contains("=\"")
-            || lower.contains("='")
-            || lower.contains(": \"")
-            || lower.contains(": '"))
+        && assigns_string_literal(&lower)
+}
+
+/// True when some `=` or `:` is followed (after optional whitespace) by a quote, so
+/// `key = 'x'`, `key='x'` and `key: "x"` all count; `==` comparisons do not.
+fn assigns_string_literal(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.iter().enumerate().any(|(index, byte)| {
+        if !matches!(byte, b'=' | b':') {
+            return false;
+        }
+        if *byte == b'='
+            && (bytes.get(index + 1) == Some(&b'=') || index > 0 && bytes[index - 1] == b'=')
+        {
+            return false;
+        }
+        bytes[index + 1..]
+            .iter()
+            .find(|next| !next.is_ascii_whitespace())
+            .is_some_and(|next| matches!(next, b'"' | b'\'' | b'`'))
+    })
 }
 
 fn contains_interpolated_sql(text: &str, parameter: Option<&str>) -> bool {
