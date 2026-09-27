@@ -677,7 +677,7 @@ fn run_release_smoke(fixture: &std::path::Path, database_path: &std::path::Path)
             "graph_nodes": graph.node_count,
             "graph_edges": graph.edge_count,
             "workspace_projects": workspace.project_count,
-            "database": database_path,
+            "database": database_path.display().to_string(),
         })
     );
     Ok(())
