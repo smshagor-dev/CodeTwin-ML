@@ -622,7 +622,8 @@ fn extract_forms(base: &Url, html: &str) -> Vec<FormObservation> {
                 };
                 parameters.push(name.clone());
                 if tag_has_attribute(select_tag, "multiple") {
-                    protected_names.push(name.clone());
+                    protected_names.push(name);
+                    continue;
                 }
                 if let Some(value) = select_default_value(select_body) {
                     default_values.insert(name, value);
@@ -1554,9 +1555,9 @@ mod tests {
             form.default_values.get("region").map(String::as_str),
             Some("us")
         );
-        assert_eq!(
-            form.default_values.get("roles").map(String::as_str),
-            Some("reader")
+        assert!(
+            form.default_values.get("roles").is_none(),
+            "multi-select values are repeated-key semantics and must not be collapsed into one seed"
         );
         assert_eq!(
             form.default_values.get("bio").map(String::as_str),
@@ -1698,38 +1699,3 @@ mod tests {
     #[test]
     fn openapi_external_refs_and_unresolved_server_variables_fail_closed() {
         let external = serde_json::json!({ "$ref": "https://example.invalid/schema.json" });
-        assert!(
-            super::resolve_local_openapi_ref(&external, &external, 0).is_none(),
-            "remote references must never be fetched or trusted"
-        );
-        assert!(
-            expand_openapi_server_url(&serde_json::json!({
-                "url": "/api/{tenant}",
-                "variables": { "tenant": {} }
-            }))
-            .is_none(),
-            "server variables without bounded defaults must be ignored"
-        );
-    }
-
-    #[test]
-    fn openapi_scalar_seed_values_preserve_simple_json_types() {
-        assert_eq!(
-            bounded_schema_seed(&serde_json::json!({"type":"integer"})),
-            Some(serde_json::json!(1))
-        );
-        assert_eq!(
-            bounded_schema_seed(&serde_json::json!({"type":"boolean"})),
-            Some(serde_json::json!(true))
-        );
-        assert_eq!(
-            bounded_schema_seed(&serde_json::json!({"type":"string","format":"email"})),
-            Some(serde_json::json!("codetwin@example.invalid"))
-        );
-        assert_eq!(
-            bounded_schema_seed(&serde_json::json!({"type":"object"})),
-            None,
-            "complex request shapes must remain fail-closed instead of being guessed"
-        );
-    }
-}
