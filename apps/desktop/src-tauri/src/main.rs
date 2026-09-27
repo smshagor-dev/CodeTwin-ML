@@ -96,8 +96,9 @@ use security_fix_commands::{
     rollback_security_fix, run_security_fix_validation,
 };
 use supply_chain_commands::{
-    dependency_audit_history, list_dependency_findings, list_dependency_inventory,
-    list_secret_findings, run_dependency_audit, run_secret_scan, secret_scan_history,
+    dependency_audit_history, export_dependency_sbom, list_dependency_findings,
+    list_dependency_inventory, list_secret_findings, run_dependency_audit, run_secret_scan,
+    secret_scan_history,
 };
 use tauri::Manager;
 use web_security_commands::{
@@ -782,6 +783,7 @@ fn main() {
             security_history,
             list_security_rules,
             run_secret_scan,
+            export_dependency_sbom,
             dataset_benchmark_status,
             run_dataset_benchmark,
             list_dataset_benchmarks,

@@ -2008,6 +2008,7 @@ html[data-theme="dark"] .ws-security-fix-warning {
 .ws-advisory-path input { flex: 1; min-width: 0; padding: 8px 10px; }
 .ws-consent { padding-left: 24px; color: var(--ws-muted); }
 .ws-security-layout.ws-supply-layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+.ws-sbom-actions { display: flex; align-items: center; gap: 8px; }
 @media (max-width: 1100px) { .ws-security-layout.ws-supply-layout { grid-template-columns: minmax(0, 1fr); } }
 
 .ws-benchmark-toolbar { flex-wrap: wrap; }

@@ -189,6 +189,17 @@ export const workspaceApi = {
     const selected = await open({ directory: true, multiple: false, title: "Choose the installed OpenMindAI Dataset directory" });
     return typeof selected === "string" ? selected : null;
   },
+  exportDependencySbom(projectId: string, path: string) {
+    return invoke<{ path: string; components: number; vulnerabilities: number }>("export_dependency_sbom", { projectId, path });
+  },
+  async chooseSbomPath(): Promise<string | null> {
+    const selected = await save({
+      title: "Export CycloneDX SBOM",
+      defaultPath: "codetwin-sbom.cdx.json",
+      filters: [{ name: "CycloneDX JSON", extensions: ["json"] }],
+    });
+    return typeof selected === "string" ? selected : null;
+  },
   async pickAdvisoryDirectory(): Promise<string | null> {
     const selected = await open({ directory: true, multiple: false, title: "Choose an extracted OSV advisory directory" });
     return typeof selected === "string" ? selected : null;
