@@ -2,7 +2,7 @@
   "schema_version": 1,
   "brand": "OpenMindAI Dataset",
   "release_tag": "openmindai-datasets-v1.0.0",
-  "estimated_total_download_bytes": 177210655,
+  "estimated_total_download_bytes": 177020067,
   "datasets": [
     {
       "id": "code_x_glue_defect_detection",
@@ -13,12 +13,28 @@
       "license": "c-uda",
       "license_url": "https://spdx.org/licenses/C-UDA-1.0.html",
       "license_acceptance_required": true,
-      "purpose": ["defect_detection", "quality_assurance", "security_screening"],
+      "purpose": [
+        "defect_detection",
+        "quality_assurance",
+        "security_screening"
+      ],
       "download_bytes": 22289955,
       "files": [
-        {"path": "data/train-00000-of-00001.parquet", "size_bytes": 17847670, "sha256": "e319c83e2e816a10aeeebe78668aa95b757b04e555700bf5f826766b0e80bb06"},
-        {"path": "data/validation-00000-of-00001.parquet", "size_bytes": 2214315, "sha256": "a17a76ed040d7f8657d1ff741f967b44704c008101ac958e2990ad468203cfa4"},
-        {"path": "data/test-00000-of-00001.parquet", "size_bytes": 2227970, "sha256": "259c944eb4f8689e83895de476a00fe4cadf4839636769e725d3744fc36cfcd5"}
+        {
+          "path": "data/train-00000-of-00001.parquet",
+          "size_bytes": 17847670,
+          "sha256": "e319c83e2e816a10aeeebe78668aa95b757b04e555700bf5f826766b0e80bb06"
+        },
+        {
+          "path": "data/validation-00000-of-00001.parquet",
+          "size_bytes": 2214315,
+          "sha256": "a17a76ed040d7f8657d1ff741f967b44704c008101ac958e2990ad468203cfa4"
+        },
+        {
+          "path": "data/test-00000-of-00001.parquet",
+          "size_bytes": 2227970,
+          "sha256": "259c944eb4f8689e83895de476a00fe4cadf4839636769e725d3744fc36cfcd5"
+        }
       ]
     },
     {
@@ -30,15 +46,43 @@
       "license": "c-uda",
       "license_url": "https://spdx.org/licenses/C-UDA-1.0.html",
       "license_acceptance_required": true,
-      "purpose": ["repair_generation", "repair_ranking", "quality_assurance"],
+      "purpose": [
+        "repair_generation",
+        "repair_ranking",
+        "quality_assurance"
+      ],
       "download_bytes": 20824021,
       "files": [
-        {"path": "medium/train-00000-of-00001.parquet", "size_bytes": 11943277, "sha256": "955496550f8603dd920aa2a09d1e4a14d878bda9f35f2f3575bae68b9d9493f0"},
-        {"path": "medium/validation-00000-of-00001.parquet", "size_bytes": 1498199, "sha256": "9eb660729a7a43df19c714726933a517d0497cefa99cb95328bc964658eaa44c"},
-        {"path": "medium/test-00000-of-00001.parquet", "size_bytes": 1488083, "sha256": "776766b34878a999193dae39f0462ed1dc5aec3b7d219d3488db4c0127eca858"},
-        {"path": "small/train-00000-of-00001.parquet", "size_bytes": 4715251, "sha256": "6e0ddaf02afd36f2827d0f6edcf94b3b6b5908206cbf63fc6ac99ee4a6332472"},
-        {"path": "small/validation-00000-of-00001.parquet", "size_bytes": 590633, "sha256": "b623a6544959b1767eb3082064b3b3896e26f0770dfd2270d14d4e62da0246a5"},
-        {"path": "small/test-00000-of-00001.parquet", "size_bytes": 588578, "sha256": "be9b78909122cc07a9b31b55c999fe8b8346b1bd775e726b0cbb044f9d1ebc90"}
+        {
+          "path": "medium/train-00000-of-00001.parquet",
+          "size_bytes": 11943277,
+          "sha256": "955496550f8603dd920aa2a09d1e4a14d878bda9f35f2f3575bae68b9d9493f0"
+        },
+        {
+          "path": "medium/validation-00000-of-00001.parquet",
+          "size_bytes": 1498199,
+          "sha256": "9eb660729a7a43df19c714726933a517d0497cefa99cb95328bc964658eaa44c"
+        },
+        {
+          "path": "medium/test-00000-of-00001.parquet",
+          "size_bytes": 1488083,
+          "sha256": "776766b34878a999193dae39f0462ed1dc5aec3b7d219d3488db4c0127eca858"
+        },
+        {
+          "path": "small/train-00000-of-00001.parquet",
+          "size_bytes": 4715251,
+          "sha256": "6e0ddaf02afd36f2827d0f6edcf94b3b6b5908206cbf63fc6ac99ee4a6332472"
+        },
+        {
+          "path": "small/validation-00000-of-00001.parquet",
+          "size_bytes": 590633,
+          "sha256": "b623a6544959b1767eb3082064b3b3896e26f0770dfd2270d14d4e62da0246a5"
+        },
+        {
+          "path": "small/test-00000-of-00001.parquet",
+          "size_bytes": 588578,
+          "sha256": "be9b78909122cc07a9b31b55c999fe8b8346b1bd775e726b0cbb044f9d1ebc90"
+        }
       ]
     },
     {
@@ -51,10 +95,18 @@
       "license_url": "https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified",
       "license_note": "The SWE-bench project is MIT licensed, while task material can retain licenses from the source repositories.",
       "license_acceptance_required": true,
-      "purpose": ["repair_verification", "regression_repair", "repository_issue_repair"],
+      "purpose": [
+        "repair_verification",
+        "regression_repair",
+        "repository_issue_repair"
+      ],
       "download_bytes": 2096679,
       "files": [
-        {"path": "data/test-00000-of-00001.parquet", "size_bytes": 2096679, "sha256": "a45b1fe4e2f0c8390b2b2938ac83e92ed5979000856808f3679c07812e9e6dcd"}
+        {
+          "path": "data/test-00000-of-00001.parquet",
+          "size_bytes": 2096679,
+          "sha256": "a45b1fe4e2f0c8390b2b2938ac83e92ed5979000856808f3679c07812e9e6dcd"
+        }
       ]
     },
     {
@@ -62,30 +114,76 @@
       "name": "OpenMindAI Dataset - Security Vulnerability",
       "release_asset": "openmindai-dataset-security-vulnerability-v1.0.0.zip",
       "repository": "ayshajavd/code-security-vulnerability-dataset",
-      "revision": "074abd8",
+      "revision": "074abd84cd1f35b2b40b855ed25bca484fa8ed7c",
       "license": "apache-2.0",
       "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
       "license_acceptance_required": false,
-      "purpose": ["security_analysis", "cwe_classification", "vulnerability_detection"],
-      "download_bytes": 132000000,
+      "purpose": [
+        "security_analysis",
+        "cwe_classification",
+        "vulnerability_detection"
+      ],
+      "download_bytes": 131809412,
       "files": [
-        {"path": "data/train-00000-of-00001.parquet", "size_bytes": null, "sha256": null},
-        {"path": "data/validation-00000-of-00001.parquet", "size_bytes": null, "sha256": null},
-        {"path": "data/test-00000-of-00001.parquet", "size_bytes": null, "sha256": null}
+        {
+          "path": "data/train-00000-of-00001.parquet",
+          "size_bytes": 105216488,
+          "sha256": "7f24347ae73c217640b54f374010f7306941a9cb25b36b55eda352873e4a784d"
+        },
+        {
+          "path": "data/validation-00000-of-00001.parquet",
+          "size_bytes": 13369639,
+          "sha256": "ab98983fef1655f77d9acfd79aff388391f4b7659d0f508274d3877e0951bfd1"
+        },
+        {
+          "path": "data/test-00000-of-00001.parquet",
+          "size_bytes": 13223285,
+          "sha256": "f16650e9ccfa2aeb2858136b055d899d4059b435b88a76c16573fb88f175fae4"
+        }
       ]
     }
   ],
   "routes": {
-    "defect_detection": ["code_x_glue_defect_detection", "code_security_vulnerability"],
-    "quality_assurance": ["code_x_glue_defect_detection", "code_x_glue_code_refinement"],
-    "security_analysis": ["code_security_vulnerability", "code_x_glue_defect_detection"],
-    "security_screening": ["code_x_glue_defect_detection", "code_security_vulnerability"],
-    "cwe_classification": ["code_security_vulnerability"],
-    "vulnerability_detection": ["code_security_vulnerability", "code_x_glue_defect_detection"],
-    "repair_generation": ["code_x_glue_code_refinement", "swe_bench_verified"],
-    "repair_ranking": ["code_x_glue_code_refinement", "swe_bench_verified"],
-    "repair_verification": ["swe_bench_verified"],
-    "regression_repair": ["swe_bench_verified", "code_x_glue_code_refinement"],
-    "repository_issue_repair": ["swe_bench_verified"]
+    "defect_detection": [
+      "code_x_glue_defect_detection",
+      "code_security_vulnerability"
+    ],
+    "quality_assurance": [
+      "code_x_glue_defect_detection",
+      "code_x_glue_code_refinement"
+    ],
+    "security_analysis": [
+      "code_security_vulnerability",
+      "code_x_glue_defect_detection"
+    ],
+    "security_screening": [
+      "code_x_glue_defect_detection",
+      "code_security_vulnerability"
+    ],
+    "cwe_classification": [
+      "code_security_vulnerability"
+    ],
+    "vulnerability_detection": [
+      "code_security_vulnerability",
+      "code_x_glue_defect_detection"
+    ],
+    "repair_generation": [
+      "code_x_glue_code_refinement",
+      "swe_bench_verified"
+    ],
+    "repair_ranking": [
+      "code_x_glue_code_refinement",
+      "swe_bench_verified"
+    ],
+    "repair_verification": [
+      "swe_bench_verified"
+    ],
+    "regression_repair": [
+      "swe_bench_verified",
+      "code_x_glue_code_refinement"
+    ],
+    "repository_issue_repair": [
+      "swe_bench_verified"
+    ]
   }
 }
