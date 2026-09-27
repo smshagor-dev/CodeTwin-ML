@@ -29,8 +29,38 @@ characters, fully masked for short values) and a fingerprint derived from a
 project-salted SHA-256 of the value, so the same secret moving within a file stays one
 finding. The integration test checks every text column of the database for the raw value.
 
-Not covered: git history. A secret that was committed and later deleted must still be
-rotated; scan history with a dedicated tool before publishing a repository.
+Values that are plainly stand-ins are skipped: template slots (`{password}`, `%s`,
+`%(pw)s`, `${VAR}`) and bare words such as `secret`, `password` or `postgres`. Rust code after a
+`#[cfg(test)]` line, `tests.rs` and `test_*.py` files count as test code.
+
+## Secrets in git history
+
+Service: `SecretHistoryService` (`analyzer_key = 'secret_history'`, run kind `secret_history`,
+migration 0026). A credential that was committed and later deleted can still be read from any
+clone, so it still has to be rotated.
+
+- Runs `git log --all -p --unified=0` over up to 10,000 commits by default (configurable up to
+  200,000) and scans only the lines each commit added, with the same rules as the working-tree
+  scan. Added lines of one file in one commit are scanned together so multi-line private keys
+  still match. Hunk line counts decide what is content, so added text that looks like a diff
+  header is not misparsed.
+- One finding per distinct value, however many commits or paths it appears in. Each finding
+  records the commit that introduced it (oldest by commit time), the path and line there, how
+  many commits contain it, up to 20 paths, and whether the value is **still in the current
+  files**.
+- Coverage is incomplete, and nothing is resolved, when the commit limit is hit or more than
+  10,000 distinct values are found. Shallow clones are flagged: commits before the cut-off are
+  not on disk and cannot be scanned. Changes over 1 MiB of added text are skipped and counted.
+- Git runs with `--no-ext-diff`, `--no-textconv`, `--no-pager`, explicit `a/`/`b/` prefixes,
+  `log.showSignature=false`, `core.fsmonitor=false`, no system config and no inherited
+  `GIT_DIR`/`GIT_CONFIG_*`, and is killed after 10 minutes. An integration test plants an
+  external diff, textconv filter, pager, GPG program and fsmonitor hook in a repository's config
+  and checks none of them runs.
+
+Measured: CodeTwin's own history (1,395 commits) in 0.6 s; Flask's full history (5,598 commits)
+in 1.3 s, reporting two example `SECRET_KEY` values in `docs/config.rst` at reduced confidence.
+
+Not covered: commits no ref reaches (reflog-only or dangling objects) and submodules.
 
 ## Dependency vulnerability audit
 

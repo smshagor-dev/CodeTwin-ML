@@ -34,6 +34,8 @@ SQLite foreign keys are enabled and schema changes are controlled through number
 
 Secret scanning reads project files but never persists or returns a matched value: findings hold a redacted preview and a project-salted SHA-256 fingerprint. Dependency auditing parses lockfiles as data and never runs a package manager. Its only network path is the optional OSV.dev lookup, which is disabled until the user consents in the UI and sends only package ecosystem, name and version to `https://api.osv.dev`; advisory IDs are validated before being used in a request URL and responses are size-bounded. The offline mode reads a user-chosen directory of OSV JSON and uses no network. Advisory text from OSV is treated as data and rendered as text.
 
+The git history scan is the one place CodeTwin runs `git` against an imported repository, and that repository controls its own `.git/config` and `.gitattributes`. The scan runs only `git log --all -p --unified=0` with `--no-ext-diff`, `--no-textconv`, `--no-pager`, explicit diff prefixes, `log.showSignature=false`, `core.fsmonitor=false`, no system config and no `GIT_DIR`/`GIT_CONFIG_*` overrides, so external diff drivers, textconv filters, pagers and GPG programs named by the repository never execute (covered by an integration test that plants each of them). Output is parsed as data under per-change and per-line size caps with a 10-minute timeout. Raw values stay in memory only; persisted findings carry the same redaction and salted fingerprint as working-tree findings.
+
 ## Semantic and ML controls
 
 Language-server enrichment is an explicit trusted workflow and does not auto-discover an executable from the analyzed repository.

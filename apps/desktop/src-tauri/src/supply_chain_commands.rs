@@ -6,11 +6,13 @@ use std::{
 use codetwin_core::{
     AdvisorySource, Database, DependencyAuditRunRecord, DependencyAuditService,
     DependencyAuditSummary, DependencyFindingRecord, DependencyRecord, SecretFindingRecord,
+    SecretHistoryFindingRecord, SecretHistoryRunRecord, SecretHistoryService, SecretHistorySummary,
     SecretScanRunRecord, SecretScanSummary, SecretScanningService,
 };
 use tauri::Manager;
 
 static SECRET_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
+static SECRET_HISTORY_RUNNING: AtomicBool = AtomicBool::new(false);
 static DEPENDENCY_AUDIT_RUNNING: AtomicBool = AtomicBool::new(false);
 const OSV_API: &str = "https://api.osv.dev";
 
@@ -63,6 +65,53 @@ pub fn secret_scan_history(
 ) -> Result<Vec<SecretScanRunRecord>, String> {
     let database = open_database(&app)?;
     SecretScanningService::new(&database)
+        .history(&project_id, limit)
+        .map_err(|error| error.to_string())
+}
+
+/// Scans the lines added by up to `max_commits` commits across all refs. Runs `git log`
+/// read-only with external diff, textconv, pager and signature programs disabled.
+#[tauri::command]
+pub async fn run_secret_history_scan(
+    project_id: String,
+    max_commits: usize,
+    app: tauri::AppHandle,
+) -> Result<SecretHistorySummary, String> {
+    if SECRET_HISTORY_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("a git history secret scan is already running".to_string());
+    }
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        let database = open_database(&app)?;
+        SecretHistoryService::new(&database)
+            .scan_project(&project_id, max_commits)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    SECRET_HISTORY_RUNNING.store(false, Ordering::SeqCst);
+    task.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn list_secret_history_findings(
+    project_id: String,
+    status: Option<String>,
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<SecretHistoryFindingRecord>, String> {
+    let database = open_database(&app)?;
+    SecretHistoryService::new(&database)
+        .list_findings(&project_id, status.as_deref(), limit)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn secret_history_runs(
+    project_id: String,
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<SecretHistoryRunRecord>, String> {
+    let database = open_database(&app)?;
+    SecretHistoryService::new(&database)
         .history(&project_id, limit)
         .map_err(|error| error.to_string())
 }
