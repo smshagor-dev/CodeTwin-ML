@@ -160,6 +160,23 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
     }
 
     match path {
+        path if path.starts_with("/xss-lab/") => {
+            let name = path.trim_start_matches("/xss-lab/");
+            let q = query.get("q").map(String::as_str).unwrap_or("");
+            if name == "truncated" || name == "blocked" {
+                let body = format!("<div>{q}</div>{}", "x".repeat(20_000));
+                respond(&mut stream, if name == "blocked" { "403 Forbidden" } else { "200 OK" }, &[("Content-Type", "text/html")], &body);
+                return;
+            }
+            let fixtures: serde_json::Value = serde_json::from_str(include_str!("fixtures/xss-contexts.json")).expect("fixtures");
+            if let Some(case) = fixtures.as_array().expect("array").iter().find(|case| case["name"] == name) {
+                let body = case["body"].as_str().expect("body").replace("<codetwin-xss-lab>", q).replace("&lt;codetwin-xss-lab&gt;", &q.replace('<', "&lt;").replace('>', "&gt;"));
+                respond(&mut stream, "200 OK", &[("Content-Type", "text/html")], &body);
+            } else {
+                respond(&mut stream, "200 OK", &[("Content-Type", "application/json")], &serde_json::json!({"value":q}).to_string());
+            }
+        }
+
         path if path.starts_with("/sql-lab/") => {
             let q = query.get("q").map(String::as_str).unwrap_or("");
             if path.ends_with("waf") && q.contains("AND") {
@@ -1454,5 +1471,72 @@ fn sql_confirmation_requires_real_predicates_and_stable_successful_controls() {
                 .any(|f| f.category == "sql_injection"));
         }
         assert!(lab.requests.lock().expect("requests").len() <= 20);
+    }
+}
+
+#[test]
+fn xss_context_lab_excludes_inert_and_non_html_reflections() {
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/xss-contexts.json")).expect("fixtures");
+    let mut cases: Vec<_> = fixtures
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|c| {
+            (
+                c["name"].as_str().unwrap().to_string(),
+                c["context"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    cases.push(("json".into(), "inert".into()));
+    cases.push(("truncated".into(), "inert".into()));
+    cases.push(("blocked".into(), "inert".into()));
+    for (name, context) in cases {
+        let lab = LocalLab::start();
+        let mut config = lab.config(5);
+        config.scope.target_url = format!("{}/xss-lab/{name}?q=baseline", lab.base_url);
+        config.scope.response_limit_bytes = 16_384;
+        config.scope.max_crawl_depth = 0;
+        config.checks = CheckConfig {
+            sql_injection: false,
+            xss: true,
+            csrf: false,
+            open_redirect: false,
+            path_traversal: false,
+            ssrf_indicators: false,
+            template_command_indicators: false,
+            method_misconfiguration: false,
+            cors: false,
+            session: false,
+            access_control: false,
+            api_validation: false,
+        };
+        let outcome = run_authorized_scan(
+            &config,
+            &AuthContext::default(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .expect("XSS scan");
+        let findings: Vec<_> = outcome
+            .findings
+            .iter()
+            .filter(|f| f.category == "xss")
+            .collect();
+        if context == "inert" {
+            assert!(findings.is_empty(), "false positive: {name}");
+        } else {
+            assert_eq!(findings.len(), 1, "missing {name}");
+            assert_eq!(
+                findings[0].confidence,
+                if context == "markup" {
+                    "Likely"
+                } else {
+                    "Potential"
+                }
+            );
+        }
     }
 }

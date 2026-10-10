@@ -182,3 +182,26 @@ Real local SQLite HTTP lab tests compare unsafe SQL construction with prepared
 parameter binding. Additional negative controls cover WAF rejection, a fixed
 first-payload response rule and baseline changes. These tests establish bounded
 behavior, not universal SQL injection detection or proof against every WAF.
+
+
+### Milestone 6: XSS reflection context and browser lab verification
+
+XSS reflection analysis requires a complete successful `text/html` response.
+A custom HTML scanner tracks quoted attributes, comments, raw-text elements,
+script type and inert containers instead of guessing from a short substring.
+Comments, textarea/title, templates, data scripts, encoded text and non-HTML
+responses do not create XSS findings. Markup candidates remain Likely; attribute
+and JavaScript-source reflections are Potential because a harmless marker does
+not prove quote breakout or execution. Reflection never produces Confirmed XSS.
+Potential script-string findings lack evidence for speculative generated repairs.
+Dynamic DOM sinks, stored XSS and browser-specific parser recovery remain outside
+this bounded coverage.
+
+Shared fixtures drive Rust classification, actual local HTTP scanner tests and
+`scripts/security/verify-xss-contexts.cjs`. The browser script serves fixtures on
+loopback, blocks external requests and checks whether the harmless marker became
+a live DOM element or remained an attribute/raw-text value. Run with Playwright
+available through NODE_PATH and optionally CHROMIUM_EXECUTABLE. This verifies
+browser parsing in the lab; production scans do not launch a browser or execute
+injected scripts. HTTP negatives also cover truncation and rejected responses.
+Browser verification does not establish exploitable script execution.
