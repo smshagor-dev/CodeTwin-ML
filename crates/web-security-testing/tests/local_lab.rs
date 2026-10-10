@@ -160,6 +160,34 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
     }
 
     match path {
+        path if path.starts_with("/sql-lab/") => {
+            let q = query.get("q").map(String::as_str).unwrap_or("");
+            if path.ends_with("waf") && q.contains("AND") {
+                respond(&mut stream, "403 Forbidden", &[("Content-Type", "text/plain")], "blocked predicate");
+                return;
+            }
+            if path.ends_with("fixed") {
+                let body = if q.contains("' AND '1'='2'") { "[]" } else { "[\"known-record\"]" };
+                respond(&mut stream, "200 OK", &[("Content-Type", "application/json")], body);
+                return;
+            }
+            let db = rusqlite::Connection::open_in_memory().expect("SQL lab");
+            db.execute_batch("CREATE TABLE records(name TEXT); INSERT INTO records VALUES('known');").expect("seed");
+            let result = if path.ends_with("safe") {
+                db.prepare("SELECT name FROM records WHERE name = ?1").expect("prepare").query_map([q], |row| row.get::<_, String>(0)).and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+            } else {
+                db.prepare(&format!("SELECT name FROM records WHERE name = '{q}'")).and_then(|mut statement| statement.query_map([], |row| row.get::<_, String>(0)).and_then(|rows| rows.collect::<Result<Vec<_>, _>>()))
+            };
+            match result {
+                Ok(rows) => {
+                    let baseline_count = requests.lock().expect("requests").iter().filter(|r| r.target == target).count();
+                    let body = if path.ends_with("unstable") && q == "known" && baseline_count > 1 { "[\"changed-record\"]".to_string() } else { serde_json::to_string(&rows).expect("JSON") };
+                    respond(&mut stream, "200 OK", &[("Content-Type", "application/json")], &body);
+                }
+                Err(_) => respond(&mut stream, "500 Internal Server Error", &[("Content-Type", "application/json")], "{\"error\":\"syntax error at or near SQL input\"}"),
+            }
+        }
+
         path if path.starts_with("/identity/") => {
             let secondary = authorization.as_deref() == Some("Bearer secondary-session-secret");
             let primary_count = requests.lock().expect("requests").iter().filter(|r| r.target == target && r.authorization.as_deref() == Some("Bearer primary-session-secret")).count();
@@ -278,14 +306,14 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
                     &[("Content-Type", "text/plain")],
                     "SQLSTATE[42000] syntax error near input",
                 );
-            } else if q.contains("' AND '1'='2'") {
+            } else if q.contains("' AND '1'='2'") || q.contains("' AND '2'='3'") {
                 respond(
                     &mut stream,
                     "403 Forbidden",
                     &[("Content-Type", "text/html")],
                     "<html><body>no result</body></html>",
                 );
-            } else if q.contains("' OR '1'='1'") {
+            } else if q.contains("' OR '1'='1'") || q.contains("' OR '2'='2'") {
                 respond(
                     &mut stream,
                     "200 OK",
@@ -1376,5 +1404,55 @@ fn identity_comparison_requires_distinct_complete_repeatable_sessions() {
         if case == "valid" {
             assert_eq!(requests.len(), 4);
         }
+    }
+}
+
+#[test]
+fn sql_confirmation_requires_real_predicates_and_stable_successful_controls() {
+    for case in ["positive", "safe", "waf", "fixed", "unstable"] {
+        let lab = LocalLab::start();
+        let mut config = lab.config(20);
+        config.scope.target_url = format!("{}/sql-lab/{case}?q=known", lab.base_url);
+        config.scope.max_crawl_depth = 0;
+        config.checks = CheckConfig {
+            sql_injection: true,
+            xss: false,
+            csrf: false,
+            open_redirect: false,
+            path_traversal: false,
+            ssrf_indicators: false,
+            template_command_indicators: false,
+            method_misconfiguration: false,
+            cors: false,
+            session: false,
+            access_control: false,
+            api_validation: false,
+        };
+        let outcome = run_authorized_scan(
+            &config,
+            &AuthContext::default(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .expect("SQL scan");
+        let confirmed: Vec<_> = outcome
+            .findings
+            .iter()
+            .filter(|f| f.category == "sql_injection" && f.confidence == "Confirmed")
+            .collect();
+        if case == "positive" {
+            assert_eq!(confirmed.len(), 1);
+            assert_eq!(confirmed[0].evidence.len(), 6);
+        } else {
+            assert!(confirmed.is_empty(), "false confirmation: {case}");
+        }
+        if case == "safe" {
+            assert!(!outcome
+                .findings
+                .iter()
+                .any(|f| f.category == "sql_injection"));
+        }
+        assert!(lab.requests.lock().expect("requests").len() <= 20);
     }
 }
