@@ -5,6 +5,7 @@ import type {
   WebCheckConfig,
   WebScanConfig,
   WebScanStartRequest,
+  WebScanRecord,
   WebsiteRecord,
 } from "../types";
 import { Modal } from "../ui";
@@ -17,6 +18,8 @@ import {
   webCheckLabels,
 } from "./webSecurityModel";
 
+import { buildObjectPolicy, policyReplayConfig, policyResult } from "./objectPolicyModel";
+
 export function WebScanDialog({
   open,
   websites,
@@ -25,7 +28,9 @@ export function WebScanDialog({
   busy,
   onClose,
   onStart,
+  replayScan,
 }: {
+  replayScan?: WebScanRecord | null;
   open: boolean;
   websites: WebsiteRecord[];
   projects: ProjectOverview[];
@@ -46,24 +51,41 @@ export function WebScanDialog({
   const [secondaryCookie, setSecondaryCookie] = useState("");
   const [secondaryBearer, setSecondaryBearer] = useState("");
   const [secondaryHeaders, setSecondaryHeaders] = useState("");
+  const [policyEnabled, setPolicyEnabled] = useState(false);
+  const [identityUrl, setIdentityUrl] = useState("");
+  const [identityPointer, setIdentityPointer] = useState("/principal");
+  const [primaryIdentity, setPrimaryIdentity] = useState("");
+  const [secondaryIdentity, setSecondaryIdentity] = useState("");
+  const [objectUrl, setObjectUrl] = useState("");
+  const [objectPointer, setObjectPointer] = useState("/record");
+  const [expectedObject, setExpectedObject] = useState("");
+  const [shared, setShared] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     const preferredWebsite = websites.find((website) => website.project_id === activeProjectId) ?? websites[0];
     const target = preferredWebsite?.url ?? "";
-    setWebsiteId(preferredWebsite?.id ?? "");
-    setProjectId(preferredWebsite?.project_id ?? activeProjectId ?? "");
-    setConfig(defaultWebScanConfig(target));
+    setWebsiteId(replayScan ? replayScan.website_id ?? "" : preferredWebsite?.id ?? "");
+    setProjectId(replayScan ? replayScan.project_id ?? "" : preferredWebsite?.project_id ?? activeProjectId ?? "");
+    setConfig(replayScan ? policyReplayConfig(replayScan) : defaultWebScanConfig(target));
+    const previous = policyResult(replayScan ?? null);
+    setPolicyEnabled(Boolean(previous));
+    setIdentityUrl(previous?.identity_url ?? "");
+    setIdentityPointer(previous?.identity_json_pointer ?? "/principal");
+    setObjectUrl(previous?.object_url ?? "");
+    setObjectPointer(previous?.object_json_pointer ?? "/record");
+    setPrimaryIdentity(""); setSecondaryIdentity(""); setExpectedObject("");
+    setShared(previous?.secondary_access_allowed ?? false);
     setPrimaryCookie("");
     setPrimaryBearer("");
     setPrimaryHeaders("");
-    setSecondaryEnabled(false);
+    setSecondaryEnabled(Boolean(replayScan && policyResult(replayScan)));
     setSecondaryCookie("");
     setSecondaryBearer("");
     setSecondaryHeaders("");
     setError(null);
-  }, [open, activeProjectId, websites]);
+  }, [open, activeProjectId, websites, replayScan]);
 
   const selectedWebsite = useMemo(
     () => websites.find((website) => website.id === websiteId),
@@ -131,6 +153,7 @@ export function WebScanDialog({
         secondaryBearer,
         secondaryHeaders,
       });
+      if (policyEnabled) request.object_access_policy = buildObjectPolicy({ identityUrl, identityPointer, primaryIdentity, secondaryIdentity, objectUrl, objectPointer, expectedObject, shared }, request);
       setError(null);
       await onStart(request);
     } catch (value) {
@@ -148,7 +171,7 @@ export function WebScanDialog({
         <>
           <button className="ws-button ws-button-secondary" onClick={onClose} disabled={busy}>Cancel</button>
           <button className="ws-button ws-button-primary" onClick={() => void submit()} disabled={busy}>
-            {busy ? "Starting…" : config.scope.active_testing ? "Start Authorized Active Scan" : "Start Passive Scan"}
+            {busy ? "Starting…" : policyEnabled ? "Start Object Policy Check" : config.scope.active_testing ? "Start Authorized Active Scan" : "Start Passive Scan"}
           </button>
         </>
       }
@@ -231,7 +254,7 @@ export function WebScanDialog({
               allow_non_idempotent_methods: event.target.checked ? config.scope.allow_non_idempotent_methods : false,
               enable_timing_probes: false,
             })}/>
-            <span><strong>Enable bounded active testing</strong><small>Uses conservative non-destructive probes. Passive crawling and response analysis run either way.</small></span>
+            <span><strong>Enable bounded active testing</strong><small>Uses conservative non-destructive probes. The exact policy mode checks only the two supplied endpoints; other scans include passive crawling.</small></span>
           </label>
           {config.scope.active_testing && (
             <div className="ws-webscan-risk-options">
@@ -246,6 +269,22 @@ export function WebScanDialog({
               </label>
             ))}
           </div>
+        </section>
+
+        <section>
+          <h3>Object access policy</h3>
+          <label className="ws-check-field"><input type="checkbox" checked={policyEnabled} onChange={event => setPolicyEnabled(event.target.checked)}/><span>Run an exact object policy check instead of crawling</span></label>
+          {policyEnabled && <div className="ws-webscan-auth-grid">
+            <p className="ws-muted">Supply verified principal values and known protected content. Only these two URLs receive GET requests. Credentials and expected values are not saved in scan configuration. Finding evidence may contain response excerpts.</p>
+            <label className="ws-field"><span>Identity endpoint URL</span><input value={identityUrl} onChange={e => setIdentityUrl(e.target.value)}/></label>
+            <label className="ws-field"><span>Principal JSON pointer</span><input value={identityPointer} onChange={e => setIdentityPointer(e.target.value)}/></label>
+            <label className="ws-field"><span>Expected primary principal</span><input value={primaryIdentity} onChange={e => setPrimaryIdentity(e.target.value)} autoComplete="off"/></label>
+            <label className="ws-field"><span>Expected secondary principal</span><input value={secondaryIdentity} onChange={e => setSecondaryIdentity(e.target.value)} autoComplete="off"/></label>
+            <label className="ws-field"><span>Object endpoint URL</span><input value={objectUrl} onChange={e => setObjectUrl(e.target.value)}/></label>
+            <label className="ws-field"><span>Object JSON pointer</span><input value={objectPointer} onChange={e => setObjectPointer(e.target.value)}/></label>
+            <label className="ws-field"><span>Expected protected JSON object</span><textarea rows={4} value={expectedObject} onChange={e => setExpectedObject(e.target.value)} placeholder={'{"id":42,"content":"known protected content"}'}/></label>
+            <label className="ws-check-field"><input type="checkbox" checked={shared} onChange={e => setShared(e.target.checked)}/><span>Secondary principal is allowed to read this shared object</span></label>
+          </div>}
         </section>
 
         <section className="ws-webscan-authorization">

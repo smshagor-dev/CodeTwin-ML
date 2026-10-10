@@ -303,6 +303,57 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             .ok_or_else(|| WebSecurityStoreError::NotFound(id))
     }
 
+    pub fn record_object_policy_result(
+        &self,
+        scan_id: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<(), WebSecurityStoreError> {
+        let scan = self
+            .get_scan(scan_id)?
+            .ok_or_else(|| WebSecurityStoreError::NotFound(scan_id.into()))?;
+        let allowed = [
+            "status",
+            "reason",
+            "identity_url",
+            "object_url",
+            "identity_json_pointer",
+            "object_json_pointer",
+            "secondary_access_allowed",
+        ];
+        let object = metadata.as_object().ok_or_else(|| {
+            WebSecurityStoreError::InvalidConfig("object policy result must be an object".into())
+        })?;
+        if object.keys().any(|key| !allowed.contains(&key.as_str()))
+            || !matches!(
+                metadata["status"].as_str(),
+                Some(
+                    "ViolationConfirmed"
+                        | "AccessDenied"
+                        | "SharedAccessObserved"
+                        | "UnableToVerify"
+                )
+            )
+            || allowed[..6].iter().any(|key| !metadata[*key].is_string())
+            || !metadata["secondary_access_allowed"].is_boolean()
+        {
+            return Err(WebSecurityStoreError::InvalidConfig(
+                "invalid object policy report metadata".into(),
+            ));
+        }
+        let mut config: serde_json::Value = serde_json::from_str(&scan.config_json)?;
+        let config = config.as_object_mut().ok_or_else(|| {
+            WebSecurityStoreError::InvalidConfig("scan config must be an object".into())
+        })?;
+        config.insert("object_policy_result".into(), metadata.clone());
+        let changed = self.database.connection().execute("UPDATE web_security_scans SET config_json = ?1 WHERE id = ?2 AND status IN ('queued','running')", params![serde_json::to_string(&config)?, scan_id])?;
+        if changed != 1 {
+            return Err(WebSecurityStoreError::State(
+                "policy outcomes can only be recorded on an active scan".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn get_scan(&self, scan_id: &str) -> Result<Option<WebScanRecord>, WebSecurityStoreError> {
         self.database
             .connection()
@@ -1229,6 +1280,12 @@ impl<'a> AuthorizedWebSecurityStore<'a> {
             report.push_str(&format!("**{}:** {}  ", severity, count));
         }
         report.push_str("\n\n");
+        if let Some(policy) = serde_json::from_str::<serde_json::Value>(&scan.config_json)?
+            .get("object_policy_result")
+        {
+            report.push_str("## Object Access Policy Check\n\n");
+            report.push_str(&format!("```json\n{}\n```\n\nExpected principal/object inputs and credentials are not persisted in scan configuration. Finding evidence may contain response excerpts. Rechecks require fresh sessions and policy evidence.\n\n", serde_json::to_string_pretty(policy)?));
+        }
         report.push_str("## Scope & Authorization\n\n");
         report.push_str(
             "The scan record contains explicit authorization confirmation and the exact bounded scope/configuration used for execution. Authentication metadata records only whether credentials were supplied and custom header names; secret values are not persisted.\n\n",

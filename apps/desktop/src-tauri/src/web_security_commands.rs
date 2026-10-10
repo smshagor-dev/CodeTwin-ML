@@ -15,8 +15,8 @@ use codetwin_core::{
 use serde::Deserialize;
 use web_security_testing::{
     apply_approved_execution_policy, run_authorized_scan_with_seeds, source_endpoint_seed,
-    ApprovedExecutionPolicy, AuthContext, ScanConfig, ScanError, ScanPhase, ScopePolicy,
-    SourceEndpointSeed,
+    ApprovedExecutionPolicy, AuthContext, ObjectAccessPolicy, ScanConfig, ScanError, ScanPhase,
+    ScopePolicy, SourceEndpointSeed,
 };
 
 use crate::{with_database, AppState};
@@ -29,6 +29,8 @@ pub struct WebScanStartRequest {
     #[serde(default)]
     pub primary_auth: AuthContext,
     pub secondary_auth: Option<AuthContext>,
+    #[serde(default)]
+    pub object_access_policy: Option<ObjectAccessPolicy>,
     #[serde(default)]
     pub guided_session_id: Option<String>,
 }
@@ -70,6 +72,14 @@ pub fn start_web_security_scan(
     state: tauri::State<'_, AppState>,
 ) -> Result<WebScanRecord, String> {
     ScopePolicy::new(request.config.scope.clone()).map_err(|error| error.to_string())?;
+    if request.object_access_policy.is_some()
+        && (request.secondary_auth.is_none()
+            || !request.config.scope.active_testing
+            || !request.config.checks.access_control
+            || request.guided_session_id.is_some())
+    {
+        return Err("Object policy checks require active access-control testing, two sessions and a standalone scan.".into());
+    }
 
     let scope_json =
         serde_json::to_string(&request.config.scope).map_err(|error| error.to_string())?;
@@ -223,52 +233,68 @@ fn run_scan_background(
         }
     };
 
-    let outcome = run_authorized_scan_with_seeds(
-        &execution_config,
-        &request.primary_auth,
-        request.secondary_auth.as_ref(),
-        &source_seeds,
-        Arc::clone(&cancelled),
-        |progress| {
-            if cancelled.load(Ordering::SeqCst) {
-                let _ = store.cancel_scan(scan_id);
-                return;
-            }
-            let phase = if progress.phase == ScanPhase::Completed {
-                "correlating"
-            } else {
-                progress.phase.as_str()
-            };
-            let _ = store.update_progress(
-                scan_id,
-                "running",
-                phase,
-                progress.endpoints_discovered,
-                progress.requests_performed,
-                progress.findings_observed,
-            );
-            if let Some(session_id) = guided_session_id.as_deref() {
-                if last_guided_phase != phase {
-                    last_guided_phase = phase.to_string();
-                    let _ = guided.append_activity(
-                        session_id,
-                        "phase_changed",
-                        phase,
-                        &format!(
-                            "Guided security execution entered phase {}.",
-                            phase.replace('_', " ")
-                        ),
-                        &serde_json::json!({
-                            "endpoints_discovered": progress.endpoints_discovered,
-                            "requests_performed": progress.requests_performed,
-                            "findings_observed": progress.findings_observed,
-                        })
-                        .to_string(),
-                    );
+    let outcome = if let Some(expected) = request.object_access_policy.as_ref() {
+        let _ = store.update_progress(scan_id, "running", "active_testing", 0, 0, 0);
+        crate::web_policy_commands::run_policy_scan(
+            &database,
+            scan_id,
+            &execution_config,
+            &request.primary_auth,
+            request
+                .secondary_auth
+                .as_ref()
+                .expect("validated secondary session"),
+            expected,
+            Arc::clone(&cancelled),
+        )
+    } else {
+        run_authorized_scan_with_seeds(
+            &execution_config,
+            &request.primary_auth,
+            request.secondary_auth.as_ref(),
+            &source_seeds,
+            Arc::clone(&cancelled),
+            |progress| {
+                if cancelled.load(Ordering::SeqCst) {
+                    let _ = store.cancel_scan(scan_id);
+                    return;
                 }
-            }
-        },
-    );
+                let phase = if progress.phase == ScanPhase::Completed {
+                    "correlating"
+                } else {
+                    progress.phase.as_str()
+                };
+                let _ = store.update_progress(
+                    scan_id,
+                    "running",
+                    phase,
+                    progress.endpoints_discovered,
+                    progress.requests_performed,
+                    progress.findings_observed,
+                );
+                if let Some(session_id) = guided_session_id.as_deref() {
+                    if last_guided_phase != phase {
+                        last_guided_phase = phase.to_string();
+                        let _ = guided.append_activity(
+                            session_id,
+                            "phase_changed",
+                            phase,
+                            &format!(
+                                "Guided security execution entered phase {}.",
+                                phase.replace('_', " ")
+                            ),
+                            &serde_json::json!({
+                                "endpoints_discovered": progress.endpoints_discovered,
+                                "requests_performed": progress.requests_performed,
+                                "findings_observed": progress.findings_observed,
+                            })
+                            .to_string(),
+                        );
+                    }
+                }
+            },
+        )
+    };
 
     match outcome {
         Ok(outcome) => {

@@ -243,3 +243,57 @@ fn same_success(left: &ObservedResponse, right: &ObservedResponse) -> bool {
         && left.content_type == right.content_type
         && left.body == right.body
 }
+
+/// Report/retest metadata excludes expected principal/object contents and sessions.
+pub fn object_policy_report_metadata(
+    policy: &ObjectAccessPolicy,
+    outcome: &AccessPolicyOutcome,
+    primary: &AuthContext,
+    secondary: &AuthContext,
+) -> serde_json::Value {
+    let mut secrets = primary.redaction_values();
+    secrets.extend(secondary.redaction_values());
+    let safe_url = |raw: &str| {
+        url::Url::parse(raw)
+            .map(|url| crate::evidence::redact_url_with_secrets(&url, &secrets))
+            .unwrap_or_else(|_| "invalid URL".into())
+    };
+    serde_json::json!({
+        "status":outcome.status, "reason":outcome.reason,
+        "identity_url":safe_url(&policy.identity_url), "object_url":safe_url(&policy.object_url),
+        "identity_json_pointer":policy.identity_json_pointer, "object_json_pointer":policy.object_json_pointer,
+        "secondary_access_allowed":policy.secondary_access_allowed,
+    })
+}
+
+pub fn object_policy_scan_outcome(
+    policy: &ObjectAccessPolicy,
+    outcome: AccessPolicyOutcome,
+) -> crate::ScanOutcome {
+    let mut urls = vec![policy.identity_url.clone(), policy.object_url.clone()];
+    urls.sort();
+    urls.dedup();
+    crate::ScanOutcome {
+        endpoints: urls
+            .into_iter()
+            .map(|url| crate::EndpointObservation {
+                parameter_names: url::Url::parse(&url)
+                    .map(|url| crate::query_parameters(&url))
+                    .unwrap_or_default(),
+                url,
+                route_template: None,
+                method: "GET".into(),
+                depth: 0,
+                source: "object_policy".into(),
+                parameter_locations: Default::default(),
+                response_header_names: Vec::new(),
+                cookie_names: Vec::new(),
+                content_type: None,
+                status_code: None,
+                redirect_to: None,
+            })
+            .collect(),
+        findings: outcome.finding.into_iter().collect(),
+        requests_performed: outcome.requests_performed,
+    }
+}

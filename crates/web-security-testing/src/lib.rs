@@ -1,6 +1,7 @@
 mod access_policy;
 pub use access_policy::{
-    run_object_access_policy, AccessPolicyOutcome, AccessPolicyStatus, ObjectAccessPolicy,
+    object_policy_report_metadata, object_policy_scan_outcome, run_object_access_policy,
+    AccessPolicyOutcome, AccessPolicyStatus, ObjectAccessPolicy,
 };
 mod active;
 mod discover;

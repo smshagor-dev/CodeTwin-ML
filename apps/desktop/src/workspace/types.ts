@@ -391,12 +391,28 @@ export type WebAuthContext = {
   custom_headers: Array<[string, string]>;
 };
 
+export type ObjectAccessPolicy = {
+  identity_url: string;
+  identity_json_pointer: string;
+  primary_identity: unknown;
+  secondary_identity: unknown;
+  object_url: string;
+  object_json_pointer: string;
+  expected_object: Record<string, unknown>;
+  secondary_access_allowed: boolean;
+};
+export type ObjectPolicyResult = Pick<ObjectAccessPolicy, "identity_url" | "identity_json_pointer" | "object_url" | "object_json_pointer" | "secondary_access_allowed"> & {
+  status: "ViolationConfirmed" | "AccessDenied" | "SharedAccessObserved" | "UnableToVerify";
+  reason: string;
+};
+
 export type WebScanStartRequest = {
   website_id: string | null;
   project_id: string | null;
   config: WebScanConfig;
   primary_auth: WebAuthContext;
   secondary_auth: WebAuthContext | null;
+  object_access_policy?: ObjectAccessPolicy | null;
   guided_session_id?: string | null;
 };
 

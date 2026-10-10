@@ -1,3 +1,4 @@
+import { policyResult } from "./objectPolicyModel";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { chooseWebSecurityReportPath, workspaceApi } from "../api";
@@ -34,6 +35,7 @@ export function AuthorizedWebSecurityPanel() {
   const [findings, setFindings] = useState<WebFindingRecord[]>([]);
   const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<WebEvidenceRecord[]>([]);
+  const [replayScan, setReplayScan] = useState<WebScanRecord | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const [starting, setStarting] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -132,6 +134,7 @@ export function AuthorizedWebSecurityPanel() {
     return links;
   }, [sourceLinks]);
 
+  const objectPolicyOutcome = policyResult(scan);
   const selectedFinding = findings.find((finding) => finding.id === selectedFindingId) ?? null;
   const categories = useMemo(
     () => [...new Set(findings.map((finding) => finding.category))].sort(),
@@ -238,7 +241,7 @@ export function AuthorizedWebSecurityPanel() {
             <span>Every scan stores explicit authorization and bounded scope. Redirects, DNS addresses, request count, response size, concurrency and timeouts are enforced by the scanner.</span>
           </p>
         </div>
-        <button className="ws-button ws-button-primary" onClick={() => setComposerOpen(true)}>
+        <button className="ws-button ws-button-primary" onClick={() => { setReplayScan(null); setComposerOpen(true); }}>
           <Icon name="plus"/>New Scan
         </button>
       </div>
@@ -248,7 +251,7 @@ export function AuthorizedWebSecurityPanel() {
           icon="security"
           title="No authorized web security scans yet"
           description="Start with a registered website or an explicitly authorized custom target. Passive crawling is conservative by default; active probes must be deliberately enabled."
-          action={<button className="ws-button ws-button-primary" onClick={() => setComposerOpen(true)}>New Authorized Scan</button>}
+          action={<button className="ws-button ws-button-primary" onClick={() => { setReplayScan(null); setComposerOpen(true); }}>New Authorized Scan</button>}
         />
       ) : (
         <>
@@ -260,6 +263,8 @@ export function AuthorizedWebSecurityPanel() {
             <div><span><Icon name="security"/></span><strong>{scan.findings_count}</strong><small>Total findings</small></div>
           </section>
 
+          {objectPolicyOutcome && <Panel title="Object policy outcome"><strong>{objectPolicyOutcome.status.replace(/([a-z])([A-Z])/g, "$1 $2")}</strong><p>{objectPolicyOutcome.reason}</p><small>Classification depends on the supplied application policy. Rechecks require fresh sessions and expected protected content.</small></Panel>}
+
           <Panel
             title="Scan progress & scope"
             action={
@@ -269,6 +274,7 @@ export function AuthorizedWebSecurityPanel() {
                     Cancel Scan
                   </button>
                 )}
+                {scan.status === "completed" && objectPolicyOutcome && <button className="ws-button ws-button-secondary" onClick={() => { setReplayScan(scan); setComposerOpen(true); }}>Repeat with fresh sessions</button>}
                 <button className="ws-button ws-button-secondary" disabled={reportBusy} onClick={() => void openReport("markdown")}>Preview Report</button>
                 <button className="ws-button ws-button-secondary" onClick={() => void exportReport("markdown")}>Export MD</button>
                 <button className="ws-button ws-button-secondary" onClick={() => void exportReport("json")}>Export JSON</button>
@@ -449,6 +455,7 @@ export function AuthorizedWebSecurityPanel() {
         websites={websites}
         projects={projects}
         activeProjectId={activeProjectId}
+        replayScan={replayScan}
         busy={starting}
         onClose={() => setComposerOpen(false)}
         onStart={start}
