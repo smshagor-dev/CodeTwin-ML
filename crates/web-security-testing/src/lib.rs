@@ -1,3 +1,7 @@
+mod access_policy;
+pub use access_policy::{
+    run_object_access_policy, AccessPolicyOutcome, AccessPolicyStatus, ObjectAccessPolicy,
+};
 mod active;
 mod discover;
 mod evidence;
