@@ -160,6 +160,12 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
     }
 
     match path {
+        "/redirect-owner/a/index" => respond(&mut stream, "200 OK", &[("Content-Type", "text/html")], "<script src='/redirect-asset'></script><a href='/redirect-hop'>b</a>"),
+        "/redirect-hop" => respond(&mut stream, "200 OK", &[("Content-Type", "text/html")], "<a href='/redirect-owner/b/index'>b</a>"),
+        "/redirect-owner/b/index" => respond(&mut stream, "200 OK", &[("Content-Type", "text/html")], "<script src='/redirect-asset'></script>"),
+        "/redirect-asset" => respond(&mut stream, "302 Found", &[("Location", "/assets/redirected.js")], ""),
+        "/assets/redirected.js" => respond(&mut stream, "200 OK", &[("Content-Type", "text/javascript")], "window.fetch('./read'); fetch('./write?key=1', {method:'POST'}); axios.delete('./delete');"),
+        "/redirect-owner/a/read" | "/redirect-owner/b/read" => respond(&mut stream, "200 OK", &[("Content-Type", "application/json")], "{}"),
         "/pages/one/index" => respond(
             &mut stream,
             "200 OK",
@@ -1214,4 +1220,53 @@ fn inline_script_respects_document_base_href() {
         .endpoints
         .iter()
         .any(|e| e.url.ends_with("/pages/base/relative") && e.status_code == Some(200)));
+}
+
+#[test]
+fn redirected_shared_script_replays_cached_calls_for_late_document_owners() {
+    let lab = LocalLab::start();
+    let mut config = lab.config(20);
+    config.scope.target_url = format!("{}/redirect-owner/a/index", lab.base_url);
+    config.scope.max_crawl_depth = 4;
+    config.scope.active_testing = false;
+    let outcome = run_authorized_scan(
+        &config,
+        &AuthContext::default(),
+        None,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .expect("scan");
+    let requests = lab.requests.lock().expect("requests");
+    for owner in ["a", "b"] {
+        assert!(requests
+            .iter()
+            .any(|r| r.target == format!("/redirect-owner/{owner}/read")));
+        let write = outcome
+            .endpoints
+            .iter()
+            .find(|e| {
+                e.url
+                    .ends_with(&format!("/redirect-owner/{owner}/write?key=1"))
+                    && e.method == "POST"
+            })
+            .expect("POST inventory");
+        assert_eq!(write.status_code, None);
+        assert!(write.parameter_names.contains(&"key".to_string()));
+        assert!(outcome.endpoints.iter().any(|e| e
+            .url
+            .ends_with(&format!("/redirect-owner/{owner}/delete"))
+            && e.method == "DELETE"
+            && e.status_code.is_none()));
+    }
+    assert!(requests
+        .iter()
+        .all(|r| r.method == "GET" && !r.target.contains("write") && !r.target.contains("delete")));
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.target == "/assets/redirected.js")
+            .count(),
+        1
+    );
 }

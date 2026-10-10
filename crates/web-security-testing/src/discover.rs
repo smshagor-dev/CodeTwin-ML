@@ -32,7 +32,8 @@ pub fn crawl_with_seeds(
     let mut queue = VecDeque::new();
     let mut seen = HashSet::new();
     let mut script_owners = HashMap::<String, Vec<Url>>::new();
-    let mut script_calls = HashMap::<String, Vec<String>>::new();
+    let mut script_redirects = HashMap::<String, String>::new();
+    let mut script_calls = HashMap::<String, Vec<crate::javascript::ApiCall>>::new();
     let mut endpoint_keys = HashMap::new();
     let mut endpoints = Vec::new();
     let mut findings = Vec::new();
@@ -172,6 +173,7 @@ pub fn crawl_with_seeds(
                 if redirects < policy.config().redirect_limit {
                     if let Ok(next) = resolve_url(&url, location) {
                         if policy.assert_url(&next).is_ok() {
+                            script_redirects.insert(normalized.clone(), normalized_key(&next));
                             if let Some(owners) = script_owners.get(&normalized).cloned() {
                                 let target_owners =
                                     script_owners.entry(normalized_key(&next)).or_default();
@@ -199,15 +201,21 @@ pub fn crawl_with_seeds(
                     let body = String::from_utf8_lossy(&response.body);
                     if !response.truncated {
                         let document_base = tags(&body, "base")
-                            .first()
-                            .and_then(|tag| attribute_from_tag(tag, "href"))
+                            .iter()
+                            .find_map(|tag| attribute_from_tag(tag, "href"))
                             .and_then(|href| resolve_url(&url, &href).ok())
                             .unwrap_or_else(|| url.clone());
                         for (asset, calls) in script_sources(&body) {
                             if let Some(asset) = asset {
                                 if let Ok(asset_url) = resolve_url(&document_base, &asset) {
                                     if policy.assert_url(&asset_url).is_ok() {
-                                        let key = normalized_key(&asset_url);
+                                        let mut key = normalized_key(&asset_url);
+                                        for _ in 0..policy.config().redirect_limit {
+                                            let Some(next) = script_redirects.get(&key) else {
+                                                break;
+                                            };
+                                            key = next.clone();
+                                        }
                                         let owners = script_owners.entry(key.clone()).or_default();
                                         if owners.len() < 256 && !owners.contains(&document_base) {
                                             owners.push(document_base.clone());
@@ -218,6 +226,8 @@ pub fn crawl_with_seeds(
                                                     calls,
                                                     depth + 1,
                                                     &mut queue,
+                                                    &mut endpoints,
+                                                    &mut endpoint_keys,
                                                 );
                                             }
                                         }
@@ -231,6 +241,8 @@ pub fn crawl_with_seeds(
                                     &calls,
                                     depth + 1,
                                     &mut queue,
+                                    &mut endpoints,
+                                    &mut endpoint_keys,
                                 );
                             }
                         }
@@ -312,19 +324,27 @@ pub fn crawl_with_seeds(
                 ) && !response.truncated
                 {
                     let body = String::from_utf8_lossy(&response.body);
-                    let calls = crate::javascript::get_literals(&body);
+                    let calls = crate::javascript::calls(&body);
                     if let Some(owners) = script_owners.get(&normalized) {
                         for owner in owners {
-                            queue_javascript_calls(policy, owner, &calls, depth + 1, &mut queue);
+                            queue_javascript_calls(
+                                policy,
+                                owner,
+                                &calls,
+                                depth + 1,
+                                &mut queue,
+                                &mut endpoints,
+                                &mut endpoint_keys,
+                            );
                         }
                     } else {
                         // Direct JS scan targets have no document provenance.
                         let absolute: Vec<_> = calls
                             .iter()
                             .filter(|value| {
-                                value.starts_with('/')
-                                    || value.starts_with("http://")
-                                    || value.starts_with("https://")
+                                value.url.starts_with('/')
+                                    || value.url.starts_with("http://")
+                                    || value.url.starts_with("https://")
                             })
                             .cloned()
                             .collect();
@@ -334,6 +354,8 @@ pub fn crawl_with_seeds(
                             &absolute,
                             depth + 1,
                             &mut queue,
+                            &mut endpoints,
+                            &mut endpoint_keys,
                         );
                     }
                     script_calls.insert(normalized.clone(), calls);
@@ -364,21 +386,49 @@ pub fn crawl_with_seeds(
 fn queue_javascript_calls(
     policy: &ScopePolicy,
     document: &Url,
-    calls: &[String],
+    calls: &[crate::javascript::ApiCall],
     depth: usize,
     queue: &mut VecDeque<(Url, usize, String, usize)>,
+    endpoints: &mut Vec<EndpointObservation>,
+    endpoint_keys: &mut HashMap<String, usize>,
 ) {
     for literal in calls {
-        if let Ok(next) = resolve_url(document, literal) {
+        if let Ok(next) = resolve_url(document, &literal.url) {
             if policy.assert_url(&next).is_ok() {
-                queue.push_back((next, depth, "javascript_call".into(), 0));
+                if literal.method == "GET" {
+                    queue.push_back((next, depth, "javascript_call".into(), 0));
+                } else {
+                    let parameter_names = query_parameters(&next);
+                    let mut parameter_locations = ParameterLocations::new();
+                    for name in &parameter_names {
+                        insert_parameter_location(&mut parameter_locations, name.clone(), "query");
+                    }
+                    add_endpoint(
+                        endpoints,
+                        endpoint_keys,
+                        EndpointObservation {
+                            url: next.to_string(),
+                            route_template: None,
+                            method: literal.method.clone(),
+                            depth,
+                            source: "javascript_call".into(),
+                            parameter_names,
+                            parameter_locations,
+                            response_header_names: Vec::new(),
+                            cookie_names: Vec::new(),
+                            content_type: None,
+                            status_code: None,
+                            redirect_to: None,
+                        },
+                    );
+                }
             }
         }
     }
 }
 
 /// Extract bounded script elements, excluding HTML comments and data scripts.
-fn script_sources(html: &str) -> Vec<(Option<String>, Vec<String>)> {
+fn script_sources(html: &str) -> Vec<(Option<String>, Vec<crate::javascript::ApiCall>)> {
     let mut clean = html.to_string();
     let mut cursor = 0;
     while let Some(relative) = clean[cursor..].find("<!--") {
@@ -431,7 +481,7 @@ fn script_sources(html: &str) -> Vec<(Option<String>, Vec<String>)> {
         ) {
             let asset = attribute_from_tag(tag, "src");
             let calls = if asset.is_none() {
-                crate::javascript::get_literals(&clean[body_start..body_end])
+                crate::javascript::calls(&clean[body_start..body_end])
             } else {
                 Vec::new()
             };

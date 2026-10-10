@@ -114,3 +114,23 @@ Truncated identical prefixes or changed statuses cannot establish a confirmed
 SQL injection through those comparisons. Local HTTP lab coverage verifies real
 GET traversal, excluded/out-of-scope rejection, negative discovery cases and the
 shared request cap. This is bounded coverage, not a claim of perfect detection.
+
+
+### Milestone 3: method inventory and redirect provenance
+
+Static method-only fetch options (`{method: 'POST'}` etc.) and single-argument
+Axios method calls contribute method-specific endpoint inventory. Only GET
+candidates are traversed during discovery. No request body or credentials are
+inferred from JavaScript. Unknown/dynamic options are skipped. Existing active
+execution policy remains responsible for separately authorized testing.
+`window.fetch` and `globalThis.fetch` are supported; custom object fetch calls
+are excluded. Unterminated literals/comments invalidate the source inventory.
+Regex/division, runtime rebinding, custom Axios configuration and complex fetch
+options remain unsupported and are conservatively skipped.
+
+Script redirect aliases retain document ownership. Later documents can reuse
+already parsed redirected assets without refetching them. Redirect traversal
+still uses the configured redirect limit and scope policy. Local lab coverage
+includes a document discovered after the redirected asset was parsed, actual
+GET calls for both document bases, and POST/DELETE inventory with zero write
+requests. The first base element with an href supplies the document base.
