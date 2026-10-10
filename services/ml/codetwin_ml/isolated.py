@@ -5,10 +5,10 @@ import os
 import pathlib
 import subprocess
 import sys
-import tempfile
 from typing import Any
 
 from codetwin_ml.inference import InferenceRuntimeError
+from codetwin_ml.process import run_bounded
 
 WORKER_PROTOCOL_VERSION = 1
 MAX_WORKER_REQUEST_BYTES = 131_072
@@ -28,6 +28,7 @@ _WORKER_ENV_ALLOWLIST = (
     "APPDATA",
     "LANG",
     "LC_ALL",
+    "CODETWIN_PROCESS_GROUP",
     "CODETWIN_MODEL_CACHE",
     "CODETWIN_LLAMA_CLI",
     "CODETWIN_LLAMA_CLI_SHA256",
@@ -47,6 +48,9 @@ def _worker_environment(root: pathlib.Path) -> dict[str, str]:
     environment.update(
         {
             "PYTHONPATH": str(root),
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
             "OMP_NUM_THREADS": "1",
             "OPENBLAS_NUM_THREADS": "1",
             "MKL_NUM_THREADS": "1",
@@ -80,45 +84,29 @@ def _run_isolated_worker(
 
     root = _sidecar_root()
     environment = _worker_environment(root)
-    with tempfile.TemporaryFile(prefix="codetwin-worker-response-") as output:
-        kwargs: dict[str, Any] = {
-            "input": request,
-            "stdout": output,
-            "stderr": subprocess.DEVNULL,
-            "cwd": str(root),
-            "env": environment,
-            "timeout": (
+    try:
+        completed = run_bounded(
+            [sys.executable, "-m", "codetwin_ml.worker"],
+            input=request,
+            cwd=str(root),
+            env=environment,
+            timeout=(
                 GENERATION_WORKER_TIMEOUT_SECONDS
                 if mode == "generation"
                 else CLASSIFICATION_WORKER_TIMEOUT_SECONDS
             ),
-            "check": False,
-        }
-        if sys.platform == "win32":
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
-        try:
-            completed = subprocess.run(
-                [sys.executable, "-m", "codetwin_ml.worker"],
-                **kwargs,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise InferenceRuntimeError(
-                "isolated inference worker exceeded its bounded timeout"
-            ) from error
-        except OSError as error:
-            raise InferenceRuntimeError(
-                f"cannot start isolated inference worker: {error}"
-            ) from error
-
-        output_size = os.fstat(output.fileno()).st_size
-        if output_size > MAX_WORKER_RESPONSE_BYTES:
-            raise InferenceRuntimeError(
-                f"isolated inference response exceeds {MAX_WORKER_RESPONSE_BYTES} bytes"
-            )
-        output.seek(0)
-        stdout = output.read(MAX_WORKER_RESPONSE_BYTES + 1)
-
+            max_output=MAX_WORKER_RESPONSE_BYTES,
+            output_label="isolated inference response",
+        )
+    except subprocess.TimeoutExpired as error:
+        raise InferenceRuntimeError(
+            "isolated inference worker exceeded its bounded timeout"
+        ) from error
+    except OSError as error:
+        raise InferenceRuntimeError(
+            f"cannot start isolated inference worker: {error}"
+        ) from error
+    stdout = completed.stdout
     if len(stdout) > MAX_WORKER_RESPONSE_BYTES:
         raise InferenceRuntimeError(
             f"isolated inference response exceeds {MAX_WORKER_RESPONSE_BYTES} bytes"

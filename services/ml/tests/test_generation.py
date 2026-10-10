@@ -91,10 +91,10 @@ class GenerationTests(unittest.TestCase):
                 cli.chmod(0o700)
             cli_hash = hashlib.sha256(cli.read_bytes()).hexdigest()
             def fake_run(command, **kwargs):
-                output = kwargs["stdout"]
-                output.write(b"Use a parameterized query and add a regression test.\n")
-                output.flush()
-                return subprocess.CompletedProcess(args=command, returncode=0)
+                return subprocess.CompletedProcess(
+                    args=command, returncode=0,
+                    stdout=b"Use a parameterized query and add a regression test.\n",
+                )
 
             with patch.dict(
                 os.environ,
@@ -104,7 +104,7 @@ class GenerationTests(unittest.TestCase):
                 },
                 clear=False,
             ), patch(
-                "codetwin_ml.generation.subprocess.run",
+                "codetwin_ml.generation.run_bounded",
                 side_effect=fake_run,
             ) as run:
                 result = run_generation(
@@ -127,11 +127,9 @@ class GenerationTests(unittest.TestCase):
             self.assertNotIn("Review this source and propose a bounded repair.", command)
             prompt_path = pathlib.Path(command[command.index("-f") + 1])
             self.assertIn("codetwin-generation-", str(prompt_path))
-            self.assertEqual(run.call_args.kwargs["stderr"], subprocess.DEVNULL)
-            self.assertIsNot(run.call_args.kwargs["stdout"], subprocess.PIPE)
-            self.assertFalse(run.call_args.kwargs["check"])
+            self.assertEqual(run.call_args.kwargs["max_output"], MAX_GENERATION_BYTES)
 
-    def test_rejects_oversized_generation_output_without_buffering_it_in_memory(self) -> None:
+    def test_rejects_oversized_generation_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             model_root = self._install_gguf(root)
@@ -142,10 +140,9 @@ class GenerationTests(unittest.TestCase):
             cli_hash = hashlib.sha256(cli.read_bytes()).hexdigest()
 
             def fake_run(command, **kwargs):
-                output = kwargs["stdout"]
-                output.write(b"x" * (MAX_GENERATION_BYTES + 1))
-                output.flush()
-                return subprocess.CompletedProcess(args=command, returncode=0)
+                return subprocess.CompletedProcess(
+                    args=command, returncode=0, stdout=b"x" * (MAX_GENERATION_BYTES + 1),
+                )
 
             with patch.dict(
                 os.environ,
@@ -155,7 +152,7 @@ class GenerationTests(unittest.TestCase):
                 },
                 clear=False,
             ), patch(
-                "codetwin_ml.generation.subprocess.run",
+                "codetwin_ml.generation.run_bounded",
                 side_effect=fake_run,
             ):
                 with self.assertRaisesRegex(InferenceRuntimeError, "generation output exceeds"):
@@ -177,10 +174,9 @@ class GenerationTests(unittest.TestCase):
 
             def fake_run(command, **kwargs):
                 cli.write_bytes(b"tampered-cli")
-                output = kwargs["stdout"]
-                output.write(b"candidate patch\n")
-                output.flush()
-                return subprocess.CompletedProcess(args=command, returncode=0)
+                return subprocess.CompletedProcess(
+                    args=command, returncode=0, stdout=b"candidate patch\n",
+                )
 
             with patch.dict(
                 os.environ,
@@ -193,7 +189,7 @@ class GenerationTests(unittest.TestCase):
                 "codetwin_ml.generation._windows_share_deny_write_delete",
                 side_effect=lambda _path: nullcontext(),
             ), patch(
-                "codetwin_ml.generation.subprocess.run",
+                "codetwin_ml.generation.run_bounded",
                 side_effect=fake_run,
             ):
                 with self.assertRaisesRegex(

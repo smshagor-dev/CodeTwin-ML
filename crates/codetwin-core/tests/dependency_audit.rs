@@ -6,9 +6,7 @@ use std::{
     thread,
 };
 
-use codetwin_core::{
-    AdvisorySource, Database, DependencyAuditService, ProjectIndexService, SbomError, SbomService,
-};
+use codetwin_core::{AdvisorySource, Database, DependencyAuditService, ProjectIndexService};
 use serde_json::json;
 use tempfile::tempdir;
 

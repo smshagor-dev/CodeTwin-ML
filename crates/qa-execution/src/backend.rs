@@ -4,17 +4,18 @@ use std::{
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
 };
+
+#[cfg(any(not(windows), test))]
+use std::sync::atomic::AtomicBool;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{
-    BoundedOutput, ExecutionPlanStatus, ExecutionRunStatus, SandboxCapabilities, TestExecutionPlan,
-    MAX_TARGETS,
-};
+use crate::{BoundedOutput, ExecutionRunStatus, SandboxCapabilities, MAX_TARGETS};
+#[cfg(any(not(windows), test))]
+use crate::{ExecutionPlanStatus, TestExecutionPlan};
 
 pub const MAX_EXECUTION_INPUT_BYTES: u64 = 8 * 1024 * 1024;
 
@@ -231,6 +232,7 @@ pub fn verify_execution_inputs(
     Ok(())
 }
 
+#[cfg(any(not(windows), test))]
 pub fn execute_approved_plan(
     plan: &TestExecutionPlan,
     project_root: impl AsRef<Path>,
@@ -294,6 +296,7 @@ fn resolve_execution_input(root: &Path, target: &str) -> Result<PathBuf, Backend
     Ok(canonical)
 }
 
+#[cfg(any(not(windows), test))]
 fn verify_toolchain(plan: &TestExecutionPlan, root: &Path) -> Result<(), BackendExecutionError> {
     if plan.command.program != plan.toolchain.executable_path {
         return Err(BackendExecutionError::InvalidToolchain(

@@ -96,11 +96,14 @@ pub(crate) fn create_windows_write_restricted_token(
         Security::{
             CreateRestrictedToken, CreateWellKnownSid, GetLengthSid, IsTokenRestricted,
             SetTokenInformation, TokenIntegrityLevel, WinLowLabelSid, WinWriteRestrictedCodeSid,
-            DISABLE_MAX_PRIVILEGE, SECURITY_MAX_SID_SIZE, SE_GROUP_INTEGRITY, SID_AND_ATTRIBUTES,
-            TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_MANDATORY_LABEL,
-            TOKEN_QUERY, WRITE_RESTRICTED,
+            DISABLE_MAX_PRIVILEGE, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT,
+            TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+            WRITE_RESTRICTED,
         },
-        System::Threading::{GetCurrentProcess, OpenProcessToken},
+        System::{
+            SystemServices::SE_GROUP_INTEGRITY,
+            Threading::{GetCurrentProcess, OpenProcessToken},
+        },
     };
 
     struct Handle(HANDLE);
@@ -195,7 +198,7 @@ pub(crate) fn create_windows_write_restricted_token(
     let mut mandatory_label = TOKEN_MANDATORY_LABEL {
         Label: SID_AND_ATTRIBUTES {
             Sid: low_sid_ptr,
-            Attributes: SE_GROUP_INTEGRITY,
+            Attributes: SE_GROUP_INTEGRITY as u32,
         },
     };
     let token_label_len = u32::try_from(std::mem::size_of::<TOKEN_MANDATORY_LABEL>())
@@ -451,10 +454,10 @@ fn apply_workspace_security_contract(
         true,
     )?;
 
-    apply_low_integrity_label(root)?;
-    apply_low_integrity_label(inputs)?;
-    apply_low_integrity_label(artifacts)?;
-    apply_low_integrity_label(temp)?;
+    apply_integrity_label(root, false)?;
+    apply_integrity_label(inputs, false)?;
+    apply_integrity_label(artifacts, true)?;
+    apply_integrity_label(temp, true)?;
 
     for file in &workspace.files {
         let staged = inputs.join(&file.relative_path);
@@ -464,7 +467,7 @@ fn apply_workspace_security_contract(
             FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
             false,
         )?;
-        apply_low_integrity_label(&staged)?;
+        apply_integrity_label(&staged, false)?;
     }
     Ok(())
 }
@@ -575,7 +578,7 @@ fn grant_restricted_sid(
 }
 
 #[cfg(windows)]
-fn apply_low_integrity_label(path: &std::path::Path) -> Result<(), RestrictedIdentityError> {
+fn apply_integrity_label(path: &std::path::Path, low: bool) -> Result<(), RestrictedIdentityError> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::{
         Foundation::{LocalFree, HLOCAL},
@@ -599,10 +602,14 @@ fn apply_low_integrity_label(path: &std::path::Path) -> Result<(), RestrictedIde
         }
     }
 
-    let sddl_text = if path.is_dir() {
-        "S:(ML;OICI;NW;;;LW)"
-    } else {
-        "S:(ML;;NW;;;LW)"
+    // Keep immutable surfaces at medium integrity: no-write-up also denies
+    // mutation rights implicitly granted to the file owner, such as WRITE_DAC.
+    // Only output surfaces are writable by the low-integrity worker.
+    let sddl_text = match (path.is_dir(), low) {
+        (true, true) => "S:(ML;OICI;NW;;;LW)",
+        (false, true) => "S:(ML;;NW;;;LW)",
+        (true, false) => "S:(ML;OICI;NW;;;ME)",
+        (false, false) => "S:(ML;;NW;;;ME)",
     };
     let sddl = sddl_text
         .encode_utf16()
