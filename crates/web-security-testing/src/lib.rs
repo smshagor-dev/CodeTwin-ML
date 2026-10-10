@@ -8,6 +8,7 @@ mod payload_policy;
 mod request;
 mod retest;
 mod scope;
+mod xss;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{atomic::AtomicBool, Arc};

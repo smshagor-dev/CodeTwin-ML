@@ -249,11 +249,16 @@ fn handle_render(
     let q = query.get("q").map(String::as_str).unwrap_or("");
 
     if ambiguous {
+        let markup = if source.contains("data-guided-context") {
+            format!("<div data-guided-context>{q}</div>")
+        } else {
+            String::new()
+        };
         respond(
             stream,
             "200 OK",
             &[("Content-Type", "text/html")],
-            &format!("<html><body><script>const data = \"{q}\";</script></body></html>"),
+            &format!("<html><body>{markup}<script>const data = \"{q}\";</script></body></html>"),
         );
         return;
     }
@@ -836,18 +841,19 @@ fn xss_fix_verify_preserves_text_and_ambiguous_context_is_not_auto_patched() {
     let assessment = SecurityFixService::new(&database)
         .evaluate_eligibility(&ambiguous.id)
         .expect("ambiguous eligibility");
-    assert!(matches!(
-        assessment.result,
-        FixEligibility::GuidedFixCandidate | FixEligibility::ManualRemediation
-    ));
+    assert_eq!(assessment.result, FixEligibility::InsufficientEvidence);
     let prepared = SecurityFixService::new(&database)
         .prepare_fix(&ambiguous.id, false)
-        .expect("prepare ambiguous fix");
+        .expect("review draft");
+    assert_eq!(
+        prepared.eligibility.result,
+        FixEligibility::InsufficientEvidence
+    );
     assert!(
         SecurityFixService::new(&database)
             .generate_patch(&prepared.attempt.id)
             .is_err(),
-        "ambiguous output context must not receive a speculative generated patch"
+        "script-string reflection must not authorize a speculative patch"
     );
 }
 
@@ -1265,6 +1271,17 @@ fn rollback_restores_exact_source_index_and_current_vulnerable_state() {
 fn still_vulnerable_creates_new_immutable_attempt_and_stops_automatic_loop() {
     let project = tempdir().expect("project");
     write_project(project.path());
+    // This repair-loop regression needs real markup evidence, rather than a
+    // harmless marker contained entirely inside a JavaScript string.
+    let guided_source = project
+        .path()
+        .join("src/api/render-ambiguous-controller.ts");
+    let source = fs::read_to_string(&guided_source).expect("guided source");
+    fs::write(
+        &guided_source,
+        source.replace("<script>", "<div data-guided-context>${q}</div><script>"),
+    )
+    .expect("markup source");
     let lab = SourceBackedLab::start(project.path().to_path_buf());
     let config = lab.config();
     let primary = primary_auth();

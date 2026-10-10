@@ -490,6 +490,12 @@ fn probe_xss(
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
         Err(_) => return Ok(None),
     };
+    if response.truncated
+        || !(200..300).contains(&response.status)
+        || mime_type(&response) != "text/html"
+    {
+        return Ok(None);
+    }
     let body = String::from_utf8_lossy(&response.body);
     if !body.contains(&payload) {
         return Ok(None);
@@ -498,23 +504,24 @@ fn probe_xss(
     if baseline_body.contains(&payload) {
         return Ok(None);
     }
-    let context = reflection_context(&body, &payload);
+    let context = crate::xss::classify(&body, &payload);
     let (confidence, severity, title) = match context {
-        ReflectionContext::ScriptOrAttribute => (
-            "Likely",
-            "high",
-            "Unescaped XSS marker reached executable browser context",
-        ),
-        ReflectionContext::HtmlMarkup => (
+        crate::xss::Context::Markup => (
             "Likely",
             "medium",
-            "Unescaped XSS marker reached HTML markup context",
+            "Unencoded marker created an HTML markup candidate",
         ),
-        ReflectionContext::Text => (
+        crate::xss::Context::Script => (
+            "Potential",
+            "medium",
+            "Marker reflected in JavaScript source; execution unverified",
+        ),
+        crate::xss::Context::Attribute => (
             "Potential",
             "low",
-            "User-controlled marker is reflected without encoding",
+            "Marker reflected inside an HTML attribute; breakout unverified",
         ),
+        crate::xss::Context::Inert => return Ok(None),
     };
     Ok(Some(FindingObservation {
         category: "xss".into(),
@@ -525,7 +532,7 @@ fn probe_xss(
         method: task.endpoint.method.clone(),
         parameter: Some(task.parameter.clone()),
         title: title.into(),
-        description: "A harmless non-script marker supplied through the parameter was reflected in the response. CodeTwin distinguishes plain reflection from contexts that appear executable; it does not execute browser script.".into(),
+        description: "A harmless non-script marker supplied through the parameter was reflected in the response. CodeTwin distinguishes markup, attribute, JavaScript-source and inert reflection contexts. The harmless marker does not demonstrate script execution; no XSS result is confirmed by reflection alone.".into(),
         reproduction_summary: format!("Submit the non-executable marker {payload} in parameter {} and inspect the returned HTML context.", task.parameter),
         impact: "If attacker-controlled markup reaches an executable HTML/JavaScript context without contextual encoding, script execution may become possible.".into(),
         remediation: "Apply context-aware output encoding, avoid unsafe HTML sinks, and use a restrictive CSP as defense in depth.".into(),
@@ -1246,46 +1253,6 @@ fn mime_type(response: &ObservedResponse) -> String {
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase()
-}
-
-enum ReflectionContext {
-    ScriptOrAttribute,
-    HtmlMarkup,
-    Text,
-}
-
-fn reflection_context(body: &str, marker: &str) -> ReflectionContext {
-    let Some(index) = body.find(marker) else {
-        return ReflectionContext::Text;
-    };
-    let marker_end = index + marker.len();
-    let prefix_reversed: String = body[..index].chars().rev().take(180).collect();
-    let prefix: String = prefix_reversed.chars().rev().collect();
-    let suffix: String = body[marker_end..].chars().take(180).collect();
-    let context = format!("{prefix}{marker}{suffix}").to_ascii_lowercase();
-    let marker_lower = marker.to_ascii_lowercase();
-    let before = context
-        .split_once(&marker_lower)
-        .map(|(before, _)| before)
-        .unwrap_or("");
-    let script_start = before.rfind("<script");
-    let script_end = before.rfind("</script>");
-    let inside_script = script_start.is_some()
-        && script_end
-            .map(|end| end < script_start.unwrap_or(0))
-            .unwrap_or(true);
-    if inside_script
-        || before.ends_with(r#"=""#)
-        || before.ends_with("='")
-        || before.contains("onerror=")
-        || before.contains("onclick=")
-    {
-        ReflectionContext::ScriptOrAttribute
-    } else if context.contains("<codetwin-xss-") {
-        ReflectionContext::HtmlMarkup
-    } else {
-        ReflectionContext::Text
-    }
 }
 
 fn short_marker(endpoint: &str, parameter: &str) -> String {

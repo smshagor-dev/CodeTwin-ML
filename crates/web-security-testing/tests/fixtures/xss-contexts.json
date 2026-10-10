@@ -1,0 +1,74 @@
+[
+  {
+    "name": "markup",
+    "body": "<html><body><div><codetwin-xss-lab></div></body></html>",
+    "context": "markup",
+    "dom": true
+  },
+  {
+    "name": "comment",
+    "body": "<!-- <codetwin-xss-lab> -->",
+    "context": "inert",
+    "dom": false
+  },
+  {
+    "name": "textarea",
+    "body": "<textarea><codetwin-xss-lab></textarea>",
+    "context": "inert",
+    "dom": false
+  },
+  {
+    "name": "title",
+    "body": "<title><codetwin-xss-lab></title>",
+    "context": "inert",
+    "dom": false
+  },
+  {
+    "name": "template",
+    "body": "<template><codetwin-xss-lab></template>",
+    "context": "inert",
+    "dom": false
+  },
+  {
+    "name": "attribute",
+    "body": "<div title='prefix <codetwin-xss-lab> suffix'></div>",
+    "context": "attribute",
+    "dom": false
+  },
+  {
+    "name": "event-attribute",
+    "body": "<button onclick='/* <codetwin-xss-lab> */'>test</button>",
+    "context": "attribute",
+    "dom": false
+  },
+  {
+    "name": "script-string",
+    "body": "<script>const value='<codetwin-xss-lab>';</script>",
+    "context": "script",
+    "dom": false
+  },
+  {
+    "name": "data-script",
+    "body": "<script type='application/json'>{\"value\":\"<codetwin-xss-lab>\"}</script>",
+    "context": "inert",
+    "dom": false
+  },
+  {
+    "name": "escaped",
+    "body": "<div>&lt;codetwin-xss-lab&gt;</div>",
+    "context": "inert",
+    "dom": false
+  },
+  {
+    "name": "distant-script",
+    "body": "<script>const value='................................................................................................................................................................................................................................................................<codetwin-xss-lab>';</script>",
+    "context": "script",
+    "dom": false
+  },
+  {
+    "name": "unicode",
+    "body": "<div>বাংলা текст <codetwin-xss-lab></div>",
+    "context": "markup",
+    "dom": true
+  }
+]

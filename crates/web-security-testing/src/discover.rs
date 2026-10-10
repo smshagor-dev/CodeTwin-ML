@@ -992,7 +992,7 @@ fn attribute_values(html: &str, attribute: &str) -> Vec<String> {
     values
 }
 
-fn attribute_from_tag(tag: &str, name: &str) -> Option<String> {
+pub(crate) fn attribute_from_tag(tag: &str, name: &str) -> Option<String> {
     let bytes = tag.as_bytes();
     let target = name.as_bytes();
     let mut index = 0usize;
