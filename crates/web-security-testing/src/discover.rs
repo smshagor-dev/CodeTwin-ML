@@ -282,6 +282,36 @@ pub fn crawl_with_seeds(
                             });
                         }
                     }
+                } else if matches!(
+                    content_type.split(';').next().unwrap_or("").trim(),
+                    "application/javascript"
+                        | "text/javascript"
+                        | "application/ecmascript"
+                        | "text/ecmascript"
+                ) && !response.truncated
+                {
+                    let body = String::from_utf8_lossy(&response.body);
+                    for literal in crate::javascript::get_literals(&body) {
+                        // Relative literals require the owning document URL.
+                        // Until that provenance is retained, only root-relative
+                        // and absolute URLs are eligible for traversal.
+                        if !literal.starts_with('/')
+                            && !literal.starts_with("http://")
+                            && !literal.starts_with("https://")
+                        {
+                            continue;
+                        }
+                        if let Ok(next) = resolve_url(policy.target(), &literal) {
+                            if policy.assert_url(&next).is_ok() {
+                                queue.push_back((
+                                    next,
+                                    depth + 1,
+                                    "javascript_call".to_string(),
+                                    0,
+                                ));
+                            }
+                        }
+                    }
                 } else if content_type.contains("application/json") {
                     discover_openapi(
                         policy,

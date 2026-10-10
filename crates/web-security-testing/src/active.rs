@@ -1166,6 +1166,9 @@ fn contains_sql_error(body: &[u8]) -> bool {
 }
 
 fn similar_response(left: &ObservedResponse, right: &ObservedResponse) -> bool {
+    if left.truncated || right.truncated {
+        return false;
+    }
     if left.status != right.status || mime_type(left) != mime_type(right) {
         return false;
     }
@@ -1176,6 +1179,9 @@ fn similar_response(left: &ObservedResponse, right: &ObservedResponse) -> bool {
 }
 
 fn materially_different(left: &ObservedResponse, right: &ObservedResponse) -> bool {
+    if left.truncated || right.truncated {
+        return false;
+    }
     if left.status != right.status || mime_type(left) != mime_type(right) {
         return true;
     }
@@ -1369,6 +1375,18 @@ mod tests {
             truncated: false,
             redaction_secrets: Vec::new(),
         }
+    }
+
+    #[test]
+    fn incomplete_responses_cannot_confirm_body_comparisons() {
+        let complete = response(200, "same prefix");
+        let mut incomplete = complete.clone();
+        incomplete.truncated = true;
+        assert!(!similar_response(&complete, &incomplete));
+        assert!(!similar_response(&incomplete, &complete));
+        incomplete.status = 500;
+        assert!(!materially_different(&complete, &incomplete));
+        assert!(!materially_different(&incomplete, &complete));
     }
 
     #[test]

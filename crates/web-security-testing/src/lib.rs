@@ -1,6 +1,7 @@
 mod active;
 mod discover;
 mod evidence;
+mod javascript;
 mod operator;
 mod passive;
 mod payload_policy;

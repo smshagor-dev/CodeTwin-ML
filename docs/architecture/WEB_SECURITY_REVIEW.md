@@ -89,3 +89,24 @@ python services/security/run.py /path/to/project --fail-on high
 ## Relationship to other analyzers
 
 The deterministic Rust security analyzer owns durable indexed-source AppSec and web request-flow findings. The Rust database analyzer reviews SQL/Prisma artifacts for schema and migration risks. The Python web-security service adds broader request-to-sink, taint, ORM, SQL-injection, database-transport, header-injection, and configuration context without duplicating live runtime testing.
+
+
+### Custom JavaScript discovery milestone
+
+The crawler parses external JavaScript responses with a bounded custom lexer
+(no execution or third-party scanner). It traverses single-literal-argument
+`fetch()` and `axios.get()` calls using the existing scope, DNS pinning, rate limit,
+request budget and crawl depth. Query parameter inventory comes from the actual
+response. Root-relative and absolute URLs are supported. Calls in comments and
+quoted strings, dynamic URLs, templates, escaped literals, request options and
+non-GET calls are skipped. Source is capped at 1 MiB, 32,768 tokens and 256 calls;
+truncated responses are not parsed. Sources containing ambiguous division/regex
+syntax are conservatively skipped. Relative document URLs, inline script calls,
+JavaScript execution and Axios custom base URLs are not resolved by this milestone.
+A static call is an endpoint candidate, not proof that the application executes it.
+
+Boolean response comparisons now require complete responses on both sides.
+Truncated identical prefixes or changed statuses cannot establish a confirmed
+SQL injection through those comparisons. Local HTTP lab coverage verifies real
+GET traversal, excluded/out-of-scope rejection, negative discovery cases and the
+shared request cap. This is bounded coverage, not a claim of perfect detection.
