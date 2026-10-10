@@ -12,6 +12,7 @@ The source indexer is a Rust service built on Tree-sitter. It parses supported s
 - C
 - C++
 - PHP
+- Java (symbols from the grammar tag query; `import`, wildcard and `import static` observations)
 
 Each adapter uses an official Tree-sitter grammar package. TypeScript and TSX use a CodeTwin-owned definition query because the upstream grammar tag query does not cover all common production definition forms needed by the indexer. The other initial adapters use their grammar package tag queries. Tree-sitter provides syntax structure; future semantic/LSP adapters may augment it with compiler-quality cross-file resolution rather than replacing the parser.
 

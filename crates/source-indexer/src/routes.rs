@@ -4986,18 +4986,46 @@ fn python_assignment_is_module_level(node: Node<'_>) -> bool {
     false
 }
 
-fn pydantic_known_alias_generator(source: &str, class_text: &str) -> Option<String> {
-    if !source.contains("pydantic.alias_generators") || !class_text.contains("ConfigDict(") {
+fn pydantic_alias_generator_bindings(source: &str, root: Node<'_>) -> BTreeMap<String, String> {
+    let mut bindings = BTreeMap::new();
+    walk(root, &mut |node| {
+        if node.kind() != "import_from_statement" {
+            return;
+        }
+        let Some(raw) = text(source, node).map(str::trim) else {
+            return;
+        };
+        let Some(rest) = raw.strip_prefix("from pydantic.alias_generators import ") else {
+            return;
+        };
+        let normalized = rest.replace(['(', ')', '\n', '\r'], " ");
+        for item in normalized.split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            let (imported, local) = item
+                .split_once(" as ")
+                .map(|(imported, local)| (imported.trim(), local.trim()))
+                .unwrap_or((item, item));
+            if !matches!(imported, "to_camel" | "to_pascal" | "to_snake") || !is_identifier(local) {
+                continue;
+            }
+            bindings.insert(local.to_string(), imported.to_string());
+        }
+    });
+    bindings
+}
+
+fn pydantic_known_alias_generator(
+    class_text: &str,
+    bindings: &BTreeMap<String, String>,
+) -> Option<String> {
+    if !class_text.contains("ConfigDict(") {
         return None;
     }
-    let generator = keyword_direct_identifier(class_text, "alias_generator")?;
-    if !matches!(generator.as_str(), "to_camel" | "to_pascal" | "to_snake") {
-        return None;
-    }
-    if !source.contains(&generator) {
-        return None;
-    }
-    Some(generator)
+    let local = keyword_direct_identifier(class_text, "alias_generator")?;
+    bindings.get(&local).cloned()
 }
 
 fn pydantic_apply_alias_generator(field: &str, generator: &str) -> Option<String> {
@@ -5021,8 +5049,117 @@ fn pydantic_apply_alias_generator(field: &str, generator: &str) -> Option<String
     }
 }
 
+fn pydantic_direct_field_declarations(class_text: &str) -> Vec<String> {
+    let lines: Vec<&str> = class_text.lines().collect();
+    if lines.len() <= 1 {
+        return Vec::new();
+    }
+
+    let body_indent = lines
+        .iter()
+        .skip(1)
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            Some(line.len().saturating_sub(line.trim_start().len()))
+        })
+        .min()
+        .unwrap_or(0);
+    if body_indent == 0 {
+        return Vec::new();
+    }
+
+    let mut declarations = Vec::new();
+    let mut index = 1usize;
+    while index < lines.len() {
+        let line = lines[index];
+        let trimmed = line.trim();
+        let indent = line.len().saturating_sub(line.trim_start().len());
+        if trimmed.is_empty() || indent != body_indent {
+            index += 1;
+            continue;
+        }
+        if trimmed.starts_with('#')
+            || trimmed.starts_with('@')
+            || trimmed.starts_with("def ")
+            || trimmed.starts_with("async def ")
+            || trimmed.starts_with("class ")
+            || trimmed.starts_with("model_config")
+        {
+            index += 1;
+            continue;
+        }
+
+        let Some((candidate, _)) = trimmed.split_once(':') else {
+            index += 1;
+            continue;
+        };
+        let candidate = candidate.trim();
+        if !is_identifier(candidate) {
+            index += 1;
+            continue;
+        }
+
+        let mut statement = trimmed.to_string();
+        let mut balance = python_grouping_balance(trimmed);
+        let mut consumed = 1usize;
+        while balance > 0 && index + consumed < lines.len() && consumed < 64 {
+            let continuation = lines[index + consumed].trim();
+            if !continuation.is_empty() {
+                if statement.len() + continuation.len() + 1 > 16 * 1024 {
+                    statement.clear();
+                    break;
+                }
+                statement.push(' ');
+                statement.push_str(continuation);
+                balance += python_grouping_balance(continuation);
+            }
+            consumed += 1;
+        }
+        if !statement.is_empty() && balance == 0 {
+            declarations.push(statement);
+        }
+        index += consumed.max(1);
+    }
+    declarations
+}
+
+fn python_grouping_balance(value: &str) -> i32 {
+    let mut balance = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for character in value.chars() {
+        if let Some(current_quote) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == current_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match character {
+            '\'' | '"' => quote = Some(character),
+            '(' | '[' | '{' => balance += 1,
+            ')' | ']' | '}' => balance -= 1,
+            '#' => break,
+            _ => {}
+        }
+    }
+    balance
+}
+
 fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<String>> {
     let local_aliases = pydantic_local_alias_constants(source, root);
+    let alias_generator_bindings = pydantic_alias_generator_bindings(source, root);
     let mut models = BTreeMap::new();
     walk(root, &mut |node| {
         if node.kind() != "class_definition" {
@@ -5040,25 +5177,15 @@ fn pydantic_model_fields(source: &str, root: Node<'_>) -> BTreeMap<String, Vec<S
         else {
             return;
         };
-        let alias_generator = pydantic_known_alias_generator(source, class_text);
+        let alias_generator = pydantic_known_alias_generator(class_text, &alias_generator_bindings);
         let mut fields = Vec::new();
-        for line in class_text.lines().skip(1) {
-            let trimmed = line.trim();
-            if trimmed.is_empty()
-                || trimmed.starts_with('#')
-                || trimmed.starts_with('@')
-                || trimmed.starts_with("def ")
-                || trimmed.starts_with("async def ")
-                || trimmed.starts_with("class ")
-            {
-                continue;
-            }
-            let Some((candidate, _)) = trimmed.split_once(':') else {
+        for declaration in pydantic_direct_field_declarations(class_text) {
+            let Some((candidate, _)) = declaration.split_once(':') else {
                 continue;
             };
             let candidate = candidate.trim();
             if is_identifier(candidate) && !candidate.starts_with('_') {
-                match pydantic_field_input_aliases(trimmed, &local_aliases) {
+                match pydantic_field_input_aliases(&declaration, &local_aliases) {
                     Some(aliases) => fields.extend(aliases),
                     None => fields.push(
                         alias_generator
@@ -8845,6 +8972,112 @@ fn app() -> Router {
                 && route.http_method == "POST"
                 && route.path_template == "/users/{id}"
         }));
+    }
+
+    #[test]
+    fn maps_multiline_pydantic_fields_only_from_direct_class_body() {
+        let source = r#"
+from fastapi import FastAPI
+from pydantic import AliasChoices, AliasPath, BaseModel, Field
+
+app = FastAPI()
+
+class CreateUser(BaseModel):
+    display_name: str = Field(
+        alias="displayName",
+    )
+    account_id: str = Field(
+        validation_alias=AliasChoices(
+            "accountId",
+            "legacyAccount",
+        ),
+    )
+    external_id: str = Field(
+        validation_alias=AliasPath(
+            "externalId",
+        ),
+    )
+    annotated: str = Field(
+        default="value",
+        alias="annotatedField",
+    )
+
+    class Nested:
+        nested_secret: str = "hidden"
+
+    def helper(self):
+        local_secret: str = "hidden"
+        return local_secret
+
+@app.post("/users")
+async def create_user(payload: CreateUser):
+    return {"ok": True}
+"#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .expect("language");
+        let tree = parser.parse(source, None).expect("tree");
+        let (routes, _, _) = extract_routes("Python", "app.py", source, tree.root_node());
+        let route = routes
+            .iter()
+            .find(|route| route.framework == "fastapi" && route.path_template == "/users")
+            .expect("fastapi route");
+
+        for field in [
+            "displayName",
+            "accountId",
+            "legacyAccount",
+            "externalId",
+            "annotatedField",
+        ] {
+            assert!(route
+                .parameters
+                .iter()
+                .any(|parameter| { parameter.name == field && parameter.location == "json" }));
+        }
+        for excluded in [
+            "display_name",
+            "account_id",
+            "external_id",
+            "annotated",
+            "nested_secret",
+            "local_secret",
+        ] {
+            assert!(!route
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == excluded));
+        }
+    }
+
+    #[test]
+    fn resolves_aliased_generator_imports_without_guessing_other_modules() {
+        for (import, expected) in [
+            (
+                "from pydantic.alias_generators import to_camel as make_alias",
+                "displayName",
+            ),
+            (
+                "from pydantic.alias_generators import (\n    to_pascal as make_alias,\n)",
+                "DisplayName",
+            ),
+            (
+                "from another_module import to_camel as make_alias",
+                "display_name",
+            ),
+        ] {
+            let source = format!(
+                "from pydantic import BaseModel, ConfigDict\n{import}\n\nclass Payload(BaseModel):\n    model_config = ConfigDict(alias_generator=make_alias)\n    display_name: str\n"
+            );
+            let mut parser = Parser::new();
+            parser
+                .set_language(&tree_sitter_python::LANGUAGE.into())
+                .expect("language");
+            let tree = parser.parse(&source, None).expect("tree");
+            let models = super::pydantic_model_fields(&source, tree.root_node());
+            assert_eq!(models.get("Payload"), Some(&vec![expected.to_string()]));
+        }
     }
 
     #[test]
