@@ -216,7 +216,7 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
         </a>
         <nav aria-label="Main navigation">
           {navigation.map((item, index) => (
-            <a key={item.route} href={routeHref(item.route)} className={route === item.route ? "active" : ""} data-section={index === 10 ? "secondary" : undefined}>
+            <a key={item.route} href={routeHref(item.route)} aria-label={item.label} title={item.label} aria-current={route === item.route ? "page" : undefined} className={route === item.route ? "active" : ""} data-section={index === 10 ? "secondary" : undefined}>
               <Icon name={item.icon}/><span>{item.label}</span>
             </a>
           ))}
