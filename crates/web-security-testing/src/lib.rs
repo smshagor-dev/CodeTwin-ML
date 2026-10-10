@@ -185,6 +185,30 @@ pub struct AuthContext {
 }
 
 impl AuthContext {
+    pub(crate) fn comparison_key(&self) -> Vec<(String, String)> {
+        let mut values = self
+            .custom_headers
+            .iter()
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.clone()))
+            .collect::<Vec<_>>();
+        if let Some(cookie) = self
+            .cookie_header
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            values.push(("cookie".into(), cookie.trim().into()));
+        }
+        if let Some(token) = self
+            .bearer_token
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            values.push(("authorization".into(), format!("Bearer {}", token.trim())));
+        }
+        values.sort();
+        values
+    }
+
     pub fn metadata(&self) -> AuthMetadata {
         AuthMetadata {
             cookie_supplied: self
@@ -1043,5 +1067,40 @@ mod source_seed_tests {
             "source_route:express:src/files.ts:1",
         )
         .is_none());
+    }
+}
+
+#[cfg(test)]
+mod identity_context_tests {
+    use super::AuthContext;
+    #[test]
+    fn context_comparison_matches_transport_normalization() {
+        let first = AuthContext {
+            bearer_token: Some(" token ".into()),
+            cookie_header: Some(" session=value ".into()),
+            custom_headers: vec![
+                (" X-Role ".into(), "tester".into()),
+                ("X-Key".into(), "key".into()),
+            ],
+        };
+        let second = AuthContext {
+            bearer_token: Some("token".into()),
+            cookie_header: Some("session=value".into()),
+            custom_headers: vec![
+                ("x-key".into(), "key".into()),
+                ("x-role".into(), "tester".into()),
+            ],
+        };
+        assert_eq!(first.comparison_key(), second.comparison_key());
+        let mut changed = second.clone();
+        changed.bearer_token = Some("other-token".into());
+        assert_ne!(first.comparison_key(), changed.comparison_key());
+        assert!(AuthContext {
+            bearer_token: Some(" ".into()),
+            cookie_header: Some("".into()),
+            custom_headers: vec![]
+        }
+        .comparison_key()
+        .is_empty());
     }
 }

@@ -154,15 +154,12 @@ pub(crate) fn run_active_checks(
 
     if config.checks.access_control {
         if let Some(secondary) = secondary_auth.filter(|auth| {
-            auth.cookie_header
-                .as_ref()
-                .is_some_and(|value| !value.trim().is_empty())
-                || auth
-                    .bearer_token
-                    .as_ref()
-                    .is_some_and(|value| !value.trim().is_empty())
-                || !auth.custom_headers.is_empty()
+            let primary_key = requester.auth().comparison_key();
+            let secondary_key = auth.comparison_key();
+            !primary_key.is_empty() && !secondary_key.is_empty() && primary_key != secondary_key
         }) {
+            let mut identity_secrets = requester.auth().redaction_values();
+            identity_secrets.extend(secondary.redaction_values());
             let secondary_requester = ScopedRequester::new(
                 policy.clone(),
                 secondary.clone(),
@@ -180,6 +177,9 @@ pub(crate) fn run_active_checks(
                 let Ok(url) = policy.normalize_and_assert(&endpoint.url) else {
                     continue;
                 };
+                if !policy.credentials_allowed_for(&url) {
+                    continue;
+                }
                 let Some(primary) = baselines
                     .get(&baseline_key("GET", &endpoint.url))
                     .or_else(|| baselines.get(&normalized_key(&endpoint.url)))
@@ -188,11 +188,35 @@ pub(crate) fn run_active_checks(
                 };
                 match secondary_requester.get(&url) {
                     Ok(secondary_response) => {
-                        if (200..300).contains(&primary.status)
-                            && (200..300).contains(&secondary_response.status)
-                            && primary.body.len() > 32
+                        if usable_identity_response(primary)
+                            && usable_identity_response(&secondary_response)
+                            && mime_type(primary) == mime_type(&secondary_response)
                             && body_hash(&primary.body) == body_hash(&secondary_response.body)
                         {
+                            // Recheck both contexts; stale primary sessions and
+                            // transient identical error pages are not evidence.
+                            let primary_repeat = match requester.get(&url) {
+                                Ok(value) => value,
+                                Err(RequestError::BudgetExhausted) => break,
+                                Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
+                                Err(_) => continue,
+                            };
+                            let secondary_repeat = match secondary_requester.get(&url) {
+                                Ok(value) => value,
+                                Err(RequestError::BudgetExhausted) => break,
+                                Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
+                                Err(_) => continue,
+                            };
+                            if !usable_identity_response(&primary_repeat)
+                                || !usable_identity_response(&secondary_repeat)
+                                || mime_type(primary) != mime_type(&primary_repeat)
+                                || mime_type(primary) != mime_type(&secondary_repeat)
+                                || body_hash(&primary.body) != body_hash(&primary_repeat.body)
+                                || body_hash(&primary.body) != body_hash(&secondary_repeat.body)
+                            {
+                                continue;
+                            }
+
                             findings.push(FindingObservation {
                                 category: "access_control".into(),
                                 severity: "medium".into(),
@@ -201,15 +225,17 @@ pub(crate) fn run_active_checks(
                                 endpoint: endpoint.url.clone(),
                                 method: "GET".into(),
                                 parameter: None,
-                                title: "Different supplied identities received identical object response".into(),
-                                description: "Two explicitly supplied authorization contexts received byte-identical success responses for an object-like endpoint. This can be legitimate shared access, so CodeTwin does not label it confirmed IDOR.".into(),
+                                title: "Distinct authorization contexts repeatedly received identical object response".into(),
+                                description: "Two distinct supplied authorization contexts repeatedly received complete, byte-identical success responses for an object-like endpoint. This can be legitimate shared access, so CodeTwin does not label it confirmed IDOR.".into(),
                                 reproduction_summary: "Repeat the same object request with the two configured test identities and verify the intended authorization policy. No identifier enumeration was performed.".into(),
                                 impact: "If the secondary identity should not access this object, object-level authorization may be missing.".into(),
                                 remediation: "Enforce authorization on the server for every object lookup using the authenticated principal and object policy, independent of client-supplied identifiers.".into(),
                                 references: vec!["CWE-639".into(), "OWASP API1:2023 Broken Object Level Authorization".into()],
                                 evidence: vec![
-                                    response_evidence("primary identity", "GET", &url, primary),
-                                    response_evidence("secondary identity", "GET", &url, &secondary_response),
+                                    identity_evidence("primary identity", "GET", &url, primary, &identity_secrets),
+                                    identity_evidence("secondary identity", "GET", &url, &secondary_response, &identity_secrets),
+                                    identity_evidence("primary identity repeat", "GET", &url, &primary_repeat, &identity_secrets),
+                                    identity_evidence("secondary identity repeat", "GET", &url, &secondary_repeat, &identity_secrets),
                                 ],
                             });
                             on_progress(findings.len());
@@ -1303,6 +1329,36 @@ fn looks_url_parameter(name: &str) -> bool {
     ]
     .iter()
     .any(|value| lower.contains(value))
+}
+
+fn identity_evidence(
+    label: &str,
+    method: &str,
+    url: &Url,
+    response: &ObservedResponse,
+    secrets: &[String],
+) -> crate::EvidenceObservation {
+    let mut redacted = response.clone();
+    redacted.redaction_secrets.extend_from_slice(secrets);
+    response_evidence(label, method, url, &redacted)
+}
+
+fn usable_identity_response(response: &ObservedResponse) -> bool {
+    if response.truncated || !(200..300).contains(&response.status) || response.body.len() <= 32 {
+        return false;
+    }
+    if mime_type(response) == "text/html" {
+        let body = String::from_utf8_lossy(&response.body).to_ascii_lowercase();
+        // A successful login page is not an authenticated object baseline.
+        if body.contains("<input")
+            && (body.contains("type=\"password\"")
+                || body.contains("type='password'")
+                || body.contains("type=password"))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 fn looks_object_specific(endpoint: &EndpointObservation) -> bool {
