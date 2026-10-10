@@ -160,6 +160,45 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
     }
 
     match path {
+        "/pages/one/index" => respond(
+            &mut stream,
+            "200 OK",
+            &[("Content-Type", "text/html")],
+            r#"
+            <script src='/assets/shared.js'></script>
+            <a href='/pages/two/index'>next</a>
+            <script>fetch('./inline?q=yes');</script>
+            <script type='application/json'>fetch('/api/data-decoy');</script>
+            <!-- <script>fetch('/api/comment-decoy');</script> -->
+        "#,
+        ),
+        "/pages/two/index" => respond(
+            &mut stream,
+            "200 OK",
+            &[("Content-Type", "text/html")],
+            "<script src='/assets/shared.js'></script>",
+        ),
+        "/assets/shared.js" => respond(
+            &mut stream,
+            "200 OK",
+            &[("Content-Type", "text/javascript")],
+            "fetch('./relative'); fetch('/excluded/relative');",
+        ),
+        "/base-page" => respond(
+            &mut stream,
+            "200 OK",
+            &[("Content-Type", "text/html")],
+            "<base href='/pages/base/'><script>fetch('relative');</script>",
+        ),
+        "/pages/one/inline"
+        | "/pages/one/relative"
+        | "/pages/two/relative"
+        | "/pages/base/relative" => respond(
+            &mut stream,
+            "200 OK",
+            &[("Content-Type", "application/json")],
+            "{\"ok\":true}",
+        ),
         "/js-lab" => respond(
             &mut stream,
             "200 OK",
@@ -1115,4 +1154,64 @@ fn javascript_calls_use_real_scoped_http_and_the_shared_budget() {
             assert!(requests.iter().any(|r| r.target == "/api/js-second"));
         }
     }
+}
+
+#[test]
+fn inline_and_shared_scripts_resolve_against_each_owning_document() {
+    let lab = LocalLab::start();
+    let mut config = lab.config(20);
+    config.scope.target_url = format!("{}/pages/one/index", lab.base_url);
+    config.scope.max_crawl_depth = 4;
+    config.scope.active_testing = false;
+    let outcome = run_authorized_scan(
+        &config,
+        &AuthContext::default(),
+        None,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .expect("scan");
+    let requests = lab.requests.lock().expect("requests");
+    for path in [
+        "/pages/one/inline?q=yes",
+        "/pages/one/relative",
+        "/pages/two/relative",
+    ] {
+        assert!(requests.iter().any(|r| r.target == path), "missing {path}");
+        assert!(outcome
+            .endpoints
+            .iter()
+            .any(|e| e.url.ends_with(path) && e.status_code == Some(200)));
+    }
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|r| r.target == "/assets/shared.js")
+            .count(),
+        1
+    );
+    assert!(!outcome.endpoints.iter().any(|e| e.url.contains("decoy")));
+    assert!(!requests.iter().any(|r| r.target.contains("decoy")
+        || r.target.contains("excluded")
+        || r.target == "/assets/relative"));
+}
+
+#[test]
+fn inline_script_respects_document_base_href() {
+    let lab = LocalLab::start();
+    let mut config = lab.config(5);
+    config.scope.target_url = format!("{}/base-page", lab.base_url);
+    config.scope.active_testing = false;
+    let outcome = run_authorized_scan(
+        &config,
+        &AuthContext::default(),
+        None,
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .expect("scan");
+    assert!(outcome
+        .endpoints
+        .iter()
+        .any(|e| e.url.ends_with("/pages/base/relative") && e.status_code == Some(200)));
 }

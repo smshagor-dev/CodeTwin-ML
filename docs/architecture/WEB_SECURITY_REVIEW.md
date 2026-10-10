@@ -101,8 +101,12 @@ response. Root-relative and absolute URLs are supported. Calls in comments and
 quoted strings, dynamic URLs, templates, escaped literals, request options and
 non-GET calls are skipped. Source is capped at 1 MiB, 32,768 tokens and 256 calls;
 truncated responses are not parsed. Sources containing ambiguous division/regex
-syntax are conservatively skipped. Relative document URLs, inline script calls,
-JavaScript execution and Axios custom base URLs are not resolved by this milestone.
+syntax are conservatively skipped. Inline executable script elements and external scripts retain their owning document
+URL, including the first base href, so relative fetch URLs resolve against the
+document rather than the asset directory. Shared assets are fetched once and
+reused for each discovered document (up to 256 owners). HTML comments and
+non-executable data script types are skipped. JavaScript execution, runtime
+rebinding and Axios custom base URLs are not resolved.
 A static call is an endpoint candidate, not proof that the application executes it.
 
 Boolean response comparisons now require complete responses on both sides.
