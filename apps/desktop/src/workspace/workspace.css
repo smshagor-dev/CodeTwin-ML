@@ -1087,6 +1087,7 @@ html[data-theme="dark"] .ws-websec-finding-table > button.selected { background:
 .ws-webscan-form section:last-child { border-bottom: 0; }
 .ws-webscan-form h3 { margin: 0; font-size: 12px; }
 .ws-form-help { margin: 0; color: var(--ws-muted); font-size: 12px; line-height: 1.45; }
+.ws-webscan-auth-grid { display: grid; gap: 10px; }
 .ws-webscan-two { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .ws-webscan-limits { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }
 .ws-webscan-options, .ws-webscan-risk-options { display: grid; gap: 8px; }

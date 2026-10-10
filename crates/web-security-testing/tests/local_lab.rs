@@ -1880,3 +1880,139 @@ fn m8_cors_validation_redirect_and_passive_csrf_controls() {
         }
     }
 }
+
+#[path = "../../../apps/desktop/src-tauri/src/web_policy_commands.rs"]
+mod desktop_policy_worker;
+
+#[test]
+fn desktop_policy_worker_persists_secret_free_outcomes_and_reports() {
+    use web_security_testing::ObjectAccessPolicy;
+    for (case, status) in [
+        ("vulnerable", "ViolationConfirmed"),
+        ("denied", "AccessDenied"),
+        ("shared", "SharedAccessObserved"),
+        ("expired", "UnableToVerify"),
+    ] {
+        let lab = LocalLab::start();
+        let config = lab.config(12);
+        let db = Database::open_in_memory().expect("database");
+        let store = AuthorizedWebSecurityStore::new(&db);
+        let primary = AuthContext {
+            bearer_token: Some("primary-policy-secret".into()),
+            ..AuthContext::default()
+        };
+        let secondary = AuthContext {
+            bearer_token: Some("secondary-policy-secret".into()),
+            ..AuthContext::default()
+        };
+        let policy = ObjectAccessPolicy {
+            identity_url: format!("{}/policy/identity", lab.base_url),
+            identity_json_pointer: "/principal".into(),
+            primary_identity: serde_json::json!("owner"),
+            secondary_identity: serde_json::json!("other"),
+            object_url: format!("{}/policy/{case}/42", lab.base_url),
+            object_json_pointer: "/record".into(),
+            expected_object: serde_json::json!({"id":42,"content":"known protected object content"}),
+            secondary_access_allowed: case == "shared",
+        };
+        let scan = store
+            .create_scan(&WebScanCreate {
+                website_id: None,
+                project_id: None,
+                target_url: config.scope.target_url.clone(),
+                authorization_confirmed: true,
+                scope_json: serde_json::to_string(&config.scope).unwrap(),
+                config_json: serde_json::to_string(&config).unwrap(),
+                auth_metadata_json: "{}".into(),
+            })
+            .expect("scan");
+        let outcome = desktop_policy_worker::run_policy_scan(
+            &db,
+            &scan.id,
+            &config,
+            &primary,
+            &secondary,
+            &policy,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("production worker");
+        let saved = store.get_scan(&scan.id).unwrap().unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&saved.config_json).unwrap();
+        assert_eq!(metadata["object_policy_result"]["status"], status);
+        assert!(!saved.config_json.contains("known protected object content"));
+        assert_eq!(outcome.findings.len(), usize::from(case == "vulnerable"));
+        if let Some(finding) = outcome.findings.first() {
+            assert_eq!(finding.evidence.len(), 9);
+            let evidence = serde_json::to_string(&finding.evidence).unwrap();
+            assert!(!evidence.contains("primary-policy-secret"));
+            assert!(!evidence.contains("secondary-policy-secret"));
+        }
+        for finding in &outcome.findings {
+            let record = store
+                .record_finding(
+                    &scan.id,
+                    &WebFindingInput {
+                        fingerprint: finding.stable_fingerprint(),
+                        category: finding.category.clone(),
+                        severity: finding.severity.clone(),
+                        confidence: finding.confidence.clone(),
+                        target: finding.target.clone(),
+                        endpoint_url: finding.endpoint.clone(),
+                        method: finding.method.clone(),
+                        parameter_name: finding.parameter.clone(),
+                        title: finding.title.clone(),
+                        description: finding.description.clone(),
+                        reproduction_summary: finding.reproduction_summary.clone(),
+                        impact: finding.impact.clone(),
+                        remediation: finding.remediation.clone(),
+                        references: finding.references.clone(),
+                        source: None,
+                    },
+                )
+                .unwrap();
+            for evidence in &finding.evidence {
+                store
+                    .record_evidence(
+                        &record.id,
+                        &WebEvidenceInput {
+                            summary: evidence.summary.clone(),
+                            request_metadata_json: evidence.request_metadata.to_string(),
+                            response_metadata_json: evidence.response_metadata.to_string(),
+                        },
+                    )
+                    .unwrap();
+            }
+            assert_eq!(store.finding_evidence(&record.id, 20).unwrap().len(), 9);
+        }
+        let mut invalid = metadata["object_policy_result"].clone();
+        invalid["credentials"] = serde_json::json!("forbidden");
+        assert!(store
+            .record_object_policy_result(&scan.id, &invalid)
+            .is_err());
+        store
+            .update_progress(
+                &scan.id,
+                "completed",
+                "completed",
+                outcome.endpoints.len(),
+                outcome.requests_performed,
+                outcome.findings.len(),
+            )
+            .unwrap();
+        assert!(store
+            .record_object_policy_result(&scan.id, &metadata["object_policy_result"])
+            .is_err());
+        for format in ["json", "markdown"] {
+            let report = store.generate_report(&scan.id, format).unwrap();
+            assert!(report.contains(status), "missing {status} in {format}");
+            assert!(!report.contains("primary-policy-secret"));
+            assert!(!report.contains("secondary-policy-secret"));
+        }
+        assert!(lab
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r.method == "GET" && r.target.starts_with("/policy/")));
+    }
+}

@@ -279,3 +279,35 @@ not tested. No form submissions or state-changing requests were added.
 The HTTP lab covers five CORS policies, four API-validation behaviors, four
 redirect behaviors and token/no-token form inventory. These are bounded controls,
 not universal vulnerability coverage.
+
+### Milestone 9: object policy dashboard, evidence and fresh-session repeat
+
+Security → Expert Web Testing → New Scan now exposes the explicit object policy
+API. Supply two authorized sessions, verified expected principals, the exact
+identity/object URLs, JSON pointers and a known protected JSON object. This mode
+requires active access-control checks and executes only the two supplied GET
+endpoints, using the existing scope, cancellation and request budget. It is a
+standalone expert scan; it does not silently substitute for an approved guided
+plan or enumerate additional objects.
+
+The desktop worker converts policy violations into the existing finding/evidence
+store. All four policy outcomes are persisted as whitelisted report metadata in
+scan configuration, so AccessDenied, SharedAccessObserved and UnableToVerify remain
+visible even with zero findings. Confirmation remains conditional on the supplied
+application policy being correct. Completed scans cannot have their policy outcome
+overwritten. JSON and Markdown reports include the outcome and reason; violation
+reports include the nine redacted verification/control evidence records.
+
+“Repeat with fresh sessions” prefills scope, website/project association, endpoint
+URLs, JSON pointers and sharing policy. Credentials, expected principal values,
+expected object contents and authorization confirmation must be supplied again.
+These policy input values are not persisted in scan configuration. Evidence can
+contain observed response excerpts; credentials from both sessions are redacted.
+
+Validation includes the production Rust desktop worker against a real loopback
+HTTP lab and SQLite, all four outcomes, report persistence, prohibited metadata,
+finished-scan immutability and frontend input/replay tests. Chromium UI verification
+uses a temporary IPC adapter with that production worker and core persistence,
+covering submission, nine evidence records, Markdown/JSON export, fresh-session
+repeat, denied/expired outcomes and a 390-pixel viewport. This adapter does not
+verify native Tauri IPC, OS dialogs or a Windows desktop build.

@@ -8,6 +8,7 @@ mod runtime_commands;
 mod security_campaign_commands;
 mod security_fix_commands;
 mod supply_chain_commands;
+mod web_policy_commands;
 mod web_security_commands;
 mod workspace_commands;
 
