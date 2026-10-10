@@ -37,6 +37,8 @@ const ML_SIDECAR_JOB_CPU_SECONDS: u64 = 120;
 const ML_SIDECAR_TERMINATION_WAIT_MS: u32 = 5_000;
 
 struct MlSidecarContainment {
+    #[cfg(unix)]
+    process_group: i32,
     #[cfg(windows)]
     job: windows_sys::Win32::Foundation::HANDLE,
 }
@@ -211,7 +213,13 @@ impl MlSidecarContainment {
             return Ok(Self { job });
         }
 
-        #[cfg(not(windows))]
+        #[cfg(unix)]
+        {
+            Ok(Self {
+                process_group: child.id() as i32,
+            })
+        }
+        #[cfg(not(any(windows, unix)))]
         {
             let _ = child;
             Ok(Self {})
@@ -245,12 +253,19 @@ impl MlSidecarContainment {
 
         #[cfg(not(windows))]
         {
+            self.terminate_descendants_after_exit();
             let _ = child.kill();
             let _ = child.wait();
         }
     }
 
     fn terminate_descendants_after_exit(&self) {
+        #[cfg(unix)]
+        {
+            // The child becomes its own process-group leader before exec. Workers
+            // inherit this group, so cleanup includes Python and native engines.
+            unsafe { libc::kill(-self.process_group, libc::SIGKILL) };
+        }
         #[cfg(windows)]
         {
             use windows_sys::Win32::System::JobObjects::TerminateJobObject;
@@ -258,6 +273,13 @@ impl MlSidecarContainment {
                 TerminateJobObject(self.job, 1);
             }
         }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for MlSidecarContainment {
+    fn drop(&mut self) {
+        self.terminate_descendants_after_exit();
     }
 }
 
@@ -1040,6 +1062,11 @@ fn sidecar_request(
             command.env(key, value);
         }
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0).env("CODETWIN_PROCESS_GROUP", "1");
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -1427,6 +1454,33 @@ mod tests {
         assert!(validate_sidecar(&pinned)
             .expect_err("changed sidecar must fail")
             .contains("source digest no longer matches"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_containment_closes_descendant_output_pipe() {
+        use std::os::unix::process::CommandExt;
+
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 30 & wait"])
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn process group");
+        let containment =
+            MlSidecarContainment::attach_and_resume(&mut child).expect("attach process group");
+        let mut stdout = child.stdout.take().expect("stdout");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let reader = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = sender.send(stdout.read_to_end(&mut bytes));
+        });
+        containment.terminate_tree(&mut child);
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("descendants must not keep the pipe open")
+            .expect("read output");
+        reader.join().expect("reader exits");
     }
 
     #[cfg(unix)]

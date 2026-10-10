@@ -391,6 +391,7 @@ version = "0.1.0"
 dependencies = [
  "codetwin-core",
  "dataset-benchmark",
+ "libc",
  "project-discovery",
  "qa-execution",
  "reqwest 0.12.28",

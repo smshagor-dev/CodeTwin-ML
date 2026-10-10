@@ -14,7 +14,7 @@ No shell is used. The worker receives exactly one bounded JSON request on standa
 
 The worker does **not** inherit the full parent environment. The parent constructs a small allow-list containing only platform path/temp/locale values needed by the local runtime plus `CODETWIN_MODEL_CACHE`, then sets `PYTHONPATH` to the trusted CodeTwin ML sidecar root. Arbitrary parent variables such as GitHub/cloud/database tokens are not forwarded. Native math thread variables (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, and `NUMEXPR_NUM_THREADS`) are forced to `1`.
 
-The working directory is the trusted CodeTwin ML sidecar root; analyzed repository paths are not used to discover the worker module.
+The working directory is the trusted CodeTwin ML sidecar root; analyzed repository paths are not used to discover the worker module. Child workers enforce `PYTHONNOUSERSITE=1`, `PYTHONSAFEPATH=1`, and `PYTHONDONTWRITEBYTECODE=1`, so user-site startup code and writable bytecode cannot bypass the parent startup policy. Runtime dependencies must be installed in the configured interpreter environment rather than its user-site directory.
 
 ## Parent-enforced limits
 
@@ -28,7 +28,7 @@ The parent process applies:
 - stderr suppression so arbitrary runtime diagnostics are not interpreted as prediction evidence;
 - protocol version and result-shape checks.
 
-Timeout, startup failure, non-zero exit, malformed JSON, protocol mismatch, oversized output, and structured worker errors all become deterministic `InferenceRuntimeError` failures. Worker stdout is captured to a temporary file and size-checked before it is read back, so the 1 MiB response limit is not merely a post-hoc in-memory check. No fallback in-process inference occurs.
+Timeout, startup failure, non-zero exit, malformed JSON, protocol mismatch, oversized output, and structured worker errors all become deterministic `InferenceRuntimeError` failures. Worker stdout is read from a pipe into a buffer capped at the response limit plus one overflow byte. Overflow terminates the producer immediately; generation uses the same helper with a 256 KiB cap, and neither path writes unbounded output to a temporary file. No fallback in-process inference occurs.
 
 ## Worker-enforced limits
 
@@ -70,6 +70,10 @@ GGUF generation still requires an explicitly configured, SHA-256-pinned llama.cp
 Immediately before generation, CodeTwin re-attests both files against their expected hashes and file identities. On Windows it additionally opens both the llama.cpp executable and GGUF model with read sharing only, denying write/delete sharing for the lifetime of the generation call. This closes the ordinary verify-then-replace window while the trusted native runtime and model are being launched and used. The file identities are checked again before accepting the generated result.
 
 On non-Windows platforms CodeTwin performs pre-launch SHA-256 plus file-identity attestation and rejects ordinary identity changes observed during the call, but it does not claim an equivalent kernel-enforced share-deny lock.
+
+## POSIX process cleanup
+
+Desktop sidecars become process-group leaders before exec. Python workers and native engines inherit this group, and timeout, failure, normal exit, and owner drop terminate the group. Standalone Python launches own a session and clean up descendants on overflow, timeout, or exit. Nested workers preserve the outer group through the internal `CODETWIN_PROCESS_GROUP` marker. This is cleanup for the trusted process tree, not a sandbox that prevents deliberately hostile native code from creating another session.
 
 ## Platform boundary
 

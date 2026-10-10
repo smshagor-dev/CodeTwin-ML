@@ -21,10 +21,7 @@ from codetwin_ml.isolated import (  # noqa: E402
 class IsolatedInferenceTests(unittest.TestCase):
     def _run_with_bytes(self, response: bytes, returncode: int = 0):
         def fake_run(command, **kwargs):
-            output = kwargs["stdout"]
-            output.write(response)
-            output.flush()
-            return subprocess.CompletedProcess(args=command, returncode=returncode)
+            return subprocess.CompletedProcess(args=command, returncode=returncode, stdout=response)
         return fake_run
 
     def _run_with_result(self, result: dict):
@@ -37,7 +34,7 @@ class IsolatedInferenceTests(unittest.TestCase):
             "prediction": {"label": "review", "confidence": 0.8},
         }
         with patch(
-            "codetwin_ml.isolated.subprocess.run",
+            "codetwin_ml.isolated.run_bounded",
             side_effect=self._run_with_result(result),
         ) as run:
             actual = run_isolated_inference(
@@ -52,8 +49,7 @@ class IsolatedInferenceTests(unittest.TestCase):
         self.assertEqual(command, [sys.executable, "-m", "codetwin_ml.worker"])
         kwargs = run.call_args.kwargs
         self.assertEqual(kwargs["timeout"], CLASSIFICATION_WORKER_TIMEOUT_SECONDS)
-        self.assertEqual(kwargs["stderr"], subprocess.DEVNULL)
-        self.assertIsNot(kwargs["stdout"], subprocess.PIPE)
+        self.assertEqual(kwargs["max_output"], MAX_WORKER_RESPONSE_BYTES)
         request = json.loads(kwargs["input"].decode("utf-8"))
         self.assertEqual(request["protocol"], 1)
         self.assertEqual(request["mode"], "classification")
@@ -68,7 +64,7 @@ class IsolatedInferenceTests(unittest.TestCase):
             "generation": {"text": "candidate patch"},
         }
         with patch(
-            "codetwin_ml.isolated.subprocess.run",
+            "codetwin_ml.isolated.run_bounded",
             side_effect=self._run_with_result(result),
         ) as run:
             actual = run_isolated_generation(
@@ -103,7 +99,7 @@ class IsolatedInferenceTests(unittest.TestCase):
             },
             clear=True,
         ), patch(
-            "codetwin_ml.isolated.subprocess.run",
+            "codetwin_ml.isolated.run_bounded",
             side_effect=self._run_with_result(result),
         ) as run:
             run_isolated_inference("security_analysis", "x")
@@ -114,6 +110,9 @@ class IsolatedInferenceTests(unittest.TestCase):
         self.assertNotIn("DATABASE_URL", environment)
         self.assertEqual(environment["CODETWIN_MODEL_CACHE"], model_cache)
         self.assertEqual(environment["PYTHONPATH"], str(ROOT))
+        self.assertEqual(environment["PYTHONNOUSERSITE"], "1")
+        self.assertEqual(environment["PYTHONSAFEPATH"], "1")
+        self.assertEqual(environment["PYTHONDONTWRITEBYTECODE"], "1")
         self.assertEqual(environment["OMP_NUM_THREADS"], "1")
         self.assertEqual(environment["OPENBLAS_NUM_THREADS"], "1")
         self.assertEqual(environment["MKL_NUM_THREADS"], "1")
@@ -121,7 +120,7 @@ class IsolatedInferenceTests(unittest.TestCase):
 
     def test_classifier_timeout_is_reported_as_runtime_error(self) -> None:
         with patch(
-            "codetwin_ml.isolated.subprocess.run",
+            "codetwin_ml.isolated.run_bounded",
             side_effect=subprocess.TimeoutExpired(
                 cmd="worker",
                 timeout=CLASSIFICATION_WORKER_TIMEOUT_SECONDS,
@@ -132,7 +131,7 @@ class IsolatedInferenceTests(unittest.TestCase):
 
     def test_generation_timeout_is_reported_as_runtime_error(self) -> None:
         with patch(
-            "codetwin_ml.isolated.subprocess.run",
+            "codetwin_ml.isolated.run_bounded",
             side_effect=subprocess.TimeoutExpired(
                 cmd="worker",
                 timeout=GENERATION_WORKER_TIMEOUT_SECONDS,
@@ -143,7 +142,7 @@ class IsolatedInferenceTests(unittest.TestCase):
 
     def test_nonzero_worker_exit_is_rejected(self) -> None:
         with patch(
-            "codetwin_ml.isolated.subprocess.run",
+            "codetwin_ml.isolated.run_bounded",
             side_effect=self._run_with_bytes(b"", returncode=7),
         ):
             with self.assertRaisesRegex(InferenceRuntimeError, "status 7"):
@@ -151,7 +150,7 @@ class IsolatedInferenceTests(unittest.TestCase):
 
     def test_malformed_worker_json_is_rejected(self) -> None:
         with patch(
-            "codetwin_ml.isolated.subprocess.run",
+            "codetwin_ml.isolated.run_bounded",
             side_effect=self._run_with_bytes(b"not-json"),
         ):
             with self.assertRaisesRegex(InferenceRuntimeError, "invalid JSON"):
@@ -159,7 +158,7 @@ class IsolatedInferenceTests(unittest.TestCase):
 
     def test_oversized_worker_response_is_rejected_before_json_parse(self) -> None:
         with patch(
-            "codetwin_ml.isolated.subprocess.run",
+            "codetwin_ml.isolated.run_bounded",
             side_effect=self._run_with_bytes(b"x" * (MAX_WORKER_RESPONSE_BYTES + 1)),
         ):
             with self.assertRaisesRegex(InferenceRuntimeError, "response exceeds"):
@@ -174,7 +173,7 @@ class IsolatedInferenceTests(unittest.TestCase):
             }
         ).encode("utf-8")
         with patch(
-            "codetwin_ml.isolated.subprocess.run",
+            "codetwin_ml.isolated.run_bounded",
             side_effect=self._run_with_bytes(response),
         ):
             with self.assertRaisesRegex(InferenceRuntimeError, "model unavailable"):

@@ -13,6 +13,7 @@ from typing import Any
 
 from codetwin_ml.inference import InferenceInputError, InferenceRuntimeError
 from codetwin_ml.models import ModelError, resolve_model_for_generation
+from codetwin_ml.process import run_bounded
 
 MAX_PROMPT_BYTES = 65_536
 MAX_GENERATION_BYTES = 262_144
@@ -31,6 +32,7 @@ _ENV_ALLOWLIST = (
     "APPDATA",
     "LANG",
     "LC_ALL",
+    "CODETWIN_PROCESS_GROUP",
 )
 
 
@@ -289,46 +291,31 @@ def run_generation(
                 label="selected GGUF model",
             )
 
-            with tempfile.TemporaryFile(prefix="codetwin-generation-output-") as output:
-                kwargs: dict[str, Any] = {
-                    "stdout": output,
-                    "stderr": subprocess.DEVNULL,
-                    "cwd": str(model_dir),
-                    "env": environment,
-                    "timeout": GENERATION_TIMEOUT_SECONDS,
-                    "check": False,
-                }
-                if sys.platform == "win32":
-                    kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-
-                try:
-                    completed = subprocess.run(command, **kwargs)
-                except subprocess.TimeoutExpired as error:
-                    raise InferenceRuntimeError(
-                        f"local generation exceeded the {GENERATION_TIMEOUT_SECONDS} second timeout"
-                    ) from error
-                except OSError as error:
-                    raise InferenceRuntimeError(
-                        f"cannot start trusted llama.cpp CLI: {error}"
-                    ) from error
-
-                if completed.returncode != 0:
-                    raise InferenceRuntimeError(
-                        f"trusted llama.cpp CLI exited with status {completed.returncode}"
-                    )
-                _assert_identity_unchanged(
-                    cli, cli_identity, label="trusted llama.cpp CLI"
+            try:
+                completed = run_bounded(
+                    command,
+                    cwd=str(model_dir),
+                    env=environment,
+                    timeout=GENERATION_TIMEOUT_SECONDS,
+                    max_output=MAX_GENERATION_BYTES,
+                    output_label="generation output",
                 )
-                _assert_identity_unchanged(
-                    model_path, model_identity, label="selected GGUF model"
+            except subprocess.TimeoutExpired as error:
+                raise InferenceRuntimeError(
+                    f"local generation exceeded the {GENERATION_TIMEOUT_SECONDS} second timeout"
+                ) from error
+            except OSError as error:
+                raise InferenceRuntimeError(
+                    f"cannot start trusted llama.cpp CLI: {error}"
+                ) from error
+
+            if completed.returncode != 0:
+                raise InferenceRuntimeError(
+                    f"trusted llama.cpp CLI exited with status {completed.returncode}"
                 )
-                output_size = os.fstat(output.fileno()).st_size
-                if output_size > MAX_GENERATION_BYTES:
-                    raise InferenceRuntimeError(
-                        f"generation output exceeds the {MAX_GENERATION_BYTES}-byte limit"
-                    )
-                output.seek(0)
-                stdout = output.read(MAX_GENERATION_BYTES + 1)
+            _assert_identity_unchanged(cli, cli_identity, label="trusted llama.cpp CLI")
+            _assert_identity_unchanged(model_path, model_identity, label="selected GGUF model")
+            stdout = completed.stdout
 
     if len(stdout) > MAX_GENERATION_BYTES:
         raise InferenceRuntimeError(
