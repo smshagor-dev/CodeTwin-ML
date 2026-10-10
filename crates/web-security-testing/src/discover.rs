@@ -31,6 +31,8 @@ pub fn crawl_with_seeds(
 ) -> Result<DiscoveryResult, ScanError> {
     let mut queue = VecDeque::new();
     let mut seen = HashSet::new();
+    let mut script_owners = HashMap::<String, Vec<Url>>::new();
+    let mut script_calls = HashMap::<String, Vec<String>>::new();
     let mut endpoint_keys = HashMap::new();
     let mut endpoints = Vec::new();
     let mut findings = Vec::new();
@@ -170,6 +172,16 @@ pub fn crawl_with_seeds(
                 if redirects < policy.config().redirect_limit {
                     if let Ok(next) = resolve_url(&url, location) {
                         if policy.assert_url(&next).is_ok() {
+                            if let Some(owners) = script_owners.get(&normalized).cloned() {
+                                let target_owners =
+                                    script_owners.entry(normalized_key(&next)).or_default();
+                                for owner in owners {
+                                    if target_owners.len() < 256 && !target_owners.contains(&owner)
+                                    {
+                                        target_owners.push(owner);
+                                    }
+                                }
+                            }
                             queue.push_back((next, depth, "redirect".to_string(), redirects + 1));
                         }
                     }
@@ -185,6 +197,44 @@ pub fn crawl_with_seeds(
                     .to_ascii_lowercase();
                 if content_type.contains("text/html") {
                     let body = String::from_utf8_lossy(&response.body);
+                    if !response.truncated {
+                        let document_base = tags(&body, "base")
+                            .first()
+                            .and_then(|tag| attribute_from_tag(tag, "href"))
+                            .and_then(|href| resolve_url(&url, &href).ok())
+                            .unwrap_or_else(|| url.clone());
+                        for (asset, calls) in script_sources(&body) {
+                            if let Some(asset) = asset {
+                                if let Ok(asset_url) = resolve_url(&document_base, &asset) {
+                                    if policy.assert_url(&asset_url).is_ok() {
+                                        let key = normalized_key(&asset_url);
+                                        let owners = script_owners.entry(key.clone()).or_default();
+                                        if owners.len() < 256 && !owners.contains(&document_base) {
+                                            owners.push(document_base.clone());
+                                            if let Some(calls) = script_calls.get(&key) {
+                                                queue_javascript_calls(
+                                                    policy,
+                                                    &document_base,
+                                                    calls,
+                                                    depth + 1,
+                                                    &mut queue,
+                                                );
+                                            }
+                                        }
+                                        queue.push_back((asset_url, depth + 1, "html".into(), 0));
+                                    }
+                                }
+                            } else {
+                                queue_javascript_calls(
+                                    policy,
+                                    &document_base,
+                                    &calls,
+                                    depth + 1,
+                                    &mut queue,
+                                );
+                            }
+                        }
+                    }
                     for next in extract_links(&url, &body) {
                         if policy.assert_url(&next).is_ok() {
                             queue.push_back((next, depth + 1, "html".to_string(), 0));
@@ -253,35 +303,6 @@ pub fn crawl_with_seeds(
                             add_endpoint(&mut endpoints, &mut endpoint_keys, form_endpoint);
                         }
                     }
-                    for next in extract_script_references(&url, &body) {
-                        if policy.assert_url(&next).is_ok() {
-                            add_endpoint(&mut endpoints, &mut endpoint_keys, {
-                                let parameter_names = query_parameters(&next);
-                                let mut parameter_locations = ParameterLocations::new();
-                                for name in &parameter_names {
-                                    insert_parameter_location(
-                                        &mut parameter_locations,
-                                        name.clone(),
-                                        "query",
-                                    );
-                                }
-                                EndpointObservation {
-                                    url: next.to_string(),
-                                    route_template: None,
-                                    method: "GET".to_string(),
-                                    depth: depth + 1,
-                                    source: "javascript_reference".to_string(),
-                                    parameter_names,
-                                    parameter_locations,
-                                    response_header_names: Vec::new(),
-                                    cookie_names: Vec::new(),
-                                    content_type: None,
-                                    status_code: None,
-                                    redirect_to: None,
-                                }
-                            });
-                        }
-                    }
                 } else if matches!(
                     content_type.split(';').next().unwrap_or("").trim(),
                     "application/javascript"
@@ -291,27 +312,31 @@ pub fn crawl_with_seeds(
                 ) && !response.truncated
                 {
                     let body = String::from_utf8_lossy(&response.body);
-                    for literal in crate::javascript::get_literals(&body) {
-                        // Relative literals require the owning document URL.
-                        // Until that provenance is retained, only root-relative
-                        // and absolute URLs are eligible for traversal.
-                        if !literal.starts_with('/')
-                            && !literal.starts_with("http://")
-                            && !literal.starts_with("https://")
-                        {
-                            continue;
+                    let calls = crate::javascript::get_literals(&body);
+                    if let Some(owners) = script_owners.get(&normalized) {
+                        for owner in owners {
+                            queue_javascript_calls(policy, owner, &calls, depth + 1, &mut queue);
                         }
-                        if let Ok(next) = resolve_url(policy.target(), &literal) {
-                            if policy.assert_url(&next).is_ok() {
-                                queue.push_back((
-                                    next,
-                                    depth + 1,
-                                    "javascript_call".to_string(),
-                                    0,
-                                ));
-                            }
-                        }
+                    } else {
+                        // Direct JS scan targets have no document provenance.
+                        let absolute: Vec<_> = calls
+                            .iter()
+                            .filter(|value| {
+                                value.starts_with('/')
+                                    || value.starts_with("http://")
+                                    || value.starts_with("https://")
+                            })
+                            .cloned()
+                            .collect();
+                        queue_javascript_calls(
+                            policy,
+                            policy.target(),
+                            &absolute,
+                            depth + 1,
+                            &mut queue,
+                        );
                     }
+                    script_calls.insert(normalized.clone(), calls);
                 } else if content_type.contains("application/json") {
                     discover_openapi(
                         policy,
@@ -334,6 +359,90 @@ pub fn crawl_with_seeds(
         responses,
         request_seeds,
     })
+}
+
+fn queue_javascript_calls(
+    policy: &ScopePolicy,
+    document: &Url,
+    calls: &[String],
+    depth: usize,
+    queue: &mut VecDeque<(Url, usize, String, usize)>,
+) {
+    for literal in calls {
+        if let Ok(next) = resolve_url(document, literal) {
+            if policy.assert_url(&next).is_ok() {
+                queue.push_back((next, depth, "javascript_call".into(), 0));
+            }
+        }
+    }
+}
+
+/// Extract bounded script elements, excluding HTML comments and data scripts.
+fn script_sources(html: &str) -> Vec<(Option<String>, Vec<String>)> {
+    let mut clean = html.to_string();
+    let mut cursor = 0;
+    while let Some(relative) = clean[cursor..].find("<!--") {
+        let start = cursor + relative;
+        let Some(end) = clean[start + 4..].find("-->") else {
+            clean.truncate(start);
+            break;
+        };
+        let end = start + 4 + end + 3;
+        clean.replace_range(start..end, &" ".repeat(end - start));
+        cursor = end;
+    }
+    let lower = clean.to_ascii_lowercase();
+    let mut cursor = 0;
+    let mut output = Vec::new();
+    while output.len() < 256 {
+        let Some(relative) = lower[cursor..].find("<script") else {
+            break;
+        };
+        let start = cursor + relative;
+        let after = start + 7;
+        if lower
+            .as_bytes()
+            .get(after)
+            .is_some_and(|b| !b.is_ascii_whitespace() && *b != b'>')
+        {
+            cursor = after;
+            continue;
+        }
+        let Some(end) = lower[after..].find('>') else {
+            break;
+        };
+        let body_start = after + end + 1;
+        let Some(close) = lower[body_start..].find("</script") else {
+            break;
+        };
+        let body_end = body_start + close;
+        let tag = &clean[start..body_start];
+        let kind = attribute_from_tag(tag, "type")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        if matches!(
+            kind.as_str(),
+            "" | "module"
+                | "text/javascript"
+                | "application/javascript"
+                | "text/ecmascript"
+                | "application/ecmascript"
+        ) {
+            let asset = attribute_from_tag(tag, "src");
+            let calls = if asset.is_none() {
+                crate::javascript::get_literals(&clean[body_start..body_end])
+            } else {
+                Vec::new()
+            };
+            output.push((asset, calls));
+        }
+        cursor = body_end + 8;
+        if cursor >= lower.len() {
+            break;
+        }
+    }
+    output
 }
 
 #[derive(Debug)]
@@ -449,7 +558,7 @@ fn source_priority(source: &str) -> u8 {
         match source {
             "openapi" => 4,
             "form" => 3,
-            "html" | "javascript_reference" => 2,
+            "html" | "javascript_reference" | "javascript_call" => 2,
             "redirect" => 1,
             _ => 0,
         }
@@ -531,29 +640,6 @@ fn extract_links(base: &Url, html: &str) -> Vec<Url> {
     }
     output.sort_by(|left, right| left.as_str().cmp(right.as_str()));
     output.dedup_by(|left, right| left.as_str() == right.as_str());
-    output
-}
-
-fn extract_script_references(base: &Url, html: &str) -> Vec<Url> {
-    let mut output = Vec::new();
-    for quote in ['"', '\''] {
-        for chunk in html.split(quote) {
-            let candidate = chunk.trim();
-            let looks_like_endpoint = candidate.starts_with("/api/")
-                || candidate.starts_with("/v1/")
-                || candidate.starts_with("/v2/")
-                || candidate.starts_with("http://")
-                || candidate.starts_with("https://");
-            if looks_like_endpoint && candidate.len() <= 2_048 {
-                if let Ok(url) = resolve_url(base, candidate) {
-                    output.push(url);
-                }
-            }
-        }
-    }
-    output.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-    output.dedup_by(|left, right| left.as_str() == right.as_str());
-    output.truncate(256);
     output
 }
 
