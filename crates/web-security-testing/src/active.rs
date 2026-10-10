@@ -348,7 +348,11 @@ fn probe_sqli(
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
         Err(_) => return Ok(findings),
     };
-    if !contains_sql_error(&baseline.body) && contains_sql_error(&quote.body) {
+    if !baseline.truncated
+        && !quote.truncated
+        && !contains_sql_error(&baseline.body)
+        && contains_sql_error(&quote.body)
+    {
         findings.push(FindingObservation {
             category: "sql_injection".into(),
             severity: "high".into(),
@@ -402,28 +406,53 @@ fn probe_sqli(
                 &false_response,
             ),
         ];
-        if let (Ok(true_repeat), Ok(false_repeat)) = (
-            send_task_payload(requester, task, url, true_payload),
-            send_task_payload(requester, task, url, false_payload),
-        ) {
-            if similar_response(baseline, &true_repeat)
-                && materially_different(baseline, &false_repeat)
-                && similar_response(&false_response, &false_repeat)
-            {
-                confidence = "Confirmed";
-                evidence.push(response_evidence(
-                    "boolean true repeat",
-                    &task.endpoint.method,
-                    url,
-                    &true_repeat,
-                ));
-                evidence.push(response_evidence(
-                    "boolean false repeat",
-                    &task.endpoint.method,
-                    url,
-                    &false_repeat,
-                ));
+        let baseline_repeat = if task.endpoint.method == "GET" {
+            requester.get(url)
+        } else {
+            send_task_payload(requester, task, url, "")
+        };
+        match baseline_repeat {
+            Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
+            Ok(baseline_repeat) if similar_response(baseline, &baseline_repeat) => {
+                // Use a different predicate pair in reverse order. A fixed
+                // payload block-list or request-order effect is not confirmation.
+                let false_repeat = send_task_payload(requester, task, url, "' AND '2'='3' -- ");
+                let true_repeat = if matches!(false_repeat, Err(RequestError::Cancelled)) {
+                    return Err(ScanError::Cancelled);
+                } else {
+                    send_task_payload(requester, task, url, "' OR '2'='2' -- ")
+                };
+                if matches!(true_repeat, Err(RequestError::Cancelled)) {
+                    return Err(ScanError::Cancelled);
+                }
+                if let (Ok(true_repeat), Ok(false_repeat)) = (true_repeat, false_repeat) {
+                    if similar_response(baseline, &true_repeat)
+                        && materially_different(baseline, &false_repeat)
+                        && similar_response(&false_response, &false_repeat)
+                    {
+                        confidence = "Confirmed";
+                        evidence.push(response_evidence(
+                            "baseline repeat",
+                            &task.endpoint.method,
+                            url,
+                            &baseline_repeat,
+                        ));
+                        evidence.push(response_evidence(
+                            "independent boolean false",
+                            &task.endpoint.method,
+                            url,
+                            &false_repeat,
+                        ));
+                        evidence.push(response_evidence(
+                            "independent boolean true",
+                            &task.endpoint.method,
+                            url,
+                            &true_repeat,
+                        ));
+                    }
+                }
             }
+            _ => {}
         }
         findings.push(FindingObservation {
             category: "sql_injection".into(),
@@ -434,7 +463,7 @@ fn probe_sqli(
             method: task.endpoint.method.clone(),
             parameter: Some(task.parameter.clone()),
             title: "Boolean SQL response differential observed".into(),
-            description: "True/false SQL predicate probes produced a repeatable response differential relative to the baseline. Confirmation requires the repeated pattern; no data extraction was attempted.".into(),
+            description: "True/false SQL predicate probes produced a response differential. Confirmation requires a stable complete baseline and a second independent predicate pair with successful, MIME-compatible responses; no data extraction was attempted.".into(),
             reproduction_summary: format!("Compare baseline, boolean-true, and boolean-false requests for parameter {}. Reproduce only within the authorized scope.", task.parameter),
             impact: "Confirmed query-behavior control may permit unauthorized query manipulation even though CodeTwin does not attempt database extraction.".into(),
             remediation: "Use prepared statements/parameter binding for all data values and fixed allow-lists for identifiers. Add regression tests for the affected request path.".into(),
@@ -1191,27 +1220,20 @@ fn contains_sql_error(body: &[u8]) -> bool {
     .any(|needle| text.contains(needle))
 }
 
+fn comparable_sql_responses(left: &ObservedResponse, right: &ObservedResponse) -> bool {
+    !left.truncated
+        && !right.truncated
+        && (200..300).contains(&left.status)
+        && left.status == right.status
+        && mime_type(left) == mime_type(right)
+}
+
 fn similar_response(left: &ObservedResponse, right: &ObservedResponse) -> bool {
-    if left.truncated || right.truncated {
-        return false;
-    }
-    if left.status != right.status || mime_type(left) != mime_type(right) {
-        return false;
-    }
-    if body_hash(&left.body) == body_hash(&right.body) {
-        return true;
-    }
-    normalized_body(&left.body) == normalized_body(&right.body)
+    comparable_sql_responses(left, right) && body_hash(&left.body) == body_hash(&right.body)
 }
 
 fn materially_different(left: &ObservedResponse, right: &ObservedResponse) -> bool {
-    if left.truncated || right.truncated {
-        return false;
-    }
-    if left.status != right.status || mime_type(left) != mime_type(right) {
-        return true;
-    }
-    normalized_body(&left.body) != normalized_body(&right.body)
+    comparable_sql_responses(left, right) && body_hash(&left.body) != body_hash(&right.body)
 }
 
 fn mime_type(response: &ObservedResponse) -> String {
@@ -1224,33 +1246,6 @@ fn mime_type(response: &ObservedResponse) -> String {
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase()
-}
-
-fn normalized_body(body: &[u8]) -> String {
-    let text = String::from_utf8_lossy(body);
-    let mut output = String::with_capacity(text.len().min(65_536));
-    let mut in_digits = false;
-    let mut in_whitespace = false;
-    for character in text.chars().take(65_536) {
-        if character.is_ascii_digit() {
-            if !in_digits {
-                output.push('#');
-            }
-            in_digits = true;
-            in_whitespace = false;
-        } else if character.is_whitespace() {
-            if !in_whitespace {
-                output.push(' ');
-            }
-            in_digits = false;
-            in_whitespace = true;
-        } else {
-            output.push(character);
-            in_digits = false;
-            in_whitespace = false;
-        }
-    }
-    output
 }
 
 enum ReflectionContext {
@@ -1833,8 +1828,14 @@ mod tests {
         let base = response(200, "search result id=123 count=45");
         let similar = response(200, "search   result id=987 count=12");
         let different = response(403, "denied");
-        assert!(similar_response(&base, &similar));
-        assert!(materially_different(&base, &different));
+        assert!(!similar_response(&base, &similar));
+        assert!(!materially_different(&base, &different));
+        assert!(materially_different(&base, &response(200, "empty result")));
+        let prefix = "x".repeat(70_000);
+        assert!(!similar_response(
+            &response(200, &format!("{prefix}a")),
+            &response(200, &format!("{prefix}b"))
+        ));
     }
 
     #[test]

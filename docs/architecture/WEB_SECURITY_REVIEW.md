@@ -159,3 +159,26 @@ are excluded from identity comparison. No login automation, credential refresh o
 enumeration is performed. Local lab tests cover valid repeats, identical tokens,
 anonymous primary context, 401/403, a 200 login form, truncation, primary-session
 expiry between requests, tight budgets and secret echoes.
+
+
+### Milestone 5: conservative SQL confirmation controls
+
+Boolean SQL comparison now requires complete, successful responses with the same
+status and MIME type and compares full body hashes. Digits and whitespace are no
+longer masked; content after 64 KiB is not ignored. This deliberately reduces
+coverage for volatile pages rather than treating changed records/counts as
+identical. A 403/429/500 or MIME change is not a boolean query differential.
+
+Confirmation requires the initial true/false pair, a fresh unchanged baseline,
+and a second logically equivalent predicate pair using different constants in
+reverse order. All true controls must exactly match the baseline and both false
+controls must match each other while differing from the baseline. Evidence
+contains all six responses. An incomplete repeat retains at most the initial
+Likely signal; cancellation propagates. Quote-error indicators remain Likely,
+never Confirmed, and incomplete baseline/probe bodies cannot establish them.
+No extraction, writes or timing probes were added.
+
+Real local SQLite HTTP lab tests compare unsafe SQL construction with prepared
+parameter binding. Additional negative controls cover WAF rejection, a fixed
+first-payload response rule and baseline changes. These tests establish bounded
+behavior, not universal SQL injection detection or proof against every WAF.
