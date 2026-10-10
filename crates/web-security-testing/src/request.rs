@@ -148,6 +148,12 @@ impl ScopedRequester {
         }
     }
 
+    pub(crate) fn without_auth(&self) -> Self {
+        let mut requester = self.clone();
+        requester.auth = AuthContext::default();
+        requester
+    }
+
     pub(crate) fn auth(&self) -> &AuthContext {
         &self.auth
     }

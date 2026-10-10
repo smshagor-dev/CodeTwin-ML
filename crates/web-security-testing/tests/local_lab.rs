@@ -145,6 +145,38 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect();
 
+    if path.starts_with("/m8-cors/") {
+        let origin = request_header(&request, "origin").unwrap_or_default();
+        let mode = path.trim_start_matches("/m8-cors/");
+        let allowed = if mode == "wildcard" {
+            "*"
+        } else if mode == "fixed" {
+            "https://example.invalid"
+        } else {
+            origin.as_str()
+        };
+        let credentials = if mode == "uppercase" { "TRUE" } else { "true" };
+        if method == "OPTIONS" || mode != "preflight-only" {
+            respond(
+                &mut stream,
+                "200 OK",
+                &[
+                    ("Content-Type", "application/json"),
+                    ("Access-Control-Allow-Origin", allowed),
+                    ("Access-Control-Allow-Credentials", credentials),
+                ],
+                "{\"private\":\"local-cors-test-record\"}",
+            );
+        } else {
+            respond(
+                &mut stream,
+                "200 OK",
+                &[("Content-Type", "application/json")],
+                "{\"private\":\"local-cors-test-record\"}",
+            );
+        }
+        return;
+    }
     if method == "OPTIONS" {
         respond(
             &mut stream,
@@ -160,6 +192,23 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
     }
 
     match path {
+        path if path.starts_with("/m8-api/") => {
+            let value = query.get("id").map(String::as_str).unwrap_or("");
+            let mode = path.trim_start_matches("/m8-api/");
+            let count = requests.lock().expect("requests").iter().filter(|r| r.target == target).count();
+            let invalid = value.starts_with("CODETWIN_INVALID");
+            let status = if (invalid && mode == "positive") || (mode == "outage" && (invalid || count > 1)) || (mode == "transient" && invalid && !value.contains("second")) {"500 Internal Server Error"}
+                else if invalid && mode == "safe" {"400 Bad Request"} else {"200 OK"};
+            respond(&mut stream, status, &[("Content-Type", "application/json")], "{\"result\":\"bounded-validation-control\"}");
+        }
+        path if path.starts_with("/m8-redirect/") => {
+            let next = query.get("next").map(String::as_str).unwrap_or("/");
+            let mode = path.trim_start_matches("/m8-redirect/");
+            let destination = if mode == "safe" || (mode == "fixed" && next.ends_with("-repeat")) {"/"} else {next};
+            respond(&mut stream, if mode == "invalid-status" {"304 Not Modified"} else {"302 Found"}, &[("Location", destination)], "");
+        }
+        "/m8-csrf" => respond(&mut stream, "200 OK", &[("Content-Type", "text/html")], "<form action='/m8-write' method='POST'><input name='value'></form><form action='/m8-token' method='POST'><input type='hidden' name='csrf_token' value='csrf-secret'><input name='value'></form>"),
+
         path if path.starts_with("/policy/") => {
             let is_primary = authorization.as_deref() == Some("Bearer primary-policy-secret");
             let is_secondary = authorization.as_deref() == Some("Bearer secondary-policy-secret");
@@ -1711,4 +1760,123 @@ fn object_policy_obeys_scope_activation_and_cancellation_before_requests() {
         Err(ScanError::Cancelled)
     ));
     assert!(lab.requests.lock().expect("requests").is_empty());
+}
+
+#[test]
+fn m8_cors_validation_redirect_and_passive_csrf_controls() {
+    for group in ["cors", "api", "redirect", "csrf"] {
+        let modes: &[&str] = match group {
+            "cors" => &[
+                "reflect",
+                "wildcard",
+                "uppercase",
+                "fixed",
+                "preflight-only",
+            ],
+            "api" => &["positive", "safe", "outage", "transient"],
+            "redirect" => &["positive", "safe", "fixed", "invalid-status"],
+            _ => &[""],
+        };
+        for mode in modes {
+            let lab = LocalLab::start();
+            let mut config = lab.config(16);
+            let path = if group == "csrf" {
+                "/m8-csrf".to_string()
+            } else {
+                format!(
+                    "/m8-{group}/{mode}{}",
+                    if group == "api" {
+                        "?id=1"
+                    } else if group == "redirect" {
+                        "?next=%2F"
+                    } else {
+                        ""
+                    }
+                )
+            };
+            config.scope.target_url = format!("{}{path}", lab.base_url);
+            config.scope.max_crawl_depth = if group == "csrf" { 1 } else { 0 };
+            config.checks = CheckConfig {
+                sql_injection: false,
+                xss: false,
+                csrf: group == "csrf",
+                open_redirect: group == "redirect",
+                path_traversal: false,
+                ssrf_indicators: false,
+                template_command_indicators: false,
+                method_misconfiguration: false,
+                cors: group == "cors",
+                session: false,
+                access_control: false,
+                api_validation: group == "api",
+            };
+            let auth = AuthContext {
+                cookie_header: Some("session=cors-secret".into()),
+                bearer_token: Some("cors-bearer-secret".into()),
+                ..AuthContext::default()
+            };
+            let outcome = run_authorized_scan(
+                &config,
+                &auth,
+                None,
+                Arc::new(AtomicBool::new(false)),
+                |_| {},
+            )
+            .expect("M8 scan");
+            if group == "cors" {
+                assert_eq!(
+                    outcome
+                        .findings
+                        .iter()
+                        .any(|f| f.category == "cors" && f.confidence == "Likely"),
+                    *mode == "reflect",
+                    "{mode}"
+                );
+                assert!(lab
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|r| r.method == "OPTIONS")
+                    .all(|r| r.cookie.is_none() && r.authorization.is_none()));
+            } else if group == "api" {
+                assert_eq!(
+                    outcome
+                        .findings
+                        .iter()
+                        .any(|f| f.category == "api_input_validation"),
+                    *mode == "positive",
+                    "{mode}"
+                );
+            } else if group == "redirect" {
+                assert_eq!(
+                    outcome
+                        .findings
+                        .iter()
+                        .any(|f| f.category == "open_redirect" && f.confidence == "Confirmed"),
+                    *mode == "positive",
+                    "{mode}"
+                );
+            } else {
+                let csrf: Vec<_> = outcome
+                    .findings
+                    .iter()
+                    .filter(|f| f.category == "csrf")
+                    .collect();
+                assert_eq!(csrf.len(), 1);
+                assert_eq!(csrf[0].confidence, "Potential");
+                assert_eq!(csrf[0].evidence.len(), 1);
+                assert!(!serde_json::to_string(&csrf)
+                    .unwrap()
+                    .contains("csrf-secret"));
+            }
+            assert!(lab
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|r| r.method == "GET" || r.method == "OPTIONS"));
+            assert!(outcome.requests_performed <= 16);
+        }
+    }
 }

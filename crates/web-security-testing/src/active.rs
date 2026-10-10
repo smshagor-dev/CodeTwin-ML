@@ -556,7 +556,18 @@ fn probe_open_redirect(
         Err(_) => return Ok(None),
     };
     let location = response.location.as_deref().unwrap_or("");
-    if !(300..400).contains(&response.status) || location != destination {
+    if !matches!(response.status, 301 | 302 | 303 | 307 | 308) || location != destination {
+        return Ok(None);
+    }
+    let repeat_destination = format!("https://example.invalid/codetwin-{marker}-repeat");
+    let repeat = match send_task_payload(requester, task, url, &repeat_destination) {
+        Ok(value) => value,
+        Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
+        Err(_) => return Ok(None),
+    };
+    if !matches!(repeat.status, 301 | 302 | 303 | 307 | 308)
+        || repeat.location.as_deref() != Some(&repeat_destination)
+    {
         return Ok(None);
     }
     Ok(Some(FindingObservation {
@@ -573,7 +584,7 @@ fn probe_open_redirect(
         impact: "Open redirects can facilitate phishing and can weaken OAuth or trust-boundary assumptions when redirect URIs are not independently constrained.".into(),
         remediation: "Use relative destinations or map user choices to an allow-list of trusted destinations.".into(),
         references: vec!["CWE-601".into()],
-        evidence: vec![response_evidence("redirect probe", &task.endpoint.method, url, &response)],
+        evidence: vec![response_evidence("redirect probe", &task.endpoint.method, url, &response), response_evidence("independent redirect probe", &task.endpoint.method, url, &repeat)],
     }))
 }
 
@@ -728,7 +739,37 @@ fn probe_input_validation(
         Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
         Err(_) => return Ok(None),
     };
-    if response.status < 500 || baseline.status >= 500 {
+    if response.truncated
+        || baseline.truncated
+        || response.status < 500
+        || !(200..300).contains(&baseline.status)
+    {
+        return Ok(None);
+    }
+    let control = if task.endpoint.method == "GET" {
+        requester.get(url)
+    } else {
+        send_task_payload(requester, task, url, "")
+    };
+    let control = match control {
+        Ok(value) => value,
+        Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
+        Err(_) => return Ok(None),
+    };
+    if control.truncated || control.status != baseline.status {
+        return Ok(None);
+    }
+    let repeat = match send_task_payload(
+        requester,
+        task,
+        url,
+        &format!("CODETWIN_INVALID_{marker}_second_%00_[]{{}}"),
+    ) {
+        Ok(value) => value,
+        Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
+        Err(_) => return Ok(None),
+    };
+    if repeat.truncated || repeat.status != response.status {
         return Ok(None);
     }
     Ok(Some(FindingObservation {
@@ -748,6 +789,8 @@ fn probe_input_validation(
         evidence: vec![
             response_evidence("baseline", &task.endpoint.method, url, baseline),
             response_evidence("malformed-input probe", &task.endpoint.method, url, &response),
+            response_evidence("valid baseline repeat", &task.endpoint.method, url, &control),
+            response_evidence("independent malformed-input probe", &task.endpoint.method, url, &repeat),
         ],
     }))
 }
@@ -760,7 +803,7 @@ fn probe_options(
     let Ok(url) = Url::parse(&endpoint.url) else {
         return Ok(Vec::new());
     };
-    let response = match requester.send(
+    let response = match requester.without_auth().send(
         Method::OPTIONS,
         &url,
         None,
@@ -779,22 +822,70 @@ fn probe_options(
         let origin = response_header(&response, "access-control-allow-origin").unwrap_or_default();
         let credentials =
             response_header(&response, "access-control-allow-credentials").unwrap_or_default();
-        if origin == "https://example.invalid" && credentials.eq_ignore_ascii_case("true") {
+        if (200..300).contains(&response.status)
+            && origin == "https://example.invalid"
+            && credentials == "true"
+        {
             findings.push(FindingObservation {
                 category: "cors".into(),
                 severity: "high".into(),
-                confidence: "Likely".into(),
+                confidence: "Potential".into(),
                 target: config.scope.target_url.clone(),
                 endpoint: endpoint.url.clone(),
                 method: "OPTIONS".into(),
                 parameter: None,
                 title: "Arbitrary Origin appears accepted with credentials".into(),
-                description: "The server reflected the untrusted example.invalid Origin and also allowed credentials.".into(),
+                description: "The credential-free preflight reflected the test Origin and advertised credentials. Actual GET response policy is checked separately; preflight headers alone do not prove browser data access.".into(),
                 reproduction_summary: "Send an OPTIONS preflight with Origin: https://example.invalid and inspect Access-Control-Allow-Origin/Credentials.".into(),
                 impact: "If sensitive endpoints share this policy, attacker-controlled sites may be able to read credentialed responses.".into(),
                 remediation: "Validate Origin against an exact trusted allow-list and only enable credentials where required.".into(),
                 references: vec!["CWE-942".into()],
                 evidence: vec![response_evidence("CORS preflight", "OPTIONS", &url, &response)],
+            });
+        }
+    }
+    if config.checks.cors && endpoint.method == "GET" {
+        let mut actual = Vec::new();
+        for origin in ["https://example.invalid", "https://codetwin-origin.invalid"] {
+            let observed = match requester.send(Method::GET, &url, None, &[("Origin", origin)]) {
+                Ok(value) => value,
+                Err(RequestError::Cancelled) => return Err(ScanError::Cancelled),
+                Err(_) => break,
+            };
+            if observed
+                .headers
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("access-control-allow-origin"))
+                .count()
+                != 1
+                || observed
+                    .headers
+                    .iter()
+                    .filter(|(name, _)| {
+                        name.eq_ignore_ascii_case("access-control-allow-credentials")
+                    })
+                    .count()
+                    != 1
+                || observed.truncated
+                || !(200..300).contains(&observed.status)
+                || response_header(&observed, "access-control-allow-origin").as_deref()
+                    != Some(origin)
+                || response_header(&observed, "access-control-allow-credentials").as_deref()
+                    != Some("true")
+            {
+                break;
+            }
+            actual.push(observed);
+        }
+        if actual.len() == 2 {
+            findings.push(FindingObservation {
+                category: "cors".into(), severity: "high".into(), confidence: "Likely".into(), target: config.scope.target_url.clone(), endpoint: endpoint.url.clone(), method: "GET".into(), parameter: None,
+                title: "Two untrusted origins accepted on credentialed GET responses".into(),
+                description: "Both test Origins were reflected on complete successful GET responses with exact credential allowance. This is response-policy evidence, not proof that the data is private or that victim credentials will be sent by a browser.".into(),
+                reproduction_summary: "Compare GET response headers using the two supplied test Origin values. No external origins were contacted.".into(),
+                impact: "If sensitive cookie-authenticated data is available and browser cookie policy permits the request, untrusted origins may read it.".into(),
+                remediation: "Use an exact trusted Origin allow-list for sensitive credentialed resources.".into(), references: vec!["CWE-942".into()],
+                evidence: actual.iter().enumerate().map(|(index, observed)| response_evidence(&format!("GET Origin control {}", index + 1), "GET", &url, observed)).collect(),
             });
         }
     }

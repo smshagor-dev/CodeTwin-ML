@@ -241,3 +241,41 @@ write operations and automatic exploit generation are not part of this API.
 The local HTTP lab covers eleven policy outcomes plus activation, same-context,
 excluded-path and cancellation checks. Existing source-backed IDOR repair/retest
 E2E coverage is retained.
+
+
+### Milestone 8: CORS, API validation, redirect and CSRF controls
+
+OPTIONS preflight uses a credential-free requester sharing the original scope,
+rate and request budget. Preflight reflection alone is Potential. GET endpoints
+also receive two independent test Origin values: Likely credentialed response
+policy requires complete successful actual GETs, one matching allow-origin
+header and one exact lowercase `true` credential header for both origins.
+No test Origin is contacted. This is response-policy evidence, not confirmed
+private-data exposure; cookie SameSite/browser policy and data sensitivity still
+matter. Wildcard plus credentials is a low Potential configuration observation,
+since browsers reject that combination for credentialed reads. Rules follow the
+[WHATWG Fetch CORS protocol](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials).
+
+The loopback-only `scripts/security/verify-cors-controls.cjs` browser lab uses
+two distinct origins and actual credentialed GETs with preflight. Eight Chromium
+cases verify reflected origin reads, rejected wildcard/uppercase credentials,
+preflight-only headers and absence of cookies on OPTIONS. Production scans do
+not automatically launch this browser harness.
+
+Malformed API input produces a Likely finding only with complete initial
+responses, a successful valid baseline/control, and two independent malformed
+markers returning the same 5xx status. Proper 4xx validation, a changed outage
+control and a transient first-only 5xx do not produce that finding. Confirmation
+of an exploitable parser issue is not inferred from server errors.
+
+Open redirects require two distinct harmless marker destinations and actual
+301/302/303/307/308 Location responses. Invalid 304 statuses or a fixed first-only
+marker rule do not confirm. Destinations are never followed by active probes.
+CSRF stays passive/Potential: a missing recognized hidden token is a review
+candidate, not proof of CSRF. Form inventory evidence records field names and
+redacted URL without token values, and explicitly says server validation was
+not tested. No form submissions or state-changing requests were added.
+
+The HTTP lab covers five CORS policies, four API-validation behaviors, four
+redirect behaviors and token/no-token form inventory. These are bounded controls,
+not universal vulnerability coverage.
