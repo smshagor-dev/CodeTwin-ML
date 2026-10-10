@@ -1459,7 +1459,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unix_containment_closes_descendant_output_pipe() {
-        use std::os::unix::process::CommandExt;
+        use super::MlSidecarContainment;
+        use std::{
+            io::Read,
+            os::unix::process::CommandExt,
+            process::{Command, Stdio},
+            thread,
+            time::Duration,
+        };
 
         let mut child = Command::new("sh")
             .args(["-c", "sleep 30 & wait"])

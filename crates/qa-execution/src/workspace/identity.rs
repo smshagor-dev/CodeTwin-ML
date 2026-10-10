@@ -96,11 +96,14 @@ pub(crate) fn create_windows_write_restricted_token(
         Security::{
             CreateRestrictedToken, CreateWellKnownSid, GetLengthSid, IsTokenRestricted,
             SetTokenInformation, TokenIntegrityLevel, WinLowLabelSid, WinWriteRestrictedCodeSid,
-            DISABLE_MAX_PRIVILEGE, SECURITY_MAX_SID_SIZE, SE_GROUP_INTEGRITY, SID_AND_ATTRIBUTES,
-            TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_MANDATORY_LABEL,
-            TOKEN_QUERY, WRITE_RESTRICTED,
+            DISABLE_MAX_PRIVILEGE, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT,
+            TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+            WRITE_RESTRICTED,
         },
-        System::Threading::{GetCurrentProcess, OpenProcessToken},
+        System::{
+            SystemServices::SE_GROUP_INTEGRITY,
+            Threading::{GetCurrentProcess, OpenProcessToken},
+        },
     };
 
     struct Handle(HANDLE);
@@ -195,7 +198,7 @@ pub(crate) fn create_windows_write_restricted_token(
     let mut mandatory_label = TOKEN_MANDATORY_LABEL {
         Label: SID_AND_ATTRIBUTES {
             Sid: low_sid_ptr,
-            Attributes: SE_GROUP_INTEGRITY,
+            Attributes: SE_GROUP_INTEGRITY as u32,
         },
     };
     let token_label_len = u32::try_from(std::mem::size_of::<TOKEN_MANDATORY_LABEL>())
