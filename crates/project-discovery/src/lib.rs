@@ -102,6 +102,7 @@ fn detect_language(path: &Path, languages: &mut BTreeSet<String>) {
         "c" | "h" => "C",
         "cc" | "cpp" | "cxx" | "hpp" | "hh" => "C++",
         "php" => "PHP",
+        "java" => "Java",
         _ => return,
     };
     languages.insert(language.to_string());

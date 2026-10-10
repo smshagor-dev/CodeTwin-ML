@@ -44,6 +44,7 @@ fn visit(node: Node<'_>, language: &str, source: &str, imports: &mut Vec<Indexed
         "Rust" => extract_rust(node, source, imports),
         "Go" => extract_go(node, source, imports),
         "PHP" => extract_php(node, source, imports),
+        "Java" => extract_java(node, source, imports),
         "C" | "C++" => extract_c_family(node, source, imports),
         _ => {}
     }
@@ -182,6 +183,30 @@ fn extract_go(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImport>) {
                 push(imports, "import", raw, specifier);
             }
         }
+    }
+}
+
+/// `import a.b.C;`, `import a.b.*;` and `import static a.b.C.member;`.
+fn extract_java(node: Node<'_>, source: &str, imports: &mut Vec<IndexedImport>) {
+    if node.kind() != "import_declaration" {
+        return;
+    }
+    let Some(statement) = text(node, source) else {
+        return;
+    };
+    let body = statement
+        .trim()
+        .trim_start_matches("import")
+        .trim()
+        .trim_end_matches(';')
+        .trim();
+    let (kind, target) = match body.strip_prefix("static") {
+        Some(rest) if rest.starts_with(char::is_whitespace) => ("static_import", rest.trim()),
+        _ => ("import", body),
+    };
+    let target: String = target.chars().filter(|c| !c.is_whitespace()).collect();
+    if !target.is_empty() {
+        push(imports, kind, target, node);
     }
 }
 

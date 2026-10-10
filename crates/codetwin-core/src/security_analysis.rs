@@ -345,6 +345,86 @@ impl<'a> CodeSecurityService<'a> {
                 owasp: None,
                 confidence: 0.78,
             },
+            SecurityRuleRecord {
+                id: "java.sql.concatenated_query".into(),
+                title: "SQL built by string concatenation (Java)".into(),
+                description: "SQL text assembled with +, String.format or concat reaches a JDBC/JPA/Spring query API.".into(),
+                cwe: "CWE-89".into(),
+                owasp: Some("OWASP A03:2021 Injection".into()),
+                confidence: 0.8,
+            },
+            SecurityRuleRecord {
+                id: "java.command.dynamic_exec".into(),
+                title: "Process started with a runtime-built command (Java)".into(),
+                description: "Runtime.exec or ProcessBuilder with a non-literal command, for input-provenance review.".into(),
+                cwe: "CWE-78".into(),
+                owasp: Some("OWASP A03:2021 Injection".into()),
+                confidence: 0.6,
+            },
+            SecurityRuleRecord {
+                id: "java.crypto.weak_cipher".into(),
+                title: "Weak cipher or ECB mode (Java)".into(),
+                description: "DES, 3DES, RC2, RC4, Blowfish, ECB mode, or bare AES (which defaults to ECB).".into(),
+                cwe: "CWE-327".into(),
+                owasp: Some("OWASP A02:2021 Cryptographic Failures".into()),
+                confidence: 0.85,
+            },
+            SecurityRuleRecord {
+                id: "java.deserialization.untrusted_stream".into(),
+                title: "Java object deserialization".into(),
+                description: "ObjectInputStream, XMLDecoder or XStream.fromXML, for input-source review.".into(),
+                cwe: "CWE-502".into(),
+                owasp: Some("OWASP A08:2021 Software and Data Integrity Failures".into()),
+                confidence: 0.7,
+            },
+            SecurityRuleRecord {
+                id: "java.xml.xxe_unhardened_parser".into(),
+                title: "XML parser without XXE hardening (Java)".into(),
+                description: "An XML parser factory is created and no external-entity hardening setting appears in the same file.".into(),
+                cwe: "CWE-611".into(),
+                owasp: Some("OWASP A05:2021 Security Misconfiguration".into()),
+                confidence: 0.7,
+            },
+            SecurityRuleRecord {
+                id: "java.tls.hostname_verification_disabled".into(),
+                title: "TLS hostname verification disabled (Java)".into(),
+                description: "A hostname verifier that accepts every host.".into(),
+                cwe: "CWE-295".into(),
+                owasp: Some("OWASP A07:2021 Identification and Authentication Failures".into()),
+                confidence: 0.92,
+            },
+            SecurityRuleRecord {
+                id: "java.tls.trust_all_certificates".into(),
+                title: "Trust manager accepts every certificate (Java)".into(),
+                description: "An empty checkServerTrusted implementation.".into(),
+                cwe: "CWE-295".into(),
+                owasp: Some("OWASP A07:2021 Identification and Authentication Failures".into()),
+                confidence: 0.9,
+            },
+            SecurityRuleRecord {
+                id: "java.spring.csrf_disabled".into(),
+                title: "Spring Security CSRF protection disabled".into(),
+                description: "csrf().disable() or csrf(AbstractHttpConfigurer::disable); acceptable only for stateless token-authenticated APIs.".into(),
+                cwe: "CWE-352".into(),
+                owasp: Some("OWASP A01:2021 Broken Access Control".into()),
+                confidence: 0.6,
+            },
+            SecurityRuleRecord {
+                id: "web.redirect.request_to_location".into(),
+                title: "Request-controlled redirect target".into(),
+                description: "A redirect location read from the request (open redirect).".into(),
+                cwe: "CWE-601".into(),
+                owasp: Some("OWASP A01:2021 Broken Access Control".into()),
+                confidence: 0.9,
+            },
+            SecurityRuleRecord {
+                id: "web.path.request_to_file".into(),
+                title: "Request-controlled file path".into(),
+                description: "A file API receives a path built from request input (path traversal).".into(),
+                cwe: "CWE-22".into(),
+                owasp: Some("OWASP A01:2021 Broken Access Control".into()),
+                confidence: 0.9,
+            },
         ]
     }
 
@@ -564,7 +644,7 @@ fn persist_collection(
         match item.observation.rule_id.as_str() {
             "security.hardcoded_credential_literal" => hardcoded_credentials += 1,
             "security.dynamic_code_execution" => dynamic_execution += 1,
-            "security.weak_cryptographic_hash" => weak_crypto += 1,
+            "security.weak_cryptographic_hash" | "java.crypto.weak_cipher" => weak_crypto += 1,
             "security.unsafe_c_string_api" => unsafe_c_apis += 1,
             _ => {}
         }
@@ -780,6 +860,7 @@ fn supported_language(language: &str) -> bool {
             | "C"
             | "C++"
             | "PHP"
+            | "Java"
     )
 }
 
