@@ -171,10 +171,17 @@ function GlobalSearch() {
         placeholder="Search projects, websites, files, symbols…"
         value={query}
         onFocus={() => setOpen(true)}
-        onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
+        onChange={(event) => {
+          const value = event.target.value;
+          setQuery(value);
+          // Results belong to the previous query until the new search completes.
+          setResults([]);
+          setBusy(Boolean(value.trim()));
+          setOpen(true);
+        }}
         onKeyDown={(event) => {
           if (event.key === "Escape") setOpen(false);
-          if (event.key === "Enter" && results[0]) choose(results[0]);
+          if (event.key === "Enter" && !busy && results[0]) choose(results[0]);
         }}
       />
       <kbd>Ctrl K</kbd>
