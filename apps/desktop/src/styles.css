@@ -1,6 +1,6 @@
 :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #e8eef7; background: #090d12; }
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 900px; min-height: 100vh; }
+body { margin: 0; min-width: 0; min-height: 100vh; }
 button, input, textarea, select { font: inherit; }
 .shell { min-height: 100vh; display: grid; grid-template-columns: 180px 1fr; }
 .rail { padding: 24px 14px; background: #0d131b; border-right: 1px solid #1f2a38; display: flex; flex-direction: column; gap: 8px; }
@@ -9,10 +9,10 @@ button, input, textarea, select { font: inherit; }
 .nav { background: transparent; color: #93a1b5; border: 0; border-radius: 8px; padding: 10px 12px; text-align: left; }
 .nav.active { background: #162235; color: white; }
 .workspace { padding: 32px; max-width: 1360px; width: 100%; }
-header { display: flex; justify-content: space-between; margin-bottom: 28px; }
-h1 { margin: 2px 0 4px; font-size: 34px; }
-h2 { margin-top: 0; }
-header p { margin: 0; color: #8ea0b7; }
+:where(.ws-advanced-shell) header { display: flex; justify-content: space-between; margin-bottom: 28px; }
+:where(.ws-advanced-shell) h1 { margin: 2px 0 4px; font-size: 34px; }
+:where(.ws-advanced-shell) h2 { margin-top: 0; }
+:where(.ws-advanced-shell) header p { margin: 0; color: #8ea0b7; }
 .eyebrow { color: #66d9a8; font-size: 12px; font-weight: 700; letter-spacing: .12em; }
 .panel, .card { background: #101720; border: 1px solid #223044; border-radius: 14px; padding: 20px; }
 .panel p, .card p { color: #9cafc5; }
@@ -83,4 +83,17 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .grid, .semantic-metrics, .quality-metrics, .security-metrics, .database-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .server-grid { grid-template-columns: 1fr; }
   .twin-layout, .quality-layout, .database-layout { grid-template-columns: 1fr; }
+}
+
+/* Advanced tools also fit smaller desktop windows and browser previews. */
+.ws-advanced-shell .workspace, .ws-advanced-shell .twin-column { min-width: 0; }
+@media (max-width: 700px) {
+  .ws-advanced-shell .shell { grid-template-columns: minmax(0, 1fr); }
+  .ws-advanced-shell .rail { flex-direction: row; flex-wrap: wrap; padding: 12px; }
+  .ws-advanced-shell .brand { margin-bottom: 0; }
+  .ws-advanced-shell .workspace, .ws-advanced-shell .standalone-workspace { padding: 20px 14px; }
+  .ws-advanced-shell header, .ws-advanced-shell .section-heading { flex-wrap: wrap; gap: 12px; }
+  .ws-advanced-shell .row, .ws-advanced-shell .relationship-grid { grid-template-columns: minmax(0, 1fr); }
+  .ws-advanced-shell .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ws-advanced-shell .workspace-switcher { position: static; flex-wrap: wrap; margin: 12px; }
 }
