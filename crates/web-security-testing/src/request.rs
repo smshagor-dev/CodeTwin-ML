@@ -148,6 +148,10 @@ impl ScopedRequester {
         }
     }
 
+    pub(crate) fn auth(&self) -> &AuthContext {
+        &self.auth
+    }
+
     pub fn budget(&self) -> &RequestBudget {
         &self.budget
     }

@@ -160,6 +160,22 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
     }
 
     match path {
+        path if path.starts_with("/identity/") => {
+            let secondary = authorization.as_deref() == Some("Bearer secondary-session-secret");
+            let primary_count = requests.lock().expect("requests").iter().filter(|r| r.target == target && r.authorization.as_deref() == Some("Bearer primary-session-secret")).count();
+            if (path.contains("expired") && secondary) || (path.contains("stale") && primary_count > 1) {
+                respond(&mut stream, "401 Unauthorized", &[("Content-Type", "application/json")], "{\"error\":\"expired authentication session\"}");
+            } else if path.contains("denied") && secondary {
+                respond(&mut stream, "403 Forbidden", &[("Content-Type", "application/json")], "{\"error\":\"role lacks object access permission\"}");
+            } else if path.contains("login") {
+                respond(&mut stream, "200 OK", &[("Content-Type", "text/html")], "<html><form><input type='password' name='password'></form></html>");
+            } else if path.contains("truncated") {
+                respond(&mut stream, "200 OK", &[("Content-Type", "application/json")], &"x".repeat(20_000));
+            } else {
+                respond(&mut stream, "200 OK", &[("Content-Type", "application/json")], "{\"id\":42,\"name\":\"private-object primary-session-secret secondary-session-secret\"}");
+            }
+        }
+
         "/redirect-owner/a/index" => respond(&mut stream, "200 OK", &[("Content-Type", "text/html")], "<script src='/redirect-asset'></script><a href='/redirect-hop'>b</a>"),
         "/redirect-hop" => respond(&mut stream, "200 OK", &[("Content-Type", "text/html")], "<a href='/redirect-owner/b/index'>b</a>"),
         "/redirect-owner/b/index" => respond(&mut stream, "200 OK", &[("Content-Type", "text/html")], "<script src='/redirect-asset'></script>"),
@@ -1269,4 +1285,96 @@ fn redirected_shared_script_replays_cached_calls_for_late_document_owners() {
             .count(),
         1
     );
+}
+
+#[test]
+fn identity_comparison_requires_distinct_complete_repeatable_sessions() {
+    let primary = AuthContext {
+        bearer_token: Some("primary-session-secret".into()),
+        ..AuthContext::default()
+    };
+    let anonymous = AuthContext::default();
+    for case in [
+        "valid",
+        "expired",
+        "denied",
+        "login",
+        "truncated",
+        "stale",
+        "same",
+        "budget",
+        "anonymous",
+    ] {
+        let lab = LocalLab::start();
+        let mut config = lab.config(10);
+        config.scope.target_url = format!("{}/identity/{case}/42", lab.base_url);
+        config.scope.max_crawl_depth = 0;
+        if case == "budget" {
+            config.scope.max_requests = 2;
+        }
+        config.scope.response_limit_bytes = 16_384;
+        config.checks = CheckConfig {
+            sql_injection: false,
+            xss: false,
+            csrf: false,
+            open_redirect: false,
+            path_traversal: false,
+            ssrf_indicators: false,
+            template_command_indicators: false,
+            method_misconfiguration: false,
+            cors: false,
+            session: false,
+            access_control: true,
+            api_validation: false,
+        };
+        let secondary = AuthContext {
+            bearer_token: Some(
+                if case == "same" {
+                    " primary-session-secret "
+                } else {
+                    "secondary-session-secret"
+                }
+                .into(),
+            ),
+            ..AuthContext::default()
+        };
+        let outcome = run_authorized_scan(
+            &config,
+            if case == "anonymous" {
+                &anonymous
+            } else {
+                &primary
+            },
+            Some(&secondary),
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .expect("scan");
+        let findings: Vec<_> = outcome
+            .findings
+            .iter()
+            .filter(|f| f.category == "access_control")
+            .collect();
+        if case == "valid" {
+            assert_eq!(findings.len(), 1);
+            assert_eq!(findings[0].confidence, "Potential");
+            assert_eq!(findings[0].evidence.len(), 4);
+        } else {
+            assert!(findings.is_empty(), "false finding for {case}");
+        }
+        let serialized = serde_json::to_string(&outcome.findings).expect("serialize");
+        assert!(
+            !serialized.contains("primary-session-secret")
+                && !serialized.contains("secondary-session-secret")
+        );
+        let requests = lab.requests.lock().expect("requests");
+        assert!(requests.len() <= 10);
+        assert!(requests.iter().all(|r| r.method == "GET"));
+        if case == "same" {
+            assert_eq!(requests.len(), 1);
+        }
+        if case == "valid" {
+            assert_eq!(requests.len(), 4);
+        }
+    }
 }

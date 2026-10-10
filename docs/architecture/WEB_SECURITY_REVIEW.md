@@ -134,3 +134,28 @@ still uses the configured redirect limit and scope policy. Local lab coverage
 includes a document discovered after the redirected asset was parsed, actual
 GET calls for both document bases, and POST/DELETE inventory with zero write
 requests. The first base element with an href supplies the document base.
+
+
+### Milestone 4: repeatable authorization-context comparison
+
+Object-like GET endpoint comparison now requires two distinct, nonempty supplied
+contexts. Header names are normalized and context ordering is ignored; bearer
+and cookie whitespace follows transport normalization. Different contexts are
+not proof of different principals or role membership.
+
+Both baseline responses must be complete, successful, MIME-compatible and
+byte-identical. HTML password-input login pages are excluded. Both contexts
+are then re-requested, and all four complete responses must remain identical
+before a Potential finding is recorded. Expired/denied sessions, changed primary
+sessions, truncated responses and insufficient repeat-request budgets produce
+no access-control finding. This does not infer the application's intended
+object ownership policy or confirm IDOR. Successful JSON login/error envelopes
+and runtime role mapping require application-specific policy evidence.
+
+All four evidence records redact secrets from both supplied contexts, including
+cross-context echoes. The same global rate/request budget and cancellation rules
+apply to rechecks. Endpoints where origin policy strips the supplied credentials
+are excluded from identity comparison. No login automation, credential refresh or identifier
+enumeration is performed. Local lab tests cover valid repeats, identical tokens,
+anonymous primary context, 401/403, a 200 login form, truncation, primary-session
+expiry between requests, tight budgets and secret echoes.
