@@ -160,6 +160,31 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
     }
 
     match path {
+        "/js-lab" => respond(
+            &mut stream,
+            "200 OK",
+            &[("Content-Type", "text/html")],
+            "<script src='/assets/app.js'></script>",
+        ),
+        "/assets/app.js" => respond(
+            &mut stream,
+            "200 OK",
+            &[("Content-Type", "application/javascript")],
+            r#"
+            fetch('/api/js-live?q=1'); axios.get('/api/js-second');
+            fetch('/excluded/private'); fetch('http://example.invalid/escape');
+            fetch('/api/write', {method:'POST'}); axios.post('/api/write');
+            // fetch('/api/comment')
+            const decoy = "fetch('/api/string')";
+            fetch('/api/dynamic' + id);
+        "#,
+        ),
+        "/api/js-live" | "/api/js-second" => respond(
+            &mut stream,
+            "200 OK",
+            &[("Content-Type", "application/json")],
+            "{\"ok\":true}",
+        ),
         "/" => respond(
             &mut stream,
             "200 OK",
@@ -1051,4 +1076,43 @@ fn request_limit_is_hard_bounded() {
     let history = lab.requests.lock().expect("requests");
     assert!(history.len() <= 3);
     assert!(history.iter().all(|request| !request.method.is_empty()));
+}
+
+#[test]
+fn javascript_calls_use_real_scoped_http_and_the_shared_budget() {
+    for budget in [2, 10] {
+        let lab = LocalLab::start();
+        let mut config = lab.config(budget);
+        config.scope.target_url = format!("{}/js-lab", lab.base_url);
+        config.scope.active_testing = false;
+        let outcome = run_authorized_scan(
+            &config,
+            &AuthContext::default(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .expect("scan");
+        let requests = lab.requests.lock().expect("requests");
+        assert!(requests.len() <= budget);
+        assert!(requests.iter().all(|r| r.method == "GET"));
+        assert!(!requests.iter().any(|r| [
+            "excluded", "write", "comment", "string", "dynamic", "escape"
+        ]
+        .iter()
+        .any(|word| r.target.contains(word))));
+        let live = outcome
+            .endpoints
+            .iter()
+            .find(|e| e.url.contains("/api/js-live"));
+        if budget == 2 {
+            assert!(live.is_none());
+        } else {
+            let live = live.expect("discovered GET executed");
+            assert_eq!(live.status_code, Some(200));
+            assert_eq!(live.source, "javascript_call");
+            assert!(live.parameter_names.contains(&"q".to_string()));
+            assert!(requests.iter().any(|r| r.target == "/api/js-second"));
+        }
+    }
 }
