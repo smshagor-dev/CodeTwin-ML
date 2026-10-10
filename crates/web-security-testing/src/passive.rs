@@ -129,11 +129,11 @@ pub fn analyze_response(
                     target,
                     endpoint,
                     "cors",
-                    "high",
-                    "Likely",
+                    "low",
+                    "Potential",
                     "Wildcard CORS combined with credential allowance",
                     "The response advertises Access-Control-Allow-Origin: * together with credential allowance.",
-                    "Overly broad cross-origin policy can expose authenticated APIs if browsers or middleware interpret the combination unsafely.",
+                    "Browsers reject wildcard-origin responses for credentialed reads. This invalid header combination is a configuration indicator, not confirmed credentialed data exposure.",
                     "Return an explicit trusted origin allow-list and do not enable credentials for untrusted origins.",
                     response_evidence("CORS headers", &endpoint.method, target, response),
                 ));
@@ -244,7 +244,11 @@ pub fn analyze_form(
         impact: "If no server-side anti-CSRF control exists, another site may be able to trigger an authenticated state change.".to_string(),
         remediation: "Use the framework's anti-CSRF middleware/token validation and appropriate SameSite cookie policy. Treat Origin/Referer validation as defense in depth.".to_string(),
         references: vec!["CWE-352".to_string(), "OWASP A01:2021 Broken Access Control".to_string()],
-        evidence: vec![],
+        evidence: vec![crate::EvidenceObservation {
+            summary: "Passive state-changing form inventory; no form submission performed".into(),
+            request_metadata: serde_json::json!({"method":endpoint.method, "url":crate::redact_url(target), "parameter_names":endpoint.parameter_names}),
+            response_metadata: serde_json::json!({"hidden_field_names":hidden_names, "recognized_csrf_field":false, "server_validation_tested":false}),
+        }],
     }]
 }
 
