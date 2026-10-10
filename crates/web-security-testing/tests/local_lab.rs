@@ -160,6 +160,29 @@ fn handle(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
     }
 
     match path {
+        path if path.starts_with("/policy/") => {
+            let is_primary = authorization.as_deref() == Some("Bearer primary-policy-secret");
+            let is_secondary = authorization.as_deref() == Some("Bearer secondary-policy-secret");
+            if path.ends_with("identity") {
+                let count = requests.lock().expect("requests").iter().filter(|r| r.target == target && r.authorization == authorization).count();
+                if (!is_primary && !is_secondary) || (path.contains("stale") && count > 1) {
+                    respond(&mut stream, "401 Unauthorized", &[("Content-Type", "application/json")], "{}");
+                } else {
+                    let id = if is_primary || path.contains("same") {"owner"} else {"other"};
+                    respond(&mut stream, "200 OK", &[("Content-Type", "application/json")], &serde_json::json!({"principal":id}).to_string());
+                }
+            } else if (!is_primary && !is_secondary) && !path.contains("public") {
+                respond(&mut stream, "401 Unauthorized", &[("Content-Type", "application/json")], "{}");
+            } else if is_secondary && (path.contains("denied") || path.contains("expired")) {
+                respond(&mut stream, if path.contains("expired") {"401 Unauthorized"} else {"403 Forbidden"}, &[("Content-Type", "application/json")], "{}");
+            } else {
+                let id = if is_secondary && path.contains("wrong") {99} else {42};
+                let body = if path.contains("generic") { serde_json::json!({"error":"login required"}).to_string() }
+                    else { serde_json::json!({"record":{"id":id,"content":"known protected object content"},"private":"primary-policy-secret secondary-policy-secret","padding":if path.contains("truncated") {"x".repeat(20_000)} else {String::new()}}).to_string() };
+                respond(&mut stream, "200 OK", &[("Content-Type", "application/json")], &body);
+            }
+        }
+
         path if path.starts_with("/xss-lab/") => {
             let name = path.trim_start_matches("/xss-lab/");
             let q = query.get("q").map(String::as_str).unwrap_or("");
@@ -1539,4 +1562,153 @@ fn xss_context_lab_excludes_inert_and_non_html_reflections() {
             );
         }
     }
+}
+
+#[test]
+fn explicit_object_policy_proves_principals_and_protected_object_access() {
+    use web_security_testing::{run_object_access_policy, AccessPolicyStatus, ObjectAccessPolicy};
+    let primary = AuthContext {
+        bearer_token: Some("primary-policy-secret".into()),
+        ..AuthContext::default()
+    };
+    let secondary = AuthContext {
+        bearer_token: Some("secondary-policy-secret".into()),
+        ..AuthContext::default()
+    };
+    for (case, status) in [
+        ("vulnerable", AccessPolicyStatus::ViolationConfirmed),
+        ("denied", AccessPolicyStatus::AccessDenied),
+        ("shared", AccessPolicyStatus::SharedAccessObserved),
+        ("public", AccessPolicyStatus::UnableToVerify),
+        ("expired", AccessPolicyStatus::UnableToVerify),
+        ("wrong", AccessPolicyStatus::UnableToVerify),
+        ("generic", AccessPolicyStatus::UnableToVerify),
+        ("truncated", AccessPolicyStatus::UnableToVerify),
+        ("stale", AccessPolicyStatus::UnableToVerify),
+        ("same", AccessPolicyStatus::UnableToVerify),
+        ("budget", AccessPolicyStatus::UnableToVerify),
+    ] {
+        let lab = LocalLab::start();
+        let mut config = lab.config(if case == "budget" { 5 } else { 12 });
+        config.scope.response_limit_bytes = 16_384;
+        let expected = ObjectAccessPolicy {
+            identity_url: format!(
+                "{}/policy/{}identity",
+                lab.base_url,
+                if case == "stale" {
+                    "stale-"
+                } else if case == "same" {
+                    "same-"
+                } else {
+                    ""
+                }
+            ),
+            identity_json_pointer: "/principal".into(),
+            primary_identity: serde_json::json!("owner"),
+            secondary_identity: serde_json::json!("other"),
+            object_url: format!("{}/policy/{case}/42", lab.base_url),
+            object_json_pointer: "/record".into(),
+            expected_object: serde_json::json!({"id":42,"content":"known protected object content"}),
+            secondary_access_allowed: case == "shared",
+        };
+        let outcome = run_object_access_policy(
+            &config,
+            &primary,
+            &secondary,
+            &expected,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("policy check");
+        assert_eq!(outcome.status, status, "{case}: {}", outcome.reason);
+        assert!(outcome.requests_performed <= config.scope.max_requests);
+        if case == "vulnerable" {
+            let finding = outcome.finding.expect("confirmed policy violation");
+            assert_eq!(finding.confidence, "Confirmed");
+            assert_eq!(finding.evidence.len(), 9);
+            let json = serde_json::to_string(&finding).expect("evidence");
+            assert!(
+                !json.contains("primary-policy-secret")
+                    && !json.contains("secondary-policy-secret")
+            );
+        } else {
+            assert!(outcome.finding.is_none());
+        }
+        assert!(lab
+            .requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .all(|r| r.method == "GET"
+                && (r.target.starts_with("/policy/")
+                    && (r.target.ends_with("identity") || r.target.ends_with("/42")))));
+    }
+}
+
+#[test]
+fn object_policy_obeys_scope_activation_and_cancellation_before_requests() {
+    use web_security_testing::{run_object_access_policy, AccessPolicyStatus, ObjectAccessPolicy};
+    let lab = LocalLab::start();
+    let primary = AuthContext {
+        bearer_token: Some("primary-policy-secret".into()),
+        ..AuthContext::default()
+    };
+    let secondary = AuthContext {
+        bearer_token: Some("secondary-policy-secret".into()),
+        ..AuthContext::default()
+    };
+    let policy = ObjectAccessPolicy {
+        identity_url: format!("{}/policy/identity", lab.base_url),
+        identity_json_pointer: "/principal".into(),
+        primary_identity: serde_json::json!("owner"),
+        secondary_identity: serde_json::json!("other"),
+        object_url: format!("{}/policy/vulnerable/42", lab.base_url),
+        object_json_pointer: "/record".into(),
+        expected_object: serde_json::json!({"id":42,"content":"known protected object content"}),
+        secondary_access_allowed: false,
+    };
+    let mut config = lab.config(12);
+    config.scope.active_testing = false;
+    let disabled = run_object_access_policy(
+        &config,
+        &primary,
+        &secondary,
+        &policy,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("disabled");
+    assert_eq!(disabled.status, AccessPolicyStatus::UnableToVerify);
+    assert_eq!(disabled.requests_performed, 0);
+    config.scope.active_testing = true;
+    let same = run_object_access_policy(
+        &config,
+        &primary,
+        &primary,
+        &policy,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("same context");
+    assert_eq!(same.requests_performed, 0);
+    let mut excluded = policy.clone();
+    excluded.object_url = format!("{}/excluded/42", lab.base_url);
+    assert!(matches!(
+        run_object_access_policy(
+            &config,
+            &primary,
+            &secondary,
+            &excluded,
+            Arc::new(AtomicBool::new(false))
+        ),
+        Err(ScanError::Scope(_))
+    ));
+    assert!(matches!(
+        run_object_access_policy(
+            &config,
+            &primary,
+            &secondary,
+            &policy,
+            Arc::new(AtomicBool::new(true))
+        ),
+        Err(ScanError::Cancelled)
+    ));
+    assert!(lab.requests.lock().expect("requests").is_empty());
 }

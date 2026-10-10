@@ -205,3 +205,39 @@ available through NODE_PATH and optionally CHROMIUM_EXECUTABLE. This verifies
 browser parsing in the lab; production scans do not launch a browser or execute
 injected scripts. HTTP negatives also cover truncation and rejected responses.
 Browser verification does not establish exploitable script execution.
+
+
+### Milestone 7: explicit object authorization policy checks
+
+`run_object_access_policy` is a separate public Rust engine API. Existing generic
+scans remain Potential when identical responses lack application policy proof.
+The new API takes two test sessions plus `ObjectAccessPolicy`: an identity URL,
+JSON pointer and expected principal for each context; an exact object URL, JSON
+pointer and expected nonempty JSON object value (including known protected
+content, not just a reflected identifier); and whether secondary access is allowed.
+No IDs are guessed or enumerated, and only the supplied two URLs receive GETs.
+Desktop policy-entry/report integration is separate from this engine milestone.
+
+For a confirmed deny-policy violation, both distinct principals must match the
+supplied identity JSON before and after object reads. The owner's complete
+successful JSON object response must match the expected field and repeat exactly;
+the secondary principal must receive the same full object response twice.
+An anonymous control must be denied (401/403/404), establishing that the object
+is protected rather than apparently public. Nine evidence responses redact both
+contexts' secrets. Confirmation is conditional on the operator's object policy
+and identity endpoint being correct; principal verification is not role inference.
+
+Outcomes are `ViolationConfirmed`, `AccessDenied`, `SharedAccessObserved` or
+`UnableToVerify`. Stable 403/404 secondary denial is observed denial, not proof
+that every object is secure; 401 is unverified session state. Expired/changing
+sessions, generic JSON errors, wrong objects, incomplete responses, public
+controls and insufficient budgets cannot confirm a violation. Explicit shared
+access returns no finding. Scope, origin credential rules, authorization,
+activation, cancellation and the shared four-request-per-second rate cap apply.
+JSON response equality is deliberately strict; volatile/redacted representations
+and redirect-to-login flows may remain unverified. Login automation, enumeration,
+write operations and automatic exploit generation are not part of this API.
+
+The local HTTP lab covers eleven policy outcomes plus activation, same-context,
+excluded-path and cancellation checks. Existing source-backed IDOR repair/retest
+E2E coverage is retained.
