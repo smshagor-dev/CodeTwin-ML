@@ -265,103 +265,45 @@ export function AuthorizedWebSecurityPanel() {
 
           {objectPolicyOutcome && <Panel title="Object policy outcome"><strong>{objectPolicyOutcome.status.replace(/([a-z])([A-Z])/g, "$1 $2")}</strong><p>{objectPolicyOutcome.reason}</p><small>Classification depends on the supplied application policy. Rechecks require fresh sessions and expected protected content.</small></Panel>}
 
-          <Panel
-            title="Scan progress & scope"
-            action={
-              <div className="ws-button-row ws-websec-panel-actions">
-                {["queued", "running"].includes(scan.status) && (
-                  <button className="ws-button ws-button-danger-ghost" onClick={() => void cancel()}>
-                    Cancel Scan
-                  </button>
-                )}
-                {scan.status === "completed" && objectPolicyOutcome && <button className="ws-button ws-button-secondary" onClick={() => { setReplayScan(scan); setComposerOpen(true); }}>Repeat with fresh sessions</button>}
-                <button className="ws-button ws-button-secondary" disabled={reportBusy} onClick={() => void openReport("markdown")}>Preview Report</button>
-                <button className="ws-button ws-button-secondary" onClick={() => void exportReport("markdown")}>Export MD</button>
-                <button className="ws-button ws-button-secondary" onClick={() => void exportReport("json")}>Export JSON</button>
-              </div>
-            }
-          >
-            <div className="ws-websec-scan-head">
-              <div>
-                <strong title={scan.target_url}>{shortPath(scan.target_url, 90)}</strong>
-                <small>Created {formatDate(scan.created_at)} · <StatusBadge status={scan.status}/></small>
-              </div>
-              {scan.last_error && <p className="ws-form-error">{scan.last_error}</p>}
-            </div>
-            <div className="ws-websec-phases" aria-label="Scan phases">
-              {phases.map((phase) => {
-                const currentIndex = phases.indexOf(scan.phase as typeof phases[number]);
-                const index = phases.indexOf(phase);
-                const state =
-                  scan.status === "failed" || scan.status === "cancelled"
-                    ? phase === scan.phase ? scan.status : index < currentIndex ? "done" : "waiting"
-                    : index < currentIndex || scan.status === "completed" ? "done" : index === currentIndex ? "current" : "waiting";
-                return <span key={phase} data-state={state}>{phase.replaceAll("_", " ")}</span>;
-              })}
-            </div>
-            <details className="ws-websec-scope-details">
-              <summary>Stored authorization and scope configuration</summary>
-              <pre>{prettyJson(scan.scope_json)}</pre>
-              <p>Authentication metadata only: <code>{prettyJson(scan.auth_metadata_json)}</code></p>
-            </details>
-          </Panel>
-
-          <div className="ws-websec-history-grid">
-            <Panel title="Scan history" action={<span className="ws-count">{scans.length} scans</span>}>
-              <div className="ws-websec-scan-list">
-                {scans.map((item) => (
-                  <button key={item.id} className={item.id === scan.id ? "selected" : ""} onClick={() => setSelectedScanId(item.id)}>
-                    <StatusBadge status={item.status}/>
-                    <span><strong title={item.target_url}>{shortPath(item.target_url, 50)}</strong><small>{item.phase.replaceAll("_", " ")} · {formatDate(item.created_at)}</small></span>
-                    <span>{item.findings_count} findings</span>
-                  </button>
-                ))}
-              </div>
-            </Panel>
-
-            <Panel title="Endpoint inventory" action={<span className="ws-count">{endpoints.length} endpoints</span>}>
-              <div className="ws-websec-endpoints">
-                {endpoints.map((endpoint) => (
-                  <div key={endpoint.id}>
-                    <b>{endpoint.method}</b>
-                    <p>
-                      <strong title={endpoint.url}>{shortPath(endpoint.url, 68)}</strong>
-                      <small>
-                        {endpoint.source} · depth {endpoint.depth}
-                        {endpoint.status_code ? " · HTTP " + endpoint.status_code : ""}
-                      </small>
-                      {!!endpoint.parameter_names.length && (
-                        <em>
-                          Inputs: {endpoint.parameter_names.map((name) =>
-                            name +
-                            " (" +
-                            (endpoint.parameter_locations[name]?.join(" / ") ?? "unknown") +
-                            ")",
-                          ).join(", ")}
-                        </em>
-                      )}
-                      {sourceLinkByEndpoint.get(endpoint.id) && (() => {
-                        const link = sourceLinkByEndpoint.get(endpoint.id)!;
-                        return (
-                          <em>
-                            Source route: {link.source_relative_path}
-                            {link.handler_relative_path && link.handler_relative_path !== link.source_relative_path
-                              ? " → handler " + link.handler_relative_path
-                              : ""}
-                            {link.source_handler_name ? " → " + link.source_handler_name : ""}
-                            {" · " + link.source_method + " " + link.source_path_template}
-                            {" · " + Math.round(link.confidence * 100) + "% " + link.match_kind.replaceAll("_", " ")}
-                          </em>
-                        );
-                      })()}
-                      {!!endpoint.cookie_names.length && <em>Cookies observed: {endpoint.cookie_names.join(", ")}</em>}
-                    </p>
-                  </div>
-                ))}
-                {!endpoints.length && <p className="ws-inline-empty">No endpoints persisted yet. A running scan may still be discovering the target.</p>}
-              </div>
-            </Panel>
+          <div className="ws-button-row ws-websec-panel-actions">
+            {["queued", "running"].includes(scan.status) && (
+              <button className="ws-button ws-button-danger-ghost" onClick={() => void cancel()}>
+                Cancel Scan
+              </button>
+            )}
+            {scan.status === "completed" && objectPolicyOutcome && <button className="ws-button ws-button-secondary" onClick={() => { setReplayScan(scan); setComposerOpen(true); }}>Repeat with fresh sessions</button>}
+            <button className="ws-button ws-button-secondary" disabled={reportBusy} onClick={() => void openReport("markdown")}>Preview Report</button>
+            <button className="ws-button ws-button-secondary" onClick={() => void exportReport("markdown")}>Export MD</button>
+            <button className="ws-button ws-button-secondary" onClick={() => void exportReport("json")}>Export JSON</button>
           </div>
+          <details className="ws-scan-disclosure" open={scan.status === "running" || scan.status === "queued"}>
+            <summary>Scan details <StatusBadge status={scan.status}/></summary>
+            <Panel title="Scan progress & scope">
+              <div className="ws-websec-scan-head">
+                <div>
+                  <strong title={scan.target_url}>{shortPath(scan.target_url, 90)}</strong>
+                  <small>Created {formatDate(scan.created_at)} · <StatusBadge status={scan.status}/></small>
+                </div>
+                {scan.last_error && <p className="ws-form-error">{scan.last_error}</p>}
+              </div>
+              <div className="ws-websec-phases" aria-label="Scan phases">
+                {phases.map((phase) => {
+                  const currentIndex = phases.indexOf(scan.phase as typeof phases[number]);
+                  const index = phases.indexOf(phase);
+                  const state =
+                    scan.status === "failed" || scan.status === "cancelled"
+                      ? phase === scan.phase ? scan.status : index < currentIndex ? "done" : "waiting"
+                      : index < currentIndex || scan.status === "completed" ? "done" : index === currentIndex ? "current" : "waiting";
+                  return <span key={phase} data-state={state}>{phase.replaceAll("_", " ")}</span>;
+                })}
+              </div>
+              <details className="ws-websec-scope-details">
+                <summary>Stored authorization and scope configuration</summary>
+                <pre>{prettyJson(scan.scope_json)}</pre>
+                <p>Authentication metadata only: <code>{prettyJson(scan.auth_metadata_json)}</code></p>
+              </details>
+            </Panel>
+          </details>
 
           <Panel
             title="Web security findings"
@@ -447,6 +389,63 @@ export function AuthorizedWebSecurityPanel() {
               </Panel>
             </div>
           )}
+          <div className="ws-websec-history-grid">
+            <Panel title="Scan history" action={<span className="ws-count">{scans.length} scans</span>}>
+              <div className="ws-websec-scan-list">
+                {scans.map((item) => (
+                  <button key={item.id} className={item.id === scan.id ? "selected" : ""} onClick={() => setSelectedScanId(item.id)}>
+                    <StatusBadge status={item.status}/>
+                    <span><strong title={item.target_url}>{shortPath(item.target_url, 50)}</strong><small>{item.phase.replaceAll("_", " ")} · {formatDate(item.created_at)}</small></span>
+                    <span>{item.findings_count} findings</span>
+                  </button>
+                ))}
+              </div>
+            </Panel>
+
+            <Panel title="Endpoint inventory" action={<span className="ws-count">{endpoints.length} endpoints</span>}>
+              <div className="ws-websec-endpoints">
+                {endpoints.map((endpoint) => (
+                  <div key={endpoint.id}>
+                    <b>{endpoint.method}</b>
+                    <p>
+                      <strong title={endpoint.url}>{shortPath(endpoint.url, 68)}</strong>
+                      <small>
+                        {endpoint.source} · depth {endpoint.depth}
+                        {endpoint.status_code ? " · HTTP " + endpoint.status_code : ""}
+                      </small>
+                      {!!endpoint.parameter_names.length && (
+                        <em>
+                          Inputs: {endpoint.parameter_names.map((name) =>
+                            name +
+                            " (" +
+                            (endpoint.parameter_locations[name]?.join(" / ") ?? "unknown") +
+                            ")",
+                          ).join(", ")}
+                        </em>
+                      )}
+                      {sourceLinkByEndpoint.get(endpoint.id) && (() => {
+                        const link = sourceLinkByEndpoint.get(endpoint.id)!;
+                        return (
+                          <em>
+                            Source route: {link.source_relative_path}
+                            {link.handler_relative_path && link.handler_relative_path !== link.source_relative_path
+                              ? " → handler " + link.handler_relative_path
+                              : ""}
+                            {link.source_handler_name ? " → " + link.source_handler_name : ""}
+                            {" · " + link.source_method + " " + link.source_path_template}
+                            {" · " + Math.round(link.confidence * 100) + "% " + link.match_kind.replaceAll("_", " ")}
+                          </em>
+                        );
+                      })()}
+                      {!!endpoint.cookie_names.length && <em>Cookies observed: {endpoint.cookie_names.join(", ")}</em>}
+                    </p>
+                  </div>
+                ))}
+                {!endpoints.length && <p className="ws-inline-empty">No endpoints persisted yet. A running scan may still be discovering the target.</p>}
+              </div>
+            </Panel>
+          </div>
+
         </>
       )}
 
