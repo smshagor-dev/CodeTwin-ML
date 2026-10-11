@@ -167,3 +167,7 @@ Existing implementation references:
 - [QA execution](QA_TEST_EXECUTION.md)
 - [Verified repair workflow](VERIFIED_REPAIR_WORKFLOW.md)
 - [Dataset benchmarks](DATASET_BENCHMARKS.md)
+
+### CS-03 progress
+
+The first increment adds explicit local branch creation at a reviewed HEAD with an atomic reference transaction, collision/stale guards and hook suppression. It preserves the current branch, index and working tree. Selected staged commits and desktop-user authenticated publication/draft PR creation remain pending; CS-03 is not complete.

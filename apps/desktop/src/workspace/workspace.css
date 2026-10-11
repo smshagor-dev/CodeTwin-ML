@@ -2118,3 +2118,8 @@ html[data-theme="system"] .ws-security-fix-warning {
 .ws-assessment-job { border-top: 1px solid var(--ws-border); padding: 20px 0; overflow-wrap: anywhere; }
 .ws-assessment-job progress { width: 100%; accent-color: var(--ws-primary); }
 .ws-assessment-job > button { margin: 8px 8px 0 0; }
+
+.ws-git-branch { margin-block: 1rem; overflow-wrap: anywhere; }
+.ws-git-branch form { display: flex; align-items: end; gap: 0.75rem; flex-wrap: wrap; }
+.ws-git-branch label { display: grid; gap: 0.4rem; flex: 1 1 16rem; min-width: 0; }
+.ws-git-branch input { width: 100%; min-width: 0; box-sizing: border-box; }

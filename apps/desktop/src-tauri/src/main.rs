@@ -246,6 +246,22 @@ async fn git_review_status(
 }
 
 #[tauri::command]
+async fn git_create_reviewed_branch(
+    project_id: String,
+    branch: String,
+    expected_head: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<codetwin_core::GitBranchReceipt, String> {
+    let root = git_project_root(&state, &project_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        codetwin_core::create_reviewed_git_branch(root, &branch, &expected_head)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn git_review_file(
     project_id: String,
     path: String,
@@ -954,6 +970,7 @@ fn main() {
             recent_security_tool_runs,
             git_review_status,
             git_review_file,
+            git_create_reviewed_branch,
             discover_project,
             index_project,
             cancel_project_index,
