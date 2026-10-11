@@ -311,3 +311,42 @@ uses a temporary IPC adapter with that production worker and core persistence,
 covering submission, nine evidence records, Markdown/JSON export, fresh-session
 repeat, denied/expired outcomes and a 390-pixel viewport. This adapter does not
 verify native Tauri IPC, OS dialogs or a Windows desktop build.
+
+### Milestone 10: measured regression controls and readiness gates
+
+The opt-in `security_readiness_benchmark` runs seven explicit-policy loopback
+controls three times by default: violation, denied, shared, expired, wrong object,
+public object and request-budget exhaustion. It asserts exact classification,
+finding presence, nine credential-redacted evidence records, GET-only scope and
+agreement between wire requests and the engine counter. Inconclusive controls
+are reported separately from negative controls. Any mismatch fails the suite.
+
+```sh
+CODETWIN_BENCH_REPORT=/tmp/web-security-benchmark.json \
+  cargo test -p web-security-testing --test local_lab \
+  security_readiness_benchmark -- --ignored --nocapture
+```
+
+`CODETWIN_BENCH_REPETITIONS` accepts 1–10. JSON records individual samples,
+request budgets, platform and p50/p95 latency. Timing includes the production
+rate limiter; these synthetic controls do not establish population accuracy or
+an arbitrary hardware-independent performance threshold. CI preserves the JSON
+as a benchmark artifact.
+
+Frontend CI now runs npm audit and installs the pinned Playwright development
+runtime for the 12 XSS context and eight CORS controls. The production route
+smoke verifies that the dashboard requests no advanced-workspace chunks, all
+eight lazy workspaces render and return to the dashboard, and a 390px layout has
+no horizontal overflow. It uses fixture IPC and does not verify native Tauri.
+
+Advanced workspaces are loaded on demand with an accessible loading status.
+Measured production entry JavaScript decreased from 551.00 kB (146.90 kB gzip)
+to 447.39 kB (125.53 kB gzip). CSS remains shared. The npm lockfile now resolves
+source-map-js 1.2.2, fixing GHSA-68fv-2mgg-jv7q; npm audit reports zero known
+vulnerabilities in the validated dependency tree.
+
+The local gate runner includes the benchmark and browser controls, and explicitly
+distinguishes portable validation from native desktop/Windows/signing checks.
+This milestone does not publish a release or bump the version. A release still
+requires fresh RustSec audit evidence, exact-candidate native CI, signing and an
+installed-artifact smoke under the existing release gates.

@@ -2016,3 +2016,108 @@ fn desktop_policy_worker_persists_secret_free_outcomes_and_reports() {
             .all(|r| r.method == "GET" && r.target.starts_with("/policy/")));
     }
 }
+
+/// Measured loopback regression controls; latency includes the production limiter.
+#[test]
+#[ignore = "opt-in benchmark with machine-readable evidence"]
+fn security_readiness_benchmark() {
+    use std::time::Instant;
+    use web_security_testing::{run_object_access_policy, AccessPolicyStatus, ObjectAccessPolicy};
+    let repetitions: usize = std::env::var("CODETWIN_BENCH_REPETITIONS")
+        .unwrap_or_else(|_| "3".into())
+        .parse()
+        .expect("numeric repetitions");
+    assert!((1..=10).contains(&repetitions));
+    let primary = AuthContext {
+        bearer_token: Some("primary-policy-secret".into()),
+        ..AuthContext::default()
+    };
+    let secondary = AuthContext {
+        bearer_token: Some("secondary-policy-secret".into()),
+        ..AuthContext::default()
+    };
+    let cases = [
+        ("vulnerable", AccessPolicyStatus::ViolationConfirmed),
+        ("denied", AccessPolicyStatus::AccessDenied),
+        ("shared", AccessPolicyStatus::SharedAccessObserved),
+        ("expired", AccessPolicyStatus::UnableToVerify),
+        ("wrong", AccessPolicyStatus::UnableToVerify),
+        ("public", AccessPolicyStatus::UnableToVerify),
+        ("budget", AccessPolicyStatus::UnableToVerify),
+    ];
+    let case_count = cases.len();
+    let mut samples = Vec::new();
+    let mut positive = 0;
+    let mut negative = 0;
+    let mut inconclusive = 0;
+    for (case, expected) in cases {
+        for repetition in 0..repetitions {
+            let lab = LocalLab::start();
+            let config = lab.config(if case == "budget" { 5 } else { 12 });
+            let object_case = if case == "budget" { "vulnerable" } else { case };
+            let policy = ObjectAccessPolicy {
+                identity_url: format!("{}/policy/identity", lab.base_url),
+                identity_json_pointer: "/principal".into(),
+                primary_identity: serde_json::json!("owner"),
+                secondary_identity: serde_json::json!("other"),
+                object_url: format!("{}/policy/{object_case}/42", lab.base_url),
+                object_json_pointer: "/record".into(),
+                expected_object: serde_json::json!({"id":42,"content":"known protected object content"}),
+                secondary_access_allowed: case == "shared",
+            };
+            let start = Instant::now();
+            let outcome = run_object_access_policy(
+                &config,
+                &primary,
+                &secondary,
+                &policy,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .expect("bounded benchmark scan");
+            let elapsed_ms = start.elapsed().as_secs_f64() * 1_000.0;
+            let requests = lab.requests.lock().unwrap();
+            assert_eq!(outcome.status, expected, "{case} repetition {repetition}");
+            assert_eq!(
+                outcome.requests_performed,
+                requests.len(),
+                "wire accounting"
+            );
+            assert!(requests.len() <= config.scope.max_requests);
+            let object_path = Url::parse(&policy.object_url).unwrap().path().to_string();
+            assert!(requests.iter().all(|r| r.method == "GET"
+                && (r.target == "/policy/identity" || r.target == object_path)));
+            assert_eq!(outcome.finding.is_some(), case == "vulnerable");
+            if let Some(finding) = &outcome.finding {
+                assert_eq!(finding.evidence.len(), 9);
+                let evidence = serde_json::to_string(&finding.evidence).unwrap();
+                assert!(!evidence.contains("primary-policy-secret"));
+                assert!(!evidence.contains("secondary-policy-secret"));
+                positive += 1;
+            } else if expected == AccessPolicyStatus::UnableToVerify {
+                inconclusive += 1;
+            } else {
+                negative += 1;
+            }
+            samples.push(serde_json::json!({"case":case,"repetition":repetition,"expected_status":expected,"observed_status":outcome.status,"elapsed_ms":elapsed_ms,"requests":requests.len(),"request_budget":config.scope.max_requests}));
+        }
+    }
+    let mut times: Vec<f64> = samples
+        .iter()
+        .map(|s| s["elapsed_ms"].as_f64().unwrap())
+        .collect();
+    times.sort_by(f64::total_cmp);
+    let percentile = |p: usize| times[(times.len() * p).div_ceil(100) - 1];
+    let report = serde_json::json!({
+        "schema_version":1,"suite":"explicit-object-policy-loopback",
+        "package_version":env!("CARGO_PKG_VERSION"),"platform":std::env::consts::OS,
+        "architecture":std::env::consts::ARCH,"repetitions":repetitions,"cases":case_count,
+        "samples":samples,"classification":{"positive_controls":positive,"negative_controls":negative,"inconclusive_controls":inconclusive,"mismatches":0},
+        "latency_ms":{"min":times[0],"p50":percentile(50),"p95":percentile(95),"max":times[times.len()-1]},
+        "limitations":["Synthetic loopback fixtures only; not a population accuracy estimate.","Inconclusive controls are not verified-safe objects.","Latency includes the four-request-per-second limiter and is hardware dependent.","Does not validate native desktop signing, packaging or Windows execution."]
+    });
+    let json = serde_json::to_string_pretty(&report).unwrap();
+    if let Ok(path) = std::env::var("CODETWIN_BENCH_REPORT") {
+        fs::write(path, &json).expect("write benchmark evidence");
+    }
+    println!("{json}");
+}

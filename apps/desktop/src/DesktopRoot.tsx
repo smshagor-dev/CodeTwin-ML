@@ -1,13 +1,6 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
-import { App } from "./App";
-import { DatabaseWorkspace } from "./DatabaseWorkspace";
-import { MLWorkspace } from "./MLWorkspace";
-import { QaWorkspace } from "./QaWorkspace";
-import { RepairApplicationWorkspace } from "./RepairApplicationWorkspace";
-import { RepairWorkspace } from "./RepairWorkspace";
-import { RuntimeWorkspace } from "./RuntimeWorkspace";
-import { WebSecurityWorkspace } from "./WebSecurityWorkspace";
+import { LoadingState } from "./workspace/ui";
 import { WorkspaceProvider } from "./workspace/WorkspaceContext";
 import { WorkspaceShell } from "./workspace/WorkspaceShell";
 import { navigate, parseRoute, type AdvancedRoute, type AppRoute, type WorkspaceRoute } from "./workspace/routes";
@@ -19,6 +12,15 @@ import "./repair-workspace.css";
 import "./runtime-workspace.css";
 import "./workspace/workspace.css";
 
+const App = lazy(() => import("./App").then(module => ({ default: module.App })));
+const DatabaseWorkspace = lazy(() => import("./DatabaseWorkspace").then(module => ({ default: module.DatabaseWorkspace })));
+const MLWorkspace = lazy(() => import("./MLWorkspace").then(module => ({ default: module.MLWorkspace })));
+const QaWorkspace = lazy(() => import("./QaWorkspace").then(module => ({ default: module.QaWorkspace })));
+const RepairApplicationWorkspace = lazy(() => import("./RepairApplicationWorkspace").then(module => ({ default: module.RepairApplicationWorkspace })));
+const RepairWorkspace = lazy(() => import("./RepairWorkspace").then(module => ({ default: module.RepairWorkspace })));
+const RuntimeWorkspace = lazy(() => import("./RuntimeWorkspace").then(module => ({ default: module.RuntimeWorkspace })));
+const WebSecurityWorkspace = lazy(() => import("./WebSecurityWorkspace").then(module => ({ default: module.WebSecurityWorkspace })));
+
 const advanced = new Set<AdvancedRoute>(["engineering", "web-security", "database", "runtime", "qa", "ml", "repair", "repair-apply"]);
 
 function AdvancedWorkspace({ route }: { route: AdvancedRoute }) {
@@ -28,6 +30,7 @@ function AdvancedWorkspace({ route }: { route: AdvancedRoute }) {
         <button onClick={() => navigate("dashboard")}>← Dashboard</button>
         <span>Advanced CodeTwin workspace · {route.replaceAll("-", " ")}</span>
       </div>
+      <Suspense fallback={<LoadingState label="Loading workspace…"/>}>
       {route === "engineering" && <App/>}
       {route === "web-security" && <WebSecurityWorkspace/>}
       {route === "database" && <DatabaseWorkspace/>}
@@ -36,6 +39,7 @@ function AdvancedWorkspace({ route }: { route: AdvancedRoute }) {
       {route === "ml" && <MLWorkspace/>}
       {route === "repair" && <RepairWorkspace/>}
       {route === "repair-apply" && <RepairApplicationWorkspace/>}
+      </Suspense>
     </div>
   );
 }
