@@ -1479,3 +1479,22 @@ export interface CatalogRunSummary {
   duration_ms: number | null;
   tests_passed: boolean | null;
 }
+
+export interface AssessmentJob {
+  id: string;
+  project_id: string;
+  scope_revision: number;
+  root_path: string;
+  input_hash: string;
+  file_count: number;
+  max_files: number;
+  budget_seconds: number;
+  definition_version: number;
+  status: "planned" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  cancel_requested: boolean;
+  message: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  steps: { position: number; tool_id: string; status: string; run_id: string | null; coverage_complete: boolean | null }[];
+}

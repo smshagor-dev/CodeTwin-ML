@@ -29,6 +29,7 @@ const MIGRATION_0022: &str = include_str!("../migrations/0022_source_route_mappi
 const MIGRATION_0023: &str = include_str!("../migrations/0023_route_prefix_semantics.sql");
 const MIGRATION_0024: &str = include_str!("../migrations/0024_campaign_regression_transitions.sql");
 const MIGRATION_0025: &str = include_str!("../migrations/0025_supply_chain_scanning.sql");
+const MIGRATION_0028: &str = include_str!("../migrations/0028_assessment_jobs.sql");
 const MIGRATION_0027: &str = include_str!("../migrations/0027_security_finding_reviews.sql");
 const MIGRATION_0026: &str = include_str!("../migrations/0026_secret_history_scanning.sql");
 
@@ -49,6 +50,7 @@ pub struct Database {
 impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
         let connection = Connection::open(path)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -101,6 +103,7 @@ impl Database {
         self.apply_migration(25, MIGRATION_0025)?;
         self.apply_migration(26, MIGRATION_0026)?;
         self.apply_migration(27, MIGRATION_0027)?;
+        self.apply_migration(28, MIGRATION_0028)?;
         Ok(())
     }
 
@@ -159,9 +162,9 @@ mod tests {
                 row.get(0)
             })
             .expect("query migrations");
-        assert_eq!(count, 27);
+        assert_eq!(count, 28);
         for version in [
-            10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+            10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
         ] {
             let applied: i64 = db
                 .connection()

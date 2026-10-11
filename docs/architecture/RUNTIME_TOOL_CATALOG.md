@@ -18,3 +18,7 @@ Opening source, secret/dependency, web or benchmark entries selects the correspo
 Only a completed QA run with `parser_completed=1` exposes its persisted test verdict. Other scan/execution records show no test verdict; completed does not imply successful tests or complete security coverage. This is a read-only summary of existing stores, not the CS-02 scheduler or a new lifecycle migration.
 
 Validation: native unit tests for unique inventory/explicit registration, missing/corrupt setup data, platform blocking, scoped/bounded history, mixed timestamp formats and absent parser verdicts; frontend tests for forged planned/blocked routes and setup routing; production browser fixture-IPC checks for all inventory entries, filters, navigation, errors/retry, stale project responses and responsive themes. Native desktop GUI physical validation remains a separate obligation.
+
+## Passive assessments
+
+The Tool Library also offers [revision-bound passive assessment jobs](ASSESSMENT_JOBS.md) for indexed source security and code quality. Save/review/start is explicit, history is project-scoped, and cancellation/time budgets are cooperative at analyzer boundaries. The 41-entry catalog remains a workflow registry, not a generic execution dispatcher.

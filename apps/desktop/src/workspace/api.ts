@@ -63,6 +63,18 @@ import type {
 export type ImportStage = "selecting" | "discovering" | "indexing" | "security" | "testing";
 
 export const workspaceApi = {
+  assessmentJobs(projectId: string) {
+    return invoke<import("./types").AssessmentJob[]>("list_assessment_jobs", { projectId });
+  },
+  createAssessmentPlan(projectId: string, tools: string[], maxFiles: number, budgetSeconds: number) {
+    return invoke<import("./types").AssessmentJob>("create_assessment_plan", { request: { project_id: projectId, tools, max_files: maxFiles, budget_seconds: budgetSeconds } });
+  },
+  runAssessment(id: string) {
+    return invoke<import("./types").AssessmentJob>("run_assessment_job", { id });
+  },
+  cancelAssessment(id: string) {
+    return invoke<void>("cancel_assessment_job", { id });
+  },
   securityTools(projectId: string | null) {
     return invoke<import("./types").CatalogTool[]>("list_security_tools", { projectId });
   },
