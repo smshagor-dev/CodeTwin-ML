@@ -102,3 +102,4 @@ jobs:
           node scripts/security/verify-finding-workflow.cjs
           node scripts/security/verify-finding-reviews.cjs
           node scripts/security/verify-project-index.cjs
+          node scripts/security/verify-git-review.cjs

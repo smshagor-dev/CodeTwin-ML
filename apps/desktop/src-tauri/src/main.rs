@@ -139,6 +139,46 @@ fn with_database<T>(
     operation(&database)
 }
 
+fn git_project_root(
+    state: &tauri::State<'_, AppState>,
+    project_id: &str,
+) -> Result<String, String> {
+    with_database(state, |database| {
+        codetwin_core::WorkspaceService::new(database)
+            .get_project(project_id)
+            .map_err(|error| error.to_string())?
+            .map(|project| project.root_path)
+            .ok_or_else(|| "Project not found".to_string())
+    })
+}
+
+#[tauri::command]
+async fn git_review_status(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<codetwin_core::GitReviewStatus, String> {
+    let root = git_project_root(&state, &project_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        codetwin_core::review_git_status(root).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn git_review_file(
+    project_id: String,
+    path: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<codetwin_core::GitFileReview, String> {
+    let root = git_project_root(&state, &project_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        codetwin_core::review_git_file(root, &path).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 fn discover_project(path: String) -> Result<ProjectProfile, String> {
     project_discovery::discover_project(path).map_err(|error| error.to_string())
@@ -799,6 +839,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            git_review_status,
+            git_review_file,
             discover_project,
             index_project,
             cancel_project_index,
