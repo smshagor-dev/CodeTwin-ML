@@ -228,9 +228,10 @@ fn hooks_signing_fsmonitor_and_clean_filters_never_execute() {
             "echo executed > helper-executed",
         ],
     );
-    fs::write(root.join(".gitattributes"), "*.txt filter=fixture\n").unwrap();
+    fs::write(root.join(".gitattributes"), "*.txt filter=fixture -diff\n").unwrap();
     let req = request(root, &["a.txt"]);
     let preview = prepare_selected_commit(root, &req).unwrap();
+    assert!(preview.patch.contains("+selected"));
     apply_selected_commit(root, &req, &preview.digest).unwrap();
     assert!(!root.join("helper-executed").exists());
 }

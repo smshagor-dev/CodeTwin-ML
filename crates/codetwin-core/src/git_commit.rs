@@ -254,6 +254,7 @@ fn prepare(
         root,
         &[
             "diff",
+            "--text",
             "--cached",
             "--no-ext-diff",
             "--no-textconv",
