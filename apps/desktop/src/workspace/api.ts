@@ -63,6 +63,12 @@ import type {
 export type ImportStage = "selecting" | "discovering" | "indexing" | "security" | "testing";
 
 export const workspaceApi = {
+  gitStatus(projectId: string) {
+    return invoke<import("./types").GitReviewStatus>("git_review_status", { projectId });
+  },
+  gitFile(projectId: string, path: string) {
+    return invoke<import("./types").GitFileReview>("git_review_file", { projectId, path });
+  },
   listProjects(search: string | null = null, limit = 250) {
     return invoke<ProjectOverview[]>("list_projects", { search, limit });
   },

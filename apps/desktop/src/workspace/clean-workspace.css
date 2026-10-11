@@ -414,3 +414,9 @@ html[data-theme="dark"] :is(.ws-app, .ws-advanced-shell) { --ws-success: #79d5ab
 .ws-finding-reviews { min-width: 0; overflow-wrap: anywhere; margin-top: 8px; }
 .ws-finding-reviews summary { cursor: pointer; font-size: 12px; }
 .ws-finding-reviews > div { padding: 8px 0; border-bottom: 1px solid var(--ws-border); }
+
+.ws-git-review { min-width: 0; }
+.ws-git-review h4, .ws-git-review .ws-list-main strong { overflow-wrap: anywhere; }
+.ws-git-review details { margin-top: 12px; min-width: 0; }
+.ws-git-review summary { cursor: pointer; font-weight: 600; }
+.ws-git-diff { max-height: 360px; max-width: 100%; overflow: auto; padding: 12px; border: 1px solid var(--ws-border); border-radius: 8px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -1,3 +1,5 @@
+pub mod git_review;
+pub use git_review::{review_git_file, review_git_status, GitFileReview, GitReviewStatus};
 pub mod database_analysis;
 pub mod db;
 pub mod dependency_audit;

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { GitReviewPanel } from "../GitReviewPanel";
 import { workspaceApi } from "../api";
 import { Icon } from "../Icon";
 import { navigate } from "../routes";
@@ -186,6 +187,7 @@ export function ProjectsPage() {
                   </div>
                 </div>
 
+                <GitReviewPanel key={selected.id} projectId={selected.id}/>
                 <div className="ws-detail-section">
                   <h3>Incremental index evidence</h3>
                   <p className="ws-form-help">Re-index reads source hashes and reuses unchanged parse results. Full rebuild parses all eligible source files. Neither action runs project code.</p>

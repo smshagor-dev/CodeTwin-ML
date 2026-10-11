@@ -1431,3 +1431,22 @@ export type SecretHistoryRunRecord = {
   findings_opened: number;
   findings_resolved: number;
 };
+
+export interface GitChange {
+  path: string;
+  original_path: string | null;
+  staged: string;
+  unstaged: string;
+}
+export interface GitReviewStatus {
+  branch: string | null;
+  head: string | null;
+  changes: GitChange[];
+}
+export interface GitFileReview {
+  path: string;
+  staged_diff: string;
+  unstaged_diff: string;
+  untracked_content: string | null;
+  notice: string | null;
+}
