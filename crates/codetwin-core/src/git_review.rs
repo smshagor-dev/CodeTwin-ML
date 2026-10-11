@@ -40,7 +40,7 @@ pub struct GitFileReview {
     pub notice: Option<String>,
 }
 
-fn error(value: impl ToString) -> GitReviewError {
+pub(crate) fn error(value: impl ToString) -> GitReviewError {
     GitReviewError(value.to_string())
 }
 
@@ -73,6 +73,16 @@ fn controlled_git(
     allow_missing_ref: bool,
     input: Option<Vec<u8>>,
 ) -> Result<Option<Vec<u8>>, GitReviewError> {
+    controlled_git_with_env(root, arguments, allow_missing_ref, input, &[])
+}
+
+pub(crate) fn controlled_git_with_env(
+    root: &Path,
+    arguments: &[&str],
+    allow_missing_ref: bool,
+    input: Option<Vec<u8>>,
+    environment: &[(String, String)],
+) -> Result<Option<Vec<u8>>, GitReviewError> {
     // Diff/status may invoke clean or process filters even with --no-textconv.
     // Enumerate names only (never credential-bearing config values), then disable them.
     let keys = run_git(
@@ -87,6 +97,7 @@ fn controlled_git(
         true,
         &[],
         None,
+        &[],
     )?;
     let mut settings = Vec::new();
     if let Some(keys) = keys {
@@ -101,7 +112,14 @@ fn controlled_git(
             ));
         }
     }
-    run_git(root, arguments, allow_missing_ref, &settings, input)
+    run_git(
+        root,
+        arguments,
+        allow_missing_ref,
+        &settings,
+        input,
+        environment,
+    )
 }
 
 fn run_git(
@@ -110,6 +128,7 @@ fn run_git(
     allow_missing_ref: bool,
     settings: &[String],
     input: Option<Vec<u8>>,
+    environment: &[(String, String)],
 ) -> Result<Option<Vec<u8>>, GitReviewError> {
     // A private empty directory prevents repository reference-transaction hooks.
     let hooks = tempfile::tempdir().map_err(error)?;
@@ -120,6 +139,9 @@ fn run_git(
     }
     for setting in [
         "core.fsmonitor=false",
+        "commit.gpgSign=false",
+        "i18n.commitEncoding=UTF-8",
+        "tag.gpgSign=false",
         "core.pager=",
         "diff.external=",
         "diff.relative=false",
@@ -140,6 +162,9 @@ fn run_git(
             if cfg!(windows) { "NUL" } else { "/dev/null" },
         )
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_PAGER", "")
         .env("PAGER", "")
@@ -168,7 +193,11 @@ fn run_git(
     }
     for (name, _) in std::env::vars_os() {
         let label = name.to_string_lossy();
-        if label.starts_with("GIT_TRACE") || label.starts_with("GIT_CONFIG_") {
+        if label.starts_with("GIT_TRACE")
+            || label.starts_with("GIT_CONFIG_")
+            || label.starts_with("GIT_AUTHOR_")
+            || label.starts_with("GIT_COMMITTER_")
+        {
             command.env_remove(name);
         }
     }
@@ -176,6 +205,9 @@ fn run_git(
         "GIT_CONFIG_GLOBAL",
         if cfg!(windows) { "NUL" } else { "/dev/null" },
     );
+    for (name, value) in environment {
+        command.env(name, value);
+    }
     let mut child = command.spawn().map_err(error)?;
     let writer = input.map(|bytes| {
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -242,11 +274,11 @@ fn text(bytes: Vec<u8>) -> Result<String, GitReviewError> {
     String::from_utf8(bytes).map_err(|_| error("Git review requires UTF-8 paths and output"))
 }
 
-fn required(root: &Path, args: &[&str]) -> Result<String, GitReviewError> {
+pub(crate) fn required(root: &Path, args: &[&str]) -> Result<String, GitReviewError> {
     text(git(root, args, false)?.expect("required result"))
 }
 
-fn repository_root(root: &Path) -> Result<PathBuf, GitReviewError> {
+pub(crate) fn repository_root(root: &Path) -> Result<PathBuf, GitReviewError> {
     let root = fs::canonicalize(root).map_err(error)?;
     let top = required(&root, &["rev-parse", "--show-toplevel"])?;
     if fs::canonicalize(top.trim_end_matches(['\r', '\n'])).map_err(error)? != root {

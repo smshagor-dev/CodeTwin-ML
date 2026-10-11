@@ -1,3 +1,8 @@
+pub mod git_commit;
+pub use git_commit::{
+    apply_selected_commit, prepare_selected_commit, GitCommitPreview, GitCommitReceipt,
+    GitCommitRequest,
+};
 pub mod assessment_jobs;
 pub mod tool_catalog;
 pub use tool_catalog::{CatalogRunSummary, CatalogTool, ToolCatalogService};

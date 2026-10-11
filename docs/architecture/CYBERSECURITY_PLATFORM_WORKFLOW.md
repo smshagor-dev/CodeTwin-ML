@@ -170,4 +170,4 @@ Existing implementation references:
 
 ### CS-03 progress
 
-The first increment adds explicit local branch creation at a reviewed HEAD with an atomic reference transaction, collision/stale guards and hook suppression. It preserves the current branch, index and working tree. Selected staged commits and desktop-user authenticated publication/draft PR creation remain pending; CS-03 is not complete.
+The first increment adds explicit local branch creation at a reviewed HEAD with an atomic reference transaction, collision/stale guards and hook suppression. It preserves the current branch, index and working tree. The second increment adds explicit selected staged-commit previews and digest-checked apply, using a private index and guarded branch update while preserving unrelated staging/unstaged edits. Desktop-user authenticated publication/draft PR creation remains pending; CS-03 is not complete.

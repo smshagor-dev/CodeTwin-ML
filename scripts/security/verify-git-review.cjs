@@ -31,6 +31,17 @@ const origin = 'http://127.0.0.1:4174';
           if (fail) throw new Error('Git unavailable');
           return { branch: args.projectId === 'a' ? 'feature/review' : 'secondary', head: 'a'.repeat(40), changes: f.gitClean ? [] : [{ path: args.projectId + '.ts', original_path: null, staged: 'M', unstaged: 'M' }, { path: 'new.ts', original_path: null, staged: '?', unstaged: '?' }] };
         }
+        if (command === 'git_prepare_selected_commit') {
+          f.prepareCalls = (f.prepareCalls || []).concat([args]);
+          if (f.commitSlow) await new Promise(resolve => setTimeout(resolve, 500));
+          if (f.prepareFail) throw new Error('Staging changed during review');
+          return { request: args.request, paths: args.request.paths, tree: 'b'.repeat(40), patch: '+selected staged <script>window.commitXss=true</script>', digest: 'd'.repeat(64) };
+        }
+        if (command === 'git_apply_selected_commit') {
+          f.commitCalls = (f.commitCalls || []).concat([args]);
+          if (f.commitFail) throw new Error('Commit review is stale');
+          return { branch: args.request.branch, parent: args.request.head, commit: 'c'.repeat(40) };
+        }
         if (command === 'git_create_reviewed_branch') {
           f.branchCalls = (f.branchCalls || []).concat([args]);
           if (f.branchSlow) await new Promise(resolve => setTimeout(resolve, 500));
@@ -55,6 +66,40 @@ const origin = 'http://127.0.0.1:4174';
     await panel.getByRole('button', { name: 'Load Git changes', exact: true }).click();
     await panel.getByText('feature/review', { exact: true }).waitFor();
     assert.equal(await page.evaluate(() => window.fixture.branchCalls), undefined);
+    assert.equal(await page.evaluate(() => window.fixture.prepareCalls), undefined);
+    assert.equal(await page.evaluate(() => window.fixture.commitCalls), undefined);
+    await panel.getByText('Commit selected staged files', { exact: true }).click();
+    const prepareCommit = panel.getByRole('button', { name: 'Prepare selected commit review', exact: true });
+    const commitButton = panel.getByRole('button', { name: 'Commit reviewed staged snapshot', exact: true });
+    assert.equal(await prepareCommit.isDisabled(), true);
+    await panel.getByRole('checkbox', { name: 'a.ts', exact: true }).check();
+    await panel.getByLabel('Commit author name').fill('Reviewed Author');
+    await panel.getByLabel('Commit author email').fill('author@example.invalid');
+    await panel.getByLabel('Commit message').fill('Reviewed change');
+    await prepareCommit.click();
+    await commitButton.waitFor();
+    assert.equal(await page.evaluate(() => window.fixture.commitCalls), undefined);
+    await panel.getByText('+selected staged <script>window.commitXss=true</script>', { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.commitXss), undefined);
+    await panel.getByLabel('Commit message').fill('Edited change');
+    assert.equal(await commitButton.count(), 0);
+    await prepareCommit.click(); await commitButton.waitFor();
+    await page.evaluate(() => { window.fixture.commitFail = true; });
+    await commitButton.click();
+    await panel.getByRole('alert').filter({ hasText: 'Commit review is stale' }).waitFor();
+    assert.equal(await commitButton.count(), 0);
+    await page.evaluate(() => { window.fixture.commitFail = false; });
+    await prepareCommit.click(); await commitButton.waitFor(); await commitButton.click();
+    await panel.getByRole('status').filter({ hasText: 'Committed ' }).waitFor();
+    assert.equal(await prepareCommit.isDisabled(), true);
+    assert.equal(await panel.getByLabel('Commit message').isDisabled(), true);
+    const commitCalls = await page.evaluate(() => window.fixture.commitCalls);
+    assert.equal(commitCalls.length, 2);
+    assert.equal(commitCalls[1].expectedDigest, 'd'.repeat(64));
+    assert.deepEqual(commitCalls[1].request.paths, ['a.ts']);
+    assert.equal(commitCalls[1].request.message, 'Edited change');
+    assert.equal(commitCalls[1].request.head, 'a'.repeat(40));
+
     await panel.getByText('Create branch', { exact: true }).click();
     const branchName = panel.getByLabel('New branch name');
     const createBranch = panel.getByRole('button', { name: 'Create at reviewed HEAD', exact: true });
@@ -116,8 +161,35 @@ const origin = 'http://127.0.0.1:4174';
     await panel.getByText('feature/review', { exact: true }).waitFor();
     await page.waitForTimeout(600);
     assert.equal(await panel.getByRole('status').filter({ hasText: 'Created feature/secondary-review' }).count(), 0);
+    await panel.getByText('Commit selected staged files', { exact: true }).click();
+    await panel.getByRole('checkbox', { name: 'a.ts', exact: true }).check();
+    await panel.getByLabel('Commit author name').fill('Stale Author');
+    await panel.getByLabel('Commit author email').fill('stale@example.invalid');
+    await panel.getByLabel('Commit message').fill('Stale preview');
+    await page.evaluate(() => { window.fixture.prepareFail = true; });
+    await prepareCommit.click();
+    await panel.getByRole('alert').filter({ hasText: 'Staging changed during review' }).waitFor();
+    assert.equal(await commitButton.count(), 0);
+    await page.evaluate(() => { window.fixture.prepareFail = false; window.fixture.commitSlow = true; });
+    await prepareCommit.click();
+    await page.getByRole('button', { name: /Secondary project.*files/ }).click();
+    await panel.getByRole('button', { name: 'Load Git changes' }).click();
+    await panel.getByText('secondary', { exact: true }).waitFor();
+    await page.waitForTimeout(600);
+    assert.equal(await panel.getByLabel('Selected commit preview').count(), 0);
+    await page.getByRole('button', { name: /Validation project.*files/ }).click();
+    await panel.getByRole('button', { name: 'Load Git changes' }).click();
+    await panel.getByText('feature/review', { exact: true }).waitFor();
+    await page.evaluate(() => { window.fixture.commitSlow = false; });
     await panel.getByText('Create branch', { exact: true }).click();
     await panel.getByLabel('New branch name').fill('feature/' + 'x'.repeat(112));
+    await panel.getByText('Commit selected staged files', { exact: true }).click();
+    await panel.getByRole('checkbox', { name: 'a.ts', exact: true }).check();
+    await panel.getByLabel('Commit author name').fill('Mobile Author');
+    await panel.getByLabel('Commit author email').fill('mobile@example.invalid');
+    await panel.getByLabel('Commit message').fill('Responsive review');
+    await prepareCommit.click(); await commitButton.waitFor();
+
     for (const theme of ['light', 'dark']) {
       await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
       for (const width of [1440, 390]) {
@@ -126,7 +198,7 @@ const origin = 'http://127.0.0.1:4174';
       }
     }
     assert.deepEqual(errors, []);
-    console.log('Git review/branch UI: explicit branch creation, exact HEAD, stale failure/receipt, separate patches, untracked escaping, errors/retry, stale status/diff, responsive themes passed.');
+    console.log('Git review/branch/commit UI: selected preview, edit invalidation, explicit digest-bound commit, explicit branch creation, exact HEAD, stale failure/receipt, separate patches, untracked escaping, errors/retry, stale status/diff, responsive themes passed.');
   } finally {
     await browser?.close();
     server.kill('SIGTERM');

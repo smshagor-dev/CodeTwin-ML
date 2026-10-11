@@ -1498,3 +1498,13 @@ export interface AssessmentJob {
   finished_at: string | null;
   steps: { position: number; tool_id: string; status: string; run_id: string | null; coverage_complete: boolean | null }[];
 }
+
+export interface GitCommitRequest {
+  branch: string; head: string; paths: string[]; name: string; email: string; message: string;
+}
+export interface GitCommitPreview {
+  request: GitCommitRequest; paths: string[]; tree: string; patch: string; digest: string;
+}
+export interface GitCommitReceipt {
+  branch: string; parent: string; commit: string;
+}
