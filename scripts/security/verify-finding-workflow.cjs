@@ -26,7 +26,7 @@ const origin = 'http://127.0.0.1:4174';
         const f = window.fixture;
         if (command === 'list_repair_plans') return [{ id: 'repair-a', project_id: 'a', finding_id: 'a-finding', title: 'Applied repair', rationale: 'Remove unsafe input execution', status: 'applied' }];
         if (command === 'index_project') { f.pipeline = ['index']; return { project_id: 'a', status: 'completed' }; }
-        if (command === 'run_security_analysis') { f.pipeline.push('scan'); return { status: 'completed', coverage_complete: !f.incomplete }; }
+        if (command === 'run_security_analysis') { f.pipeline ??= []; f.pipeline.push('scan'); await new Promise(resolve => setTimeout(resolve, 250)); return { status: 'completed', coverage_complete: !f.incomplete }; }
         if (command === 'verify_repair_plan') { f.pipeline.push('verify'); return { id: 'verification-a', repair_id: 'repair-a', status: 'verified', matched_changes: 1, mismatched_changes: 0, missing_changes: 0 }; }
         if (command === 'read_repair_source') return { file_id: 'a-file', project_id: 'a', relative_path: 'src/a.ts', content_hash: 'pinned-sha256', content: 'eval(input)', byte_size: 11, language: 'typescript' };
         if (command === 'list_repair_candidate_findings') return [{ id: 'a-finding', project_id: 'a', title: 'Validation finding', file_id: 'a-file', status: 'open' }];
@@ -66,6 +66,13 @@ const origin = 'http://127.0.0.1:4174';
     await page.setViewportSize({ width: 390, height: 900 });
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
     await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByRole('button', { name: 'Run Static Scan', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Project', exact: true }).selectOption('b');
+    await page.getByText('Secondary finding', { exact: true }).waitFor();
+    await page.waitForTimeout(400);
+    assert.equal(await page.getByText('Validation finding', { exact: true }).count(), 0);
+    await page.getByRole('combobox', { name: 'Project', exact: true }).selectOption('a');
+    await page.getByText('Validation finding', { exact: true }).waitFor();
     await page.getByRole('link', { name: 'Create repair proposal' }).click();
     await page.getByText('Finding linked.', { exact: false }).waitFor();
     assert.equal(await page.getByLabel('Repository path').inputValue(), '/local/a');

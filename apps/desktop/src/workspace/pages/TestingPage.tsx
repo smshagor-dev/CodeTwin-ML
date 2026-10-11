@@ -75,6 +75,7 @@ export function TestingPage() {
   const [qaBusy, setQaBusy] = useState<string | null>(null);
 
   async function load(projectId: string) {
+    if (latestProject.current !== projectId) return;
     const request = ++loadSequence.current;
     try {
       const [nextArtifacts, nextFrameworks, nextHistory, nextAvailability, nextPlans, nextRuns] = await Promise.all([

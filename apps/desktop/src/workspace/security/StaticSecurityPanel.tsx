@@ -10,6 +10,8 @@ export function StaticSecurityPanel() {
   const { projects, activeProjectId, setActiveProjectId, operation, runSecurity, setToast } = useWorkspace();
   const [findings, setFindings] = useState<SecurityFindingRecord[]>([]);
   const [history, setHistory] = useState<SecurityRunRecord[]>([]);
+  const latestProject = useRef(activeProjectId);
+  latestProject.current = activeProjectId;
   const requestId = useRef(0);
   const [files, setFiles] = useState<SourceFileRecord[]>([]);
   const [source, setSource] = useState<RepairSourceSnapshot | null>(null);
@@ -20,6 +22,7 @@ export function StaticSecurityPanel() {
   const [query, setQuery] = useState("");
 
   async function load(projectId: string, nextStatus = status) {
+    if (latestProject.current !== projectId) return;
     const request = ++requestId.current;
     try {
       const [nextFindings, nextHistory, nextFiles] = await Promise.all([
@@ -27,12 +30,12 @@ export function StaticSecurityPanel() {
         workspaceApi.securityHistory(projectId, 50),
         workspaceApi.listFiles(projectId),
       ]);
-      if (request !== requestId.current) return;
+      if (request !== requestId.current || latestProject.current !== projectId) return;
       setFiles(nextFiles);
       setFindings(nextFindings);
       setHistory(nextHistory);
     } catch (error) {
-      if (request !== requestId.current) return;
+      if (request !== requestId.current || latestProject.current !== projectId) return;
       setToast({ tone: "error", message: "Could not load static security evidence: " + String(error) });
     }
   }
