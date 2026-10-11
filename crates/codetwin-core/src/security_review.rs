@@ -60,7 +60,7 @@ impl<'a> SecurityReviewService<'a> {
             "INSERT INTO security_finding_reviews(finding_id, project_id, scan_run_id, indexed_content_hash, verdict, note) \
              SELECT f.id, f.project_id, f.run_id, files.content_hash, ?4, ?5 \
              FROM findings f LEFT JOIN files ON files.id=f.file_id \
-             WHERE f.id=?1 AND f.project_id=?2 AND f.run_id=?3 AND f.analyzer_key='appsec' AND files.content_hash IS ?6",
+             WHERE f.id=?1 AND f.project_id=?2 AND f.run_id=?3 AND f.analyzer_key='appsec' AND f.status='open' AND COALESCE(f.last_run_id, f.run_id)=?3 AND files.content_hash IS ?6",
             params![finding_id, project_id, expected_run_id, verdict, note, expected_content_hash],
         )?;
         if inserted != 1 {
@@ -98,7 +98,7 @@ impl<'a> SecurityReviewService<'a> {
 
     fn select() -> &'static str {
         "SELECT r.id, r.finding_id, r.project_id, r.scan_run_id, r.indexed_content_hash, r.verdict, r.note, r.created_at, \
-         (r.scan_run_id=f.run_id AND r.indexed_content_hash IS files.content_hash) \
+         (f.status='open' AND r.scan_run_id=COALESCE(f.last_run_id, f.run_id) AND r.indexed_content_hash IS files.content_hash) \
          FROM security_finding_reviews r JOIN findings f ON f.id=r.finding_id LEFT JOIN files ON files.id=f.file_id"
     }
 

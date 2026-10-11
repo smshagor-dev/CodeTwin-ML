@@ -202,7 +202,7 @@ export function StaticSecurityPanel() {
                   <small>{sourcePaths.get(finding.file_id ?? "") ?? "Source path unavailable"}{finding.source_start_line ? ":" + finding.source_start_line : ""} · {finding.status}</small>
                   {latestReviews.has(finding.id) && <p>{reviewLabel(latestReviews.get(finding.id)!)}{latestReviews.get(finding.id)!.is_current ? " · current scan" : " · earlier evidence; review again"}</p>}
                   <div className="ws-header-tools">
-                    <button className="ws-button ws-button-secondary" disabled={reviewBusy} onClick={() => { setReviewFinding(finding); setVerdict("needs_review"); setNote(""); }}>Review finding</button>
+                    <button className="ws-button ws-button-secondary" disabled={reviewBusy || finding.status !== "open"} onClick={() => { setReviewFinding(finding); setVerdict("needs_review"); setNote(""); }}>Review finding</button>
                     {finding.file_id && <button className="ws-button ws-button-secondary" disabled={sourceBusy} onClick={() => void readEvidence(finding.file_id!)}>View source evidence</button>}
                     {finding.status === "open" && finding.file_id && <a className="ws-button ws-button-secondary" href={"#/repair?project=" + encodeURIComponent(finding.project_id) + "&finding=" + encodeURIComponent(finding.id)}>Create repair proposal</a>}
                   </div>

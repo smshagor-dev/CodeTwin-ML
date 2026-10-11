@@ -208,3 +208,38 @@ fn version_26_database_upgrades_without_changing_existing_findings() {
         .unwrap();
     assert_eq!(status, "open");
 }
+
+#[test]
+fn resolved_finding_invalidates_review_even_if_detection_run_is_unchanged() {
+    let db = Database::open_in_memory().unwrap();
+    seed(&db);
+    let service = SecurityReviewService::new(&db);
+    service
+        .review(
+            "p",
+            "finding",
+            "scan",
+            Some("hash-one"),
+            "confirmed",
+            "Reviewed open finding",
+        )
+        .unwrap();
+    db.connection()
+        .execute(
+            "UPDATE findings SET status='resolved', last_run_id='scan-two' WHERE id='finding'",
+            [],
+        )
+        .unwrap();
+    assert!(!service.list("p", None, 50).unwrap()[0].is_current);
+    assert!(matches!(
+        service.review(
+            "p",
+            "finding",
+            "scan",
+            Some("hash-one"),
+            "confirmed",
+            "outdated detection"
+        ),
+        Err(SecurityReviewError::StaleFinding)
+    ));
+}
