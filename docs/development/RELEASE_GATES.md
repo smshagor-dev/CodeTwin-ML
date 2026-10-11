@@ -67,3 +67,14 @@ Implementation availability is not release validation. A production release that
 ## Merge discipline
 
 When stacked pull requests are unavoidable, parent changes must reach `main` before a child is rebased or merged into `main`. A child pull request reporting `merged` on a feature-branch base does not prove that its changes reached the default branch; verify the resulting `main` tree directly.
+
+## Security benchmark and browser evidence
+
+The CI `rust` job must pass the opt-in loopback policy regression benchmark and
+preserve its JSON artifact. Inconclusive controls must remain separate from
+negative controls; a zero-finding inconclusive scan does not prove safe access.
+The `frontend` job must pass npm audit, XSS/CORS browser controls and production
+lazy-route smoke. Install Chromium with `npx playwright install chromium` before
+running `scripts/check-all.sh` locally, or supply `CHROMIUM_EXECUTABLE` explicitly.
+Fixture IPC route tests do not replace native Tauri or installed Windows checks.
+The portable runner cannot certify signing or production release readiness.

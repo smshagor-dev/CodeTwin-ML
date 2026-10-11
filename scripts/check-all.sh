@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs every CI gate locally, so changes can be validated without GitHub Actions.
+# Runs portable CI gates; does not replace Windows QA or signed installer checks.
 # Usage: scripts/check-all.sh            (all gates)
 #        SKIP_DESKTOP=1 scripts/check-all.sh   (skip the Tauri crate, e.g. without GTK/WebKit)
 set -euo pipefail
@@ -18,6 +18,8 @@ step "Rust clippy"
 cargo clippy --workspace "${exclude[@]}" --all-targets -- -D warnings
 step "Rust tests"
 cargo test --workspace "${exclude[@]}"
+step "Measured loopback benchmark"
+cargo test -p web-security-testing --test local_lab security_readiness_benchmark -- --ignored --nocapture
 step "End-to-end smoke"
 cargo run --release -q -p codetwin-core --example e2e_smoke -- .
 
@@ -33,9 +35,19 @@ python -m compileall -q services/ml/codetwin_ml services/security/codetwin_secur
 
 step "Frontend"
 npm ci --ignore-scripts
+npm audit --audit-level=low
 npm run typecheck
 npm run test
 npm run build
 node --test fixtures/typescript-basic/tests/*.test.js
 
-printf '\nAll gates passed.\n'
+step "Browser controls (install with npx playwright install chromium)"
+node scripts/security/verify-xss-contexts.cjs
+node scripts/security/verify-cors-controls.cjs
+node scripts/security/verify-desktop-routes.cjs
+
+if [[ "${SKIP_DESKTOP:-0}" == "1" ]]; then
+  printf '\nPortable gates passed; native desktop, Windows QA and signed installer are not verified.\n'
+else
+  printf '\nLocal gates passed; Windows QA and signed installer validation remain required.\n'
+fi
