@@ -1,3 +1,5 @@
+pub mod tool_catalog;
+pub use tool_catalog::{CatalogRunSummary, CatalogTool, ToolCatalogService};
 pub mod git_review;
 pub use git_review::{review_git_file, review_git_status, GitFileReview, GitReviewStatus};
 pub mod database_analysis;

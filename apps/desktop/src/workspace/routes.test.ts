@@ -11,6 +11,7 @@ describe("workspace routing", () => {
       "agents",
       "code-analysis",
       "security",
+      "tools",
       "testing",
       "deployments",
       "integrations",

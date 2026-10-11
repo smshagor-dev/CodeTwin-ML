@@ -5,6 +5,7 @@ export const workspaceRoutes = [
   "agents",
   "code-analysis",
   "security",
+  "tools",
   "testing",
   "deployments",
   "integrations",

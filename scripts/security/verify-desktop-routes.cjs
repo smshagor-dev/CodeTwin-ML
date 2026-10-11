@@ -5,7 +5,7 @@ const { spawn } = require('node:child_process');
 const { chromium } = require('playwright');
 const root = path.resolve(__dirname, '../..');
 const origin = 'http://127.0.0.1:4173';
-const primaryRoutes = ['dashboard', 'projects', 'websites', 'agents', 'code-analysis', 'security', 'testing', 'deployments', 'integrations', 'settings', 'documentation', 'support'];
+const primaryRoutes = ['dashboard', 'projects', 'websites', 'agents', 'code-analysis', 'security', 'tools', 'testing', 'deployments', 'integrations', 'settings', 'documentation', 'support'];
 const securityModes = ['Developer Security Test', 'Expert Web Testing', 'Static Source Analysis', 'Secrets & Dependencies', 'Dataset Benchmarks'];
 const routes = ['engineering', 'web-security', 'database', 'runtime', 'qa', 'ml', 'repair', 'repair-apply'];
 (async () => {
@@ -114,7 +114,7 @@ const routes = ['engineering', 'web-security', 'database', 'runtime', 'qa', 'ml'
         await page.keyboard.press('Escape');
       }
     }
-    console.log('PASS all 20 routes, five security modes, editable integration accordion and disclosures at desktop/mobile in light/dark');
+    console.log('PASS all 21 routes, five security modes, editable integration accordion and disclosures at desktop/mobile in light/dark');
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`${origin}/#/web-security`);
     await page.locator('.ws-advanced-shell h1').waitFor();

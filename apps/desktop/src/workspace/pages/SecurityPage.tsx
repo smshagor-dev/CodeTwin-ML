@@ -8,9 +8,11 @@ import { StaticSecurityPanel } from "../security/StaticSecurityPanel";
 import { SupplyChainPanel } from "../security/SupplyChainPanel";
 
 export function SecurityPage() {
-  const [mode, setMode] = useState<"developer" | "web" | "source" | "supply" | "benchmark">(() =>
-    new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("mode") === "source" ? "source" : "developer",
-  );
+  type Mode = "developer" | "web" | "source" | "supply" | "benchmark";
+  const [mode, setMode] = useState<Mode>(() => {
+    const requested = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("mode");
+    return ["developer", "web", "source", "supply", "benchmark"].includes(requested ?? "") ? requested as Mode : "developer";
+  });
 
   return (
     <div>

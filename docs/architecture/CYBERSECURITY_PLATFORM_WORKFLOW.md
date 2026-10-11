@@ -110,6 +110,10 @@ Keep the primary sidebar compact: Overview, Workspaces, Assessments, Findings, R
 
 The tool library supports search, category, platform, risk and implemented/blocked/planned filters. Each tool shows purpose, exact coverage, evidence type, prerequisites and its last validation. Runs show progress, budget, scope and cancellation. The overview shows actual open findings, coverage gaps and recent jobs; never fabricated scores or a global “100% secure” badge.
 
+## CS-01 implementation increment
+
+The runtime Tool Library is implemented through a compiled read-only registry, project/LSP setup checks, existing strict QA backend availability, known workflow navigation and normalized recent analysis/web/QA run summaries. See [runtime tool catalog](RUNTIME_TOOL_CATALOG.md). The separate planning JSON remains documentation-only. A workflow being available does not mean all planned extensions in its domain are implemented; runtime coverage and prerequisites are displayed per entry. CS-02 job scheduling and engagement scope revisions remain planned.
+
 ## Delivery milestones
 
 These IDs are new cybersecurity-roadmap identifiers; they do not renumber earlier completed project milestones.

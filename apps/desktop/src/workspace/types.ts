@@ -1450,3 +1450,32 @@ export interface GitFileReview {
   untracked_content: string | null;
   notice: string | null;
 }
+
+export type ToolAvailability = "available" | "requires_setup" | "blocked" | "planned";
+export interface CatalogTool {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  roadmap: string;
+  definition_version: number;
+  availability: ToolAvailability;
+  reason: string;
+  operation_kind: string;
+  prerequisites: string[];
+  platforms: string[];
+  coverage: string;
+  workflow: string | null;
+  setup_workflow: string | null;
+}
+export interface CatalogRunSummary {
+  id: string;
+  source: string;
+  project_id: string | null;
+  kind: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  tests_passed: boolean | null;
+}
