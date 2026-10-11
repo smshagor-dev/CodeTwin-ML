@@ -252,8 +252,8 @@ export function WebSecurityWorkspace() {
                 </div>
               </section>
 
-              <section className="panel compact">
-                <h2>Run history</h2>
+              <details className="ws-tool-disclosure panel compact">
+                <summary>Run history</summary>
                 <div className="history-list runtime-scroll-list">
                   {history.map((run) => (
                     <div className="history-item" key={run.run_id}>
@@ -264,7 +264,7 @@ export function WebSecurityWorkspace() {
                   ))}
                   {!history.length && <p className="empty">No persisted security review run exists for this project.</p>}
                 </div>
-              </section>
+              </details>
             </div>
 
             <div className="twin-column wide">

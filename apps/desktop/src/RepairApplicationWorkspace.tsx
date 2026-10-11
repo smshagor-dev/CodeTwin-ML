@@ -222,8 +222,7 @@ export function RepairApplicationWorkspace() {
           <p className="eyebrow">EXPLICIT FILE MUTATION BOUNDARY</p>
           <h1>Repair Apply & Rollback</h1>
           <p>
-            This workspace can write approved replacement bytes to repository files. It never runs repository commands, tests,
-            compilers, package managers, hooks, or language servers.
+            Apply approved file changes or restore backups. Repository commands are never executed.
           </p>
         </div>
       </header>
@@ -232,16 +231,9 @@ export function RepairApplicationWorkspace() {
       {notice && <p className="success banner" role="status">{notice}</p>}
 
       <section className="panel danger-panel">
-        <h2>Mutation safety</h2>
-        <p>
-          Application is refused unless every current repository file is a regular non-symlink file inside the project root and
-          still matches the proposal's approved base SHA-256. All replacement files and app-data backups are staged before swaps.
-          A failed multi-file application attempts reverse rollback. A rollback refuses to overwrite post-apply manual edits.
-        </p>
-        <p>
-          This is not a crash-proof filesystem transaction: a process or machine crash during a rename window may require manual
-          recovery from the persisted app-data backup evidence.
-        </p>
+        <h2>Before applying a repair</h2>
+        <p>Only approved changes to regular files inside the project root are allowed. Current SHA-256 hashes must match. Backups are staged first; rollback never overwrites later manual edits.</p>
+        <p>A crash during file swaps can require manual recovery from the saved backups.</p>
       </section>
 
       <section className="panel">
@@ -302,8 +294,8 @@ export function RepairApplicationWorkspace() {
           </div>
 
           <div className="twin-column">
-            <section className="panel compact">
-              <h2>Application history</h2>
+            <details className="ws-tool-disclosure panel compact">
+              <summary>Application history</summary>
               <div className="result-list repair-apply-scroll">
                 {history.map((run) => (
                   <button key={run.id} className={`result-item ${selectedRun?.id === run.id ? "selected" : ""}`} onClick={() => void selectRun(run)}>
@@ -314,7 +306,7 @@ export function RepairApplicationWorkspace() {
                 ))}
                 {!history.length && <p className="empty">No application attempts for the selected repair plan.</p>}
               </div>
-            </section>
+            </details>
 
             {selectedRun && (
               <section className="panel compact">

@@ -192,7 +192,7 @@ export function RuntimeWorkspace() {
 
       <section className="panel">
         <h2>Project</h2>
-        <p>Index the repository first so Runtime Reliability shares the persistent Software Digital Twin project identity.</p>
+        <p>Open a local repository to review Dockerfile and Compose evidence.</p>
         <div className="row">
           <input aria-label="Repository path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="C:\\work\\project or /home/user/project" />
           <button onClick={() => void openProject()} disabled={busy || !path.trim()}>{busy && !projectId ? "Opening…" : "Open & index"}</button>
@@ -301,8 +301,8 @@ export function RuntimeWorkspace() {
                 ) : <p className="empty">Select a finding to inspect persisted runtime evidence.</p>}
               </section>
 
-              <section className="panel compact">
-                <h2>Rules</h2>
+              <details className="ws-tool-disclosure panel compact">
+                <summary>Rules</summary>
                 <div className="relationship-list">
                   {rules.map((rule) => (
                     <div className="relationship-item" key={rule.id}>
@@ -312,10 +312,10 @@ export function RuntimeWorkspace() {
                     </div>
                   ))}
                 </div>
-              </section>
+              </details>
 
-              <section className="panel compact">
-                <h2>Run history</h2>
+              <details className="ws-tool-disclosure panel compact">
+                <summary>Run history</summary>
                 <div className="history-list">
                   {history.map((run) => (
                     <div className="history-item" key={run.run_id}>
@@ -326,7 +326,7 @@ export function RuntimeWorkspace() {
                   ))}
                   {!history.length && <p className="empty">No runtime reliability analysis run has been persisted for this project.</p>}
                 </div>
-              </section>
+              </details>
             </div>
           </section>
         </>

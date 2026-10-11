@@ -15,7 +15,7 @@ export function SecurityPage() {
       <PageHeader
         eyebrow="APPLICATION SECURITY"
         title="Security"
-        description="Run a guided developer security test, inspect expert web-testing evidence, review static source findings, scan for leaked secrets and vulnerable dependencies, or benchmark the analyzers against pinned public datasets. Active operations remain authorization-gated and scope-bounded."
+        description="Review application, source and dependency risks. Web testing requires authorization."
       />
       <div className="ws-security-tabs" role="tablist" aria-label="Security workspace mode">
         <button role="tab" aria-selected={mode === "developer"} className={mode === "developer" ? "active" : ""} onClick={() => setMode("developer")}>

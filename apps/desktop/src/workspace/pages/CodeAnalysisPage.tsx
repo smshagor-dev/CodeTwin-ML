@@ -79,7 +79,7 @@ export function CodeAnalysisPage() {
       <PageHeader
         eyebrow="PERSISTED SOURCE INDEX"
         title="Code Analysis"
-        description="Inspect indexed files and Tree-sitter symbols. This view reuses CodeTwin's existing persistent source index rather than creating a second parser."
+        description="Browse indexed files and symbols. Search by name, path or symbol type."
         actions={<div className="ws-header-tools"><ProjectSelect projects={projects} value={activeProjectId} onChange={setActiveProjectId}/>{activeProject && <button className="ws-button ws-button-secondary" disabled={operation !== null} onClick={() => void reindexProject(activeProject).then(() => (activeProjectId ? load(activeProjectId) : undefined))}><Icon name="refresh"/>Re-index</button>}</div>}
       />
 

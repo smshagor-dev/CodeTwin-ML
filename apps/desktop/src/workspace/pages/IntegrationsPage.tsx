@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { workspaceApi } from "../api";
 import { Icon } from "../Icon";
 import type { LanguageServerConfig, LanguageServerKind } from "../types";
-import { PageHeader, Panel, StatusBadge } from "../ui";
+import { PageHeader, StatusBadge } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
 
 type Draft = { executable_path: string; arguments: string; enabled: boolean };
@@ -28,6 +28,7 @@ export function IntegrationsPage() {
     pyright: blankDraft(),
     rust_analyzer: blankDraft(),
   });
+  const [expanded, setExpanded] = useState<LanguageServerKind | null>("typescript");
   const [busy, setBusy] = useState<LanguageServerKind | null>(null);
 
   async function load() {
@@ -102,24 +103,30 @@ export function IntegrationsPage() {
       <PageHeader
         eyebrow="SUPPORTED INTEGRATIONS"
         title="Integrations"
-        description="Manage the language-server integrations that CodeTwin already supports for optional semantic enrichment. Nothing is connected implicitly."
+        description="Configure optional language servers. They run only when you request semantic enrichment."
       />
       <div className="ws-integration-grid">
         {kinds.map((kind) => {
           const draft = drafts[kind];
           const isConfigured = configured.has(kind);
           return (
-            <Panel key={kind} title={labels[kind]} action={<StatusBadge status={isConfigured ? (draft.enabled ? "configured" : "disabled") : "not_configured"}/>}>
+            <section key={kind} className="ws-integration-item">
+              <button className="ws-integration-toggle" aria-expanded={expanded === kind} aria-controls={"integration-" + kind} onClick={() => setExpanded(expanded === kind ? null : kind)}>
+                <span><Icon name="integrations"/><strong>{labels[kind]}</strong></span>
+                <span><StatusBadge status={isConfigured ? (draft.enabled ? "configured" : "disabled") : "not_configured"}/><span className="ws-disclosure-chevron"><Icon name="chevron"/></span></span>
+              </button>
+              <div id={"integration-" + kind} hidden={expanded !== kind}>
               <div className="ws-form-stack">
                 <label className="ws-field"><span>Executable path</span><input value={draft.executable_path} placeholder={kind === "typescript" ? "Absolute path to language server executable" : "Absolute executable path"} onChange={(event) => patch(kind, { executable_path: event.target.value })}/></label>
-                <label className="ws-field"><span>Arguments <small>one per line</small></span><textarea rows={4} value={draft.arguments} onChange={(event) => patch(kind, { arguments: event.target.value })}/></label>
-                <label className="ws-check-field"><input type="checkbox" checked={draft.enabled} onChange={(event) => patch(kind, { enabled: event.target.checked })}/><span>Enable this integration when semantic enrichment is explicitly requested.</span></label>
+                <label className="ws-field"><span>Arguments <small>one per line</small></span><textarea rows={2} value={draft.arguments} onChange={(event) => patch(kind, { arguments: event.target.value })}/></label>
+                <label className="ws-check-field"><input type="checkbox" checked={draft.enabled} onChange={(event) => patch(kind, { enabled: event.target.checked })}/><span>Enable for semantic enrichment</span></label>
                 <div className="ws-button-row">
                   <button className="ws-button ws-button-primary" onClick={() => void save(kind)} disabled={busy !== null}><Icon name="check"/>{busy === kind ? "Saving…" : "Save"}</button>
                   {isConfigured && <button className="ws-button ws-button-danger-ghost" onClick={() => void remove(kind)} disabled={busy !== null}><Icon name="trash"/>Remove</button>}
                 </div>
               </div>
-            </Panel>
+              </div>
+            </section>
           );
         })}
       </div>

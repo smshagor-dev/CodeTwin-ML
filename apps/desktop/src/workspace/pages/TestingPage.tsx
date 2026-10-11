@@ -12,7 +12,7 @@ import type {
   QaSandboxPolicy,
   QaTestRunnerKind,
 } from "../types";
-import { EmptyState, PageHeader, Panel, ProjectSelect, StatusBadge, formatDate } from "../ui";
+import { Disclosure, EmptyState, PageHeader, Panel, ProjectSelect, StatusBadge, formatDate } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
 
 const strictPolicy: QaSandboxPolicy = {
@@ -211,7 +211,7 @@ export function TestingPage() {
       <PageHeader
         eyebrow="QA / SANDBOX"
         title="Testing"
-        description="Discover tests passively, then create an immutable execution plan. Test code runs only when the strict sandbox capability floor is available and the exact plan is explicitly approved."
+        description="Discover test evidence and review results. Execution requires an approved plan and a supported strict sandbox."
         actions={<div className="ws-header-tools"><ProjectSelect projects={projects} value={activeProjectId} onChange={setActiveProjectId}/><button className="ws-button ws-button-primary" onClick={() => void runQaDiscovery().then(() => (activeProjectId ? load(activeProjectId) : undefined))} disabled={!activeProjectId || operation !== null}><Icon name="testing"/>{operation?.kind === "testing" ? "Discovering…" : "Discover Tests"}</button></div>}
       />
 
@@ -231,8 +231,9 @@ export function TestingPage() {
       </section>
 
       {activeProjectId && (
-        <Panel title="Sandboxed test execution">
-          <p className="ws-form-help">Execution is never inferred from discovery. Select one discovered test target, pin the exact trusted runner executable, create a plan, then approve that immutable plan. Network access and ambient host environment remain denied by the strict policy.</p>
+        <Disclosure title="Sandboxed test execution">
+          <Panel title="Sandboxed test execution">
+          <p className="ws-form-help">Select a test and pin its trusted runner to create a plan. Execution requires separate approval; network and ambient host access remain denied.</p>
           <div className="ws-webscan-two">
             <label className="ws-field">
               <span>Discovered test target</span>
@@ -297,6 +298,7 @@ export function TestingPage() {
             {!plans.length && <p className="ws-inline-empty">No QA execution plan has been created for this project.</p>}
           </div>
         </Panel>
+        </Disclosure>
       )}
 
       <div className="ws-security-layout">
@@ -314,12 +316,14 @@ export function TestingPage() {
         </Panel>
       </div>
 
-      <Panel title="Discovery history">
+      <Disclosure title="Discovery history">
+          <Panel title="Discovery history">
         <div className="ws-history-list">
           {history.map((run) => <div key={run.run_id}><StatusBadge status={run.status}/><p><strong>{run.artifacts_discovered} artifacts discovered</strong><small>{run.test_files} tests · {run.config_files} configs · {run.framework_count} frameworks</small></p><time>{formatDate(run.finished_at ?? run.started_at)}</time></div>)}
           {!history.length && <p className="ws-inline-empty">No QA discovery runs yet.</p>}
         </div>
       </Panel>
+        </Disclosure>
     </div>
   );
 }

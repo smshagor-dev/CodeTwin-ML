@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { workspaceApi } from "../api";
 import { Icon } from "../Icon";
 import type { SecurityFindingRecord, SecurityRunRecord } from "../types";
-import { EmptyState, Panel, ProjectSelect, StatusBadge, formatDate } from "../ui";
+import { Disclosure, EmptyState, Panel, ProjectSelect, StatusBadge, formatDate } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
 
 export function StaticSecurityPanel() {
@@ -78,7 +78,7 @@ export function StaticSecurityPanel() {
         <div><span><Icon name="activity"/></span><strong>{history.length}</strong><small>Recent runs</small></div>
       </section>
 
-      <div className="ws-security-layout">
+      <div className="ws-static-layout">
         <Panel
           title="Static source findings"
           action={
@@ -114,7 +114,8 @@ export function StaticSecurityPanel() {
           </div>
         </Panel>
 
-        <Panel title="Static scan history">
+        <Disclosure title="Static scan history">
+          <Panel title="Static scan history">
           <div className="ws-history-list">
             {history.map((run) => (
               <div key={run.run_id}>
@@ -129,6 +130,7 @@ export function StaticSecurityPanel() {
             {!history.length && <p className="ws-inline-empty">No static security scan history for this project yet.</p>}
           </div>
         </Panel>
+        </Disclosure>
       </div>
     </div>
   );
