@@ -254,7 +254,7 @@ impl<'a> ProjectQueryService<'a> {
             "SELECT id, project_id, status, analyzer_version, query_version, config_fingerprint, started_at, finished_at, duration_ms, \
                     files_scanned, files_added, files_modified, files_unchanged, files_deleted, symbols_added, symbols_updated, symbols_removed, parse_errors, skipped_files \
              FROM analysis_runs WHERE project_id = ?1 AND run_kind = 'source_index' \
-             ORDER BY started_at DESC, id DESC LIMIT ?2",
+             ORDER BY started_at DESC, rowid DESC LIMIT ?2",
         )?;
         let rows = statement.query_map(params![project_id, bounded_limit(limit, 100)], |row| {
             let status_text: String = row.get(2)?;

@@ -102,6 +102,19 @@ export type IndexSummary = {
   duration_ms: number;
 };
 
+export type IndexRunRecord = {
+  id: string;
+  project_id: string;
+  status: AnalysisStatus;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  analyzer_version: string;
+  query_version: string | null;
+  config_fingerprint: string | null;
+  delta: IndexSummary["delta"];
+};
+
 export type SourceFileRecord = {
   id: string;
   project_id: string;

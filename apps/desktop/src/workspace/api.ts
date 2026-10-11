@@ -108,8 +108,14 @@ export const workspaceApi = {
   discoverProject(path: string) {
     return invoke<ProjectProfile>("discover_project", { path });
   },
-  indexProject(path: string) {
-    return invoke<IndexSummary>("index_project", { path });
+  indexProject(path: string, fullRebuild = false) {
+    return invoke<IndexSummary>("index_project", { path, fullRebuild });
+  },
+  cancelIndex() {
+    return invoke<boolean>("cancel_project_index");
+  },
+  indexHistory(projectId: string, limit = 20) {
+    return invoke<import("./types").IndexRunRecord[]>("index_history", { projectId, limit });
   },
   listFiles(projectId: string, search: string | null = null, limit = 500) {
     return invoke<SourceFileRecord[]>("list_project_files", { projectId, search, limit });

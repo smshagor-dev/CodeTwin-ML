@@ -44,7 +44,7 @@ type WorkspaceContextValue = {
   setToast: (toast: Toast) => void;
   refreshWorkspace: () => Promise<void>;
   pickAndImportProject: () => Promise<void>;
-  reindexProject: (project: ProjectOverview) => Promise<void>;
+  reindexProject: (project: ProjectOverview, fullRebuild?: boolean) => Promise<void>;
   removeProject: (project: ProjectOverview) => Promise<void>;
   addWebsite: (url: string, name: string, projectId: string | null) => Promise<WebsiteRecord>;
   checkWebsite: (website: WebsiteRecord) => Promise<void>;
@@ -159,13 +159,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [preferences, refreshWorkspace]);
 
-  const reindexProject = useCallback(async (project: ProjectOverview) => {
-    setOperation({ kind: "project-import", stage: "Re-indexing " + project.display_name + "…" });
+  const reindexProject = useCallback(async (project: ProjectOverview, fullRebuild = false) => {
+    setOperation({ kind: "project-import", stage: (fullRebuild ? "Rebuilding " : "Re-indexing ") + project.display_name + "…" });
     try {
-      const result = await workspaceApi.indexProject(project.root_path);
+      const result = await workspaceApi.indexProject(project.root_path, fullRebuild);
       await refreshWorkspace();
-      setActiveProjectIdState(result.project_id);
-      setToast({ tone: "success", message: "Index refreshed for " + project.display_name + "." });
+      setToast({ tone: "success", message: `${fullRebuild ? "Full rebuild" : "Incremental index"} completed: ${result.delta.files_added} added, ${result.delta.files_modified} modified, ${result.delta.files_unchanged} unchanged, ${result.delta.files_deleted} deleted. ${result.delta.skipped_files} skipped; ${result.delta.parse_errors} parse errors.` });
     } catch (error) {
       setToast({ tone: "error", message: "Re-index failed: " + String(error) });
     } finally {

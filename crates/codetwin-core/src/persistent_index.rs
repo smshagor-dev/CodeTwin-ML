@@ -119,7 +119,7 @@ impl<'a> ProjectIndexService<'a> {
     }
 
     pub fn index_project(&self, root: impl AsRef<Path>) -> Result<IndexSummary, IndexServiceError> {
-        self.index_project_internal(root.as_ref(), None)
+        self.index_project_internal(root.as_ref(), None, false)
     }
 
     pub fn index_project_with_cancel(
@@ -127,13 +127,29 @@ impl<'a> ProjectIndexService<'a> {
         root: impl AsRef<Path>,
         cancelled: &AtomicBool,
     ) -> Result<IndexSummary, IndexServiceError> {
-        self.index_project_internal(root.as_ref(), Some(cancelled))
+        self.index_project_internal(root.as_ref(), Some(cancelled), false)
+    }
+
+    pub fn rebuild_project(
+        &self,
+        root: impl AsRef<Path>,
+    ) -> Result<IndexSummary, IndexServiceError> {
+        self.index_project_internal(root.as_ref(), None, true)
+    }
+
+    pub fn rebuild_project_with_cancel(
+        &self,
+        root: impl AsRef<Path>,
+        cancelled: &AtomicBool,
+    ) -> Result<IndexSummary, IndexServiceError> {
+        self.index_project_internal(root.as_ref(), Some(cancelled), true)
     }
 
     fn index_project_internal(
         &self,
         root: &Path,
         cancelled: Option<&AtomicBool>,
+        full_rebuild: bool,
     ) -> Result<IndexSummary, IndexServiceError> {
         let started = Instant::now();
         let project = self.open_project(root)?;
@@ -147,12 +163,21 @@ impl<'a> ProjectIndexService<'a> {
                 &config_fingerprint,
             ],
         );
-        let known_hashes = load_known_hashes(
-            self.database.connection(),
-            &project.id,
-            &analysis_fingerprint,
-        )?;
+        let known_hashes = if full_rebuild {
+            BTreeMap::new()
+        } else {
+            load_known_hashes(
+                self.database.connection(),
+                &project.id,
+                &analysis_fingerprint,
+            )?
+        };
         let run_id = new_run_id(&project.id);
+        let run_configuration = if full_rebuild {
+            r#"{"index_mode":"full_rebuild"}"#
+        } else {
+            DEFAULT_CONFIG_JSON
+        };
 
         self.database.connection().execute(
             "INSERT INTO analysis_runs( \
@@ -162,7 +187,7 @@ impl<'a> ProjectIndexService<'a> {
                 run_id,
                 project.id,
                 source_indexer::INDEXER_VERSION,
-                DEFAULT_CONFIG_JSON,
+                run_configuration,
                 source_indexer::QUERY_VERSION,
                 config_fingerprint,
             ],
