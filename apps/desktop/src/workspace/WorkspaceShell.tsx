@@ -17,18 +17,18 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { AgentsPage, DeploymentsPage, DocumentationPage, SupportPage } from "./pages/InfoPages";
 
 const navigation: Array<{ route: WorkspaceRoute; label: string; icon: IconName }> = [
-  { route: "dashboard", label: "Dashboard", icon: "dashboard" },
+  { route: "dashboard", label: "Overview", icon: "dashboard" },
   { route: "projects", label: "Projects", icon: "projects" },
   { route: "websites", label: "Websites", icon: "websites" },
-  { route: "agents", label: "Agents", icon: "agents" },
   { route: "code-analysis", label: "Code Analysis", icon: "code" },
   { route: "security", label: "Security", icon: "security" },
   { route: "testing", label: "Testing", icon: "testing" },
-  { route: "deployments", label: "Deployments", icon: "deploy" },
   { route: "integrations", label: "Integrations", icon: "integrations" },
   { route: "settings", label: "Settings", icon: "settings" },
   { route: "documentation", label: "Documentation", icon: "docs" },
   { route: "support", label: "Support", icon: "support" },
+  { route: "agents", label: "Agents", icon: "agents" },
+  { route: "deployments", label: "Deployments", icon: "deploy" },
 ];
 
 export function workspaceRoutePage(route: WorkspaceRoute) {
@@ -218,18 +218,29 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
     <div className="ws-app">
       <aside className="ws-sidebar">
         <a href={routeHref("dashboard")} className="ws-brand" aria-label="CodeTwin dashboard">
-          <img src="/app-icon.png" alt=""/>
-          <span><strong>CodeTwin</strong><small>Developer workspace</small></span>
+          <Icon name="code" size={27}/>
+          <span><strong>CodeTwin</strong></span>
         </a>
         <nav aria-label="Main navigation">
           {navigation.map((item, index) => (
             <div key={item.route} className="ws-nav-item">
-              {[0, 4, 8].includes(index) && <p className="ws-nav-label">{index === 0 ? "Workspace" : index === 4 ? "Analysis" : "Preferences"}</p>}
+              {[0, 3, 6, 10].includes(index) && <p className="ws-nav-label">{index === 0 ? "Workspace" : index === 3 ? "Analysis" : index === 6 ? "Preferences" : "Additional"}</p>}
             <a key={item.route} href={routeHref(item.route)} aria-label={item.label} title={item.label} aria-current={route === item.route ? "page" : undefined} className={route === item.route ? "active" : ""} data-section={index === 10 ? "secondary" : undefined}>
               <Icon name={item.icon}/><span>{item.label}</span>
             </a>
             </div>
           ))}
+          <details className="ws-sidebar-tools">
+            <summary aria-label="Advanced tools" title="Advanced tools"><Icon name="code"/><span>Advanced tools</span><Icon name="chevron" size={14}/></summary>
+            <a href={routeHref("engineering")}>Engineering</a>
+            <a href={routeHref("web-security")}>Source security</a>
+            <a href={routeHref("database")}>Database</a>
+            <a href={routeHref("runtime")}>Runtime</a>
+            <a href={routeHref("qa")}>QA</a>
+            <a href={routeHref("ml")}>Local ML</a>
+            <a href={routeHref("repair")}>Repair</a>
+            <a href={routeHref("repair-apply")}>Apply & rollback</a>
+          </details>
         </nav>
         <div className="ws-sidebar-profile">
           <span className="ws-avatar">{initials}</span>
@@ -240,6 +251,7 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
 
       <section className="ws-main">
         <header className="ws-topbar">
+          <div className="ws-breadcrumb"><span>Workspace</span><span>/</span><strong>{route === "dashboard" ? "Overview" : navigation.find(item => item.route === route)?.label}</strong></div>
           <GlobalSearch/>
           <div className="ws-top-actions">
             <details className="ws-top-menu">

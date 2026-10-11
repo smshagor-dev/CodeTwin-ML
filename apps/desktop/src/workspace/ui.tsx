@@ -84,7 +84,7 @@ export function ProjectSelect({
   return (
     <label className="ws-field ws-project-select" htmlFor={id}>
       <span>{label}</span>
-      <select id={id} value={value ?? ""} onChange={(event) => onChange(event.target.value)}>
+      <select id={id} aria-label={label} value={value ?? ""} onChange={(event) => onChange(event.target.value)}>
         {!projects.length && <option value="">No projects</option>}
         {projects.map((project) => <option key={project.id} value={project.id}>{project.display_name}</option>)}
       </select>

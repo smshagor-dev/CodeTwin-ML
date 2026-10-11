@@ -330,3 +330,79 @@ html[data-theme="dark"] :is(.ws-app, .ws-advanced-shell) { --ws-success: #79d5ab
 .ws-advanced-shell .grid > .card { min-width: 0; }
 .ws-advanced-shell .grid > .card p { overflow-wrap: anywhere; }
 .ws-advanced-shell .ml-generation-options { margin-top: 16px; border-top: 1px solid var(--ws-border); padding-top: 16px; }
+
+/* Technical home: one project summary and evidence-first tables. */
+.ws-breadcrumb { display: flex; gap: 10px; align-items: center; color: var(--ws-muted); white-space: nowrap; font-size: 12px; }
+.ws-breadcrumb strong { color: var(--ws-text); font-weight: 500; }
+.ws-topbar .ws-global-search { margin-left: auto; }
+.ws-overview { display: grid; gap: 18px; min-width: 0; }
+.ws-overview .ws-page-header { margin: 0 !important; min-height: 64px; }
+.ws-overview .ws-page-header h1 { font-size: 28px; }
+.ws-overview .ws-page-header p { font-size: 13px; }
+.ws-overview-project-tools { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+.ws-overview-project-tools .ws-project-select { min-width: 160px; max-width: 240px; }
+.ws-overview-project { border: 1px solid var(--ws-border); border-radius: 7px; background: var(--ws-surface); padding: 20px; min-width: 0; }
+.ws-overview-project-heading { display: flex; justify-content: space-between; align-items: start; gap: 20px; }
+.ws-overview-project-heading > div { min-width: 0; }
+.ws-overview-project h2 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.03em; overflow-wrap: anywhere; }
+.ws-overview-project p { margin: 5px 0 0; color: var(--ws-muted); font-size: 12px; overflow-wrap: anywhere; }
+.ws-overview-project-heading > span { color: var(--ws-muted); font-size: 11px; flex-shrink: 0; }
+.ws-overview-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 22px 0 0; }
+.ws-overview-metrics > div { padding: 0 20px; border-left: 1px solid var(--ws-border); }
+.ws-overview-metrics > div:first-child { padding-left: 0; border-left: 0; }
+.ws-overview-metrics dt { color: var(--ws-muted); font-size: 12px; }
+.ws-overview-metrics dd { margin: 5px 0 0; font-size: 20px; font-weight: 600; }
+.ws-overview-metrics .ws-status { vertical-align: middle; }
+.ws-overview-empty-project { display: flex; gap: 14px; align-items: center; padding: 12px 0; }
+.ws-overview-empty-project > svg { color: var(--ws-muted); flex-shrink: 0; }
+.ws-overview-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ws-overview-view-project { margin-left: auto; }
+.ws-overview .ws-panel { min-width: 0; }
+.ws-overview .ws-panel-head { padding: 12px 18px; min-height: 48px; }
+.ws-overview .ws-panel-head h2 { font-size: 14px; }
+.ws-overview-table th, .ws-overview-table td { padding: 12px 18px; }
+.ws-overview-table th { font-weight: 500; }
+.ws-overview-table td.ws-mono { max-width: 350px; overflow-wrap: anywhere; font-size: 11px; }
+.ws-overview-table td { max-width: 320px; overflow-wrap: anywhere; }
+.ws-overview-finding-link { padding: 0; border: 0; background: transparent; color: var(--ws-text); font: inherit; text-align: left; cursor: pointer; }
+.ws-overview-finding-link:hover { color: var(--ws-primary); text-decoration: underline; }
+.ws-overview-table-note { margin: 0 !important; padding: 10px 18px; border-top: 1px solid var(--ws-border); color: var(--ws-muted); font-size: 11px; }
+.ws-overview .ws-inline-empty { padding: 18px 0; }
+.ws-overview-status { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; border-top: 1px solid var(--ws-border); padding-top: 14px; font-size: 11px; color: var(--ws-muted); }
+.ws-overview-status > span { display: inline-flex; gap: 7px; align-items: center; }
+.ws-overview-status .ws-system-dot { flex-shrink: 0; width: 6px; height: 6px; }
+.ws-overview-status > button { margin-left: auto; font-size: 11px; }
+.ws-overview-error { display: flex; gap: 16px; align-items: center; border: 1px solid var(--ws-border-strong); background: var(--ws-surface-soft); padding: 14px 18px; border-radius: 6px; }
+.ws-overview-error > div { min-width: 0; flex: 1; }
+.ws-overview-error p { margin: 4px 0; color: var(--ws-muted); overflow-wrap: anywhere; }
+@media (max-width: 1100px) { .ws-breadcrumb { display: none; } }
+@media (max-width: 700px) {
+  .ws-overview .ws-page-header { flex-direction: column; gap: 14px; }
+  .ws-overview .ws-header-actions, .ws-overview-project-tools { width: 100%; }
+  .ws-overview-project-tools .ws-project-select { min-width: 0; flex: 1; }
+  .ws-overview-project { padding: 16px; }
+  .ws-overview-project-heading { flex-direction: column; gap: 8px; }
+  .ws-overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 0; }
+  .ws-overview-metrics > div:nth-child(3) { padding-left: 0; border-left: 0; }
+  .ws-overview-view-project { margin-left: 0; }
+  .ws-overview-table { min-width: 600px; }
+  .ws-overview-status > button { margin-left: 0; }
+}
+.ws-sidebar-tools { margin-top: 6px; }
+.ws-sidebar-tools summary { display: flex; gap: 10px; align-items: center; padding: 8px 10px; color: var(--ws-muted); font-size: 12px; cursor: pointer; border-radius: 5px; list-style: none; }
+.ws-sidebar-tools summary::-webkit-details-marker { display: none; }
+.ws-sidebar-tools summary:hover { background: var(--ws-surface-soft); color: var(--ws-text); }
+.ws-sidebar-tools summary > svg:first-child { width: 17px; height: 17px; }
+.ws-sidebar-tools summary > svg:last-child { margin-left: auto; }
+.ws-sidebar-tools[open] summary > svg:last-child { transform: rotate(90deg); }
+.ws-sidebar nav .ws-sidebar-tools a { padding-left: 37px; }
+@media (max-width: 760px) {
+  .ws-sidebar-tools summary { justify-content: center; padding: 8px 0; }
+  .ws-sidebar-tools summary > span, .ws-sidebar-tools summary > svg:last-child { display: none; }
+  .ws-sidebar-tools[open] { position: relative; }
+  .ws-sidebar nav .ws-sidebar-tools a { padding: 8px 5px; font-size: 9px; min-height: 0; white-space: normal; text-align: center; }
+}
+.ws-app .ws-overview .ws-status { color: var(--ws-muted); background: var(--ws-surface-soft); filter: none; font-size: 11px; font-weight: 500; }
+.ws-app .ws-overview :is(.ws-status-completed, .ws-status-operational) { color: var(--ws-success); background: color-mix(in srgb, var(--ws-success) 10%, var(--ws-surface)); }
+.ws-app .ws-overview :is(.ws-status-high, .ws-status-medium, .ws-status-running, .ws-status-queued) { color: var(--ws-warning); background: color-mix(in srgb, var(--ws-warning) 10%, var(--ws-surface)); }
+.ws-app .ws-overview :is(.ws-status-critical, .ws-status-failed, .ws-status-interrupted) { color: var(--ws-danger); background: color-mix(in srgb, var(--ws-danger) 10%, var(--ws-surface)); }

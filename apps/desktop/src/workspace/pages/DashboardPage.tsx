@@ -1,169 +1,118 @@
+import { useEffect, useState } from "react";
+import { workspaceApi } from "../api";
 import { Icon } from "../Icon";
 import { navigate } from "../routes";
-import { Panel, StatusBadge, formatDate, shortPath } from "../ui";
+import type { QaDiscoveryRunRecord, SecurityFindingRecord, SecurityRunRecord, SourceFileRecord } from "../types";
+import { PageHeader, Panel, ProjectSelect, StatusBadge, formatDate } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
 
-function SummaryCard({
-  icon,
-  label,
-  value,
-  route,
-  tone,
-}: {
-  icon: Parameters<typeof Icon>[0]["name"];
-  label: string;
-  value: number;
-  route: "projects" | "websites" | "agents" | "security";
-  tone: string;
-}) {
-  return (
-    <button className="ws-summary-card" data-tone={tone} onClick={() => navigate(route)}>
-      <span className="ws-summary-icon"><Icon name={icon} size={25}/></span>
-      <span><strong>{value.toLocaleString()}</strong><small>{label}</small></span>
-      <Icon name="chevron" size={18}/>
-    </button>
-  );
+type Evidence = {
+  projectId: string;
+  findings: SecurityFindingRecord[];
+  securityRuns: SecurityRunRecord[];
+  testRuns: QaDiscoveryRunRecord[];
+  files: SourceFileRecord[];
+  errors: string[];
+};
+
+function openSourceSecurity() {
+  window.location.hash = "#/security?mode=source";
 }
 
 export function DashboardPage() {
-  const {
-    projects,
-    websites,
-    summary,
-    activity,
-    systemStatus,
-    activeProject,
-    setActiveProjectId,
-    operation,
-    setWebsiteComposerOpen,
-    pickAndImportProject,
-    runSecurity,
-  } = useWorkspace();
-
-  const recentProjects = projects.slice(0, 5);
-  const recentWebsites = websites.slice(0, 5);
+  const { projects, activeProjectId, activeProject, setActiveProjectId, operation,
+    systemStatus, pickAndImportProject, runSecurity, runQaDiscovery } = useWorkspace();
+  const [evidence, setEvidence] = useState<Evidence | null>(null);
+  const [retry, setRetry] = useState(0);
   const busy = operation !== null;
 
+  useEffect(() => {
+    if (!activeProjectId || busy) return;
+    let cancelled = false;
+    setEvidence(null);
+    void Promise.allSettled([
+      workspaceApi.securityFindings(activeProjectId, "open", 500),
+      workspaceApi.securityHistory(activeProjectId, 8),
+      workspaceApi.qaHistory(activeProjectId, 8),
+      workspaceApi.listFiles(activeProjectId, null, 500),
+    ]).then(([findings, securityRuns, testRuns, files]) => {
+      if (cancelled) return;
+      const results = [findings, securityRuns, testRuns, files];
+      const labels = ["Findings", "Security history", "Test discovery history", "Source paths"];
+      setEvidence({
+        projectId: activeProjectId,
+        findings: findings.status === "fulfilled" ? findings.value : [],
+        securityRuns: securityRuns.status === "fulfilled" ? securityRuns.value : [],
+        testRuns: testRuns.status === "fulfilled" ? testRuns.value : [],
+        files: files.status === "fulfilled" ? files.value : [],
+        errors: results.flatMap((result, index) => result.status === "rejected" ? [labels[index] + " unavailable: " + String(result.reason)] : []),
+      });
+    });
+    return () => { cancelled = true; };
+  }, [activeProjectId, busy, retry]);
+
+  const current = evidence?.projectId === activeProjectId ? evidence : null;
+  const findings = [...(current?.findings ?? [])].sort((a, b) => b.last_seen.localeCompare(a.last_seen)).slice(0, 5);
+  const paths = new Map(current?.files.map(file => [file.id, file.relative_path]) ?? []);
+  const runs = [
+    ...(current?.securityRuns ?? []).map(run => ({ id: run.run_id, label: "Static analysis", status: run.status,
+      duration: run.duration_ms, date: run.finished_at ?? run.started_at, incomplete: !run.coverage_complete, route: "security" as const })),
+    ...(current?.testRuns ?? []).map(run => ({ id: run.run_id, label: "Test discovery", status: run.status,
+      duration: run.duration_ms, date: run.finished_at ?? run.started_at, incomplete: !run.coverage_complete, route: "testing" as const })),
+    ...(activeProject?.last_index_status ? [{ id: "latest-index", label: "Project indexing", status: activeProject.last_index_status,
+      duration: activeProject.last_index_duration_ms, date: activeProject.last_indexed_at, incomplete: false, route: "code-analysis" as const }] : []),
+  ].sort((a, b) => (b.date ?? "").localeCompare(a.date ?? "")).slice(0, 5);
+
   return (
-    <div className="ws-dashboard-page">
-      <section className="ws-welcome">
-        <div>
-          <p className="ws-eyebrow">CODETWIN WORKSPACE</p>
-          <h1>Welcome to CodeTwin</h1>
-          <p>Manage projects, inspect persisted engineering evidence, and run explicit analysis workflows.</p>
-        </div>
-        <span className="ws-local-label"><span/>Local workspace</span>
-      </section>
-
-      <section className="ws-summary-grid" aria-label="Workspace summary">
-        <SummaryCard icon="projects" label="Projects" value={summary.project_count} route="projects" tone="blue"/>
-        <SummaryCard icon="websites" label="Websites" value={summary.website_count} route="websites" tone="cyan"/>
-        <SummaryCard icon="agents" label="Active Agents" value={summary.active_agents} route="agents" tone="purple"/>
-        <SummaryCard icon="security" label="Security Scans" value={summary.security_scan_count} route="security" tone="green"/>
-      </section>
-
-      <section className="ws-primary-actions" aria-label="Primary actions">
-        <button className="ws-action-button ws-action-blue" onClick={() => setWebsiteComposerOpen(true)}>
-          <Icon name="plus"/><Icon name="websites"/> Add Website Link
-        </button>
-        <button className="ws-action-button ws-action-green" onClick={() => void pickAndImportProject()} disabled={busy}>
-          <Icon name="folder"/>{operation?.kind === "project-import" ? operation.stage : "Add Project Folder"}
-        </button>
-        <button className="ws-action-button" onClick={() => void runSecurity()} disabled={!activeProject || busy}>
-          <Icon name="scan"/> Run Scan
-        </button>
-        <details className="ws-more-menu">
-          <summary className="ws-action-button"><Icon name="more"/> More</summary>
-          <div>
-            <button onClick={() => navigate("engineering")}>Engineering Workspace</button>
-            <button onClick={() => navigate("web-security")}>Web Security Workspace</button>
-            <button onClick={() => navigate("database")}>Database Analysis</button>
-            <button onClick={() => navigate("runtime")}>Runtime Reliability</button>
-            <button onClick={() => navigate("qa")}>QA Workspace</button>
-            <button onClick={() => navigate("ml")}>ML Workspace</button>
-            <button onClick={() => navigate("repair")}>Repair Lab</button>
-            <button onClick={() => navigate("repair-apply")}>Apply & Rollback</button>
+    <div className="ws-overview">
+      <PageHeader title="Workspace Overview" description="Index, inspect and validate your code."
+        actions={<div className="ws-overview-project-tools">
+          <ProjectSelect projects={projects} value={activeProjectId} onChange={setActiveProjectId} label="Active project"/>
+          <button className="ws-button ws-button-secondary" disabled={busy} onClick={() => void pickAndImportProject()}><Icon name="plus"/>Add project</button>
+        </div>}/>
+      <section className="ws-overview-project" aria-label="Project summary">
+        {activeProject ? <>
+          <div className="ws-overview-project-heading">
+            <div><h2>{activeProject.display_name}</h2><p className="ws-mono" title={activeProject.root_path}>{activeProject.root_path}</p></div>
+            <span>Indexed {formatDate(activeProject.last_indexed_at)}</span>
           </div>
-        </details>
+          <dl className="ws-overview-metrics">
+            <div><dt>Files</dt><dd>{activeProject.file_count.toLocaleString()}</dd></div>
+            <div><dt>Symbols</dt><dd>{activeProject.symbol_count.toLocaleString()}</dd></div>
+            <div><dt>Index</dt><dd><StatusBadge status={activeProject.last_index_status ?? "not_indexed"}/></dd></div>
+            <div><dt>Languages</dt><dd>{activeProject.language_count.toLocaleString()}</dd></div>
+          </dl>
+        </> : <div className="ws-overview-empty-project"><Icon name="folder" size={24}/><div><h2>Add your first project</h2><p>Choose a local folder to index its files and symbols.</p></div></div>}
       </section>
-
-      <section className="ws-dashboard-tables">
-        <Panel title="Recent Websites" action={<button className="ws-text-button" onClick={() => navigate("websites")}>View All →</button>}>
-          {recentWebsites.length ? (
-            <div className="ws-table-wrap">
-              <table className="ws-table">
-                <thead><tr><th>#</th><th>Website</th><th>Status</th><th>Last Checked</th><th>Actions</th></tr></thead>
-                <tbody>
-                  {recentWebsites.map((website, index) => (
-                    <tr key={website.id}>
-                      <td>{index + 1}</td>
-                      <td><strong>{website.display_name}</strong><small title={website.url}>{shortPath(website.url, 46)}</small></td>
-                      <td><StatusBadge status={website.status}/></td>
-                      <td>{formatDate(website.last_checked_at)}</td>
-                      <td><button className="ws-icon-button" aria-label={"View " + website.display_name} onClick={() => { window.location.hash = "#/websites?website=" + encodeURIComponent(website.id); }}><Icon name="chevron"/></button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : <p className="ws-inline-empty">No websites registered yet.</p>}
-        </Panel>
-
-        <Panel title="Recent Projects" action={<button className="ws-text-button" onClick={() => navigate("projects")}>View All →</button>}>
-          {recentProjects.length ? (
-            <div className="ws-table-wrap">
-              <table className="ws-table">
-                <thead><tr><th>#</th><th>Project</th><th>Path</th><th>Last Indexed</th><th>Actions</th></tr></thead>
-                <tbody>
-                  {recentProjects.map((project, index) => (
-                    <tr key={project.id}>
-                      <td>{index + 1}</td>
-                      <td><strong>{project.display_name}</strong><small>{project.file_count} files · {project.symbol_count} symbols</small></td>
-                      <td className="ws-mono" title={project.root_path}>{shortPath(project.root_path, 42)}</td>
-                      <td>{formatDate(project.last_indexed_at)}</td>
-                      <td><button className="ws-icon-button" aria-label={"Open " + project.display_name} onClick={() => { setActiveProjectId(project.id); window.location.hash = "#/projects?project=" + encodeURIComponent(project.id); }}><Icon name="chevron"/></button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : <p className="ws-inline-empty">No projects have been indexed yet.</p>}
-        </Panel>
-      </section>
-
-      <section className="ws-dashboard-lower">
-        <Panel title="Recent Activity" action={<button className="ws-text-button" onClick={() => navigate("projects")}>Explore →</button>}>
-          <div className="ws-activity-list">
-            {activity.slice(0, 6).map((item) => (
-              <div key={item.id}>
-                <span className={"ws-activity-dot ws-activity-" + item.kind}/>
-                <p><strong>{item.title}</strong><small>{item.detail}</small></p>
-                <time>{formatDate(item.occurred_at)}</time>
-              </div>
-            ))}
-            {!activity.length && <p className="ws-inline-empty">No persisted workspace activity yet.</p>}
-          </div>
-        </Panel>
-
-        <Panel title="System Status">
-          <div className="ws-system-list">
-            {systemStatus.map((entry) => (
-              <div key={entry.key} title={entry.detail}>
-                <span className={"ws-system-dot ws-system-" + entry.state}/>
-                <span>{entry.label}</span>
-                <StatusBadge status={entry.state}/>
-              </div>
-            ))}
-          </div>
-          <div className="ws-status-note">
-            <Icon name={systemStatus.every((entry) => entry.state === "operational") ? "check" : "warning"}/>
-            <div>
-              <strong>Capability truth</strong>
-              <small>Unavailable and limited subsystems are shown explicitly rather than reported as operational.</small>
-            </div>
-          </div>
-        </Panel>
-      </section>
+      <div className="ws-overview-actions" aria-label="Analysis actions">
+        <button className="ws-button ws-button-secondary" disabled={!activeProject} onClick={() => navigate("code-analysis")}><Icon name="code"/>Code Analysis</button>
+        <button className="ws-button ws-button-primary" disabled={!activeProject || busy} title="Run static source analysis on the selected local project" onClick={() => void runSecurity()}><Icon name="security"/>{operation?.kind === "security" ? "Scanning…" : "Run Security Scan"}</button>
+        <button className="ws-button ws-button-secondary" disabled={!activeProject || busy} onClick={() => void runQaDiscovery()}><Icon name="testing"/>{operation?.kind === "testing" ? "Discovering…" : "Discover Tests"}</button>
+        {activeProject && <button className="ws-text-button ws-overview-view-project" onClick={() => { window.location.hash = "#/projects?project=" + encodeURIComponent(activeProject.id); }}>View project →</button>}
+      </div>
+      {current && current.errors.length > 0 && <div className="ws-overview-error" role="alert"><div><strong>Evidence unavailable</strong>{current.errors.map(error => <p key={error}>{error}</p>)}</div><button className="ws-button ws-button-secondary" disabled={busy} onClick={() => setRetry(value => value + 1)}>Retry</button></div>}
+      <Panel title="Latest findings" action={<button className="ws-text-button" onClick={openSourceSecurity}>View all →</button>}>
+        {!activeProject ? <p className="ws-inline-empty">Select an indexed project to view source findings.</p> : !current ? <p className="ws-inline-empty" role="status">Loading project evidence…</p> : findings.length ? <>
+          <div className="ws-table-wrap"><table className="ws-table ws-overview-table"><thead><tr><th>Severity</th><th>Finding</th><th>Source</th><th>Status</th></tr></thead><tbody>
+            {findings.map(finding => <tr key={finding.id}>
+              <td><StatusBadge status={finding.severity}/></td><td><button className="ws-overview-finding-link" onClick={openSourceSecurity}>{finding.title}</button></td>
+              <td className="ws-mono">{finding.file_id ? (paths.get(finding.file_id) ?? "Source path unavailable") : "Project"}{finding.source_start_line !== null ? ":" + finding.source_start_line : ""}</td>
+              <td><StatusBadge status={finding.status}/></td>
+            </tr>)}
+          </tbody></table></div>
+          <p className="ws-overview-table-note">Showing {findings.length} latest open source findings. Review scope and coverage in Security.</p>
+        </> : <p className="ws-inline-empty">{current.errors.some(error => error.startsWith("Findings")) ? "Findings could not be loaded. Retry the evidence read." : current.securityRuns.length ? "No persisted open source findings for this project. Review scan coverage in Security." : "No source analysis yet. Run a security scan to collect findings."}</p>}
+      </Panel>
+      <Panel title="Recent runs" action={<button className="ws-text-button" onClick={() => navigate("testing")}>View tests →</button>}>
+        {!activeProject ? <p className="ws-inline-empty">Index a project to start collecting run history.</p> : !current ? <p className="ws-inline-empty" role="status">Loading run history…</p> : runs.length ? <div className="ws-table-wrap"><table className="ws-table ws-overview-table"><thead><tr><th>Run</th><th>Project</th><th>Status</th><th>Duration</th><th>Finished / started</th></tr></thead><tbody>
+          {runs.map(run => <tr key={run.label + run.id}><td><button className="ws-overview-finding-link" onClick={() => run.route === "security" ? openSourceSecurity() : navigate(run.route)}>{run.label}</button></td><td>{activeProject.display_name}</td><td><StatusBadge status={run.status}/>{run.incomplete && <small>Coverage incomplete</small>}</td><td>{run.duration === null ? "—" : (run.duration / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 }) + "s"}</td><td>{formatDate(run.date)}</td></tr>)}
+        </tbody></table></div> : <p className="ws-inline-empty">No persisted analysis runs yet.</p>}
+      </Panel>
+      <footer className="ws-overview-status" aria-label="Local system status">
+        {systemStatus.filter(entry => ["backend", "database", "indexer"].includes(entry.key)).map(entry => <span key={entry.key} title={entry.detail}><i className={"ws-system-dot ws-system-" + entry.state}/>{entry.label} · {entry.state}</span>)}
+        {!systemStatus.length && <span>System status unavailable</span>}
+        <button className="ws-text-button" onClick={() => navigate("support")}>Diagnostics →</button>
+      </footer>
     </div>
   );
 }
