@@ -37,7 +37,7 @@ describe("desktop integration surface", () => {
     const shellPath = fileURLToPath(new URL("./workspace/WorkspaceShell.tsx", import.meta.url));
     const source = readFileSync(shellPath, "utf8");
     for (const label of [
-      "Dashboard", "Projects", "Websites", "Agents", "Code Analysis", "Security",
+      "Overview", "Projects", "Websites", "Agents", "Code Analysis", "Security",
       "Testing", "Deployments", "Integrations", "Settings", "Documentation", "Support",
     ]) {
       expect(source).toContain('label: "' + label + '"');

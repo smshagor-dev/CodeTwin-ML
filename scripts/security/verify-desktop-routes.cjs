@@ -37,7 +37,7 @@ const routes = ['engineering', 'web-security', 'database', 'runtime', 'qa', 'ml'
       } };
     });
     await page.goto(`${origin}/#/dashboard`);
-    await page.getByRole('heading', { name: 'Welcome to CodeTwin' }).waitFor();
+    await page.getByRole('heading', { name: 'Workspace Overview' }).waitFor();
     assert(!requests.some(url => /\/(App|\w+Workspace)-[^/]+\.js/.test(url)), 'Advanced chunks loaded on dashboard');
     console.log('PASS production dashboard excludes advanced chunks');
     await page.goto(`${origin}/#/security`);
@@ -59,7 +59,7 @@ const routes = ['engineering', 'web-security', 'database', 'runtime', 'qa', 'ml'
       assert.equal(await page.getByText('Loading workspace…', { exact: true }).count(), 0);
       console.log(`PASS lazy workspace ${route}`);
       await page.getByRole('button', { name: '← Dashboard', exact: true }).click();
-      await page.getByRole('heading', { name: 'Welcome to CodeTwin' }).waitFor();
+      await page.getByRole('heading', { name: 'Workspace Overview' }).waitFor();
     }
     for (const theme of ['light', 'dark']) {
       for (const width of [1440, 390]) {

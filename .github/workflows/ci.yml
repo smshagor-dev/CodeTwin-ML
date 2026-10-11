@@ -98,3 +98,4 @@ jobs:
           node scripts/security/verify-xss-contexts.cjs
           node scripts/security/verify-cors-controls.cjs
           node scripts/security/verify-desktop-routes.cjs
+          node scripts/security/verify-workspace-overview.cjs

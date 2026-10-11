@@ -40,7 +40,7 @@ export function DocumentationPage() {
         <article><div><h3>Security</h3><p>Run source, secret and dependency checks. Web testing needs explicit authorization and a bounded scope; registering a URL does not start a scan.</p></div><button className="ws-text-button" onClick={() => navigate("security")}>Open Security →</button></article>
         <article><div><h3>Testing</h3><p>Discovery inventories test files. Execution needs an approved plan and an available strict sandbox.</p></div><button className="ws-text-button" onClick={() => navigate("testing")}>Open Testing →</button></article>
         <article><div><h3>Language servers</h3><p>Configure TypeScript, Pyright or Rust Analyzer for explicitly requested semantic enrichment.</p></div><button className="ws-text-button" onClick={() => navigate("integrations")}>Open Integrations →</button></article>
-        <article><div><h3>Advanced tools</h3><p>Database, runtime, local ML and repair tools are available from Dashboard → More. Repairs require review and approval.</p></div></article>
+        <article><div><h3>Advanced tools</h3><p>Open Advanced tools in the sidebar for engineering, database, runtime, local ML and repair workflows. Repairs require review and approval.</p></div></article>
         <article><div><h3>Local data</h3><p>Projects, evidence and preferences are stored in the application SQLite database.</p></div></article>
       </Panel>
     </div>
