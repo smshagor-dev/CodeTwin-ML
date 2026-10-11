@@ -38,7 +38,6 @@ export function DashboardPage() {
     setWebsiteComposerOpen,
     pickAndImportProject,
     runSecurity,
-    runQaDiscovery,
   } = useWorkspace();
 
   const recentProjects = projects.slice(0, 5);
@@ -53,7 +52,7 @@ export function DashboardPage() {
           <h1>Welcome to CodeTwin</h1>
           <p>Manage projects, inspect persisted engineering evidence, and run explicit analysis workflows.</p>
         </div>
-        <blockquote>“Index. Analyze. Secure. Verify. All from one local workspace.”</blockquote>
+        <span className="ws-local-label"><span/>Local workspace</span>
       </section>
 
       <section className="ws-summary-grid" aria-label="Workspace summary">
@@ -70,14 +69,8 @@ export function DashboardPage() {
         <button className="ws-action-button ws-action-green" onClick={() => void pickAndImportProject()} disabled={busy}>
           <Icon name="folder"/>{operation?.kind === "project-import" ? operation.stage : "Add Project Folder"}
         </button>
-        <button className="ws-action-button" disabled title="Project scaffolding is not implemented. Import an existing project folder instead.">
-          <Icon name="file"/> New Project
-        </button>
         <button className="ws-action-button" onClick={() => void runSecurity()} disabled={!activeProject || busy}>
           <Icon name="scan"/> Run Scan
-        </button>
-        <button className="ws-action-button" disabled title="Deployment execution is not implemented in CodeTwin yet.">
-          <Icon name="deploy"/> Deploy
         </button>
         <details className="ws-more-menu">
           <summary className="ws-action-button"><Icon name="more"/> More</summary>
@@ -139,17 +132,6 @@ export function DashboardPage() {
       </section>
 
       <section className="ws-dashboard-lower">
-        <Panel title="Quick Actions" className="ws-quick-panel">
-          <div className="ws-quick-grid">
-            <button onClick={() => setWebsiteComposerOpen(true)}><span><Icon name="websites"/></span><b>Add Website Link</b><small>Register a URL without scanning it</small></button>
-            <button onClick={() => void pickAndImportProject()} disabled={busy}><span><Icon name="folder"/></span><b>Add Project Folder</b><small>Discover and persist a local project</small></button>
-            <button onClick={() => navigate("code-analysis")} disabled={!activeProject}><span><Icon name="code"/></span><b>Code Analysis</b><small>Inspect files and symbols</small></button>
-            <button onClick={() => void runSecurity()} disabled={!activeProject || busy}><span><Icon name="security"/></span><b>Run Security Scan</b><small>Run existing static source rules</small></button>
-            <button onClick={() => void runQaDiscovery()} disabled={!activeProject || busy}><span><Icon name="testing"/></span><b>Discover Tests</b><small>Inventory QA evidence safely</small></button>
-            <button onClick={() => navigate("documentation")}><span><Icon name="docs"/></span><b>Documentation</b><small>Review current capability boundaries</small></button>
-          </div>
-        </Panel>
-
         <Panel title="Recent Activity" action={<button className="ws-text-button" onClick={() => navigate("projects")}>Explore →</button>}>
           <div className="ws-activity-list">
             {activity.slice(0, 6).map((item) => (

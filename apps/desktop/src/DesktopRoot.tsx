@@ -11,6 +11,7 @@ import "./repair-application-workspace.css";
 import "./repair-workspace.css";
 import "./runtime-workspace.css";
 import "./workspace/workspace.css";
+import "./workspace/clean-workspace.css";
 
 const App = lazy(() => import("./App").then(module => ({ default: module.App })));
 const DatabaseWorkspace = lazy(() => import("./DatabaseWorkspace").then(module => ({ default: module.DatabaseWorkspace })));

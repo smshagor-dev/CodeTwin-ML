@@ -219,13 +219,16 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
       <aside className="ws-sidebar">
         <a href={routeHref("dashboard")} className="ws-brand" aria-label="CodeTwin dashboard">
           <img src="/app-icon.png" alt=""/>
-          <span><strong>CodeTwin</strong><small>Engineering Intelligence</small></span>
+          <span><strong>CodeTwin</strong><small>Developer workspace</small></span>
         </a>
         <nav aria-label="Main navigation">
           {navigation.map((item, index) => (
+            <div key={item.route} className="ws-nav-item">
+              {[0, 4, 8].includes(index) && <p className="ws-nav-label">{index === 0 ? "Workspace" : index === 4 ? "Analysis" : "Preferences"}</p>}
             <a key={item.route} href={routeHref(item.route)} aria-label={item.label} title={item.label} aria-current={route === item.route ? "page" : undefined} className={route === item.route ? "active" : ""} data-section={index === 10 ? "secondary" : undefined}>
               <Icon name={item.icon}/><span>{item.label}</span>
             </a>
+            </div>
           ))}
         </nav>
         <div className="ws-sidebar-profile">
