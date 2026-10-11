@@ -6,6 +6,8 @@ import type { CatalogRunSummary, CatalogTool } from "../types";
 import { Disclosure, LoadingState, PageHeader, Panel, ProjectSelect, StatusBadge, formatDate } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
 
+import { AssessmentPanel } from "../AssessmentPanel";
+
 export function ToolsPage() {
   const { projects, activeProjectId, setActiveProjectId } = useWorkspace();
   const [tools, setTools] = useState<CatalogTool[]>([]);
@@ -37,6 +39,7 @@ export function ToolsPage() {
 
   return <div>
     <PageHeader eyebrow="CYBERSECURITY WORKFLOWS" title="Tool Library" description="Find supported workflows, inspect their prerequisites and see what is still planned. Opening a workflow does not start a scan." actions={<button className="ws-button ws-button-secondary" disabled={loading} onClick={() => setRefresh(value => value + 1)}>Refresh availability</button>}/>
+    {activeProjectId && <AssessmentPanel key={activeProjectId} projectId={activeProjectId} projectName={projects.find(project => project.id === activeProjectId)?.display_name ?? activeProjectId}/>}
     <div className="ws-tool-filters">
       <ProjectSelect projects={projects} value={activeProjectId} onChange={setActiveProjectId}/>
       <label className="ws-field"><span>Search tools</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Name, ID or coverage…"/></label>

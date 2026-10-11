@@ -104,3 +104,4 @@ jobs:
           node scripts/security/verify-project-index.cjs
           node scripts/security/verify-git-review.cjs
           node scripts/security/verify-tool-catalog.cjs
+          node scripts/security/verify-assessment-jobs.cjs

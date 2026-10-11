@@ -1,3 +1,4 @@
+pub mod assessment_jobs;
 pub mod tool_catalog;
 pub use tool_catalog::{CatalogRunSummary, CatalogTool, ToolCatalogService};
 pub mod git_review;

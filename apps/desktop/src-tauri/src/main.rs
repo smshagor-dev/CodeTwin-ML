@@ -118,6 +118,7 @@ use workspace_commands::{
 struct AppState {
     database: Mutex<Database>,
     database_path: PathBuf,
+    assessment_running: Arc<AtomicBool>,
     index_cancelled: Arc<AtomicBool>,
     index_running: Arc<AtomicBool>,
     semantic_cancelled: Arc<AtomicBool>,
@@ -126,6 +127,85 @@ struct AppState {
     security_running: Arc<AtomicBool>,
     ml_running: Arc<AtomicBool>,
     web_security_cancellations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+}
+
+// Reserve existing analyzer flags for the complete assessment; Drop also releases on panic.
+struct AssessmentReservations(Vec<Arc<AtomicBool>>);
+impl Drop for AssessmentReservations {
+    fn drop(&mut self) {
+        for flag in &self.0 {
+            flag.store(false, Ordering::SeqCst);
+        }
+    }
+}
+impl AssessmentReservations {
+    fn acquire(flags: &[&Arc<AtomicBool>]) -> Result<Self, String> {
+        let mut reservations = Self(Vec::new());
+        for flag in flags {
+            if flag
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return Err("Indexing, semantic enrichment or analysis is already running; retry after it finishes".into());
+            }
+            reservations.0.push(Arc::clone(flag));
+        }
+        Ok(reservations)
+    }
+}
+fn reserve_assessment(state: &AppState) -> Result<AssessmentReservations, String> {
+    AssessmentReservations::acquire(&[
+        &state.assessment_running,
+        &state.index_running,
+        &state.semantic_running,
+        &state.quality_running,
+        &state.security_running,
+    ])
+}
+#[tauri::command]
+async fn create_assessment_plan(
+    request: codetwin_core::assessment_jobs::AssessmentPlanRequest,
+    state: tauri::State<'_, AppState>,
+) -> Result<codetwin_core::assessment_jobs::AssessmentJob, String> {
+    let reservations = reserve_assessment(&state)?;
+    let path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _reservations = reservations;
+        let database = Database::open(path).map_err(|e| e.to_string())?;
+        codetwin_core::assessment_jobs::AssessmentJobs::new(&database).create_plan(request)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+fn list_assessment_jobs(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<codetwin_core::assessment_jobs::AssessmentJob>, String> {
+    with_database(&state, |database| {
+        codetwin_core::assessment_jobs::AssessmentJobs::new(database).list(&project_id)
+    })
+}
+#[tauri::command]
+fn cancel_assessment_job(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    with_database(&state, |database| {
+        codetwin_core::assessment_jobs::AssessmentJobs::new(database).cancel(&id)
+    })
+}
+#[tauri::command]
+async fn run_assessment_job(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<codetwin_core::assessment_jobs::AssessmentJob, String> {
+    let reservations = reserve_assessment(&state)?;
+    let path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _reservations = reservations;
+        let database = Database::open(path).map_err(|e| e.to_string())?;
+        codetwin_core::assessment_jobs::AssessmentJobs::new(&database).execute(&id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn with_database<T>(
@@ -235,7 +315,8 @@ async fn index_project(
 
 #[tauri::command]
 fn cancel_project_index(state: tauri::State<'_, AppState>) -> bool {
-    let running = state.index_running.load(Ordering::SeqCst);
+    let running = state.index_running.load(Ordering::SeqCst)
+        && !state.assessment_running.load(Ordering::SeqCst);
     if running {
         state.index_cancelled.store(true, Ordering::SeqCst);
     }
@@ -496,7 +577,8 @@ async fn enrich_project_semantics(
 
 #[tauri::command]
 fn cancel_semantic_enrichment(state: tauri::State<'_, AppState>) -> bool {
-    let running = state.semantic_running.load(Ordering::SeqCst);
+    let running = state.semantic_running.load(Ordering::SeqCst)
+        && !state.assessment_running.load(Ordering::SeqCst);
     if running {
         state.semantic_cancelled.store(true, Ordering::SeqCst);
     }
@@ -835,6 +917,9 @@ fn main() {
             std::fs::create_dir_all(&app_data_dir)?;
             let database_path = app_data_dir.join("codetwin.sqlite3");
             let database = Database::open(&database_path)?;
+            codetwin_core::assessment_jobs::AssessmentJobs::new(&database)
+                .recover_interrupted()
+                .map_err(std::io::Error::other)?;
             let repair_backup_root = app_data_dir.join("repair-backups");
             RepairApplicationService::new(&database)
                 .recover_interrupted_applications(&repair_backup_root)
@@ -848,6 +933,7 @@ fn main() {
             app.manage(AppState {
                 database: Mutex::new(database),
                 database_path,
+                assessment_running: Arc::new(AtomicBool::new(false)),
                 index_cancelled: Arc::new(AtomicBool::new(false)),
                 index_running: Arc::new(AtomicBool::new(false)),
                 semantic_cancelled: Arc::new(AtomicBool::new(false)),
@@ -860,6 +946,10 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            create_assessment_plan,
+            list_assessment_jobs,
+            cancel_assessment_job,
+            run_assessment_job,
             list_security_tools,
             recent_security_tool_runs,
             git_review_status,
@@ -1045,4 +1135,28 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");
+}
+
+#[cfg(test)]
+mod assessment_reservation_tests {
+    use super::*;
+    #[test]
+    fn failed_reservation_releases_only_flags_it_owns() {
+        let free = Arc::new(AtomicBool::new(false));
+        let occupied = Arc::new(AtomicBool::new(true));
+        assert!(AssessmentReservations::acquire(&[&free, &occupied]).is_err());
+        assert!(!free.load(Ordering::SeqCst));
+        assert!(occupied.load(Ordering::SeqCst));
+    }
+    #[test]
+    fn worker_unwind_releases_reservations() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let result = std::panic::catch_unwind(|| {
+            let _guard = AssessmentReservations::acquire(&[&flag]).unwrap();
+            assert!(flag.load(Ordering::SeqCst));
+            panic!("fixture worker failure");
+        });
+        assert!(result.is_err());
+        assert!(!flag.load(Ordering::SeqCst));
+    }
 }

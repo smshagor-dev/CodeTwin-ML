@@ -112,7 +112,7 @@ The tool library supports search, category, platform, risk and implemented/block
 
 ## CS-01 implementation increment
 
-The runtime Tool Library is implemented through a compiled read-only registry, project/LSP setup checks, existing strict QA backend availability, known workflow navigation and normalized recent analysis/web/QA run summaries. See [runtime tool catalog](RUNTIME_TOOL_CATALOG.md). The separate planning JSON remains documentation-only. A workflow being available does not mean all planned extensions in its domain are implemented; runtime coverage and prerequisites are displayed per entry. CS-02 job scheduling and engagement scope revisions remain planned.
+The runtime Tool Library is implemented through a compiled read-only registry, project/LSP setup checks, existing strict QA backend availability, known workflow navigation and normalized recent analysis/web/QA run summaries. See [runtime tool catalog](RUNTIME_TOOL_CATALOG.md). The separate planning JSON remains documentation-only. A workflow being available does not mean all planned extensions in its domain are implemented; runtime coverage and prerequisites are displayed per entry. CS-02 now provides revision-bound passive indexed-source plans, persisted job/step progress, cooperative cancellation and explicit restart recovery for source security and code quality. See [passive assessment jobs](ASSESSMENT_JOBS.md). Active engagement authorization and network/external adapters retain their existing separate gates and remain staged work.
 
 ## Delivery milestones
 

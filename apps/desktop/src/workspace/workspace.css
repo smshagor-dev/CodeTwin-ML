@@ -2111,3 +2111,10 @@ html[data-theme="system"] .ws-security-fix-warning {
 .ws-summary-card[data-tone] .ws-summary-icon {
   background: color-mix(in srgb, currentColor 12%, var(--ws-surface));
 }
+
+.ws-assessment-options { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; border: 1px solid var(--ws-border); border-radius: 8px; padding: 16px; margin: 16px 0; }
+.ws-assessment-options > label:not(.ws-field) { display: flex; gap: 8px; align-items: center; }
+.ws-assessment-options .ws-field { flex: 1 1 180px; }
+.ws-assessment-job { border-top: 1px solid var(--ws-border); padding: 20px 0; overflow-wrap: anywhere; }
+.ws-assessment-job progress { width: 100%; accent-color: var(--ws-primary); }
+.ws-assessment-job > button { margin: 8px 8px 0 0; }
