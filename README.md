@@ -545,6 +545,8 @@ This CLI performs static review. It does not start, crawl, or exploit the target
 
 Key documents:
 
+- [Runtime Tool Library (CS-01)](docs/architecture/RUNTIME_TOOL_CATALOG.md)
+
 - [Cybersecurity platform workflow and delivery roadmap](docs/architecture/CYBERSECURITY_PLATFORM_WORKFLOW.md)
 - [Cybersecurity planning tool catalog](docs/architecture/CYBERSECURITY_TOOL_CATALOG.json)
 

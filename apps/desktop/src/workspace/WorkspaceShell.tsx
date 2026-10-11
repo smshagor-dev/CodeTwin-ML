@@ -10,6 +10,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
 import { WebsitesPage } from "./pages/WebsitesPage";
 import { CodeAnalysisPage } from "./pages/CodeAnalysisPage";
+import { ToolsPage } from "./pages/ToolsPage";
 import { SecurityPage } from "./pages/SecurityPage";
 import { TestingPage } from "./pages/TestingPage";
 import { IntegrationsPage } from "./pages/IntegrationsPage";
@@ -22,6 +23,7 @@ const navigation: Array<{ route: WorkspaceRoute; label: string; icon: IconName }
   { route: "websites", label: "Websites", icon: "websites" },
   { route: "code-analysis", label: "Code Analysis", icon: "code" },
   { route: "security", label: "Security", icon: "security" },
+  { route: "tools", label: "Tool Library", icon: "integrations" },
   { route: "testing", label: "Testing", icon: "testing" },
   { route: "integrations", label: "Integrations", icon: "integrations" },
   { route: "settings", label: "Settings", icon: "settings" },
@@ -39,6 +41,7 @@ export function workspaceRoutePage(route: WorkspaceRoute) {
     case "agents": return <AgentsPage/>;
     case "code-analysis": return <CodeAnalysisPage/>;
     case "security": return <SecurityPage/>;
+    case "tools": return <ToolsPage/>;
     case "testing": return <TestingPage/>;
     case "deployments": return <DeploymentsPage/>;
     case "integrations": return <IntegrationsPage/>;

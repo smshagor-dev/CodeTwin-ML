@@ -1,0 +1,289 @@
+[
+  {
+    "id": "code.sast",
+    "name": "Source security review",
+    "category": "Code",
+    "description": "Passive source security rules and selected taint analysis",
+    "roadmap": "CS-01"
+  },
+  {
+    "id": "code.index",
+    "name": "Source and symbol index",
+    "category": "Code",
+    "description": "Incremental source, symbol and reference evidence",
+    "roadmap": "CS-01"
+  },
+  {
+    "id": "code.semantics",
+    "name": "Language-server enrichment",
+    "category": "Code",
+    "description": "Explicit trusted language-server enrichment",
+    "roadmap": "CS-01"
+  },
+  {
+    "id": "code.secrets",
+    "name": "Working-tree secret scan",
+    "category": "Supply chain",
+    "description": "Redacted working-tree secret detection",
+    "roadmap": "CS-01"
+  },
+  {
+    "id": "code.history-secrets",
+    "name": "Git-history secret scan",
+    "category": "Supply chain",
+    "description": "Reachable Git-history secret detection",
+    "roadmap": "CS-01"
+  },
+  {
+    "id": "supply.dependencies",
+    "name": "Dependency vulnerability audit",
+    "category": "Supply chain",
+    "description": "Exact-version advisory audit",
+    "roadmap": "CS-01"
+  },
+  {
+    "id": "supply.sbom",
+    "name": "CycloneDX SBOM export",
+    "category": "Supply chain",
+    "description": "CycloneDX evidence export",
+    "roadmap": "CS-04"
+  },
+  {
+    "id": "supply.licenses",
+    "name": "Dependency license review",
+    "category": "Supply chain",
+    "description": "Dependency license metadata review",
+    "roadmap": "CS-08"
+  },
+  {
+    "id": "web.scoped-scan",
+    "name": "Authorized web security checks",
+    "category": "Web/API",
+    "description": "Authorized bounded web security checks",
+    "roadmap": "CS-01"
+  },
+  {
+    "id": "web.identity",
+    "name": "Object access-policy testing",
+    "category": "Web/API",
+    "description": "Existing access policy plus richer role/tenant matrix",
+    "roadmap": "CS-05"
+  },
+  {
+    "id": "web.request-workbench",
+    "name": "Request workbench",
+    "category": "Web/API",
+    "description": "Typed manual request composer and comparisons",
+    "roadmap": "CS-05"
+  },
+  {
+    "id": "web.browser-proxy",
+    "name": "Scoped browser proxy",
+    "category": "Web/API",
+    "description": "Explicit scoped browser inspection; sensitive traffic handling",
+    "roadmap": "CS-05"
+  },
+  {
+    "id": "api.specification",
+    "name": "OpenAPI assessment",
+    "category": "Web/API",
+    "description": "OpenAPI import and supported schema checks",
+    "roadmap": "CS-05"
+  },
+  {
+    "id": "api.graphql",
+    "name": "GraphQL assessment",
+    "category": "Web/API",
+    "description": "Schema and bounded authorization/configuration checks",
+    "roadmap": "CS-05"
+  },
+  {
+    "id": "network.services",
+    "name": "Owned-host service inventory",
+    "category": "Network",
+    "description": "Owned-host bounded service inventory",
+    "roadmap": "CS-06"
+  },
+  {
+    "id": "network.tls",
+    "name": "TLS assessment",
+    "category": "Network",
+    "description": "TLS certificate and configuration assessment",
+    "roadmap": "CS-06"
+  },
+  {
+    "id": "network.dns",
+    "name": "DNS assessment",
+    "category": "Network",
+    "description": "Scoped DNS configuration assessment",
+    "roadmap": "CS-06"
+  },
+  {
+    "id": "network.capture-import",
+    "name": "Packet evidence import",
+    "category": "Network",
+    "description": "Bounded offline packet-evidence import",
+    "roadmap": "CS-09"
+  },
+  {
+    "id": "host.configuration",
+    "name": "Host configuration audit",
+    "category": "Host",
+    "description": "Read-only host services/permissions/configuration audit",
+    "roadmap": "CS-06"
+  },
+  {
+    "id": "infra.containers",
+    "name": "Docker configuration review",
+    "category": "Infrastructure",
+    "description": "Passive Docker artifacts; future image/config coverage",
+    "roadmap": "CS-08"
+  },
+  {
+    "id": "infra.database",
+    "name": "Database artifact review",
+    "category": "Infrastructure",
+    "description": "Passive SQL/Prisma artifacts; no live database connection",
+    "roadmap": "CS-01"
+  },
+  {
+    "id": "infra.iac",
+    "name": "Infrastructure-as-code review",
+    "category": "Infrastructure",
+    "description": "Terraform/Kubernetes configuration review",
+    "roadmap": "CS-08"
+  },
+  {
+    "id": "cloud.configuration",
+    "name": "Cloud posture review",
+    "category": "Infrastructure",
+    "description": "Offline configuration and later scoped read-only connectors",
+    "roadmap": "CS-08"
+  },
+  {
+    "id": "qa.discovery",
+    "name": "Test discovery",
+    "category": "Testing",
+    "description": "Passive framework and test discovery",
+    "roadmap": "CS-01"
+  },
+  {
+    "id": "qa.execution",
+    "name": "Sandboxed test execution",
+    "category": "Testing",
+    "description": "Strict Windows execution backend; unsupported platforms planning-only",
+    "roadmap": "CS-07"
+  },
+  {
+    "id": "qa.browser-api",
+    "name": "Browser/API regression",
+    "category": "Testing",
+    "description": "Isolated browser/API regression execution",
+    "roadmap": "CS-07"
+  },
+  {
+    "id": "qa.fuzzing",
+    "name": "Isolated fuzz testing",
+    "category": "Testing",
+    "description": "Bounded isolated property/fuzz testing",
+    "roadmap": "CS-10"
+  },
+  {
+    "id": "lab.scenarios",
+    "name": "Local scenario manager",
+    "category": "Testing",
+    "description": "Existing local lab; future reproducible scenario management",
+    "roadmap": "CS-05"
+  },
+  {
+    "id": "findings.review",
+    "name": "Finding review feedback",
+    "category": "Evidence",
+    "description": "Persisted human verdicts with evidence identity",
+    "roadmap": "CS-04"
+  },
+  {
+    "id": "findings.comparison",
+    "name": "Guided scan comparison",
+    "category": "Evidence",
+    "description": "Existing guided scan comparison; future cross-engine views",
+    "roadmap": "CS-04"
+  },
+  {
+    "id": "repair.verified",
+    "name": "Verified repair",
+    "category": "Repair",
+    "description": "Hash-guarded proposal/apply/rollback/verification",
+    "roadmap": "CS-01"
+  },
+  {
+    "id": "git.review",
+    "name": "Local Git review",
+    "category": "Repair",
+    "description": "Read-only status and separate staged/working-tree review",
+    "roadmap": "CS-03"
+  },
+  {
+    "id": "git.publication",
+    "name": "Git branch and publication",
+    "category": "Repair",
+    "description": "Explicit branch/selected commit and authenticated push/PR",
+    "roadmap": "CS-03"
+  },
+  {
+    "id": "incident.timeline",
+    "name": "Incident evidence timeline",
+    "category": "Investigation",
+    "description": "Imported log evidence and forensic timeline",
+    "roadmap": "CS-09"
+  },
+  {
+    "id": "binary.static",
+    "name": "Static binary review",
+    "category": "Investigation",
+    "description": "Metadata/strings/imports/signature evidence",
+    "roadmap": "CS-10"
+  },
+  {
+    "id": "binary.dynamic-lab",
+    "name": "Disposable VM analysis",
+    "category": "Investigation",
+    "description": "Disposable VM analysis with separate containment gates",
+    "roadmap": "CS-10"
+  },
+  {
+    "id": "mobile.android",
+    "name": "Android package review",
+    "category": "Devices",
+    "description": "Offline Android package/configuration evidence review",
+    "roadmap": "CS-10"
+  },
+  {
+    "id": "devices.iot-wireless",
+    "name": "Device evidence review",
+    "category": "Devices",
+    "description": "Owned-device configuration and imported evidence; hardware-dependent",
+    "roadmap": "CS-10"
+  },
+  {
+    "id": "ai.assistance",
+    "name": "Controlled AI assistance",
+    "category": "Assistance",
+    "description": "Existing local inference; future controlled evidence-aware tool proposals",
+    "roadmap": "CS-11"
+  },
+  {
+    "id": "validation.benchmarks",
+    "name": "Dataset benchmarks",
+    "category": "Evidence",
+    "description": "Versioned local dataset and lab evaluation foundations",
+    "roadmap": "CS-12"
+  },
+  {
+    "id": "reports.unified",
+    "name": "Unified assessment reports",
+    "category": "Evidence",
+    "description": "Unified redacted reports and control coverage",
+    "roadmap": "CS-04"
+  }
+]

@@ -36,6 +36,7 @@ export function DocumentationPage() {
     <div>
       <PageHeader eyebrow="PRODUCT DOCUMENTATION" title="Documentation" description="A concise guide to the capabilities currently exposed by this desktop build."/>
       <Panel title="Workspace guide" className="ws-guide-panel">
+        <article><div><h3>Tool Library</h3><p>Search tools, inspect availability and prerequisites, and open registered workflows. Planned and blocked tools cannot run.</p></div><button className="ws-text-button" onClick={() => navigate("tools")}>Open Tool Library →</button></article>
         <article><div><h3>Projects &amp; code analysis</h3><p>Import a local folder to index its files and symbols. Removing it from CodeTwin keeps the original files.</p></div><button className="ws-text-button" onClick={() => navigate("code-analysis")}>Open Code Analysis →</button></article>
         <article><div><h3>Security</h3><p>Run source, secret and dependency checks. Web testing needs explicit authorization and a bounded scope; registering a URL does not start a scan.</p></div><button className="ws-text-button" onClick={() => navigate("security")}>Open Security →</button></article>
         <article><div><h3>Testing</h3><p>Discovery inventories test files. Execution needs an approved plan and an available strict sandbox.</p></div><button className="ws-text-button" onClick={() => navigate("testing")}>Open Testing →</button></article>

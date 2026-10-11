@@ -180,6 +180,27 @@ async fn git_review_file(
 }
 
 #[tauri::command]
+fn recent_security_tool_runs(
+    project_id: Option<String>,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<codetwin_core::CatalogRunSummary>, String> {
+    with_database(&state, |database| {
+        codetwin_core::ToolCatalogService::new(database).recent_runs(project_id.as_deref(), limit)
+    })
+}
+
+#[tauri::command]
+fn list_security_tools(
+    project_id: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<codetwin_core::CatalogTool>, String> {
+    with_database(&state, |database| {
+        codetwin_core::ToolCatalogService::new(database).list(project_id.as_deref())
+    })
+}
+
+#[tauri::command]
 fn discover_project(path: String) -> Result<ProjectProfile, String> {
     project_discovery::discover_project(path).map_err(|error| error.to_string())
 }
@@ -839,6 +860,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            list_security_tools,
+            recent_security_tool_runs,
             git_review_status,
             git_review_file,
             discover_project,
