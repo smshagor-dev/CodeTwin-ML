@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { workspaceApi } from "../api";
 import { Icon } from "../Icon";
@@ -54,6 +54,11 @@ function runnerForFramework(framework: string): QaTestRunnerKind {
 
 export function TestingPage() {
   const { projects, activeProjectId, setActiveProjectId, operation, runQaDiscovery, setToast } = useWorkspace();
+  const latestProject = useRef(activeProjectId);
+  latestProject.current = activeProjectId;
+  const loadSequence = useRef(0);
+  const hashSequence = useRef(0);
+  const [cancelBusy, setCancelBusy] = useState(false);
   const [artifacts, setArtifacts] = useState<QaArtifactRecord[]>([]);
   const [frameworks, setFrameworks] = useState<QaFrameworkSummary[]>([]);
   const [history, setHistory] = useState<QaDiscoveryRunRecord[]>([]);
@@ -70,6 +75,8 @@ export function TestingPage() {
   const [qaBusy, setQaBusy] = useState<string | null>(null);
 
   async function load(projectId: string) {
+    if (latestProject.current !== projectId) return;
+    const request = ++loadSequence.current;
     try {
       const [nextArtifacts, nextFrameworks, nextHistory, nextAvailability, nextPlans, nextRuns] = await Promise.all([
         workspaceApi.qaArtifacts(projectId, 500),
@@ -79,6 +86,7 @@ export function TestingPage() {
         workspaceApi.qaExecutionPlans(projectId, 50),
         workspaceApi.qaExecutionRuns(projectId, 50),
       ]);
+      if (latestProject.current !== projectId || request !== loadSequence.current) return;
       setArtifacts(nextArtifacts);
       setFrameworks(nextFrameworks);
       setHistory(nextHistory);
@@ -86,16 +94,27 @@ export function TestingPage() {
       setPlans(nextPlans);
       setRuns(nextRuns);
       const firstTest = nextArtifacts.find((item) => item.artifact_kind === "test_file" && item.is_active);
-      if (firstTest && !target) {
+      if (firstTest) {
         setTarget(firstTest.relative_path);
         setRunner(runnerForFramework(firstTest.framework));
       }
     } catch (error) {
+      if (latestProject.current !== projectId || request !== loadSequence.current) return;
       setToast({ tone: "error", message: "Could not load QA evidence: " + String(error) });
     }
   }
 
   useEffect(() => {
+    loadSequence.current++;
+    hashSequence.current++;
+    setTarget("");
+    setToolchainHash("");
+    setArtifacts([]);
+    setFrameworks([]);
+    setHistory([]);
+    setPlans([]);
+    setRuns([]);
+    setAvailability(null);
     if (!activeProjectId) {
       setArtifacts([]);
       setFrameworks([]);
@@ -106,6 +125,7 @@ export function TestingPage() {
       return;
     }
     void load(activeProjectId);
+    return () => { loadSequence.current++; hashSequence.current++; };
   }, [activeProjectId]);
 
   const visible = useMemo(
@@ -120,9 +140,12 @@ export function TestingPage() {
 
   async function pinToolchain() {
     if (!toolchainPath.trim()) return;
+    const request = ++hashSequence.current;
+    const path = toolchainPath.trim();
     setQaBusy("hash");
     try {
-      setToolchainHash(await workspaceApi.qaToolchainSha256(toolchainPath.trim()));
+      const hash = await workspaceApi.qaToolchainSha256(path);
+      if (request === hashSequence.current) setToolchainHash(hash);
     } catch (error) {
       setToast({ tone: "error", message: "Could not pin QA toolchain: " + String(error) });
     } finally {
@@ -202,6 +225,18 @@ export function TestingPage() {
     }
   }
 
+  async function cancelExecution() {
+    setCancelBusy(true);
+    try {
+      const accepted = await workspaceApi.cancelQaExecution();
+      setToast({ tone: accepted ? "success" : "error", message: accepted ? "Cancellation requested. Waiting for persisted execution evidence." : "No active QA execution to cancel." });
+    } catch (error) {
+      setToast({ tone: "error", message: "Could not cancel execution: " + String(error) });
+    } finally {
+      setCancelBusy(false);
+    }
+  }
+
   if (!projects.length) {
     return <><PageHeader eyebrow="QA EVIDENCE" title="Testing" description="Discover test evidence and run explicitly approved tests only inside the strict sandbox."/><EmptyState icon="testing" title="No project selected" description="Add an indexed project before discovering QA evidence."/></>;
   }
@@ -222,6 +257,8 @@ export function TestingPage() {
           <p>{availability?.reason ?? "Checking sandbox capability evidence…"}</p>
         </div>
       </div>
+
+      {qaBusy?.startsWith("run:") && <button className="ws-button ws-button-secondary" disabled={cancelBusy} onClick={() => void cancelExecution()}>{cancelBusy ? "Requesting cancellation…" : "Cancel active test run"}</button>}
 
       <section className="ws-analysis-metrics">
         <div><span><Icon name="testing"/></span><strong>{testArtifacts.length}</strong><small>Test files</small></div>
@@ -260,7 +297,7 @@ export function TestingPage() {
             </label>
             <label className="ws-field">
               <span>Trusted runner executable</span>
-              <input value={toolchainPath} onChange={(event) => { setToolchainPath(event.target.value); setToolchainHash(""); }} placeholder="Absolute path to pytest.exe / cargo.exe / go.exe / …"/>
+              <input value={toolchainPath} onChange={(event) => { hashSequence.current++; setToolchainPath(event.target.value); setToolchainHash(""); }} placeholder="Absolute path to pytest.exe / cargo.exe / go.exe / …"/>
             </label>
             <label className="ws-field">
               <span>Runner version</span>
@@ -310,7 +347,15 @@ export function TestingPage() {
         </Panel>
         <Panel title="Execution history">
           <div className="ws-history-list">
-            {runs.map((run) => <div key={run.id}><StatusBadge status={run.status}/><p><strong>{run.tests_passed === true ? "Tests passed" : run.tests_passed === false ? "Tests failed" : "No parsed test verdict"}</strong><small>exit {run.exit_code ?? "n/a"} · {run.duration_ms ?? 0} ms · {run.parser_completed ? "parser complete" : "raw execution evidence only"}</small></p><time>{formatDate(run.finished_at ?? run.started_at)}</time></div>)}
+            {runs.map((run) => <div key={run.id}><StatusBadge status={run.status}/><p><strong>{run.tests_passed === true ? "Tests passed" : run.tests_passed === false ? "Tests failed" : "No parsed test verdict"}</strong><small>exit {run.exit_code ?? "n/a"} · {run.duration_ms ?? 0} ms · {run.parser_completed ? "parser complete" : "raw execution evidence only"}</small></p><time>{formatDate(run.finished_at ?? run.started_at)}</time>
+              <details className="ws-run-evidence"><summary>Run evidence and logs</summary>
+                <p className="mono">Run {run.id} · Plan {run.plan_id}</p>
+                <p className="mono">Project manifest SHA-256: {run.project_manifest_sha256}</p>
+                <p>stdout: {run.stdout_original_bytes} bytes{run.stdout_truncated ? " · excerpt truncated" : ""}; stderr: {run.stderr_original_bytes} bytes{run.stderr_truncated ? " · excerpt truncated" : ""}</p>
+                <pre style={{ overflow: "auto", maxHeight: 300, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{run.stdout_excerpt || "No stdout captured"}</pre>
+                <pre style={{ overflow: "auto", maxHeight: 300, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{run.stderr_excerpt || "No stderr captured"}</pre>
+              </details>
+            </div>)}
             {!runs.length && <p className="ws-inline-empty">No sandboxed QA execution run yet.</p>}
           </div>
         </Panel>

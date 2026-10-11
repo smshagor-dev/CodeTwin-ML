@@ -406,3 +406,7 @@ html[data-theme="dark"] :is(.ws-app, .ws-advanced-shell) { --ws-success: #79d5ab
 .ws-app .ws-overview :is(.ws-status-completed, .ws-status-operational) { color: var(--ws-success); background: color-mix(in srgb, var(--ws-success) 10%, var(--ws-surface)); }
 .ws-app .ws-overview :is(.ws-status-high, .ws-status-medium, .ws-status-running, .ws-status-queued) { color: var(--ws-warning); background: color-mix(in srgb, var(--ws-warning) 10%, var(--ws-surface)); }
 .ws-app .ws-overview :is(.ws-status-critical, .ws-status-failed, .ws-status-interrupted) { color: var(--ws-danger); background: color-mix(in srgb, var(--ws-danger) 10%, var(--ws-surface)); }
+
+.ws-history-list .ws-run-evidence { grid-column: 1 / -1; min-width: 0; overflow-wrap: anywhere; }
+.ws-run-evidence summary { cursor: pointer; color: var(--ws-muted); font-size: 12px; }
+.ws-run-evidence pre { min-width: 0; max-width: 100%; }

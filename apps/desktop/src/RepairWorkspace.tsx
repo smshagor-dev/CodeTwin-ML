@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+
+import { useWorkspace } from "./workspace/WorkspaceContext";
 
 type AnalysisStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
 type PlanFilter = "all" | "draft" | "approved" | "applied" | "verified" | "rejected" | "superseded";
@@ -131,6 +133,9 @@ function buildPatchPreview(before: string, after: string, maxOutputLines = 320):
 }
 
 export function RepairWorkspace() {
+  const { projects, activeProjectId } = useWorkspace();
+  const linkedProject = projects.find((item) => item.id === activeProjectId);
+  const linkedProjectPath = linkedProject?.root_path;
   const [path, setPath] = useState("");
   const [projectId, setProjectId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -156,6 +161,39 @@ export function RepairWorkspace() {
   const [fileId, setFileId] = useState("");
   const [source, setSource] = useState<RepairSourceSnapshot | null>(null);
   const [proposedContent, setProposedContent] = useState("");
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+    const requestedProject = params.get("project");
+    if (!requestedProject || requestedProject !== activeProjectId) return;
+    if (!linkedProjectPath) return;
+    const project = { id: requestedProject, root_path: linkedProjectPath };
+    let cancelled = false;
+    setBusy(true);
+    setPath(project.root_path);
+    Promise.all([
+      invoke<SourceFileRecord[]>("list_project_files", { projectId: project.id, search: null, limit: 500 }),
+      invoke<RepairFindingRecord[]>("list_repair_candidate_findings", { projectId: project.id, status: "open", limit: 200 }),
+      invoke<RepairPlanRecord[]>("list_repair_plans", { projectId: project.id, status: null, limit: 200 }),
+    ]).then(([nextFiles, nextFindings, nextPlans]) => {
+      if (cancelled) return;
+      setProjectId(project.id);
+      setFiles(nextFiles);
+      setFindings(nextFindings);
+      setPlans(nextPlans);
+      const finding = nextFindings.find((item) => item.id === params.get("finding"));
+      if (finding) {
+        setFindingId(finding.id);
+        setFileId(finding.file_id ?? "");
+        setTitle("Fix: " + finding.title);
+        setNotice("Finding linked. Review the source and create a proposal; application requires explicit approval.");
+      } else {
+        setNotice("Project loaded. The requested finding is unavailable or no longer open.");
+      }
+    }).catch((value: unknown) => { if (!cancelled) setError(String(value)); })
+      .finally(() => { if (!cancelled) setBusy(false); });
+    return () => { cancelled = true; };
+  }, [activeProjectId, linkedProjectPath]);
 
   async function loadProjectData(id: string, nextFilter: PlanFilter = planFilter) {
     const status = nextFilter === "all" ? null : nextFilter;
@@ -412,12 +450,19 @@ export function RepairWorkspace() {
     }
   }
 
-  async function verifyPlan() {
+  async function verifyPlan(refresh = false) {
     if (!selectedPlan) return;
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
+      if (refresh) {
+        if (!projectId || !path.trim()) throw new Error("A linked project path is required for fresh verification.");
+        const index = await invoke<IndexSummary>("index_project", { path: path.trim() });
+        if (index.project_id !== projectId || index.status !== "completed") throw new Error("Re-indexing did not complete for the selected project; verification stopped.");
+        const scan = await invoke<{ status: AnalysisStatus; coverage_complete: boolean }>("run_security_analysis", { projectId });
+        if (scan.status !== "completed" || !scan.coverage_complete) throw new Error("Static scan coverage is incomplete; verification stopped. Review the scan evidence.");
+      }
       const run = await invoke<RepairVerificationRunRecord>("verify_repair_plan", { repairId: selectedPlan.id });
       setSelectedVerification(run);
       const items = await invoke<RepairVerificationItemRecord[]>("list_repair_verification_items", { runId: run.id, limit: 500 });
@@ -576,7 +621,8 @@ export function RepairWorkspace() {
                       <button onClick={() => void approvePlan()} disabled={busy || !editable || changes.length === 0}>Approve with base-hash check</button>
                       {selectedPlan.status === "approved" && <button onClick={() => void applyPlan()} disabled={busy}>Apply approved repair</button>}
                       <button className="secondary" onClick={() => void rejectPlan()} disabled={busy || !["draft", "approved", "applied"].includes(selectedPlan.status)}>Reject</button>
-                      <button onClick={() => void verifyPlan()} disabled={busy || !verifiable}>Verify re-indexed state</button>
+                      <button onClick={() => void verifyPlan(true)} disabled={busy || !verifiable}>Re-index, scan & verify</button>
+                      <button className="secondary" onClick={() => void verifyPlan()} disabled={busy || !verifiable}>Verify existing indexed state</button>
                     </div>
                     {selectedPlan.status === "approved" && <p className="warning banner">Apply performs a base-hash recheck, writes verified backups, and swaps only the approved full-file replacements. Re-index after application before verification.</p>}
                     {selectedPlan.status === "applied" && <p className="warning banner">Repository bytes were applied by CodeTwin. Re-index before verification; use the application history below to roll back to verified backups if needed.</p>}
