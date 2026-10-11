@@ -1,0 +1,385 @@
+{
+  "schema_version": 1,
+  "kind": "planning_inventory",
+  "runtime_executable": false,
+  "baseline_commit": "23ad5d3cc506f480816b42098dd42efa8433f391",
+  "reviewed_on": "2026-10-11",
+  "status_definitions": {
+    "baseline": "Existing subsystem; coverage and validation limits still apply.",
+    "extend": "Existing foundation with new planned capability.",
+    "planned": "Not implemented by this document."
+  },
+  "tools": [
+    {
+      "id": "code.sast",
+      "category": "Code",
+      "status": "baseline",
+      "purpose": "Passive source security rules and selected taint analysis",
+      "milestone": "CS-01",
+      "baseline_references": [
+        "crates/security-analyzer",
+        "crates/codetwin-core/src/security_analysis.rs"
+      ]
+    },
+    {
+      "id": "code.index",
+      "category": "Code",
+      "status": "baseline",
+      "purpose": "Incremental source, symbol and reference evidence",
+      "milestone": "CS-01",
+      "baseline_references": [
+        "crates/source-indexer",
+        "crates/reference-indexer"
+      ]
+    },
+    {
+      "id": "code.semantics",
+      "category": "Code",
+      "status": "baseline",
+      "purpose": "Explicit trusted language-server enrichment",
+      "milestone": "CS-01",
+      "baseline_references": [
+        "crates/lsp-enrichment"
+      ]
+    },
+    {
+      "id": "code.secrets",
+      "category": "Supply chain",
+      "status": "baseline",
+      "purpose": "Redacted working-tree secret detection",
+      "milestone": "CS-01",
+      "baseline_references": [
+        "crates/secret-scanner"
+      ]
+    },
+    {
+      "id": "code.history-secrets",
+      "category": "Supply chain",
+      "status": "baseline",
+      "purpose": "Reachable Git-history secret detection",
+      "milestone": "CS-01",
+      "baseline_references": [
+        "crates/codetwin-core/src/secret_history.rs"
+      ]
+    },
+    {
+      "id": "supply.dependencies",
+      "category": "Supply chain",
+      "status": "baseline",
+      "purpose": "Exact-version advisory audit",
+      "milestone": "CS-01",
+      "baseline_references": [
+        "crates/dependency-audit"
+      ]
+    },
+    {
+      "id": "supply.sbom",
+      "category": "Supply chain",
+      "status": "baseline",
+      "purpose": "CycloneDX evidence export",
+      "milestone": "CS-04",
+      "baseline_references": [
+        "crates/codetwin-core/src/sbom.rs"
+      ]
+    },
+    {
+      "id": "supply.licenses",
+      "category": "Supply chain",
+      "status": "planned",
+      "purpose": "Dependency license metadata review",
+      "milestone": "CS-08",
+      "baseline_references": []
+    },
+    {
+      "id": "web.scoped-scan",
+      "category": "Web/API",
+      "status": "baseline",
+      "purpose": "Authorized bounded web security checks",
+      "milestone": "CS-01",
+      "baseline_references": [
+        "crates/web-security-testing"
+      ]
+    },
+    {
+      "id": "web.identity",
+      "category": "Web/API",
+      "status": "extend",
+      "purpose": "Existing access policy plus richer role/tenant matrix",
+      "milestone": "CS-05",
+      "baseline_references": [
+        "crates/web-security-testing/src/access_policy.rs"
+      ]
+    },
+    {
+      "id": "web.request-workbench",
+      "category": "Web/API",
+      "status": "planned",
+      "purpose": "Typed manual request composer and comparisons",
+      "milestone": "CS-05",
+      "baseline_references": []
+    },
+    {
+      "id": "web.browser-proxy",
+      "category": "Web/API",
+      "status": "planned",
+      "purpose": "Explicit scoped browser inspection; sensitive traffic handling",
+      "milestone": "CS-05",
+      "baseline_references": []
+    },
+    {
+      "id": "api.specification",
+      "category": "Web/API",
+      "status": "planned",
+      "purpose": "OpenAPI import and supported schema checks",
+      "milestone": "CS-05",
+      "baseline_references": []
+    },
+    {
+      "id": "api.graphql",
+      "category": "Web/API",
+      "status": "planned",
+      "purpose": "Schema and bounded authorization/configuration checks",
+      "milestone": "CS-05",
+      "baseline_references": []
+    },
+    {
+      "id": "network.services",
+      "category": "Network",
+      "status": "planned",
+      "purpose": "Owned-host bounded service inventory",
+      "milestone": "CS-06",
+      "baseline_references": []
+    },
+    {
+      "id": "network.tls",
+      "category": "Network",
+      "status": "planned",
+      "purpose": "TLS certificate and configuration assessment",
+      "milestone": "CS-06",
+      "baseline_references": []
+    },
+    {
+      "id": "network.dns",
+      "category": "Network",
+      "status": "planned",
+      "purpose": "Scoped DNS configuration assessment",
+      "milestone": "CS-06",
+      "baseline_references": []
+    },
+    {
+      "id": "network.capture-import",
+      "category": "Network",
+      "status": "planned",
+      "purpose": "Bounded offline packet-evidence import",
+      "milestone": "CS-09",
+      "baseline_references": []
+    },
+    {
+      "id": "host.configuration",
+      "category": "Host",
+      "status": "planned",
+      "purpose": "Read-only host services/permissions/configuration audit",
+      "milestone": "CS-06",
+      "baseline_references": []
+    },
+    {
+      "id": "infra.containers",
+      "category": "Infrastructure",
+      "status": "extend",
+      "purpose": "Passive Docker artifacts; future image/config coverage",
+      "milestone": "CS-08",
+      "baseline_references": [
+        "crates/runtime-analyzer"
+      ]
+    },
+    {
+      "id": "infra.database",
+      "category": "Infrastructure",
+      "status": "baseline",
+      "purpose": "Passive SQL/Prisma artifacts; no live database connection",
+      "milestone": "CS-01",
+      "baseline_references": [
+        "crates/database-analyzer"
+      ]
+    },
+    {
+      "id": "infra.iac",
+      "category": "Infrastructure",
+      "status": "planned",
+      "purpose": "Terraform/Kubernetes configuration review",
+      "milestone": "CS-08",
+      "baseline_references": []
+    },
+    {
+      "id": "cloud.configuration",
+      "category": "Infrastructure",
+      "status": "planned",
+      "purpose": "Offline configuration and later scoped read-only connectors",
+      "milestone": "CS-08",
+      "baseline_references": []
+    },
+    {
+      "id": "qa.discovery",
+      "category": "Testing",
+      "status": "baseline",
+      "purpose": "Passive framework and test discovery",
+      "milestone": "CS-01",
+      "baseline_references": [
+        "crates/qa-analyzer"
+      ]
+    },
+    {
+      "id": "qa.execution",
+      "category": "Testing",
+      "status": "baseline",
+      "purpose": "Strict Windows execution backend; unsupported platforms planning-only",
+      "milestone": "CS-07",
+      "baseline_references": [
+        "crates/qa-execution"
+      ]
+    },
+    {
+      "id": "qa.browser-api",
+      "category": "Testing",
+      "status": "planned",
+      "purpose": "Isolated browser/API regression execution",
+      "milestone": "CS-07",
+      "baseline_references": []
+    },
+    {
+      "id": "qa.fuzzing",
+      "category": "Testing",
+      "status": "planned",
+      "purpose": "Bounded isolated property/fuzz testing",
+      "milestone": "CS-10",
+      "baseline_references": []
+    },
+    {
+      "id": "lab.scenarios",
+      "category": "Testing",
+      "status": "extend",
+      "purpose": "Existing local lab; future reproducible scenario management",
+      "milestone": "CS-05",
+      "baseline_references": [
+        "crates/web-security-testing/tests/local_lab.rs"
+      ]
+    },
+    {
+      "id": "findings.review",
+      "category": "Evidence",
+      "status": "baseline",
+      "purpose": "Persisted human verdicts with evidence identity",
+      "milestone": "CS-04",
+      "baseline_references": [
+        "crates/codetwin-core/src/security_review.rs"
+      ]
+    },
+    {
+      "id": "findings.comparison",
+      "category": "Evidence",
+      "status": "extend",
+      "purpose": "Existing guided scan comparison; future cross-engine views",
+      "milestone": "CS-04",
+      "baseline_references": [
+        "crates/codetwin-core/src/guided_security.rs"
+      ]
+    },
+    {
+      "id": "repair.verified",
+      "category": "Repair",
+      "status": "baseline",
+      "purpose": "Hash-guarded proposal/apply/rollback/verification",
+      "milestone": "CS-01",
+      "baseline_references": [
+        "crates/codetwin-core/src/repair_workflow.rs",
+        "crates/codetwin-core/src/repair_application.rs"
+      ]
+    },
+    {
+      "id": "git.review",
+      "category": "Repair",
+      "status": "baseline",
+      "purpose": "Read-only status and separate staged/working-tree review",
+      "milestone": "CS-03",
+      "baseline_references": [
+        "crates/codetwin-core/src/git_review.rs"
+      ]
+    },
+    {
+      "id": "git.publication",
+      "category": "Repair",
+      "status": "planned",
+      "purpose": "Explicit branch/selected commit and authenticated push/PR",
+      "milestone": "CS-03",
+      "baseline_references": []
+    },
+    {
+      "id": "incident.timeline",
+      "category": "Investigation",
+      "status": "planned",
+      "purpose": "Imported log evidence and forensic timeline",
+      "milestone": "CS-09",
+      "baseline_references": []
+    },
+    {
+      "id": "binary.static",
+      "category": "Investigation",
+      "status": "planned",
+      "purpose": "Metadata/strings/imports/signature evidence",
+      "milestone": "CS-10",
+      "baseline_references": []
+    },
+    {
+      "id": "binary.dynamic-lab",
+      "category": "Investigation",
+      "status": "planned",
+      "purpose": "Disposable VM analysis with separate containment gates",
+      "milestone": "CS-10",
+      "baseline_references": []
+    },
+    {
+      "id": "mobile.android",
+      "category": "Devices",
+      "status": "planned",
+      "purpose": "Offline Android package/configuration evidence review",
+      "milestone": "CS-10",
+      "baseline_references": []
+    },
+    {
+      "id": "devices.iot-wireless",
+      "category": "Devices",
+      "status": "planned",
+      "purpose": "Owned-device configuration and imported evidence; hardware-dependent",
+      "milestone": "CS-10",
+      "baseline_references": []
+    },
+    {
+      "id": "ai.assistance",
+      "category": "Assistance",
+      "status": "extend",
+      "purpose": "Existing local inference; future controlled evidence-aware tool proposals",
+      "milestone": "CS-11",
+      "baseline_references": [
+        "crates/codetwin-core/src/ml_inference.rs"
+      ]
+    },
+    {
+      "id": "validation.benchmarks",
+      "category": "Evidence",
+      "status": "baseline",
+      "purpose": "Versioned local dataset and lab evaluation foundations",
+      "milestone": "CS-12",
+      "baseline_references": [
+        "crates/dataset-benchmark"
+      ]
+    },
+    {
+      "id": "reports.unified",
+      "category": "Evidence",
+      "status": "planned",
+      "purpose": "Unified redacted reports and control coverage",
+      "milestone": "CS-04",
+      "baseline_references": []
+    }
+  ]
+}
