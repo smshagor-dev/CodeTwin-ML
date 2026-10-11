@@ -117,3 +117,28 @@ fn changed_analysis_version_invalidates_cache_and_cancelled_rebuild_keeps_index(
         .unwrap();
     assert_eq!(after, run);
 }
+
+#[test]
+fn same_second_runs_show_latest_inserted_run_in_history_and_project_status() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.ts"), "export const a = 1;").unwrap();
+    let db = Database::open_in_memory().unwrap();
+    let summary = ProjectIndexService::new(&db)
+        .index_project(dir.path())
+        .unwrap();
+    for (id, status, duration) in [("zz-old", "completed", 10), ("aa-new", "failed", 22)] {
+        db.connection().execute("INSERT INTO analysis_runs(id, project_id, status, analyzer_version, run_kind, started_at, duration_ms) VALUES (?1, ?2, ?3, 'fixture', 'source_index', '2099-01-01 00:00:00', ?4)", rusqlite::params![id, summary.project_id, status, duration]).unwrap();
+    }
+    let history = codetwin_core::ProjectQueryService::new(&db)
+        .index_history(&summary.project_id, 1)
+        .unwrap();
+    assert_eq!(history[0].id, "aa-new");
+    let projects = codetwin_core::WorkspaceService::new(&db)
+        .list_projects(None, 10)
+        .unwrap();
+    assert_eq!(
+        projects[0].last_index_status,
+        Some(codetwin_core::AnalysisStatus::Failed)
+    );
+    assert_eq!(projects[0].last_index_duration_ms, Some(22));
+}
