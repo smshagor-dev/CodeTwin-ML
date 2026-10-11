@@ -145,18 +145,31 @@ fn discover_project(path: String) -> Result<ProjectProfile, String> {
 }
 
 #[tauri::command]
-fn index_project(path: String, state: tauri::State<'_, AppState>) -> Result<IndexSummary, String> {
+async fn index_project(
+    path: String,
+    full_rebuild: Option<bool>,
+    state: tauri::State<'_, AppState>,
+) -> Result<IndexSummary, String> {
     if state.index_running.swap(true, Ordering::SeqCst) {
         return Err("project indexing is already running".to_string());
     }
     state.index_cancelled.store(false, Ordering::SeqCst);
-    let result = with_database(&state, |database| {
-        ProjectIndexService::new(database)
-            .index_project_with_cancel(path, state.index_cancelled.as_ref())
-            .map_err(|error| error.to_string())
-    });
-    state.index_running.store(false, Ordering::SeqCst);
-    result
+    let cancelled = Arc::clone(&state.index_cancelled);
+    let running = Arc::clone(&state.index_running);
+    let database_path = state.database_path.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let database = Database::open(database_path).map_err(|error| error.to_string())?;
+        let service = ProjectIndexService::new(&database);
+        let result = if full_rebuild.unwrap_or(false) {
+            service.rebuild_project_with_cancel(path, cancelled.as_ref())
+        } else {
+            service.index_project_with_cancel(path, cancelled.as_ref())
+        };
+        result.map_err(|error| error.to_string())
+    })
+    .await;
+    running.store(false, Ordering::SeqCst);
+    result.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
