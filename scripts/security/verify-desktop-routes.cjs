@@ -37,6 +37,19 @@ const routes = ['engineering', 'web-security', 'database', 'runtime', 'qa', 'ml'
     await page.getByRole('heading', { name: 'Welcome to CodeTwin' }).waitFor();
     assert(!requests.some(url => /\/(App|\w+Workspace)-[^/]+\.js/.test(url)), 'Advanced chunks loaded on dashboard');
     console.log('PASS production dashboard excludes advanced chunks');
+    await page.goto(`${origin}/#/security`);
+    await page.getByRole('tab', { name: 'Expert Web Testing' }).click();
+    const newScan = page.getByRole('button', { name: 'New Scan', exact: true });
+    await newScan.click();
+    const target = page.getByLabel('Target URL', { exact: true });
+    const typed = 'https://staging.example.test/native focus';
+    await target.pressSequentially(typed);
+    assert.equal(await target.inputValue(), typed, 'Controlled modal input lost keystrokes');
+    assert(await target.evaluate(element => element === document.activeElement), 'Modal rerender moved input focus');
+    await target.press('Escape');
+    assert.equal(await page.getByRole('dialog').count(), 0, 'Escape did not close the current modal');
+    assert(await newScan.evaluate(element => element === document.activeElement), 'Modal did not restore trigger focus');
+    console.log('PASS modal keeps keyboard focus across form edits and restores it on close');
     for (const route of routes) {
       await page.goto(`${origin}/#/${route}`);
       await page.locator('.ws-advanced-shell h1').first().waitFor();

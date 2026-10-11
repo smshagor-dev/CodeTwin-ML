@@ -350,3 +350,12 @@ distinguishes portable validation from native desktop/Windows/signing checks.
 This milestone does not publish a release or bump the version. A release still
 requires fresh RustSec audit evidence, exact-candidate native CI, signing and an
 installed-artifact smoke under the existing release gates.
+
+### Native Linux validation follow-up
+
+Real Tauri IPC, GTK folder/report dialogs, SQLite persistence and the explicit
+policy worker were exercised on a virtual Linux desktop. The run found and fixed
+a shared modal keyboard-focus defect, then completed the nine-request policy
+flow and both report exports. See [native validation evidence](../NATIVE_DESKTOP_VALIDATION.md)
+for the candidate hash, observed flows, reproduction steps and remaining Windows
+and release gates. This follow-up does not certify every advanced operation.
