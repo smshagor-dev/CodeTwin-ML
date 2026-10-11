@@ -131,6 +131,12 @@ export const workspaceApi = {
   runSecurity(projectId: string) {
     return invoke("run_security_analysis", { projectId });
   },
+  securityReviews(projectId: string, findingId: string | null = null, limit = 500) {
+    return invoke<import("./types").SecurityFindingReview[]>("list_security_finding_reviews", { projectId, findingId, limit });
+  },
+  reviewSecurityFinding(projectId: string, findingId: string, expectedRunId: string, expectedContentHash: string | null, verdict: import("./types").SecurityFindingReview["verdict"], note: string) {
+    return invoke<import("./types").SecurityFindingReview>("review_security_finding", { projectId, findingId, expectedRunId, expectedContentHash, verdict, note });
+  },
   securityFindings(projectId: string, status: string | null = null, limit = 500) {
     return invoke<SecurityFindingRecord[]>("list_security_findings", { projectId, status, limit });
   },

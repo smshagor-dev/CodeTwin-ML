@@ -585,6 +585,45 @@ fn list_security_findings(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn review_security_finding(
+    project_id: String,
+    finding_id: String,
+    expected_run_id: String,
+    expected_content_hash: Option<String>,
+    verdict: String,
+    note: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<codetwin_core::SecurityFindingReview, String> {
+    with_database(&state, |database| {
+        codetwin_core::SecurityReviewService::new(database)
+            .review(
+                &project_id,
+                &finding_id,
+                &expected_run_id,
+                expected_content_hash.as_deref(),
+                &verdict,
+                &note,
+            )
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn list_security_finding_reviews(
+    project_id: String,
+    finding_id: Option<String>,
+    limit: usize,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<codetwin_core::SecurityFindingReview>, String> {
+    with_database(&state, |database| {
+        codetwin_core::SecurityReviewService::new(database)
+            .list(&project_id, finding_id.as_deref(), limit)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
 fn list_security_evidence(
     finding_id: String,
     limit: usize,
@@ -781,6 +820,8 @@ fn main() {
             list_quality_rules,
             run_security_analysis,
             list_security_findings,
+            review_security_finding,
+            list_security_finding_reviews,
             list_security_evidence,
             security_history,
             list_security_rules,

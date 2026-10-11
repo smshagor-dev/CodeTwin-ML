@@ -100,3 +100,4 @@ jobs:
           node scripts/security/verify-desktop-routes.cjs
           node scripts/security/verify-workspace-overview.cjs
           node scripts/security/verify-finding-workflow.cjs
+          node scripts/security/verify-finding-reviews.cjs

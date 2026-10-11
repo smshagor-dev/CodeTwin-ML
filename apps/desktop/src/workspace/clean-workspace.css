@@ -410,3 +410,7 @@ html[data-theme="dark"] :is(.ws-app, .ws-advanced-shell) { --ws-success: #79d5ab
 .ws-history-list .ws-run-evidence { grid-column: 1 / -1; min-width: 0; overflow-wrap: anywhere; }
 .ws-run-evidence summary { cursor: pointer; color: var(--ws-muted); font-size: 12px; }
 .ws-run-evidence pre { min-width: 0; max-width: 100%; }
+
+.ws-finding-reviews { min-width: 0; overflow-wrap: anywhere; margin-top: 8px; }
+.ws-finding-reviews summary { cursor: pointer; font-size: 12px; }
+.ws-finding-reviews > div { padding: 8px 0; border-bottom: 1px solid var(--ws-border); }
