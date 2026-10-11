@@ -148,6 +148,18 @@ export type SecurityFindingRecord = {
   owasp: string | null;
 };
 
+export type SecurityFindingReview = {
+  id: number;
+  finding_id: string;
+  project_id: string;
+  scan_run_id: string;
+  indexed_content_hash: string | null;
+  verdict: "confirmed" | "false_positive" | "needs_review";
+  note: string;
+  created_at: string;
+  is_current: boolean;
+};
+
 export type SecurityRunRecord = {
   project_id: string;
   run_id: string;
