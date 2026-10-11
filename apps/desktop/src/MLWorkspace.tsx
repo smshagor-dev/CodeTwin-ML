@@ -369,7 +369,17 @@ export function MLWorkspace() {
       {error && <p className="error banner" role="alert">{error}</p>}
 
       <section className="panel">
-        <h2>Trusted sidecar</h2>
+        <h2>Project</h2>
+        <p>Indexing establishes the file identity and current SHA-256 used to prevent stale ML attribution.</p>
+        <div className="row">
+          <input aria-label="Repository path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="C:\\work\\project or /home/user/project" />
+          <button onClick={() => void openProject()} disabled={busy || !path.trim()}>{busy && !projectId ? "Opening…" : "Open & index"}</button>
+        </div>
+        {projectId && <p className="mono workspace-project-id">Project {projectId}</p>}
+      </section>
+
+      <details className="ws-tool-disclosure panel">
+        <summary>Local ML runtime setup</summary>
         <p>Configure the absolute Python executable and the CodeTwin <code>services/ml</code> directory. CodeTwin never discovers or executes a sidecar from the analyzed repository.</p>
         <div className="ml-config-grid">
           <label>
@@ -423,17 +433,7 @@ export function MLWorkspace() {
           </div>
         )}
         {capabilities?.note && <p className="muted">{capabilities.note}</p>}
-      </section>
-
-      <section className="panel">
-        <h2>Project</h2>
-        <p>Indexing establishes the file identity and current SHA-256 used to prevent stale ML attribution.</p>
-        <div className="row">
-          <input aria-label="Repository path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="C:\\work\\project or /home/user/project" />
-          <button onClick={() => void openProject()} disabled={busy || !path.trim()}>{busy && !projectId ? "Opening…" : "Open & index"}</button>
-        </div>
-        {projectId && <p className="mono workspace-project-id">Project {projectId}</p>}
-      </section>
+      </details>
 
       {projectId && (
         <section className="ml-layout">
@@ -466,23 +466,25 @@ export function MLWorkspace() {
                 <button onClick={() => void inspectPlan()} disabled={busy || !sidecarStatus || !action.trim()}>Check classifier plan</button>
                 <button onClick={() => void runInference()} disabled={busy || !sidecarStatus || !selectedFileId || !action.trim()}>{busy ? "Running…" : "Run classifier & record"}</button>
               </div>
-              <label className="field-label">
-                <span>Local generation instruction</span>
-                <textarea
-                  rows={4}
-                  value={generationInstruction}
-                  onChange={(event) => setGenerationInstruction(event.target.value)}
-                  maxLength={4096}
-                />
-              </label>
-              <div className="row ml-actions-row">
-                <button
-                  onClick={() => void runGeneration()}
-                  disabled={busy || !sidecarStatus || !selectedFileId || !action.trim() || !generationInstruction.trim()}
-                >
-                  {busy ? "Running…" : "Generate local suggestion"}
-                </button>
-              </div>
+              <details className="ws-tool-disclosure ml-generation-options"><summary>Generate a local suggestion</summary>
+                <label className="field-label">
+                  <span>Local generation instruction</span>
+                  <textarea
+                    rows={4}
+                    value={generationInstruction}
+                    onChange={(event) => setGenerationInstruction(event.target.value)}
+                    maxLength={4096}
+                  />
+                </label>
+                <div className="row ml-actions-row">
+                  <button
+                    onClick={() => void runGeneration()}
+                    disabled={busy || !sidecarStatus || !selectedFileId || !action.trim() || !generationInstruction.trim()}
+                  >
+                    {busy ? "Running…" : "Generate local suggestion"}
+                  </button>
+                </div>
+              </details>
               {plan && (
                 <div className="relationship-item">
                   <strong>{plan.status ?? "unknown plan"}</strong>
@@ -545,8 +547,8 @@ export function MLWorkspace() {
               ) : <p className="empty">Run inference or select a persisted history record.</p>}
             </section>
 
-            <section className="panel compact">
-              <h2>Inference history</h2>
+            <details className="ws-tool-disclosure panel compact">
+              <summary>Inference history</summary>
               <div className="history-list ml-history-list">
                 {history.map((record) => (
                   <button key={record.id} className={`history-item ml-history-item ${selectedRecord?.id === record.id ? "selected" : ""}`} onClick={() => setSelectedRecord(record)}>
@@ -557,7 +559,7 @@ export function MLWorkspace() {
                 ))}
                 {!history.length && <p className="empty">No ML inference provenance has been persisted for this project.</p>}
               </div>
-            </section>
+            </details>
           </div>
         </section>
       )}

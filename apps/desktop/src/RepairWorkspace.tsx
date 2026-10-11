@@ -535,8 +535,8 @@ export function RepairWorkspace() {
                 </div>
               </section>
 
-              <section className="panel compact">
-                <h2>New draft</h2>
+              <details className="ws-tool-disclosure panel compact">
+                <summary>New draft</summary>
                 <label>
                   Optional open finding
                   <select value={findingId} onChange={(event) => changeFinding(event.target.value)}>
@@ -555,7 +555,7 @@ export function RepairWorkspace() {
                   <textarea value={rationale} maxLength={16384} onChange={(event) => setRationale(event.target.value)} rows={5} placeholder="Why this replacement addresses the observed evidence and what remains to verify." />
                 </label>
                 <button onClick={() => void createPlan()} disabled={busy || !title.trim() || !rationale.trim()}>Create draft plan</button>
-              </section>
+              </details>
             </div>
 
             <div className="twin-column">
@@ -640,8 +640,8 @@ export function RepairWorkspace() {
                 </div>
               </section>
 
-              <section className="panel compact">
-                <h2>Apply & rollback history</h2>
+              <details className="ws-tool-disclosure panel compact">
+                <summary>Apply & rollback history</summary>
                 <div className="result-list repair-scroll-list">
                   {applicationHistory.map((run) => (
                     <article key={run.id} className="result-item static-item">
@@ -654,10 +654,10 @@ export function RepairWorkspace() {
                   ))}
                   {!applicationHistory.length && <p className="empty">No application runs yet.</p>}
                 </div>
-              </section>
+              </details>
 
-              <section className="panel compact">
-                <h2>Verification history</h2>
+              <details className="ws-tool-disclosure panel compact">
+                <summary>Verification history</summary>
                 <div className="result-list repair-scroll-list">
                   {verificationHistory.map((run) => (
                     <button key={run.id} className={`result-item ${selectedVerification?.id === run.id ? "selected" : ""}`} onClick={() => void selectVerification(run)}>
@@ -668,7 +668,7 @@ export function RepairWorkspace() {
                   ))}
                   {!verificationHistory.length && <p className="empty">No verification runs yet.</p>}
                 </div>
-              </section>
+              </details>
 
               <section className="panel compact">
                 <h2>Verification evidence</h2>

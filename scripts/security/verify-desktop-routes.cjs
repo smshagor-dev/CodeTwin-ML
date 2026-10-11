@@ -5,6 +5,8 @@ const { spawn } = require('node:child_process');
 const { chromium } = require('playwright');
 const root = path.resolve(__dirname, '../..');
 const origin = 'http://127.0.0.1:4173';
+const primaryRoutes = ['dashboard', 'projects', 'websites', 'agents', 'code-analysis', 'security', 'testing', 'deployments', 'integrations', 'settings', 'documentation', 'support'];
+const securityModes = ['Developer Security Test', 'Expert Web Testing', 'Static Source Analysis', 'Secrets & Dependencies', 'Dataset Benchmarks'];
 const routes = ['engineering', 'web-security', 'database', 'runtime', 'qa', 'ml', 'repair', 'repair-apply'];
 (async () => {
   const server = spawn(process.execPath, [path.join(root, 'node_modules/vite/bin/vite.js'), 'preview', '--host', '127.0.0.1', '--port', '4173', '--strictPort'], { cwd: path.join(root, 'apps/desktop'), stdio: 'pipe' });
@@ -29,6 +31,7 @@ const routes = ['engineering', 'web-security', 'database', 'runtime', 'qa', 'ml'
     await page.addInitScript(() => {
       window.__TAURI_INTERNALS__ = { invoke: async command => {
         if (command === 'get_app_preferences') return { display_name: 'Local Developer', theme: 'light', auto_run_security_on_import: false, auto_discover_tests_on_import: false };
+        if (command === 'dataset_benchmark_status') return { datasets_root: '', root_exists: false, datasets: [] };
         if (command === 'workspace_summary') return { project_count: 0, website_count: 0, active_agents: 0, security_scan_count: 0 };
         return [];
       } };
@@ -61,11 +64,38 @@ const routes = ['engineering', 'web-security', 'database', 'runtime', 'qa', 'ml'
     for (const theme of ['light', 'dark']) {
       for (const width of [1440, 390]) {
         await page.setViewportSize({ width, height: 844 });
-        for (const route of ['dashboard', 'projects', 'websites', 'security', 'settings']) {
+        for (const route of [...primaryRoutes, ...routes]) {
           await page.goto(`${origin}/#/${route}`);
-          await page.locator('.ws-content h1').first().waitFor();
+          console.log(`CHECK layout ${route} ${width}px ${theme}`);
+          await page.locator('h1').first().waitFor();
           await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${route} overflows at ${width}px in ${theme}`);
+          if (route === 'integrations') {
+            const toggles = page.locator('.ws-integration-toggle');
+            assert.equal(await toggles.count(), 3);
+            await toggles.nth(1).click();
+            await page.getByLabel('Executable path', { exact: true }).nth(1).fill('/trusted/pyright');
+            await toggles.nth(2).click();
+            await toggles.nth(1).click();
+            assert.equal(await page.getByLabel('Executable path', { exact: true }).nth(1).inputValue(), '/trusted/pyright', 'Switching integrations lost edits');
+            assert.equal(await page.locator('.ws-integration-toggle[aria-expanded="true"]').count(), 1);
+          }
+          if (routes.includes(route)) {
+            assert.equal(await page.locator('.ws-advanced-bar a[aria-current="page"]').count(), 1);
+          }
+          if (route === 'security') {
+            for (const mode of securityModes) {
+              await page.getByRole('tab', { name: mode, exact: true }).click();
+              assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${mode} overflows at ${width}px in ${theme}`);
+            }
+          }
+          const disclosure = page.locator('details.ws-disclosure, details.ws-tool-disclosure').first();
+          if (await disclosure.count()) {
+            await disclosure.locator(':scope > summary').click();
+            assert.equal(await disclosure.evaluate(element => element.open), true, `${route} disclosure did not open`);
+            assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${route} expanded details overflow at ${width}px`);
+          }
+
         }
         await page.goto(`${origin}/#/security`);
         await page.getByRole('tab', { name: 'Expert Web Testing' }).click();
@@ -84,7 +114,7 @@ const routes = ['engineering', 'web-security', 'database', 'runtime', 'qa', 'ml'
         await page.keyboard.press('Escape');
       }
     }
-    console.log('PASS primary layouts and scrollable scan modal at desktop/mobile in light/dark');
+    console.log('PASS all 20 routes, five security modes, editable integration accordion and disclosures at desktop/mobile in light/dark');
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`${origin}/#/web-security`);
     await page.locator('.ws-advanced-shell h1').waitFor();

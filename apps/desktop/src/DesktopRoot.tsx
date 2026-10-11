@@ -24,12 +24,25 @@ const WebSecurityWorkspace = lazy(() => import("./WebSecurityWorkspace").then(mo
 
 const advanced = new Set<AdvancedRoute>(["engineering", "web-security", "database", "runtime", "qa", "ml", "repair", "repair-apply"]);
 
+const advancedLabels: Record<AdvancedRoute, string> = {
+  engineering: "Engineering",
+  "web-security": "Source security",
+  database: "Database",
+  runtime: "Runtime",
+  qa: "QA",
+  ml: "Local ML",
+  repair: "Repair",
+  "repair-apply": "Apply & rollback",
+};
+
 function AdvancedWorkspace({ route }: { route: AdvancedRoute }) {
   return (
     <div className="ws-advanced-shell">
       <div className="ws-advanced-bar">
         <button onClick={() => navigate("dashboard")}>← Dashboard</button>
-        <span>Advanced CodeTwin workspace · {route.replaceAll("-", " ")}</span>
+        <nav aria-label="Advanced workspaces">
+          {[...advanced].map((item) => <a key={item} href={"#/" + item} aria-current={route === item ? "page" : undefined}>{advancedLabels[item]}</a>)}
+        </nav>
       </div>
       <Suspense fallback={<LoadingState label="Loading workspace…"/>}>
       {route === "engineering" && <App/>}

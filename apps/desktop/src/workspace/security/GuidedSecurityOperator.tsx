@@ -433,13 +433,7 @@ export function GuidedSecurityOperator() {
     return (
       <div className="ws-guided-security">
         <Panel title="Developer Security Test" className="ws-guided-setup">
-          <div className="ws-guided-intro">
-            <span><Icon name="security" size={26}/></span>
-            <div>
-              <h2>Deep security testing without manual pentest setup</h2>
-              <p>Choose the application and intent. CodeTwin handles bounded mapping, risk-aware planning, controlled checks, evidence and developer-focused remediation.</p>
-            </div>
-          </div>
+          <p className="ws-form-help">Choose a target and testing depth, then review the security plan before execution.</p>
 
           <div className="ws-guided-grid">
             <label className="ws-field">

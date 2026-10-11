@@ -56,6 +56,19 @@ export function LoadingState({ label = "Loading…" }: { label?: string }) {
   return <div className="ws-loading" role="status"><span className="ws-spinner"/>{label}</div>;
 }
 
+export function Disclosure({ title, children, defaultOpen = false }: {
+  title: string;
+  children: ReactNode;
+  defaultOpen?: boolean;
+}) {
+  return (
+    <details className="ws-disclosure" open={defaultOpen}>
+      <summary>{title}</summary>
+      <div className="ws-disclosure-body">{children}</div>
+    </details>
+  );
+}
+
 export function ProjectSelect({
   projects,
   value,

@@ -721,7 +721,7 @@ export function App() {
 
   const title =
     view === "overview"
-      ? "CodeTwin ML"
+      ? "Engineering"
       : view === "digital-twin"
         ? "Software Digital Twin"
         : view === "semantics"
@@ -732,7 +732,7 @@ export function App() {
 
   const subtitle =
     view === "overview"
-      ? "Engineering intelligence workstation"
+      ? "Inspect source, symbols and analysis evidence."
       : view === "digital-twin"
         ? "Persisted files, symbols, dependencies, proven relationships, and bounded impact"
         : view === "semantics"
@@ -776,6 +776,15 @@ export function App() {
             </section>
 
             {summary && (
+              <>
+                <section className="grid" aria-label="Index overview">
+                  <Metric label="Files scanned" value={summary.delta.files_scanned}/>
+                  <Metric label="Graph nodes" value={summary.graph_node_count}/>
+                  <Metric label="Parse errors" value={summary.delta.parse_errors}/>
+                  <Metric label="Status" value={summary.status}/>
+                </section>
+                <details className="panel ws-tool-disclosure">
+                  <summary>Index run details</summary>
               <section className="grid index-summary" aria-label="Persistent index summary">
                 <Metric label="files scanned" value={summary.delta.files_scanned} />
                 <Metric label="files added" value={summary.delta.files_added} />
@@ -790,9 +799,13 @@ export function App() {
                 <Metric label="duration" value={`${summary.duration_ms} ms`} />
                 <Metric label="status" value={summary.status} />
               </section>
+                </details>
+              </>
             )}
 
             {profile && (
+              <details className="panel ws-tool-disclosure">
+                <summary>Detected project stack</summary>
               <section className="grid" aria-label="Detected project profile">
                 {Object.entries(profile).map(([key, values]) => (
                   <article className="card" key={key}>
@@ -801,6 +814,7 @@ export function App() {
                   </article>
                 ))}
               </section>
+              </details>
             )}
           </>
         )}

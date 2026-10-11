@@ -371,8 +371,8 @@ export function QaWorkspace() {
       <header>
         <div>
           <p className="eyebrow">QA DISCOVERY + SANDBOXED EXECUTION</p>
-          <h1>QA / Test Engine</h1>
-          <p>Discover test evidence passively, then optionally run explicit approved targets inside the strict local sandbox. Discovery and execution remain separate evidence states.</p>
+          <h1>QA Workspace</h1>
+          <p>Discover test files and configs. Execution requires a supported strict sandbox and an approved plan.</p>
         </div>
       </header>
 
@@ -380,7 +380,7 @@ export function QaWorkspace() {
 
       <section className="panel">
         <h2>Project</h2>
-        <p>Index the repository first so QA evidence and any later execution are bound to the same Software Digital Twin identity.</p>
+        <p>Open a local repository to discover test files and review execution evidence.</p>
         <div className="row">
           <input
             aria-label="Repository path"
@@ -438,8 +438,8 @@ export function QaWorkspace() {
                 </div>
               </section>
 
-              <section className="panel compact">
-                <h2>Discovery history</h2>
+              <details className="ws-tool-disclosure panel compact">
+                <summary>Discovery history</summary>
                 <div className="history-list runtime-scroll-list">
                   {history.map((run) => (
                     <div className="history-item" key={run.run_id}>
@@ -450,7 +450,7 @@ export function QaWorkspace() {
                   ))}
                   {!history.length && <p className="empty">No QA discovery run has been persisted for this project.</p>}
                 </div>
-              </section>
+              </details>
             </div>
 
             <div className="twin-column wide">
@@ -507,41 +507,43 @@ export function QaWorkspace() {
               </>
             )}
 
-            <div className="ws-webscan-two">
+            <details className="ws-tool-disclosure"><summary>Configure test execution</summary>
+              <div className="ws-webscan-two">
+                <label className="ws-field">
+                  <span>Runner</span>
+                  <select value={runner} onChange={(event) => setRunner(event.target.value as QaTestRunnerKind)}>
+                    {RUNNER_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                </label>
+                <label className="ws-field">
+                  <span>Runner version</span>
+                  <input value={toolchainVersion} onChange={(event) => setToolchainVersion(event.target.value)} placeholder="e.g. Python 3.12 / Cargo 1.82" />
+                </label>
+              </div>
               <label className="ws-field">
-                <span>Runner</span>
-                <select value={runner} onChange={(event) => setRunner(event.target.value as QaTestRunnerKind)}>
-                  {RUNNER_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                </select>
+                <span>Trusted runner executable</span>
+                <input value={toolchainPath} onChange={(event) => setToolchainPath(event.target.value)} placeholder="Absolute path to pytest/python, cargo, go, vitest/jest runner, or phpunit" />
+                <small>CodeTwin SHA-256 pins the executable during plan creation.</small>
               </label>
               <label className="ws-field">
-                <span>Runner version</span>
-                <input value={toolchainVersion} onChange={(event) => setToolchainVersion(event.target.value)} placeholder="e.g. Python 3.12 / Cargo 1.82" />
+                <span>Explicit test targets</span>
+                <textarea rows={6} value={targetsText} onChange={(event) => setTargetsText(event.target.value)} placeholder="One project-relative test path per line" />
               </label>
-            </div>
-            <label className="ws-field">
-              <span>Trusted runner executable</span>
-              <input value={toolchainPath} onChange={(event) => setToolchainPath(event.target.value)} placeholder="Absolute path to pytest/python, cargo, go, vitest/jest runner, or phpunit" />
-              <small>CodeTwin SHA-256 pins the executable during plan creation.</small>
-            </label>
-            <label className="ws-field">
-              <span>Explicit test targets</span>
-              <textarea rows={6} value={targetsText} onChange={(event) => setTargetsText(event.target.value)} placeholder="One project-relative test path per line" />
-            </label>
-            <button className="ws-button ws-button-secondary" onClick={addDetectedTests} disabled={!activeTestArtifacts.length || executionBusy}>
-              Use discovered test files
-            </button>
-            <label className="ws-field">
-              <span>Approved runtime/toolchain roots</span>
-              <textarea rows={4} value={externalRootsText} onChange={(event) => setExternalRootsText(event.target.value)} placeholder="One absolute runtime/toolchain root per line" />
-              <small>The runner parent is automatically included. Approval hashes the complete declared read surface before execution.</small>
-            </label>
-            <div className="row">
-              <button onClick={() => void createExecutionPlan()} disabled={!availability?.execution_enabled || executionBusy}>
-                {executionBusy ? "Working…" : "Create immutable execution plan"}
+              <button className="ws-button ws-button-secondary" onClick={addDetectedTests} disabled={!activeTestArtifacts.length || executionBusy}>
+                Use discovered test files
               </button>
-              <button onClick={() => void cancelExecution()} disabled={!executionBusy}>Cancel active execution</button>
-            </div>
+              <label className="ws-field">
+                <span>Approved runtime/toolchain roots</span>
+                <textarea rows={4} value={externalRootsText} onChange={(event) => setExternalRootsText(event.target.value)} placeholder="One absolute runtime/toolchain root per line" />
+                <small>The runner parent is automatically included. Approval hashes the complete declared read surface before execution.</small>
+              </label>
+              <div className="row">
+                <button onClick={() => void createExecutionPlan()} disabled={!availability?.execution_enabled || executionBusy}>
+                  {executionBusy ? "Working…" : "Create immutable execution plan"}
+                </button>
+                <button onClick={() => void cancelExecution()} disabled={!executionBusy}>Cancel active execution</button>
+              </div>
+            </details>
           </section>
 
           <section className="runtime-layout">

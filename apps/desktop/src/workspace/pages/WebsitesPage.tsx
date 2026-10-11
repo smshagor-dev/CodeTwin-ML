@@ -76,7 +76,7 @@ export function WebsitesPage() {
       <PageHeader
         eyebrow="REGISTERED ENDPOINTS"
         title="Websites"
-        description="Website registration and availability checks are separate from security scanning. Adding a URL never launches an intrusive scan."
+        description="Manage registered URLs and check availability. Security scans are started separately."
         actions={<button className="ws-button ws-button-primary" onClick={() => setWebsiteComposerOpen(true)}><Icon name="plus"/>Add Website Link</button>}
       />
 
@@ -84,7 +84,7 @@ export function WebsitesPage() {
         <EmptyState
           icon="websites"
           title="No websites registered"
-          description="Register an HTTP or HTTPS URL. CodeTwin stores it locally and only checks availability when you explicitly request a check."
+          description="Add an HTTP or HTTPS URL. Availability checks run only when requested."
           action={<button className="ws-button ws-button-primary" onClick={() => setWebsiteComposerOpen(true)}><Icon name="plus"/>Add Website Link</button>}
         />
       ) : (

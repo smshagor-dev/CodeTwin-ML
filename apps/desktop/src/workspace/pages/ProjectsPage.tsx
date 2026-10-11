@@ -94,7 +94,7 @@ export function ProjectsPage() {
       <PageHeader
         eyebrow="PERSISTED LOCAL PROJECTS"
         title="Projects"
-        description="Projects are registered by the existing persistent indexer and remain available after CodeTwin restarts."
+        description="Manage indexed local repositories. Your projects remain available after restart."
         actions={<button className="ws-button ws-button-primary" onClick={() => void pickAndImportProject()} disabled={operation !== null}><Icon name="folder"/>Add Project Folder</button>}
       />
 
@@ -102,7 +102,7 @@ export function ProjectsPage() {
         <EmptyState
           icon="projects"
           title="No projects indexed"
-          description="Choose a local repository folder. CodeTwin will validate it, discover the stack, run the existing Tree-sitter indexer, and persist the project."
+          description="Add a local folder to discover its stack and index files and symbols."
           action={<button className="ws-button ws-button-primary" onClick={() => void pickAndImportProject()}><Icon name="folder"/>Add Project Folder</button>}
         />
       ) : (
