@@ -545,6 +545,9 @@ This CLI performs static review. It does not start, crawl, or exploit the target
 
 Key documents:
 
+- [Cybersecurity platform workflow and delivery roadmap](docs/architecture/CYBERSECURITY_PLATFORM_WORKFLOW.md)
+- [Cybersecurity planning tool catalog](docs/architecture/CYBERSECURITY_TOOL_CATALOG.json)
+
 - docs/architecture/OVERVIEW.md
 - docs/architecture/SOURCE_INDEXING.md
 - docs/architecture/DIGITAL_TWIN.md
