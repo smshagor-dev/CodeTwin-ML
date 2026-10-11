@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { GitBranchPanel } from "./GitBranchPanel";
 import { workspaceApi } from "./api";
 import type { GitFileReview, GitReviewStatus } from "./types";
 
@@ -44,11 +45,12 @@ export function GitReviewPanel({ projectId }: { projectId: string }) {
 
   return <section className="ws-detail-section ws-git-review" aria-label="Git change review">
     <h3>Git changes</h3>
-    <p className="ws-form-help">Review local staged and working-tree changes. Refresh to read current files. This view does not stage, commit, push or run project code.</p>
+    <p className="ws-form-help">Review local staged and working-tree changes. Refresh to read current files. The review does not stage, commit, push or run project code. Create a branch with the separate action below.</p>
     <button className="ws-button ws-button-secondary" disabled={loading} onClick={() => { setEnabled(true); setRefresh((value) => value + 1); }}>{loading ? "Reading Git changes…" : enabled ? "Refresh Git changes" : "Load Git changes"}</button>
     {error && <p role="alert" className="ws-warning-box">Git review unavailable: {error}</p>}
     {status && <>
       <dl className="ws-detail-grid"><dt>Branch</dt><dd>{status.branch ?? (status.head ? "Detached HEAD" : "Unborn branch")}</dd><dt>HEAD</dt><dd className="ws-mono">{status.head ?? "No commits yet"}</dd></dl>
+      <GitBranchPanel key={projectId + ":" + refresh} projectId={projectId} status={status} />
       {!status.changes.length && <p className="ws-inline-empty">Working tree is clean.</p>}
       <div className="ws-list-stack">{status.changes.map((change) => <button key={change.path} className={"ws-project-row " + (path === change.path ? "selected" : "")} aria-pressed={path === change.path} onClick={() => setPath(change.path)}>
         <span className="ws-list-main"><strong>{change.path}</strong>{change.original_path && <small>From {change.original_path}</small>}<small>{change.staged === "?" ? "Untracked file" : "Staged: " + changeLabel(change.staged) + " · Working tree: " + changeLabel(change.unstaged)}</small></span>

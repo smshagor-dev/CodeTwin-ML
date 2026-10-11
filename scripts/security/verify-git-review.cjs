@@ -29,7 +29,13 @@ const origin = 'http://127.0.0.1:4174';
           const fail = f.gitFail; const slow = f.gitSlow;
           if (slow && args.projectId === 'a') await new Promise(resolve => setTimeout(resolve, 500));
           if (fail) throw new Error('Git unavailable');
-          return { branch: args.projectId === 'a' ? 'feature/review' : 'secondary', head: 'fixture-head', changes: f.gitClean ? [] : [{ path: args.projectId + '.ts', original_path: null, staged: 'M', unstaged: 'M' }, { path: 'new.ts', original_path: null, staged: '?', unstaged: '?' }] };
+          return { branch: args.projectId === 'a' ? 'feature/review' : 'secondary', head: 'a'.repeat(40), changes: f.gitClean ? [] : [{ path: args.projectId + '.ts', original_path: null, staged: 'M', unstaged: 'M' }, { path: 'new.ts', original_path: null, staged: '?', unstaged: '?' }] };
+        }
+        if (command === 'git_create_reviewed_branch') {
+          f.branchCalls = (f.branchCalls || []).concat([args]);
+          if (f.branchSlow) await new Promise(resolve => setTimeout(resolve, 500));
+          if (f.branchFail) throw new Error('HEAD changed since review');
+          return { branch: args.branch, head: args.expectedHead };
         }
         if (command === 'git_review_file') {
           const fail = f.gitFileFail;
@@ -48,6 +54,24 @@ const origin = 'http://127.0.0.1:4174';
     const panel = page.getByRole('region', { name: 'Git change review' });
     await panel.getByRole('button', { name: 'Load Git changes', exact: true }).click();
     await panel.getByText('feature/review', { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.fixture.branchCalls), undefined);
+    await panel.getByText('Create branch', { exact: true }).click();
+    const branchName = panel.getByLabel('New branch name');
+    const createBranch = panel.getByRole('button', { name: 'Create at reviewed HEAD', exact: true });
+    assert.equal(await createBranch.isDisabled(), true);
+    await branchName.fill('feature/local-review');
+    await createBranch.click();
+    await panel.getByRole('status').filter({ hasText: 'Created feature/local-review' }).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.fixture.branchCalls), [{ projectId: 'a', branch: 'feature/local-review', expectedHead: 'a'.repeat(40) }]);
+    await panel.getByText('feature/review', { exact: true }).waitFor();
+    await page.evaluate(() => { window.fixture.branchFail = true; });
+    await branchName.fill('feature/stale');
+    await createBranch.click();
+    await panel.getByRole('alert').filter({ hasText: 'HEAD changed since review' }).waitFor();
+    await page.evaluate(() => { window.fixture.branchFail = false; });
+    await branchName.fill('bad name');
+    assert.equal(await createBranch.isDisabled(), true);
+    await branchName.fill('');
     await panel.getByRole('button', { name: /a.ts/ }).click();
     await panel.getByText('+staged-a', { exact: true }).waitFor();
     await panel.getByText('+working-a', { exact: true }).waitFor();
@@ -83,6 +107,17 @@ const origin = 'http://127.0.0.1:4174';
     assert.equal(await panel.getByText('+working-a', { exact: true }).count(), 0);
     await panel.getByRole('button', { name: /b.ts/ }).click();
     await panel.getByText('+working-b', { exact: true }).waitFor();
+    await panel.getByText('Create branch', { exact: true }).click();
+    await page.evaluate(() => { window.fixture.branchSlow = true; });
+    await panel.getByLabel('New branch name').fill('feature/secondary-review');
+    await panel.getByRole('button', { name: 'Create at reviewed HEAD', exact: true }).click();
+    await page.getByRole('button', { name: /Validation project.*files/ }).click();
+    await panel.getByRole('button', { name: 'Load Git changes' }).click();
+    await panel.getByText('feature/review', { exact: true }).waitFor();
+    await page.waitForTimeout(600);
+    assert.equal(await panel.getByRole('status').filter({ hasText: 'Created feature/secondary-review' }).count(), 0);
+    await panel.getByText('Create branch', { exact: true }).click();
+    await panel.getByLabel('New branch name').fill('feature/' + 'x'.repeat(112));
     for (const theme of ['light', 'dark']) {
       await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
       for (const width of [1440, 390]) {
@@ -91,7 +126,7 @@ const origin = 'http://127.0.0.1:4174';
       }
     }
     assert.deepEqual(errors, []);
-    console.log('Git review UI: separate patches, untracked escaping, errors/retry, stale status/diff, responsive themes passed.');
+    console.log('Git review/branch UI: explicit branch creation, exact HEAD, stale failure/receipt, separate patches, untracked escaping, errors/retry, stale status/diff, responsive themes passed.');
   } finally {
     await browser?.close();
     server.kill('SIGTERM');

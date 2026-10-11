@@ -1,8 +1,8 @@
-//! Read-only repository review. No network, staging, filters, hooks or project execution.
+//! Local review and explicit guarded branch creation. No network or project execution.
 use serde::Serialize;
 use std::{
     fs,
-    io::{self, Read},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -64,6 +64,15 @@ fn git(
     arguments: &[&str],
     allow_missing_ref: bool,
 ) -> Result<Option<Vec<u8>>, GitReviewError> {
+    controlled_git(root, arguments, allow_missing_ref, None)
+}
+
+fn controlled_git(
+    root: &Path,
+    arguments: &[&str],
+    allow_missing_ref: bool,
+    input: Option<Vec<u8>>,
+) -> Result<Option<Vec<u8>>, GitReviewError> {
     // Diff/status may invoke clean or process filters even with --no-textconv.
     // Enumerate names only (never credential-bearing config values), then disable them.
     let keys = run_git(
@@ -77,6 +86,7 @@ fn git(
         ],
         true,
         &[],
+        None,
     )?;
     let mut settings = Vec::new();
     if let Some(keys) = keys {
@@ -91,7 +101,7 @@ fn git(
             ));
         }
     }
-    run_git(root, arguments, allow_missing_ref, &settings)
+    run_git(root, arguments, allow_missing_ref, &settings, input)
 }
 
 fn run_git(
@@ -99,8 +109,12 @@ fn run_git(
     arguments: &[&str],
     allow_missing_ref: bool,
     settings: &[String],
+    input: Option<Vec<u8>>,
 ) -> Result<Option<Vec<u8>>, GitReviewError> {
+    // A private empty directory prevents repository reference-transaction hooks.
+    let hooks = tempfile::tempdir().map_err(error)?;
     let mut command = Command::new("git");
+    command.args(["-c", &format!("core.hooksPath={}", hooks.path().display())]);
     for setting in settings {
         command.args(["-c", setting]);
     }
@@ -129,7 +143,11 @@ fn run_git(
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_PAGER", "")
         .env("PAGER", "")
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for name in [
@@ -148,7 +166,21 @@ fn run_git(
     ] {
         command.env_remove(name);
     }
+    for (name, _) in std::env::vars_os() {
+        let label = name.to_string_lossy();
+        if label.starts_with("GIT_TRACE") || label.starts_with("GIT_CONFIG_") {
+            command.env_remove(name);
+        }
+    }
+    command.env("GIT_CONFIG_NOSYSTEM", "1").env(
+        "GIT_CONFIG_GLOBAL",
+        if cfg!(windows) { "NUL" } else { "/dev/null" },
+    );
     let mut child = command.spawn().map_err(error)?;
+    let writer = input.map(|bytes| {
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        thread::spawn(move || stdin.write_all(&bytes))
+    });
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let out = thread::spawn(move || drain(stdout));
@@ -178,6 +210,14 @@ fn run_git(
         .join()
         .map_err(|_| error("Git error reader failed"))?
         .map_err(error)?;
+    if let Some(writer) = writer {
+        let written = writer
+            .join()
+            .map_err(|_| error("Git input writer failed"))?;
+        if status.success() {
+            written.map_err(error)?;
+        }
+    }
     if timed_out {
         return Err(error("Git review exceeded its 15 second command limit"));
     }
@@ -358,4 +398,60 @@ pub fn review_git_file(
         }
     }
     Ok(review)
+}
+
+#[derive(Debug, Serialize)]
+pub struct GitBranchReceipt {
+    pub branch: String,
+    pub head: String,
+}
+
+/// Create a branch at the explicitly reviewed HEAD. Does not switch branches or
+/// touch the index/worktree. Git verifies HEAD and creates the ref atomically.
+pub fn create_reviewed_git_branch(
+    root: impl AsRef<Path>,
+    branch: &str,
+    expected_head: &str,
+) -> Result<GitBranchReceipt, GitReviewError> {
+    if branch.is_empty()
+        || branch.starts_with('-')
+        || branch.len() > 120
+        || !branch
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-".contains(&byte))
+    {
+        return Err(error(
+            "Use a branch name of 1–120 ASCII letters, digits, / . _ or -",
+        ));
+    }
+    if ![40, 64].contains(&expected_head.len())
+        || !expected_head.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(error(
+            "Load Git changes to review the current HEAD before creating a branch",
+        ));
+    }
+    let root = repository_root(root.as_ref())?;
+    required(
+        &root,
+        &["check-ref-format", &format!("refs/heads/{branch}")],
+    )?;
+    let current = status_at(&root)?;
+    if current.head.as_deref() != Some(expected_head) {
+        return Err(error("HEAD changed since review. Refresh Git changes."));
+    }
+    if current.branch.is_none() {
+        return Err(error("Create branches from an initialized, named branch"));
+    }
+    let input = format!("start\nverify HEAD {expected_head}\ncreate refs/heads/{branch} {expected_head}\nprepare\ncommit\n");
+    controlled_git(
+        &root,
+        &["update-ref", "--stdin"],
+        false,
+        Some(input.into_bytes()),
+    )?;
+    Ok(GitBranchReceipt {
+        branch: branch.to_string(),
+        head: expected_head.to_string(),
+    })
 }

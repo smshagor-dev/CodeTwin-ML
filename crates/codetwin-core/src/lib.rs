@@ -2,7 +2,10 @@ pub mod assessment_jobs;
 pub mod tool_catalog;
 pub use tool_catalog::{CatalogRunSummary, CatalogTool, ToolCatalogService};
 pub mod git_review;
-pub use git_review::{review_git_file, review_git_status, GitFileReview, GitReviewStatus};
+pub use git_review::{
+    create_reviewed_git_branch, review_git_file, review_git_status, GitBranchReceipt,
+    GitFileReview, GitReviewStatus,
+};
 pub mod database_analysis;
 pub mod db;
 pub mod dependency_audit;

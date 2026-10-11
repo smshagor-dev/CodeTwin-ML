@@ -81,6 +81,9 @@ export const workspaceApi = {
   securityToolRuns(projectId: string | null, limit = 20) {
     return invoke<import("./types").CatalogRunSummary[]>("recent_security_tool_runs", { projectId, limit });
   },
+  gitCreateBranch(projectId: string, branch: string, expectedHead: string) {
+    return invoke<{ branch: string; head: string }>("git_create_reviewed_branch", { projectId, branch, expectedHead });
+  },
   gitStatus(projectId: string) {
     return invoke<import("./types").GitReviewStatus>("git_review_status", { projectId });
   },
