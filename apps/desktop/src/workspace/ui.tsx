@@ -96,6 +96,8 @@ export function Modal({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
+  const close = useRef(onClose);
+  useEffect(() => { close.current = onClose; }, [onClose]);
 
   useEffect(() => {
     if (!open) return;
@@ -109,7 +111,7 @@ export function Modal({
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        close.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -130,7 +132,8 @@ export function Modal({
       document.removeEventListener("keydown", onKeyDown);
       previousFocus.current?.focus();
     };
-  }, [open, onClose]);
+    // Form edits can replace onClose; they must not reset the user's focus.
+  }, [open]);
 
   if (!open) return null;
   return (
