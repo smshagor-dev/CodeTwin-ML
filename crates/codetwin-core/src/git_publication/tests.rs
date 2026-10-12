@@ -125,8 +125,21 @@ impl Server {
                 let mut bytes = Vec::new();
                 let mut buf = [0; 8192];
                 let (end, length) = loop {
-                    let n = stream.read(&mut buf).unwrap();
-                    assert!(n > 0);
+                    let n = match stream.read(&mut buf) {
+                        Ok(0) if bytes.is_empty() => break (0, 0),
+                        Ok(n) => n,
+                        Err(cause)
+                            if bytes.is_empty()
+                                && matches!(
+                                    cause.kind(),
+                                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                                ) =>
+                        {
+                            break (0, 0)
+                        }
+                        Err(cause) => panic!("Fixture request read failed: {cause}"),
+                    };
+                    assert!(n > 0, "Incomplete fixture request");
                     bytes.extend_from_slice(&buf[..n]);
                     assert!(bytes.len() < 3 * 1024 * 1024);
                     if let Some(end) = bytes.windows(4).position(|b| b == b"\r\n\r\n") {
@@ -144,6 +157,9 @@ impl Server {
                         }
                     }
                 };
+                if end == 0 {
+                    continue;
+                }
                 let headers = String::from_utf8_lossy(&bytes[..end]);
                 assert!(headers
                     .to_ascii_lowercase()
@@ -181,7 +197,12 @@ impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(worker) = self.worker.take() {
-            worker.join().unwrap();
+            let result = worker.join();
+            // Preserve the original test failure instead of aborting from a
+            // second panic while unwinding through fixture cleanup.
+            if !thread::panicking() {
+                assert!(result.is_ok(), "Fixture HTTP worker failed");
+            }
         }
     }
 }
@@ -384,6 +405,15 @@ fn authentication_default_branch_divergence_and_hash_mismatch_never_update_refs(
             .unwrap_err()
             .to_string();
         assert!(!cause.contains("fixture-token-only"));
+        let expected = match mode {
+            "auth" => "HTTP 401",
+            "default" => "non-default",
+            "diverged" => "diverged",
+            "hash" => "hash differs",
+            _ => unreachable!(),
+        };
+        assert!(cause.contains(expected), "{mode}: {cause}");
+        assert!(server.state.lock().unwrap().requests > 0);
         assert_eq!(server.state.lock().unwrap().writes, 0);
     }
 }
