@@ -69,6 +69,7 @@ impl Api {
         }
         Ok(Self {
             client: Client::builder()
+                .pool_max_idle_per_host(0)
                 .timeout(Duration::from_secs(20))
                 .connect_timeout(Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
