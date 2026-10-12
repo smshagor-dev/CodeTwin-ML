@@ -227,7 +227,7 @@
     "id": "git.publication",
     "name": "Git branch and publication",
     "category": "Repair",
-    "description": "Explicit branch/selected commit and authenticated push/PR",
+    "description": "Reviewed branches/selected commits and authenticated single-commit publication/draft PR",
     "roadmap": "CS-03"
   },
   {

@@ -1,4 +1,5 @@
 pub mod git_commit;
+pub mod git_publication;
 pub use git_commit::{
     apply_selected_commit, prepare_selected_commit, GitCommitPreview, GitCommitReceipt,
     GitCommitRequest,

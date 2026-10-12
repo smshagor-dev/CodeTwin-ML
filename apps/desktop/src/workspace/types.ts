@@ -1508,3 +1508,6 @@ export interface GitCommitPreview {
 export interface GitCommitReceipt {
   branch: string; parent: string; commit: string;
 }
+
+export interface GitPublishTarget { repository: string; branch: string; commit: string; }
+export interface GitPublishReceipt extends GitPublishTarget {}

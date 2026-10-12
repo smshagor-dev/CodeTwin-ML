@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { GitPublishPanel } from "./GitPublishPanel";
 import { GitCommitPanel } from "./GitCommitPanel";
 import { GitBranchPanel } from "./GitBranchPanel";
 import { workspaceApi } from "./api";
@@ -51,6 +52,7 @@ export function GitReviewPanel({ projectId }: { projectId: string }) {
     {error && <p role="alert" className="ws-warning-box">Git review unavailable: {error}</p>}
     {status && <>
       <dl className="ws-detail-grid"><dt>Branch</dt><dd>{status.branch ?? (status.head ? "Detached HEAD" : "Unborn branch")}</dd><dt>HEAD</dt><dd className="ws-mono">{status.head ?? "No commits yet"}</dd></dl>
+      <GitPublishPanel key={"publish:" + projectId + ":" + refresh} projectId={projectId} status={status} />
       <GitCommitPanel key={"commit:" + projectId + ":" + refresh} projectId={projectId} status={status} />
       <GitBranchPanel key={projectId + ":" + refresh} projectId={projectId} status={status} />
       {!status.changes.length && <p className="ws-inline-empty">Working tree is clean.</p>}

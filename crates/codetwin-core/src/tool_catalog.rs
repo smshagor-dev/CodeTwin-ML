@@ -80,6 +80,7 @@ fn registered(id: &str) -> Option<RegisteredWorkflow> {
         "findings.review" => (Security, true, "local_record_write", &["Persisted finding and matching evidence identity", "Reviewer reason"], "Human feedback remains separate from scanner resolution and benchmark accuracy."),
         "findings.comparison" => (Security, false, "evidence_review", &["Two persisted guided scan runs"], "Guided web scan comparison only; not a general cross-engine comparison."),
         "repair.verified" => (Repair, true, "reviewed_write", &["Reviewed candidate diff", "Matching source hashes", "Explicit approval and verification"], "Hash-guarded repairs, rollback and selected verification; not automatic universal repair."),
+        "git.publication" => (Projects, true, "explicit_publication", &["Git repository root and reviewed HEAD", "GitHub Contents/Pull requests write token", "Remote parent exists; non-default destination branch"], "One unsigned SHA-1 UTF-8 commit, hash-verified REST upload and separate same-repository draft PR; no force or full-history push."),
         "git.review" => (Projects, true, "passive_git", &["Git installed", "Project is a Git repository root"], "Bounded read-only status/diff; opening this workflow does not probe Git or mutate the index."),
         _ => return None,
     };
@@ -238,17 +239,24 @@ mod tests {
         {
             assert!(row.workflow.is_none() && row.setup_workflow.is_none());
         }
-        for id in [
-            "git.publication",
-            "binary.dynamic-lab",
-            "ai.assistance",
-            "reports.unified",
-        ] {
+        for id in ["binary.dynamic-lab", "ai.assistance", "reports.unified"] {
             assert_eq!(
                 rows.iter().find(|row| row.id == id).unwrap().availability,
                 ToolAvailability::Planned
             );
         }
+    }
+    #[test]
+    fn publication_opens_projects_but_requires_setup_without_a_project() {
+        let rows = build_catalog(false, true, true, "enabled").unwrap();
+        let row = rows.iter().find(|row| row.id == "git.publication").unwrap();
+        assert_eq!(row.availability, ToolAvailability::RequiresSetup);
+        assert!(row.workflow.is_none());
+        let rows = build_catalog(true, true, true, "enabled").unwrap();
+        let row = rows.iter().find(|row| row.id == "git.publication").unwrap();
+        assert_eq!(row.availability, ToolAvailability::Available);
+        assert_eq!(row.workflow, Some(ToolWorkflow::Projects));
+        assert_eq!(row.operation_kind, "explicit_publication");
     }
     #[test]
     fn project_and_lsp_requirements_are_independent() {

@@ -371,6 +371,7 @@ dependencies = [
  "qa-analyzer",
  "qa-execution",
  "reference-indexer",
+ "reqwest 0.12.28",
  "runtime-analyzer",
  "rusqlite",
  "secret-scanner",

@@ -11,6 +11,7 @@ lsp-enrichment = { path = "../lsp-enrichment" }
 qa-analyzer = { path = "../qa-analyzer" }
 qa-execution = { path = "../qa-execution" }
 rusqlite.workspace = true
+reqwest.workspace = true
 runtime-analyzer = { path = "../runtime-analyzer" }
 security-analyzer = { path = "../security-analyzer" }
 secret-scanner = { path = "../secret-scanner" }
