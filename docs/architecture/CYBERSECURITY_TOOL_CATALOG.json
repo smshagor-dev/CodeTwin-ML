@@ -308,10 +308,13 @@
     {
       "id": "git.publication",
       "category": "Repair",
-      "status": "planned",
-      "purpose": "Explicit branch/selected commit and authenticated push/PR",
+      "status": "baseline",
+      "purpose": "Explicit reviewed branch/selected commit and authenticated single-commit publication/draft PR",
       "milestone": "CS-03",
-      "baseline_references": []
+      "baseline_references": [
+        "crates/codetwin-core/src/git_commit.rs",
+        "crates/codetwin-core/src/git_publication.rs"
+      ]
     },
     {
       "id": "incident.timeline",

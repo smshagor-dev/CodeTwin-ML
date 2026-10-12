@@ -87,6 +87,12 @@ export const workspaceApi = {
   gitApplyCommit(projectId: string, request: import("./types").GitCommitRequest, expectedDigest: string) {
     return invoke<import("./types").GitCommitReceipt>("git_apply_selected_commit", { projectId, request, expectedDigest });
   },
+  gitPublishCommit(projectId: string, target: import("./types").GitPublishTarget, token: string) {
+    return invoke<import("./types").GitPublishReceipt>("git_publish_commit", { projectId, target, token });
+  },
+  gitOpenDraftPr(projectId: string, target: import("./types").GitPublishTarget, base: string, title: string, body: string, token: string) {
+    return invoke<string>("git_open_draft_pr", { projectId, target, base, title, body, token });
+  },
   gitCreateBranch(projectId: string, branch: string, expectedHead: string) {
     return invoke<{ branch: string; head: string }>("git_create_reviewed_branch", { projectId, branch, expectedHead });
   },

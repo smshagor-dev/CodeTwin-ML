@@ -31,6 +31,16 @@ const origin = 'http://127.0.0.1:4174';
           if (fail) throw new Error('Git unavailable');
           return { branch: args.projectId === 'a' ? 'feature/review' : 'secondary', head: 'a'.repeat(40), changes: f.gitClean ? [] : [{ path: args.projectId + '.ts', original_path: null, staged: 'M', unstaged: 'M' }, { path: 'new.ts', original_path: null, staged: '?', unstaged: '?' }] };
         }
+        if (command === 'git_publish_commit') {
+          f.publishCalls = (f.publishCalls || []).concat([{ projectId: args.projectId, target: args.target, authenticated: !!args.token }]);
+          if (f.publishSlow) await new Promise(resolve => setTimeout(resolve, 500));
+          if (f.publishFail) throw new Error('GitHub returned HTTP 401');
+          return args.target;
+        }
+        if (command === 'git_open_draft_pr') {
+          f.prCalls = (f.prCalls || []).concat([{ target: args.target, base: args.base, title: args.title }]);
+          return 'https://github.com/fixture/repo/pull/1';
+        }
         if (command === 'git_prepare_selected_commit') {
           f.prepareCalls = (f.prepareCalls || []).concat([args]);
           if (f.commitSlow) await new Promise(resolve => setTimeout(resolve, 500));
@@ -66,6 +76,34 @@ const origin = 'http://127.0.0.1:4174';
     await panel.getByRole('button', { name: 'Load Git changes', exact: true }).click();
     await panel.getByText('feature/review', { exact: true }).waitFor();
     assert.equal(await page.evaluate(() => window.fixture.branchCalls), undefined);
+    assert.equal(await page.evaluate(() => window.fixture.publishCalls), undefined);
+    assert.equal(await page.evaluate(() => window.fixture.prCalls), undefined);
+    await panel.getByText('Publish commit and open draft PR', { exact: true }).click();
+    const publishButton = panel.getByRole('button', { name: 'Publish displayed commit', exact: true });
+    const prButton = panel.getByRole('button', { name: 'Open draft PR', exact: true });
+    assert.equal(await publishButton.isDisabled(), true);
+    await panel.getByLabel('GitHub repository').fill('fixture/repo');
+    await panel.getByLabel('GitHub token').fill('fixture-token-only');
+    assert.equal(await panel.getByLabel('GitHub token').getAttribute('type'), 'password');
+    await panel.getByLabel('PR title').fill('Reviewed PR');
+    assert.equal(await prButton.isDisabled(), true);
+    await page.evaluate(() => { window.fixture.publishFail = true; });
+    await publishButton.click();
+    await panel.getByRole('alert').filter({ hasText: 'HTTP 401' }).waitFor();
+    assert.equal(await prButton.isDisabled(), true);
+    await page.evaluate(() => { window.fixture.publishFail = false; });
+    await publishButton.click();
+    await panel.getByRole('status').filter({ hasText: 'Verified published commit' }).waitFor();
+    assert.equal(await page.evaluate(() => window.fixture.prCalls), undefined);
+    await panel.getByLabel('PR base branch').fill('feature/review');
+    assert.equal(await prButton.isDisabled(), true);
+    await panel.getByLabel('PR base branch').fill('main');
+    await prButton.click();
+    await panel.getByRole('link', { name: 'View draft PR', exact: true }).waitFor();
+    assert.equal(await panel.getByLabel('GitHub token').inputValue(), '');
+    assert.equal(await page.evaluate(() => JSON.stringify(localStorage).includes('fixture-token-only')), false);
+    assert.equal(await page.evaluate(() => window.fixture.prCalls.length), 1);
+
     assert.equal(await page.evaluate(() => window.fixture.prepareCalls), undefined);
     assert.equal(await page.evaluate(() => window.fixture.commitCalls), undefined);
     await panel.getByText('Commit selected staged files', { exact: true }).click();
@@ -137,6 +175,9 @@ const origin = 'http://127.0.0.1:4174';
     await page.getByRole('button', { name: /Secondary project.*files/ }).click();
     await panel.getByRole('button', { name: 'Load Git changes' }).click();
     await panel.getByText('secondary', { exact: true }).waitFor();
+    assert.equal(await panel.getByLabel('GitHub token').inputValue(), '');
+    assert.equal(await panel.getByRole('status').filter({ hasText: 'Verified published commit' }).count(), 0);
+
     await page.waitForTimeout(600);
     assert.equal(await panel.getByText('feature/review', { exact: true }).count(), 0);
     await panel.getByRole('button', { name: /b.ts/ }).click();
@@ -181,6 +222,22 @@ const origin = 'http://127.0.0.1:4174';
     await panel.getByRole('button', { name: 'Load Git changes' }).click();
     await panel.getByText('feature/review', { exact: true }).waitFor();
     await page.evaluate(() => { window.fixture.commitSlow = false; });
+    await panel.getByText('Publish commit and open draft PR', { exact: true }).click();
+    await panel.getByLabel('GitHub repository').fill('fixture/repo');
+    await panel.getByLabel('GitHub token').fill('transient-token-only');
+    await page.evaluate(() => { window.fixture.publishSlow = true; });
+    await publishButton.click();
+    await page.getByRole('button', { name: /Secondary project.*files/ }).click();
+    await panel.getByRole('button', { name: 'Load Git changes' }).click();
+    await panel.getByText('secondary', { exact: true }).waitFor();
+    await page.waitForTimeout(600);
+    assert.equal(await panel.getByLabel('GitHub token').inputValue(), '');
+    assert.equal(await panel.getByRole('status').filter({ hasText: 'Verified published commit' }).count(), 0);
+    await page.getByRole('button', { name: /Validation project.*files/ }).click();
+    await panel.getByRole('button', { name: 'Load Git changes' }).click();
+    await panel.getByText('feature/review', { exact: true }).waitFor();
+    await page.evaluate(() => { window.fixture.publishSlow = false; });
+
     await panel.getByText('Create branch', { exact: true }).click();
     await panel.getByLabel('New branch name').fill('feature/' + 'x'.repeat(112));
     await panel.getByText('Commit selected staged files', { exact: true }).click();
@@ -198,7 +255,7 @@ const origin = 'http://127.0.0.1:4174';
       }
     }
     assert.deepEqual(errors, []);
-    console.log('Git review/branch/commit UI: selected preview, edit invalidation, explicit digest-bound commit, explicit branch creation, exact HEAD, stale failure/receipt, separate patches, untracked escaping, errors/retry, stale status/diff, responsive themes passed.');
+    console.log('Git review/branch/commit/publication UI: explicit publish/PR, auth failures, token clearing, late response guards, selected preview, edit invalidation, explicit digest-bound commit, explicit branch creation, exact HEAD, stale failure/receipt, separate patches, untracked escaping, errors/retry, stale status/diff, responsive themes passed.');
   } finally {
     await browser?.close();
     server.kill('SIGTERM');

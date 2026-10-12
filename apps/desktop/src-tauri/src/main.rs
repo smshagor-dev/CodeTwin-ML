@@ -292,6 +292,41 @@ async fn git_apply_selected_commit(
 }
 
 #[tauri::command]
+async fn git_publish_commit(
+    project_id: String,
+    target: codetwin_core::git_publication::GitPublishTarget,
+    token: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<codetwin_core::git_publication::GitPublishReceipt, String> {
+    let root = git_project_root(&state, &project_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        codetwin_core::git_publication::publish_commit(root, &target, &token)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn git_open_draft_pr(
+    project_id: String,
+    target: codetwin_core::git_publication::GitPublishTarget,
+    base: String,
+    title: String,
+    body: String,
+    token: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let root = git_project_root(&state, &project_id)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        codetwin_core::git_publication::open_draft_pr(root, &target, &base, &title, &body, &token)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn git_review_file(
     project_id: String,
     path: String,
@@ -1003,6 +1038,8 @@ fn main() {
             git_create_reviewed_branch,
             git_prepare_selected_commit,
             git_apply_selected_commit,
+            git_publish_commit,
+            git_open_draft_pr,
             discover_project,
             index_project,
             cancel_project_index,
