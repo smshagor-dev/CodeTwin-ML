@@ -113,7 +113,16 @@ impl Api {
                 .header("Content-Type", "application/json")
                 .body(body.to_string());
         }
-        let response = request.send().map_err(|_| {
+        let response = request.send().map_err(|cause| {
+            #[cfg(test)]
+            eprintln!(
+                "GitHub fixture HTTP failure: timeout={} connect={} request={} error={cause:?}",
+                cause.is_timeout(),
+                cause.is_connect(),
+                cause.is_request()
+            );
+            #[cfg(not(test))]
+            let _ = cause;
             error("GitHub request failed; remote state may have changed. Verify before retrying.")
         })?;
         if missing && response.status().as_u16() == 404 {

@@ -182,6 +182,16 @@ impl Server {
                 let (status, value) = handle(&path, &shared, method, &route, &body);
                 let body = value.to_string();
                 write!(stream,"HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                stream.flush().unwrap();
+                // Finish the response with FIN, then consume peer shutdown.
+                // Closing a Windows socket with unread data can send a reset.
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
             }
         });
         Self {
