@@ -10,7 +10,10 @@
     "dev": "npm --workspace @codetwin/desktop run dev",
     "build": "npm --workspace @codetwin/desktop run build",
     "typecheck": "npm --workspace @codetwin/desktop run typecheck",
-    "test": "npm --workspace @codetwin/desktop run test"
+    "test": "npm --workspace @codetwin/desktop run test && node --test scripts/desktop-dev-config.test.mjs",
+    "tauri": "npm --workspace @codetwin/desktop run tauri --",
+    "tauri:dev": "npm --workspace @codetwin/desktop run tauri:dev",
+    "tauri:build": "npm --workspace @codetwin/desktop run tauri:build"
   },
   "engines": {
     "node": ">=22"
