@@ -2,7 +2,7 @@ use super::*;
 use std::{
     fs,
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -119,6 +119,11 @@ impl Server {
                     }
                     Err(e) => panic!("{e}"),
                 };
+                // On Windows, accepted sockets can inherit the listener's
+                // nonblocking mode. Waiting for the first request byte would
+                // then return WouldBlock, causing an empty HTTP response and
+                // intermittent hyper IncompleteMessage / WSAECONNABORTED.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
@@ -357,6 +362,29 @@ fn handle(
         return (201, pr);
     }
     panic!("Unexpected fixture request {method} {route}");
+}
+
+#[test]
+fn fixture_keeps_accepted_socket_open_until_request_arrives() {
+    let (dir, _) = fixture();
+    let server = Server::new(dir.path());
+    let address = server.api.endpoint.strip_prefix("http://").unwrap();
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+
+    // Accept must not treat a temporarily empty socket as EOF, even when the
+    // nonblocking listener accepts before a client has sent its HTTP headers.
+    thread::sleep(Duration::from_millis(60));
+    stream
+        .write_all(b"GET /repos/fixture/repo HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer fixture-token-only\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains(r#""default_branch":"main""#));
+    assert_eq!(server.state.lock().unwrap().requests, 1);
 }
 
 #[test]
