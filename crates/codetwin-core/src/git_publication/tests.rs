@@ -383,7 +383,7 @@ fn fixture_keeps_accepted_socket_open_until_request_arrives() {
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
-    assert!(response.contains("\r\n\r\n{\\"default_branch\\":\\"main\\""));
+    assert!(response.contains(r#""default_branch":"main""#));
     assert_eq!(server.state.lock().unwrap().requests, 1);
 }
 
