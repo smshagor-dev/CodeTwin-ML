@@ -498,11 +498,40 @@ Pydantic request models also support aliased imports of the built-in `to_camel`,
 npm ci
 ~~~
 
-### Frontend development
+### Desktop development (Tauri 2)
+
+From the repository root on Windows (PowerShell):
+
+~~~powershell
+npm ci
+cargo install tauri-cli --version 2.8.4 --locked
+npm run tauri:dev
+~~~
+
+The last command opens the **CodeTwin ML desktop app**, not just the Vite webpage.
+You can also run `pnpm tauri dev` from the repository root when pnpm is installed.
+Use `npm ci` to install dependencies: this repository commits `package-lock.json`,
+not a pnpm lockfile. To produce a desktop installer, run `npm run tauri:build`.
+
+The desktop Tauri CLI runs in `apps/desktop` via workspace scripts; there is
+no need to manually change folders. Install Rust and the platform-specific
+Tauri prerequisites first (on Windows, MSVC C++ Build Tools and WebView2).
+
+Vite binds to `127.0.0.1:5173`, which exactly matches Tauri's `devUrl`.
+This avoids IPv4/IPv6 `localhost` resolution mismatches on Windows. If Tauri
+still reports `Waiting for your frontend dev server`, open a **second**
+PowerShell and check `Invoke-WebRequest -UseBasicParsing http://127.0.0.1:5173/`.
+Ensure no other instance is occupying port 5173; stop the current dev run with
+Ctrl+C before retrying. The first desktop build may take longer while Rust
+compiles dependencies.
+
+### Frontend-only development
 
 ~~~bash
 npm run dev
 ~~~
+
+This command starts Vite in a browser and does **not** open a Tauri desktop window.
 
 ### Build and validation
 
