@@ -509,6 +509,12 @@ npm run tauri:dev
 ~~~
 
 The last command opens the **CodeTwin ML desktop app**, not just the Vite webpage.
+
+The Windows build requires `apps/desktop/src-tauri/icons/icon.ico`, committed
+alongside the existing `icon.png`. If an older checkout reports
+`icon.ico not found`, pull the latest `main` branch before rebuilding.
+The Windows CI job performs `cargo check -p codetwin-desktop --locked` to
+catch desktop resource/build-script failures that core-only tests cannot detect.
 You can also run `pnpm tauri dev` from the repository root when pnpm is installed.
 Use `npm ci` to install dependencies: this repository commits `package-lock.json`,
 not a pnpm lockfile. To produce a desktop installer, run `npm run tauri:build`.

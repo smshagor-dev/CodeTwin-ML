@@ -32,3 +32,21 @@ test("Repository root delegates Tauri commands to the desktop workspace", () => 
   assert.equal(desktopScripts["tauri:dev"], "cargo tauri dev");
   assert.equal(desktopScripts["tauri:build"], "cargo tauri build");
 });
+
+test("Windows Tauri icon is a committed, valid PNG-backed ICO", () => {
+  const png = readFileSync(path.join(repoRoot, "apps/desktop/src-tauri/icons/icon.png"));
+  const ico = readFileSync(path.join(repoRoot, "apps/desktop/src-tauri/icons/icon.ico"));
+
+  assert.equal(ico.readUInt16LE(0), 0); // ICO reserved
+  assert.equal(ico.readUInt16LE(2), 1); // Icon, not cursor
+  assert.equal(ico.readUInt16LE(4), 1); // One PNG-backed image
+  assert.equal(ico[6], 64);
+  assert.equal(ico[7], 64);
+  assert.equal(ico.readUInt16LE(10), 1); // Planes
+  assert.equal(ico.readUInt16LE(12), 32); // 32-bit color
+  assert.equal(ico.readUInt32LE(14), png.length);
+  const offset = ico.readUInt32LE(18);
+  assert.equal(offset, 22);
+  assert.equal(ico.length, offset + png.length);
+  assert.deepEqual(ico.subarray(offset), png);
+});
