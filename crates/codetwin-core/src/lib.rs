@@ -9,6 +9,7 @@ pub mod native_agent_handoffs;
 pub mod native_agent_memory;
 pub mod native_agent_knowledge;
 pub mod native_agent_delegation;
+pub mod native_agent_workers;
 pub mod native_agent_reasoning;
 pub mod native_agents;
 pub mod tool_catalog;
