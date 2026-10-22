@@ -4,6 +4,7 @@ mod guided_security_commands;
 mod ml_commands;
 mod native_agent_commands;
 mod native_agent_reasoning_commands;
+mod native_orchestration_commands;
 mod qa_commands;
 mod repair_commands;
 mod runtime_commands;
@@ -67,6 +68,10 @@ use native_agent_commands::{
 use native_agent_reasoning_commands::{
     interpret_native_agent_review, native_agent_insight, native_model_readiness,
     suggest_native_agent_roles,
+};
+use native_orchestration_commands::{
+    clear_native_knowledge, native_delegation_graph, native_isolated_scan_readiness,
+    native_knowledge_graph, run_native_isolated_scan, search_native_knowledge,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
@@ -1052,6 +1057,12 @@ fn main() {
             approve_native_agent_review,
             run_native_agent_review,
             cancel_native_agent_review,
+            native_delegation_graph,
+            search_native_knowledge,
+            native_knowledge_graph,
+            clear_native_knowledge,
+            native_isolated_scan_readiness,
+            run_native_isolated_scan,
             native_agent_report,
             list_native_agent_memory,
             clear_native_agent_memory,
