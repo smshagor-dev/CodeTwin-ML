@@ -5,6 +5,8 @@ use codetwin_core::{
     native_agent_knowledge::{AgentKnowledge, KnowledgeGraph, KnowledgeNode},
     native_agent_workers::{IsolatedScanReadiness, IsolatedScanReceipt, IsolatedWorker},
     native_worker_audit::{WorkerAudit, WorkerAuditRecord},
+    native_neural_embeddings::{NeuralMemory, NeuralMatch, NeuralReadiness},
+    native_graph_reasoning::{GraphReasoner, GraphInference},
     Database,
 };
 use tauri::Manager;
@@ -122,4 +124,48 @@ pub fn native_worker_audit(
 ) -> Result<Vec<WorkerAuditRecord>, String> {
     let database = db(&app)?;
     WorkerAudit::new(&database).list(&id)
+}
+
+#[tauri::command]
+pub fn native_neural_readiness() -> NeuralReadiness {
+    NeuralMemory::readiness()
+}
+
+#[tauri::command]
+pub async fn index_native_neural_memory(
+    id: String,
+    consent: bool,
+    app: tauri::AppHandle,
+) -> Result<usize, String> {
+    if !consent {return Err("Explicit neural indexing consent is required".into());}
+    tauri::async_runtime::spawn_blocking(move || {
+        let database=db(&app)?;
+        NeuralMemory::new(&database).index_run(&id,consent)
+    }).await.map_err(|error|error.to_string())?
+}
+
+#[tauri::command]
+pub async fn search_native_neural_memory(
+    project_id: String,
+    query: String,
+    limit: usize,
+    consent: bool,
+    app: tauri::AppHandle,
+) -> Result<Vec<NeuralMatch>, String> {
+    if !consent {return Err("Explicit query embedding consent is required".into());}
+    tauri::async_runtime::spawn_blocking(move || {
+        let database=db(&app)?;
+        NeuralMemory::new(&database).search(&project_id,&query,limit,consent)
+    }).await.map_err(|error|error.to_string())?
+}
+
+#[tauri::command]
+pub fn reason_native_knowledge_graph(
+    project_id: String,
+    id: String,
+    position: usize,
+    app: tauri::AppHandle,
+) -> Result<GraphInference, String> {
+    let database=db(&app)?;
+    GraphReasoner::new(&database).analyze(&project_id,&id,position)
 }

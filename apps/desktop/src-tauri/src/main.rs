@@ -72,7 +72,8 @@ use native_agent_reasoning_commands::{
 use native_orchestration_commands::{
     clear_native_knowledge, native_delegation_graph, native_isolated_scan_readiness,
     native_knowledge_graph, run_native_isolated_scan, search_native_knowledge, native_task_schedule,
-    native_worker_audit,
+    native_worker_audit, native_neural_readiness, index_native_neural_memory,
+    search_native_neural_memory, reason_native_knowledge_graph,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
@@ -1059,6 +1060,10 @@ fn main() {
             create_native_task_review,
             native_task_schedule,
             native_worker_audit,
+            native_neural_readiness,
+            index_native_neural_memory,
+            search_native_neural_memory,
+            reason_native_knowledge_graph,
             list_native_agent_reviews,
             native_agent_review,
             approve_native_agent_review,
