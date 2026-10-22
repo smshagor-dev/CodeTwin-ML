@@ -103,11 +103,11 @@ impl<'a> GraphReasoner<'a> {
 
 /// Directed cycle detection over every node, including components not reachable
 /// from the selected specialist. A topological ordering must consume all nodes.
-fn graph_has_cycle(
-    nodes: &BTreeSet<usize>,
-    forward: &BTreeMap<usize, Vec<usize>>,
-) -> bool {
-    let mut indegree = nodes.iter().map(|id| (*id, 0usize)).collect::<BTreeMap<_, _>>();
+fn graph_has_cycle(nodes: &BTreeSet<usize>, forward: &BTreeMap<usize, Vec<usize>>) -> bool {
+    let mut indegree = nodes
+        .iter()
+        .map(|id| (*id, 0usize))
+        .collect::<BTreeMap<_, _>>();
     for neighbors in forward.values() {
         for next in neighbors {
             if let Some(count) = indegree.get_mut(next) {
@@ -115,8 +115,9 @@ fn graph_has_cycle(
             }
         }
     }
-    let mut queue: VecDeque<usize> = indegree.iter()
-        .filter_map(|(id,count)| (*count==0).then_some(*id))
+    let mut queue: VecDeque<usize> = indegree
+        .iter()
+        .filter_map(|(id, count)| (*count == 0).then_some(*id))
         .collect();
     let mut removed = 0;
     while let Some(node) = queue.pop_front() {
@@ -124,7 +125,9 @@ fn graph_has_cycle(
         for next in forward.get(&node).into_iter().flatten() {
             if let Some(count) = indegree.get_mut(next) {
                 *count -= 1;
-                if *count == 0 { queue.push_back(*next); }
+                if *count == 0 {
+                    queue.push_back(*next);
+                }
             }
         }
     }
