@@ -314,6 +314,16 @@ impl<'a> NativeAgents<'a> {
              WHERE run_id=?1 AND status IN ('pending','running')",
             params![id,status],
         ).map_err(to_error)?;
+        // A completed run is only accepted after checking the whole handoff chain.
+        if status == "completed" {
+            let verdict = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
+            if !verdict.verified {
+                self.db.connection().execute(
+                    "UPDATE native_agent_runs SET status='failed',message=?2 WHERE id=?1 AND status='completed'",
+                    params![id, verdict.issues.join("; ")],
+                ).map_err(to_error)?;
+            }
+        }
         // Remember only non-sensitive role status and source-run provenance.
         crate::native_agent_memory::AgentMemory::new(self.db).record_run(id)?;
         self.get(id)
