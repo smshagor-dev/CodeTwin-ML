@@ -1,5 +1,6 @@
 use codetwin_core::{
     native_agent_memory::{AgentMemory, MemoryEntry},
+    native_agent_handoffs::{AgentHandoff, AgentHandoffs, AgentVerification},
     native_agents::{AgentRun, NativeAgents},
     Database,
 };
@@ -104,4 +105,22 @@ pub fn clear_native_agent_memory(
 ) -> Result<usize, String> {
     let db = open_db(&app)?;
     AgentMemory::new(&db).clear(&project_id)
+}
+
+#[tauri::command]
+pub fn list_native_agent_handoffs(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<AgentHandoff>, String> {
+    let db = open_db(&app)?;
+    AgentHandoffs::new(&db).list(&id)
+}
+
+#[tauri::command]
+pub fn verify_native_agent_run(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<AgentVerification, String> {
+    let db = open_db(&app)?;
+    AgentHandoffs::new(&db).verify(&id)
 }
