@@ -4,6 +4,7 @@ use codetwin_core::{
     native_agent_delegation::{DelegationGraph, NativeDelegation},
     native_agent_knowledge::{AgentKnowledge, KnowledgeGraph, KnowledgeNode},
     native_agent_workers::{IsolatedScanReadiness, IsolatedScanReceipt, IsolatedWorker},
+    native_worker_audit::{WorkerAudit, WorkerAuditRecord},
     Database,
 };
 use tauri::Manager;
@@ -78,7 +79,12 @@ pub async fn run_native_isolated_scan(
     let lease = WorkerLease;
     tauri::async_runtime::spawn_blocking(move || {
         let _lease = lease;
-        IsolatedWorker::new(&db(&app)?).scan(&id, authorized)
+        let database = db(&app)?;
+        let audit = WorkerAudit::new(&database);
+        let audit_id = audit.begin(&id)?;
+        let result = IsolatedWorker::new(&database).scan(&id, authorized);
+        audit.finish(audit_id, &result)?;
+        result
     })
     .await
     .map_err(|e| e.to_string())?
@@ -107,4 +113,13 @@ pub fn native_task_schedule(
             tasks, rationale: "Persisted bounded review graph".into(),
         }
     )
+}
+
+#[tauri::command]
+pub fn native_worker_audit(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<WorkerAuditRecord>, String> {
+    let database = db(&app)?;
+    WorkerAudit::new(&database).list(&id)
 }

@@ -72,6 +72,7 @@ use native_agent_reasoning_commands::{
 use native_orchestration_commands::{
     clear_native_knowledge, native_delegation_graph, native_isolated_scan_readiness,
     native_knowledge_graph, run_native_isolated_scan, search_native_knowledge, native_task_schedule,
+    native_worker_audit,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
@@ -1021,6 +1022,9 @@ fn main() {
             codetwin_core::native_agents::NativeAgents::new(&database)
                 .recover_interrupted()
                 .map_err(std::io::Error::other)?;
+            codetwin_core::native_worker_audit::WorkerAudit::new(&database)
+                .recover_interrupted()
+                .map_err(std::io::Error::other)?;
             let repair_backup_root = app_data_dir.join("repair-backups");
             RepairApplicationService::new(&database)
                 .recover_interrupted_applications(&repair_backup_root)
@@ -1054,6 +1058,7 @@ fn main() {
             create_native_agent_review,
             create_native_task_review,
             native_task_schedule,
+            native_worker_audit,
             list_native_agent_reviews,
             native_agent_review,
             approve_native_agent_review,

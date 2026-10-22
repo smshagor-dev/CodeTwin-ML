@@ -12,6 +12,7 @@ pub mod native_agent_knowledge;
 pub mod native_agent_memory;
 pub mod native_agent_reasoning;
 pub mod native_agent_workers;
+pub mod native_worker_audit;
 pub mod native_agents;
 pub mod tool_catalog;
 pub use tool_catalog::{CatalogRunSummary, CatalogTool, ToolCatalogService};
