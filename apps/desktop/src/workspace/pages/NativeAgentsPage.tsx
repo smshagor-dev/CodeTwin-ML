@@ -62,11 +62,36 @@ export type AgentVerification = {
   issues: string[];
 };
 
+export type DelegationGraph = {
+  run_id: string;
+  tasks: { position: number; role: string; tool: string; status: string; requires: number[] }[];
+};
+export type KnowledgeNode = {
+  run_id: string; position: number; role: string; tool: string; status: string; score: number;
+};
+export type KnowledgeGraph = {
+  project_id: string;
+  nodes: KnowledgeNode[];
+  edges: { run_id: string; from_position: number; to_position: number; relation: string }[];
+};
+export type IsolatedScanReceipt = {
+  run_id: string; image_digest: string; report_sha256: string;
+  vulnerability_count: number; misconfiguration_count: number;
+  runtime_seconds: number; warnings: string[];
+};
+
 export function NativeAgentsPage() {
   const { projects, activeProjectId, setActiveProjectId } = useWorkspace();
   const [runs, setRuns] = useState<NativeAgentRun[]>([]);
   const [memory, setMemory] = useState<NativeAgentMemory[]>([]);
   const [memoryQuery, setMemoryQuery] = useState("");
+  const [knowledgeQuery, setKnowledgeQuery] = useState("");
+  const [knowledgeMatches, setKnowledgeMatches] = useState<KnowledgeNode[]>([]);
+  const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraph | null>(null);
+  const [delegation, setDelegation] = useState<DelegationGraph | null>(null);
+  const [workerStatus, setWorkerStatus] = useState<{ configured: boolean; detail: string } | null>(null);
+  const [workerConsent, setWorkerConsent] = useState(false);
+  const [workerReceipt, setWorkerReceipt] = useState<IsolatedScanReceipt | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [handoffs, setHandoffs] = useState<AgentHandoff[]>([]);
   const [verification, setVerification] = useState<AgentVerification | null>(null);
@@ -89,6 +114,8 @@ export function NativeAgentsPage() {
 
   useEffect(() => {
     void workspaceApi.nativeModelReadiness().then(setModelStatus)
+      .catch(reason => setError(String(reason)));
+    void workspaceApi.nativeIsolatedScanReadiness().then(setWorkerStatus)
       .catch(reason => setError(String(reason)));
   }, []);
 
@@ -138,6 +165,54 @@ export function NativeAgentsPage() {
       .catch(reason => { if (active) setError(String(reason)); });
     return () => { active = false; };
   }, [selectedId, runs]);
+
+  useEffect(() => {
+    const id = selectedId || runs[0]?.id;
+    if (!activeProjectId || !id) {
+      setKnowledgeGraph(null);
+      setDelegation(null);
+      return;
+    }
+    let active = true;
+    void Promise.all([
+      workspaceApi.nativeDelegationGraph(id),
+      workspaceApi.nativeKnowledgeGraph(activeProjectId, id),
+    ]).then(([tasks, graph]) => {
+      if (active) { setDelegation(tasks); setKnowledgeGraph(graph); }
+    }).catch(reason => { if (active) setError(String(reason)); });
+    return () => { active = false; };
+  }, [activeProjectId, selectedId, runs]);
+
+  async function searchKnowledge() {
+    if (!activeProjectId) return;
+    setError("");
+    try {
+      setKnowledgeMatches(await workspaceApi.searchNativeKnowledge(activeProjectId, knowledgeQuery, 12));
+    } catch (reason) { setError(String(reason)); }
+  }
+
+  async function clearKnowledge() {
+    if (!activeProjectId || !window.confirm("Delete the derived vector and graph memory for this project? Review evidence will remain.")) return;
+    setBusy("knowledge"); setError("");
+    try {
+      await workspaceApi.clearNativeKnowledge(activeProjectId);
+      setKnowledgeMatches([]);
+      setKnowledgeGraph(null);
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+
+  async function runWorker(id: string) {
+    if (!workerConsent || !window.confirm("Run an offline, read-only Docker security scan of this approved local project?")) return;
+    setBusy("worker"); setError("");
+    setWorkerReceipt(null);
+    try {
+      const receipt = await workspaceApi.runNativeIsolatedScan(id, true);
+      setWorkerReceipt(receipt);
+      setWorkerConsent(false);
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
 
   async function interpret(id: string) {
     if (!modelConsent) return;
@@ -326,6 +401,24 @@ export function NativeAgentsPage() {
       )}</div>
     </Panel>
 
+    <Panel title="Local vector and knowledge-graph memory">
+      <p className="ws-form-help">Local lexical vectors, not neural embeddings. Only role, tool and status provenance is indexed; source code and scan output are never copied here.</p>
+      <label className="ws-field"><span>Search prior specialist outcomes</span>
+        <input value={knowledgeQuery} maxLength={120} onChange={event => setKnowledgeQuery(event.target.value)}
+          placeholder="source secrets database runtime"/>
+      </label>
+      <div className="ws-top-actions">
+        <button className="ws-button ws-button-secondary" disabled={!activeProjectId || Boolean(busy)}
+          onClick={() => void searchKnowledge()}>Search local vectors</button>
+        <button className="ws-button ws-button-secondary" disabled={!activeProjectId || Boolean(busy)}
+          onClick={() => void clearKnowledge()}>Clear derived knowledge</button>
+      </div>
+      {knowledgeMatches.map(node => <button key={node.run_id + ":" + node.position}
+        className="ws-button ws-button-secondary" onClick={() => setSelectedId(node.run_id)}>
+        {node.role} · {node.status} · similarity {node.score.toFixed(2)}
+      </button>)}
+    </Panel>
+
     <Panel title="Saved reviews">
       {!runs.length && <p className="ws-inline-empty">Choose an indexed project to create your first local review.</p>}
       <div className="ws-history-list">{runs.map(run =>
@@ -347,6 +440,18 @@ export function NativeAgentsPage() {
         </details>)}
       </div>
       {selected.message && <p className="ws-warning-box">{selected.message}</p>}
+      <section>
+        <h3>Approved delegation tasks</h3>
+        <p className="ws-form-help">Dependencies are verified in Rust before each registered specialist runs.</p>
+        {delegation?.tasks.map(task => <p key={task.position}>
+          <strong>{task.role}</strong> · {task.status}
+          {task.requires.length ? " · requires " + task.requires.join(", ") : " · initial task"}
+        </p>)}
+        <h3>Stored knowledge graph</h3>
+        <p className="ws-form-help">
+          {knowledgeGraph?.nodes.length ?? 0} local evidence nodes · {knowledgeGraph?.edges.length ?? 0} verified handoff relations.
+        </p>
+      </section>
       <section>
         <h3>Specialist handoffs and verification</h3>
         <p className="ws-form-help">
@@ -379,6 +484,25 @@ export function NativeAgentsPage() {
             onClick={() => void interpret(selected.id)}>{busy === "reason" ? "Analyzing…" : "Generate AI interpretation"}</button>
         </>}
       </div>
+      <section className="ws-form-stack">
+        <h3>Optional isolated security worker</h3>
+        <p className="ws-form-help">{workerStatus?.detail ?? "Checking Docker worker configuration…"}</p>
+        <p className="ws-form-help">Pinned Trivy image only · local Docker · no network · read-only source mount · fixed arguments · resource/time ceilings. Never launches arbitrary commands.</p>
+        <label className="ws-field"><span>
+          <input type="checkbox" checked={workerConsent} onChange={event => setWorkerConsent(event.target.checked)}/>
+          I explicitly authorize an offline security scan of the selected project in Docker.
+        </span></label>
+        <button className="ws-button ws-button-secondary"
+          disabled={!workerConsent || !workerStatus?.configured || selected.status !== "approved" || Boolean(busy)}
+          onClick={() => void runWorker(selected.id)}>
+          {busy === "worker" ? "Running isolated scan…" : "Run approved offline scanner"}
+        </button>
+        {workerReceipt && <p role="status">
+          Offline scan finished · {workerReceipt.vulnerability_count} vulnerability records,
+          {" "}{workerReceipt.misconfiguration_count} misconfiguration records.
+          Evidence SHA-256: <code>{workerReceipt.report_sha256}</code>
+        </p>}
+      </section>
       <div className="ws-top-actions">
         {selected.status === "planned" && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => void approve(selected.id)}>Approve plan</button>}
         {selected.status === "approved" && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => execute(selected.id)}>Run approved review</button>}
