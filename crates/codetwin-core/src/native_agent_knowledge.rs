@@ -2,7 +2,7 @@
 //! Vectors use deterministic token hashing; they are lexical, not neural embeddings.
 //! Only role/tool/status provenance is stored; scanner output and source never leave the run.
 use crate::{native_agents::NativeAgents, Database};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
