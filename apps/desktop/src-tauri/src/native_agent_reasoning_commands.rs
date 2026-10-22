@@ -96,3 +96,29 @@ pub async fn suggest_native_agent_roles(
     .await
     .map_err(|error| error.to_string())?
 }
+
+#[tauri::command]
+pub async fn suggest_native_task_plan(
+    project_id: String,
+    objective: String,
+    consent: bool,
+    app: tauri::AppHandle,
+) -> Result<codetwin_core::native_task_plans::TaskProposal, String> {
+    if !consent {
+        return Err("Explicit AI planning consent is required".into());
+    }
+    if PLANNING_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("Another model planning request is active".into());
+    }
+    let guard = PlanningGuard;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        let db = open_db(&app)?;
+        NativeReviewReasoner::new(&db).suggest_task_plan(&project_id, &objective, consent)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
