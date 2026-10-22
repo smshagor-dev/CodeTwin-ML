@@ -445,6 +445,14 @@ impl<'a> NativeAgents<'a> {
         if let Some(message) = run.message {
             text.push_str(&format!("\n## Unresolved\n\n{message}\n"));
         }
+        let verification = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
+        text.push_str(&format!(
+            "\n## Specialist Evidence Chain\n\nVerified: {}\n\nChecked specialists: {}\n\nVerified handoffs: {}\n",
+            verification.verified, verification.checked_roles, verification.checked_handoffs
+        ));
+        for issue in verification.issues {
+            text.push_str(&format!("\n- {}\n", issue));
+        }
         Ok(text)
     }
 
