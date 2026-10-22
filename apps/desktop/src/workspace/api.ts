@@ -81,6 +81,26 @@ export const workspaceApi = {
   cancelNativeAgentReview(id: string) {
     return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("cancel_native_agent_review", { id });
   },
+  nativeDelegationGraph(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").DelegationGraph>("native_delegation_graph", { id });
+  },
+  searchNativeKnowledge(projectId: string, query: string, limit = 12) {
+    return invoke<import("./pages/NativeAgentsPage").KnowledgeNode[]>("search_native_knowledge", {
+      projectId, query, limit,
+    });
+  },
+  nativeKnowledgeGraph(projectId: string, id: string) {
+    return invoke<import("./pages/NativeAgentsPage").KnowledgeGraph>("native_knowledge_graph", { projectId, id });
+  },
+  clearNativeKnowledge(projectId: string) {
+    return invoke<number>("clear_native_knowledge", { projectId });
+  },
+  nativeIsolatedScanReadiness() {
+    return invoke<{ configured: boolean; detail: string }>("native_isolated_scan_readiness");
+  },
+  runNativeIsolatedScan(id: string, authorized: boolean) {
+    return invoke<import("./pages/NativeAgentsPage").IsolatedScanReceipt>("run_native_isolated_scan", { id, authorized });
+  },
   nativeAgentHandoffs(id: string) {
     return invoke<import("./pages/NativeAgentsPage").AgentHandoff[]>("list_native_agent_handoffs", { id });
   },
