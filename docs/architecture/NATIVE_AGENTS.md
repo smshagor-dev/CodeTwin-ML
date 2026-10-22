@@ -55,3 +55,17 @@ not exposed to the WebView. Model output is stored separately in the SQLite
 `native_agent_insights` table as **unverified interpretation**, never as a scan verdict.
 A completed or failed review and explicit per-request user consent are prerequisites. The optional
 model cannot call tools, change scope, patch code or turn incomplete evidence into passing tests.
+
+## Project review memory
+
+Completed and failed specialist-role outcomes are indexed in `native_agent_memory` on a per-project
+basis. Each entry retains only the specialist role, registered tool ID, terminal step state, timestamp,
+original review ID and position. Review evidence must be opened from the original saved run.
+Source file contents, secret discoveries, raw scan output and optional LLM interpretations are
+**not** copied into memory. The memory is strictly read-only context for the UI and does not
+automatically authorize new tests or alter plans.
+
+The Agents page provides project-scoped filtering and an explicit **Clear project memory** action.
+This erases only the derived memory rows, not the original review history. Memory storage is bounded
+to the latest 500 role outcomes per project, and retrieval is capped at 50 rows. Query escaping
+prevents LIKE wildcards from broadening user-entered search terms.
