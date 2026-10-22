@@ -60,7 +60,28 @@ impl WorkerSettings {
 }
 
 /// Return arguments for audit/testing: no untrusted CLI arguments, no network, no host write mounts.
-fn build_args(settings: &WorkerSettings, project: &Path, output: &Path, name: &str) -> Vec<String> {
+fn container_user(output: &Path) -> Result<String, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::metadata(output).map_err(err)?;
+        if meta.uid() == 0 {
+            return Err("Running container workers as the root host user is forbidden".into());
+        }
+        return Ok(format!("{}:{}", meta.uid(), meta.gid()));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = output;
+        Ok("65534:65534".into())
+    }
+}
+
+fn safe_mount_path(path: &Path) -> bool {
+    !path.to_string_lossy().chars().any(|c| c == ',' || c == '\n' || c == '\r')
+}
+
+fn build_args(settings: &WorkerSettings, project: &Path, output: &Path, name: &str, user: &str) -> Vec<String> {
     vec![
         "run".into(), "--rm".into(), "--pull=never".into(),
         "--name".into(), name.into(),
@@ -68,7 +89,7 @@ fn build_args(settings: &WorkerSettings, project: &Path, output: &Path, name: &s
         "--read-only".into(), "--cap-drop=ALL".into(),
         "--security-opt=no-new-privileges".into(),
         "--pids-limit=64".into(), "--memory=512m".into(),
-        "--cpus=1".into(), "--user=65534:65534".into(),
+        "--cpus=1".into(), format!("--user={user}"),
         "--tmpfs=/tmp:rw,noexec,nosuid,size=64m".into(),
         "--mount".into(), format!("type=bind,src={},dst=/workspace,readonly",project.display()),
         "--mount".into(), format!("type=bind,src={},dst=/out",output.display()),
@@ -106,10 +127,14 @@ impl<'a> IsolatedWorker<'a> {
         if !root.is_dir() {return Err("Project root is not a directory".into());}
         let settings=WorkerSettings::load()?;
         let tmp=tempfile::tempdir().map_err(err)?;
+        if !safe_mount_path(&root) || !safe_mount_path(tmp.path()) {
+            return Err("Mount paths cannot contain Docker option separators".into());
+        }
+        let user=container_user(tmp.path())?;
         // Scope output storage to an isolated temporary directory only.
         let stamp=SystemTime::now().duration_since(UNIX_EPOCH).map_err(err)?.as_nanos();
         let name=format!("codetwin-scan-{:x}",stamp);
-        let args=build_args(&settings,&root,tmp.path(),&name);
+        let args=build_args(&settings,&root,tmp.path(),&name,&user);
         let begin=Instant::now();
         let mut child=Command::new(&settings.docker)
             .args(&args)
@@ -177,12 +202,14 @@ mod tests {
             docker:PathBuf::from("/opt/bin/docker"),
             image:format!("local/trivy@sha256:{}", "a".repeat(64)),
         };
-        let argv=build_args(&fake,Path::new("/source"),Path::new("/tmp/out"),"test");
+        let argv=build_args(&fake,Path::new("/source"),Path::new("/tmp/out"),"test","1000:1000");
         assert!(argv.windows(2).any(|p|p==["--network","none"]));
         assert!(argv.windows(2).any(|p|p==["--cap-drop=ALL","--security-opt=no-new-privileges"]));
         assert!(argv.iter().any(|a|a.contains("dst=/workspace,readonly")));
         assert!(argv.iter().any(|a|a=="--pull=never"));
         assert!(!argv.iter().any(|a|a=="--privileged"));
+        assert!(argv.iter().any(|a|a=="--user=1000:1000"));
+        assert!(!safe_mount_path(Path::new("/tmp/path,with-comma")));
     }
     #[test]
     fn cannot_scan_unapproved_run_or_run_without_authorization() {
