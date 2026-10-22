@@ -62,7 +62,10 @@ impl<'a> NativeAgents<'a> {
         max_files: usize,
         budget_seconds: u64,
     ) -> Result<AgentRun, String> {
-        let all_roles = STEP_TOOLS.iter().map(|(id, _)| (*id).to_string()).collect::<Vec<_>>();
+        let all_roles = STEP_TOOLS
+            .iter()
+            .map(|(id, _)| (*id).to_string())
+            .collect::<Vec<_>>();
         self.create_with_roles(project_id, objective, max_files, budget_seconds, &all_roles)
     }
 
@@ -77,10 +80,18 @@ impl<'a> NativeAgents<'a> {
         if !(2..=STEP_TOOLS.len()).contains(&roles.len())
             || !roles.iter().any(|role| role.as_str() == "scout")
             || !roles.iter().any(|role| role.as_str() == "source")
-            || roles.iter().any(|role| !STEP_TOOLS.iter().any(|(id, _)| role.as_str() == *id))
-            || roles.iter().enumerate().any(|(i, role)| roles[..i].contains(role))
+            || roles
+                .iter()
+                .any(|role| !STEP_TOOLS.iter().any(|(id, _)| role.as_str() == *id))
+            || roles
+                .iter()
+                .enumerate()
+                .any(|(i, role)| roles[..i].contains(role))
         {
-            return Err("Select unique supported roles; Project Recon and Source Auditor are required".into());
+            return Err(
+                "Select unique supported roles; Project Recon and Source Auditor are required"
+                    .into(),
+            );
         }
         if objective.trim().is_empty() || objective.len() > 2000 {
             return Err("Give a review objective of at most 2000 bytes".into());
@@ -486,18 +497,42 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("sample.ts"), "export const a = 1;").unwrap();
         let project_id = crate::ProjectIndexService::new(&db)
-            .index_project(root.path()).unwrap().project_id;
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
         let agents = NativeAgents::new(&db);
         for bad in [
             vec!["scout".to_string(), "qa".to_string()],
-            vec!["scout".to_string(), "source".to_string(), "unknown".to_string()],
-            vec!["scout".to_string(), "source".to_string(), "source".to_string()],
+            vec![
+                "scout".to_string(),
+                "source".to_string(),
+                "unknown".to_string(),
+            ],
+            vec![
+                "scout".to_string(),
+                "source".to_string(),
+                "source".to_string(),
+            ],
         ] {
-            assert!(agents.create_with_roles(&project_id, "Review", 10, 60, &bad).is_err());
+            assert!(agents
+                .create_with_roles(&project_id, "Review", 10, 60, &bad)
+                .is_err());
         }
-        let roles = vec!["scout".to_string(), "source".to_string(), "secrets".to_string()];
-        let review = agents.create_with_roles(&project_id, "Review", 10, 60, &roles).unwrap();
-        assert_eq!(review.steps.iter().map(|step| step.tool.as_str()).collect::<Vec<_>>(),
-            vec!["scout", "source", "secrets"]);
+        let roles = vec![
+            "scout".to_string(),
+            "source".to_string(),
+            "secrets".to_string(),
+        ];
+        let review = agents
+            .create_with_roles(&project_id, "Review", 10, 60, &roles)
+            .unwrap();
+        assert_eq!(
+            review
+                .steps
+                .iter()
+                .map(|step| step.tool.as_str())
+                .collect::<Vec<_>>(),
+            vec!["scout", "source", "secrets"]
+        );
     }
 }

@@ -28,7 +28,9 @@ pub fn create_native_agent_review(
     let db = open_db(&app)?;
     let agents = NativeAgents::new(&db);
     match roles {
-        Some(roles) => agents.create_with_roles(&project_id, &objective, max_files, budget_seconds, &roles),
+        Some(roles) => {
+            agents.create_with_roles(&project_id, &objective, max_files, budget_seconds, &roles)
+        }
         None => agents.create(&project_id, &objective, max_files, budget_seconds),
     }
 }
