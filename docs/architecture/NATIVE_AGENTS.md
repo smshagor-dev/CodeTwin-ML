@@ -8,7 +8,7 @@ CodeTwin's local agents are written entirely in Rust. Their workflow supervisor 
 
 1. Select an **indexed local project**.
 2. Create a review plan. The source assessment planner binds the source index, verified file hashes, and a file and time budget.
-3. Inspect the six predeclared roles and approve the review.
+3. Review the registered roles (Project Recon and Source Auditor are mandatory; other passive specialists can be selected individually), then explicitly approve the resulting plan.
 4. Run the approved review. The supervisor executes a deterministic chain of existing **passive** services: project metadata, source AppSec and quality, secrets scanning, QA evidence discovery, database review and runtime configuration review.
 5. Inspect each role's persisted outcome, any incomplete coverage, and the overall status. Copy an evidence-backed Markdown report.
 
@@ -21,7 +21,7 @@ marked interrupted at next app startup, not automatically replayed.
 - Nothing executes just by importing a project or typing an objective.
 - A review must be approved by a separate action.
 - No agent tools can run generated shell commands, scripts, exploits or active web probes.
-- All role tools are fixed native service calls. LLM text cannot enlarge tool permissions.
+- All role tools are fixed native service calls. Optional roles must match a strict allowlist; duplicate and unknown roles are rejected. LLM text cannot enlarge tool permissions.
 - Existing source assessment controls check hashes and reject stale/over-budget source trees.
 - Each step checks for cancellation and elapsed time at analyzer boundaries.
 - Concurrent index, semantic, source security and quality work is blocked through existing desktop reservations.
