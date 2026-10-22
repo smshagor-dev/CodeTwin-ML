@@ -326,6 +326,7 @@ impl<'a> NativeAgents<'a> {
         }
         // Remember only non-sensitive role status and source-run provenance.
         crate::native_agent_memory::AgentMemory::new(self.db).record_run(id)?;
+        crate::native_agent_knowledge::AgentKnowledge::new(self.db).ingest(id)?;
         self.get(id)
     }
 
