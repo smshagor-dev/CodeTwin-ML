@@ -475,8 +475,11 @@ export function NativeAgentsPage() {
           {roleChoices.map(role => <label className="ws-field" key={role.id}>
             <span><input type="checkbox" checked={selectedRoles.includes(role.id)}
               disabled={role.mandatory || Boolean(busy)}
-              onChange={event => setSelectedRoles(current =>
-                event.target.checked ? [...current, role.id] : current.filter(id => id !== role.id))}/>
+              onChange={event => {
+                setAcceptedTaskPlan(false);
+                setSelectedRoles(current =>
+                  event.target.checked ? [...current, role.id] : current.filter(id => id !== role.id));
+              }}/>
               {role.name}{role.mandatory ? " (required)" : ""}
             </span>
           </label>)}
