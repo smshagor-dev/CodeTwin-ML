@@ -84,6 +84,12 @@ export const workspaceApi = {
   nativeAgentReport(id: string) {
     return invoke<string>("native_agent_report", { id });
   },
+  listNativeAgentMemory(projectId: string, query = "", limit = 50) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentMemory[]>("list_native_agent_memory", { projectId, query, limit });
+  },
+  clearNativeAgentMemory(projectId: string) {
+    return invoke<number>("clear_native_agent_memory", { projectId });
+  },
   nativeModelReadiness() {
     return invoke<{ configured: boolean; detail: string }>("native_model_readiness");
   },

@@ -63,7 +63,7 @@ use native_agent_reasoning_commands::{
 };
 use native_agent_commands::{
     approve_native_agent_review, cancel_native_agent_review, create_native_agent_review,
-    list_native_agent_reviews, native_agent_report, native_agent_review, run_native_agent_review,
+    list_native_agent_reviews, list_native_agent_memory, clear_native_agent_memory, native_agent_report, native_agent_review, run_native_agent_review,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
@@ -1050,6 +1050,8 @@ fn main() {
             run_native_agent_review,
             cancel_native_agent_review,
             native_agent_report,
+            list_native_agent_memory,
+            clear_native_agent_memory,
             native_model_readiness,
             native_agent_insight,
             interpret_native_agent_review,

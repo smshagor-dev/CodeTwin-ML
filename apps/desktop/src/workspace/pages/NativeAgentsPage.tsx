@@ -25,9 +25,21 @@ export type NativeAgentRun = {
   steps: NativeAgentStep[];
 };
 
+export type NativeAgentMemory = {
+  project_id: string;
+  run_id: string;
+  position: number;
+  role: string;
+  tool: string;
+  status: string;
+  created_at: string;
+};
+
 export function NativeAgentsPage() {
   const { projects, activeProjectId, setActiveProjectId } = useWorkspace();
   const [runs, setRuns] = useState<NativeAgentRun[]>([]);
+  const [memory, setMemory] = useState<NativeAgentMemory[]>([]);
+  const [memoryQuery, setMemoryQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
   const [objective, setObjective] = useState("Review the selected project's security, code quality and reliability. Report confirmed evidence and unresolved issues.");
   const [maxFiles, setMaxFiles] = useState(500);
@@ -46,11 +58,16 @@ export function NativeAgentsPage() {
   const refresh = useCallback(async () => {
     if (!activeProjectId) {
       setRuns([]);
+      setMemory([]);
       return;
     }
-    const next = await workspaceApi.listNativeAgentReviews(activeProjectId);
-    setRuns(next);
-  }, [activeProjectId]);
+    const [reviews, remembered] = await Promise.all([
+      workspaceApi.listNativeAgentReviews(activeProjectId),
+      workspaceApi.listNativeAgentMemory(activeProjectId, memoryQuery, 50),
+    ]);
+    setRuns(reviews);
+    setMemory(remembered);
+  }, [activeProjectId, memoryQuery]);
 
   useEffect(() => {
     void refresh().catch(reason => setError(String(reason)));
@@ -129,6 +146,20 @@ export function NativeAgentsPage() {
     }
   }
 
+  async function clearMemory() {
+    if (!activeProjectId) return;
+    if (!window.confirm("Forget the saved agent-role summaries for this project? Original review history will remain.")) return;
+    setBusy("memory"); setError("");
+    try {
+      await workspaceApi.clearNativeAgentMemory(activeProjectId);
+      await refresh();
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function copyReport(id: string) {
     try {
       const text = await workspaceApi.nativeAgentReport(id);
@@ -166,6 +197,23 @@ export function NativeAgentsPage() {
         </button>
         {error && <p className="ws-warning-box" role="alert">{error}</p>}
       </div>
+    </Panel>
+
+    <Panel title="Project review memory">
+      <p className="ws-form-help">Previous completed or failed specialist-role states, indexed by project and original review. Source text, secrets, tool output and AI responses are not copied into this memory.</p>
+      <div className="ws-tool-filters">
+        <label className="ws-field"><span>Search past roles or statuses</span>
+          <input value={memoryQuery} maxLength={120} placeholder="Recon, source, completed…" onChange={event => setMemoryQuery(event.target.value)}/>
+        </label>
+        <button className="ws-button ws-button-secondary" disabled={!activeProjectId || Boolean(busy)} onClick={() => void clearMemory()}>Clear project memory</button>
+      </div>
+      {!memory.length && <p className="ws-inline-empty">No remembered role outcomes in this project.</p>}
+      <div className="ws-history-list">{memory.map(item =>
+        <button key={item.run_id + ":" + item.position} className="ws-button ws-button-secondary" title={"Original review: " + item.run_id}
+          onClick={() => setSelectedId(item.run_id)}>
+          {item.role} · {item.status} · {item.created_at}
+        </button>
+      )}</div>
     </Panel>
 
     <Panel title="Saved reviews">
