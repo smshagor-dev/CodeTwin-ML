@@ -64,7 +64,8 @@ use native_agent_commands::{
     native_agent_report, native_agent_review, run_native_agent_review,
 };
 use native_agent_reasoning_commands::{
-    interpret_native_agent_review, native_agent_insight, native_model_readiness, suggest_native_agent_roles,
+    interpret_native_agent_review, native_agent_insight, native_model_readiness,
+    suggest_native_agent_roles,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
