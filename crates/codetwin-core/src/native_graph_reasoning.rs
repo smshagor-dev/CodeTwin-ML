@@ -59,8 +59,9 @@ impl<'a> GraphReasoner<'a> {
                 .or_default()
                 .push(edge.from_position);
         }
-        let (descendant_paths, cycle_a) = walk(position, &forward);
-        let (ancestor_paths, cycle_b) = walk(position, &reverse);
+        let (descendant_paths, _) = walk(position, &forward);
+        let (ancestor_paths, _) = walk(position, &reverse);
+        let cycles_detected = graph_has_cycle(&nodes, &forward);
         let downstream_dependents = descendant_paths
             .keys()
             .copied()
@@ -95,9 +96,39 @@ impl<'a> GraphReasoner<'a> {
             shortest_paths,
             reachable_nodes: reachable.len(),
             orphaned_nodes: orphans,
-            cycles_detected: cycle_a || cycle_b,
+            cycles_detected,
         })
     }
+}
+
+/// Directed cycle detection over every node, including components not reachable
+/// from the selected specialist. A topological ordering must consume all nodes.
+fn graph_has_cycle(
+    nodes: &BTreeSet<usize>,
+    forward: &BTreeMap<usize, Vec<usize>>,
+) -> bool {
+    let mut indegree = nodes.iter().map(|id| (*id, 0usize)).collect::<BTreeMap<_, _>>();
+    for neighbors in forward.values() {
+        for next in neighbors {
+            if let Some(count) = indegree.get_mut(next) {
+                *count += 1;
+            }
+        }
+    }
+    let mut queue: VecDeque<usize> = indegree.iter()
+        .filter_map(|(id,count)| (*count==0).then_some(*id))
+        .collect();
+    let mut removed = 0;
+    while let Some(node) = queue.pop_front() {
+        removed += 1;
+        for next in forward.get(&node).into_iter().flatten() {
+            if let Some(count) = indegree.get_mut(next) {
+                *count -= 1;
+                if *count == 0 { queue.push_back(*next); }
+            }
+        }
+    }
+    removed != nodes.len()
 }
 
 /// Breadth-first path tracing with cycle detection and 500-node cap.
@@ -138,5 +169,7 @@ mod tests {
         assert_eq!(paths[&3], vec![0, 2, 3]);
         let cyclic = BTreeMap::from([(0, vec![1]), (1, vec![0])]);
         assert!(walk(0, &cyclic).1);
+        assert!(graph_has_cycle(&BTreeSet::from([0, 1]), &cyclic));
+        assert!(!graph_has_cycle(&BTreeSet::from([0, 1, 2, 3]), &edges));
     }
 }
