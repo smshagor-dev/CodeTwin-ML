@@ -90,3 +90,26 @@ The model does not receive tool schemas and cannot execute commands, add privile
 
 Without a configured model, the existing manual role selector and deterministic local review
 workflow continue to function without inference or network access.
+
+## Specialist handoff chain and supervisor validation
+
+Native reviews now persist source-to-destination specialist handoffs in the SQLite
+`native_agent_handoffs` table (migration 32). After each completed passive specialist tool:
+
+- The supervisor binds the next role to the already-approved ordered plan.
+- Only the prior role name, destination role, step coordinates, timestamp and SHA-256
+  digest of the stored evidence are copied into the handoff. Raw tool output is not
+  duplicated or sent to external providers.
+- Immediately before the next specialist runs, Rust validates that the previous
+  tool completed, that the handoff matches both approved roles, and that the prior
+  evidence still hashes to the stored digest.
+- A missing or changed handoff fails the run closed. A completed chain receives a
+  deterministic final verification pass before the run can remain `completed`.
+- The Agents interface displays the persisted handoff chain and verification issues.
+
+These are **structured, auditable native specialist handoffs**, not yet autonomous
+conversational delegation or model-controlled execution. The registered passive
+CodeTwin analyzers are the only tools these specialists can invoke.
+No model is allowed to add tools, run shell commands, bypass authorization, or
+expand the scan scope. All operations are local until a user explicitly consents to
+the separate optional model features.
