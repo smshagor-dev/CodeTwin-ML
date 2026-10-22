@@ -492,6 +492,32 @@ mod tests {
     }
 
     #[test]
+    fn approved_source_review_persists_evidence_and_project_memory() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("sample.ts"), "export const safe = true;").unwrap();
+        let project_id = crate::ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let agents = NativeAgents::new(&db);
+        let roles = vec!["scout".to_string(), "source".to_string()];
+        let run = agents
+            .create_with_roles(&project_id, "Review source security", 10, 300, &roles)
+            .unwrap();
+        agents.approve(&run.id).unwrap();
+        let result = agents.execute(&run.id).unwrap();
+        assert_eq!(result.status, "completed", "{:?}", result.message);
+        assert_eq!(result.steps.len(), 2);
+        assert!(result.steps.iter().all(|step| step.status == "completed"));
+        let memories = crate::native_agent_memory::AgentMemory::new(&db)
+            .search(&project_id, "", 50)
+            .unwrap();
+        assert_eq!(memories.len(), 2);
+        assert!(agents.report(&run.id).unwrap().contains("Source Auditor"));
+    }
+
+    #[test]
     fn role_selection_rejects_unknown_duplicate_or_missing_required_roles() {
         let db = Database::open_in_memory().unwrap();
         let root = tempfile::tempdir().unwrap();
