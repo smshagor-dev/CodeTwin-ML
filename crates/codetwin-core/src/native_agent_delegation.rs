@@ -10,6 +10,7 @@ pub struct DelegatedTask {
     pub role: String,
     pub tool: String,
     pub status: String,
+    pub objective: Option<String>,
     pub requires: Vec<usize>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,14 +92,65 @@ impl<'a> NativeDelegation<'a> {
         self.graph(run_id)
     }
 
+    /// Replace the default DAG with a validated role-specific decomposition.
+    /// This can only happen while the review is unapproved.
+    pub fn apply_proposal(
+        &self,
+        run_id: &str,
+        proposal: &crate::native_task_plans::TaskProposal,
+    ) -> Result<DelegationGraph, String> {
+        let _ = crate::native_task_plans::validate_proposal(proposal)?;
+        let run = NativeAgents::new(self.db).get(run_id)?;
+        if run.status != "planned" {
+            return Err("Model task proposals cannot alter approved or running plans".into());
+        }
+        if run.steps.len() != proposal.tasks.len() {
+            return Err("Task proposal must match the prepared specialist selection".into());
+        }
+        let positions = run.steps.iter()
+            .map(|s| (s.tool.as_str(), s.position))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if proposal.tasks.iter().any(|task| !positions.contains_key(task.role.as_str())) {
+            return Err("Task proposal changed the approved tool allowlist".into());
+        }
+        let tx = self.db.connection().unchecked_transaction().map_err(err)?;
+        tx.execute("DELETE FROM native_delegation_dependencies WHERE run_id=?1", [run_id])
+            .map_err(err)?;
+        tx.execute("DELETE FROM native_task_intents WHERE run_id=?1", [run_id])
+            .map_err(err)?;
+        for task in &proposal.tasks {
+            let position = positions[task.role.as_str()];
+            tx.execute(
+                "INSERT INTO native_task_intents(run_id,position,role,objective)
+                 VALUES (?1,?2,?3,?4)",
+                params![run_id,position,task.role,task.objective.trim()],
+            ).map_err(err)?;
+            for required in &task.depends_on {
+                let predecessor = positions[required.as_str()];
+                if predecessor >= position {
+                    return Err("Task dependencies must follow the audited role order".into());
+                }
+                tx.execute(
+                    "INSERT INTO native_delegation_dependencies(run_id,position,requires_position)
+                     VALUES (?1,?2,?3)",
+                    params![run_id,position,predecessor],
+                ).map_err(err)?;
+            }
+        }
+        tx.commit().map_err(err)?;
+        self.graph(run_id)
+    }
+
     pub fn graph(&self, run_id: &str) -> Result<DelegationGraph, String> {
         let _ = NativeAgents::new(self.db).get(run_id)?;
         let mut stmt = self
             .db
             .connection()
             .prepare(
-                "SELECT position,role,tool,status FROM native_delegation_tasks
-             WHERE run_id=?1 ORDER BY position",
+                "SELECT t.position,t.role,t.tool,t.status,i.objective
+             FROM native_delegation_tasks t
+             LEFT JOIN native_task_intents i ON i.run_id=t.run_id AND i.position=t.position
+             WHERE t.run_id=?1 ORDER BY t.position",
             )
             .map_err(err)?;
         let rows = stmt
@@ -108,6 +160,7 @@ impl<'a> NativeDelegation<'a> {
                     role: row.get(1)?,
                     tool: row.get(2)?,
                     status: row.get(3)?,
+                    objective: row.get(4)?,
                     requires: Vec::new(),
                 })
             })
