@@ -227,8 +227,8 @@ impl<'a> NativeReviewReasoner<'a> {
 
         // Opt-in only. Include at most twelve previous role/status pairs, not source,
         // paths, project IDs, raw findings, tool output, timestamps or model responses.
-        let memory = crate::native_agent_memory::AgentMemory::new(self.db)
-            .search(project_id, "", 12)?;
+        let memory =
+            crate::native_agent_memory::AgentMemory::new(self.db).search(project_id, "", 12)?;
         let prior_roles: Vec<Value> = memory
             .iter()
             .map(|entry| json!({ "role": entry.role, "status": entry.status }))

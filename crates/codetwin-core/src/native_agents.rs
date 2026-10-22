@@ -542,7 +542,10 @@ mod tests {
             .unwrap();
         assert!(verified.verified, "{:?}", verified.issues);
         assert_eq!(verified.checked_handoffs, 1);
-        assert!(agents.report(&run.id).unwrap().contains("Specialist Evidence Chain"));
+        assert!(agents
+            .report(&run.id)
+            .unwrap()
+            .contains("Specialist Evidence Chain"));
     }
 
     #[test]
