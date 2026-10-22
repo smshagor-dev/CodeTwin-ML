@@ -85,7 +85,7 @@ fn container_user(output: &Path) -> Result<String, String> {
         if meta.uid() == 0 {
             return Err("Running container workers as the root host user is forbidden".into());
         }
-        return Ok(format!("{}:{}", meta.uid(), meta.gid()));
+        Ok(format!("{}:{}", meta.uid(), meta.gid()))
     }
     #[cfg(not(unix))]
     {
