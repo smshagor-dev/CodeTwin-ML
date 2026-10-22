@@ -136,11 +136,21 @@ pub fn create_native_task_review(
 ) -> Result<AgentRun, String> {
     codetwin_core::native_task_plans::validate_proposal(&proposal)?;
     let db = open_db(&app)?;
-    let selected = proposal.tasks.iter().map(|task| task.role.clone()).collect::<Vec<_>>();
-    let run = NativeAgents::new(&db)
-        .create_with_roles(&project_id, &objective, max_files, budget_seconds, &selected)?;
+    let selected = proposal
+        .tasks
+        .iter()
+        .map(|task| task.role.clone())
+        .collect::<Vec<_>>();
+    let run = NativeAgents::new(&db).create_with_roles(
+        &project_id,
+        &objective,
+        max_files,
+        budget_seconds,
+        &selected,
+    )?;
     match codetwin_core::native_agent_delegation::NativeDelegation::new(&db)
-        .apply_proposal(&run.id, &proposal) {
+        .apply_proposal(&run.id, &proposal)
+    {
         Ok(_) => NativeAgents::new(&db).get(&run.id),
         Err(error) => {
             let _ = NativeAgents::new(&db).cancel(&run.id);

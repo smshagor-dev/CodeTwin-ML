@@ -50,7 +50,8 @@ pub fn validate_proposal(plan: &TaskProposal) -> Result<TaskSchedule, String> {
     for task in &plan.tasks {
         let mut seen = BTreeSet::new();
         for dependency in &task.depends_on {
-            if dependency == &task.role || !positions.contains_key(dependency.as_str())
+            if dependency == &task.role
+                || !positions.contains_key(dependency.as_str())
                 || !seen.insert(dependency.as_str())
             {
                 return Err("Duplicate, unknown or self-referential task dependency".into());
@@ -66,8 +67,12 @@ pub fn validate_proposal(plan: &TaskProposal) -> Result<TaskSchedule, String> {
         if task.role == "source" && task.depends_on != ["scout"] {
             return Err("Source Auditor must depend on Project Recon".into());
         }
-        if task.role != "scout" && task.role != "source"
-            && !task.depends_on.iter().any(|dependency| dependency == "source")
+        if task.role != "scout"
+            && task.role != "source"
+            && !task
+                .depends_on
+                .iter()
+                .any(|dependency| dependency == "source")
         {
             return Err("Optional specialists must depend on verified source review".into());
         }
@@ -91,8 +96,16 @@ pub fn validate_proposal(plan: &TaskProposal) -> Result<TaskSchedule, String> {
             .iter()
             .copied()
             .filter(|role| pending.contains(role))
-            .filter(|role| plan.tasks.iter().find(|task| task.role == *role)
-                .is_some_and(|task| task.depends_on.iter().all(|dep| done.contains(dep.as_str()))))
+            .filter(|role| {
+                plan.tasks
+                    .iter()
+                    .find(|task| task.role == *role)
+                    .is_some_and(|task| {
+                        task.depends_on
+                            .iter()
+                            .all(|dep| done.contains(dep.as_str()))
+                    })
+            })
             .map(str::to_string)
             .collect();
         if ready.is_empty() {
@@ -104,7 +117,10 @@ pub fn validate_proposal(plan: &TaskProposal) -> Result<TaskSchedule, String> {
         }
         batches.push(ready);
     }
-    Ok(TaskSchedule { batches, max_parallel: 2 })
+    Ok(TaskSchedule {
+        batches,
+        max_parallel: 2,
+    })
 }
 
 pub fn parse_proposal(raw: &str) -> Result<(TaskProposal, TaskSchedule), String> {
@@ -124,40 +140,57 @@ mod tests {
     fn valid() -> TaskProposal {
         TaskProposal {
             tasks: vec![
-                PlannedSpecialist { role:"scout".into(), objective:"Inventory".into(), depends_on:vec![] },
-                PlannedSpecialist { role:"source".into(), objective:"Review source".into(), depends_on:vec!["scout".into()] },
-                PlannedSpecialist { role:"qa".into(), objective:"Find tests".into(), depends_on:vec!["source".into()] },
-                PlannedSpecialist { role:"runtime".into(), objective:"Review config".into(), depends_on:vec!["source".into()] },
+                PlannedSpecialist {
+                    role: "scout".into(),
+                    objective: "Inventory".into(),
+                    depends_on: vec![],
+                },
+                PlannedSpecialist {
+                    role: "source".into(),
+                    objective: "Review source".into(),
+                    depends_on: vec!["scout".into()],
+                },
+                PlannedSpecialist {
+                    role: "qa".into(),
+                    objective: "Find tests".into(),
+                    depends_on: vec!["source".into()],
+                },
+                PlannedSpecialist {
+                    role: "runtime".into(),
+                    objective: "Review config".into(),
+                    depends_on: vec!["source".into()],
+                },
             ],
-            rationale:"Bounded passive review".into(),
+            rationale: "Bounded passive review".into(),
         }
     }
 
     #[test]
     fn independent_specialists_have_parallel_ready_batch() {
         let schedule = validate_proposal(&valid()).unwrap();
-        assert_eq!(schedule.batches, vec![
-            vec!["scout"],vec!["source"],vec!["qa","runtime"],
-        ]);
+        assert_eq!(
+            schedule.batches,
+            vec![vec!["scout"], vec!["source"], vec!["qa", "runtime"],]
+        );
         assert_eq!(schedule.max_parallel, 2);
     }
 
     #[test]
     fn model_cannot_add_commands_loosen_scope_or_bypass_source_review() {
-        let mut plan=valid();
-        plan.tasks[2].role="bash".into();
+        let mut plan = valid();
+        plan.tasks[2].role = "bash".into();
         assert!(validate_proposal(&plan).is_err());
-        let mut plan=valid();
+        let mut plan = valid();
         plan.tasks[2].depends_on.clear();
         assert!(validate_proposal(&plan).is_err());
-        let mut plan=valid();
-        plan.tasks[3].depends_on=vec!["qa".into(),"source".into()];
+        let mut plan = valid();
+        plan.tasks[3].depends_on = vec!["qa".into(), "source".into()];
         assert!(validate_proposal(&plan).is_ok());
-        let mut plan=valid();
-        plan.tasks[2].depends_on=vec!["runtime".into(),"source".into()];
+        let mut plan = valid();
+        plan.tasks[2].depends_on = vec!["runtime".into(), "source".into()];
         assert!(validate_proposal(&plan).is_err());
-        let mut json=serde_json::to_value(valid()).unwrap();
-        json["tasks"][0]["shell"]="rm -rf /";
+        let mut json = serde_json::to_value(valid()).unwrap();
+        json["tasks"][0]["shell"] = "rm -rf /";
         assert!(parse_proposal(&json.to_string()).is_err());
     }
 }

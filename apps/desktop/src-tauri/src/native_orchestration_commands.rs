@@ -4,9 +4,9 @@ use codetwin_core::{
     native_agent_delegation::{DelegationGraph, NativeDelegation},
     native_agent_knowledge::{AgentKnowledge, KnowledgeGraph, KnowledgeNode},
     native_agent_workers::{IsolatedScanReadiness, IsolatedScanReceipt, IsolatedWorker},
+    native_graph_reasoning::{GraphInference, GraphReasoner},
+    native_neural_embeddings::{NeuralMatch, NeuralMemory, NeuralReadiness},
     native_worker_audit::{WorkerAudit, WorkerAuditRecord},
-    native_neural_embeddings::{NeuralMemory, NeuralMatch, NeuralReadiness},
-    native_graph_reasoning::{GraphReasoner, GraphInference},
     Database,
 };
 use tauri::Manager;
@@ -98,22 +98,37 @@ pub fn native_task_schedule(
     app: tauri::AppHandle,
 ) -> Result<codetwin_core::native_task_plans::TaskSchedule, String> {
     let graph = NativeDelegation::new(&db(&app)?).graph(&id)?;
-    let tasks = graph.tasks.iter().map(|task| {
-        let depends_on = task.requires.iter().map(|required| {
-            graph.tasks.iter().find(|candidate| candidate.position == *required)
-                .map(|candidate| candidate.tool.clone())
-                .ok_or_else(|| "Missing required specialist".to_string())
-        }).collect::<Result<Vec<_>, String>>()?;
-        Ok(codetwin_core::native_task_plans::PlannedSpecialist {
-            role: task.tool.clone(),
-            objective: task.objective.clone().unwrap_or_else(|| format!("Review {}",task.tool)),
-            depends_on,
+    let tasks = graph
+        .tasks
+        .iter()
+        .map(|task| {
+            let depends_on = task
+                .requires
+                .iter()
+                .map(|required| {
+                    graph
+                        .tasks
+                        .iter()
+                        .find(|candidate| candidate.position == *required)
+                        .map(|candidate| candidate.tool.clone())
+                        .ok_or_else(|| "Missing required specialist".to_string())
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(codetwin_core::native_task_plans::PlannedSpecialist {
+                role: task.tool.clone(),
+                objective: task
+                    .objective
+                    .clone()
+                    .unwrap_or_else(|| format!("Review {}", task.tool)),
+                depends_on,
+            })
         })
-    }).collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, String>>()?;
     codetwin_core::native_task_plans::validate_proposal(
         &codetwin_core::native_task_plans::TaskProposal {
-            tasks, rationale: "Persisted bounded review graph".into(),
-        }
+            tasks,
+            rationale: "Persisted bounded review graph".into(),
+        },
     )
 }
 
@@ -137,11 +152,15 @@ pub async fn index_native_neural_memory(
     consent: bool,
     app: tauri::AppHandle,
 ) -> Result<usize, String> {
-    if !consent {return Err("Explicit neural indexing consent is required".into());}
+    if !consent {
+        return Err("Explicit neural indexing consent is required".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        let database=db(&app)?;
-        NeuralMemory::new(&database).index_run(&id,consent)
-    }).await.map_err(|error|error.to_string())?
+        let database = db(&app)?;
+        NeuralMemory::new(&database).index_run(&id, consent)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -152,11 +171,15 @@ pub async fn search_native_neural_memory(
     consent: bool,
     app: tauri::AppHandle,
 ) -> Result<Vec<NeuralMatch>, String> {
-    if !consent {return Err("Explicit query embedding consent is required".into());}
+    if !consent {
+        return Err("Explicit query embedding consent is required".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        let database=db(&app)?;
-        NeuralMemory::new(&database).search(&project_id,&query,limit,consent)
-    }).await.map_err(|error|error.to_string())?
+        let database = db(&app)?;
+        NeuralMemory::new(&database).search(&project_id, &query, limit, consent)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -166,6 +189,6 @@ pub fn reason_native_knowledge_graph(
     position: usize,
     app: tauri::AppHandle,
 ) -> Result<GraphInference, String> {
-    let database=db(&app)?;
-    GraphReasoner::new(&database).analyze(&project_id,&id,position)
+    let database = db(&app)?;
+    GraphReasoner::new(&database).analyze(&project_id, &id, position)
 }

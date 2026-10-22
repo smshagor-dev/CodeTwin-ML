@@ -107,15 +107,24 @@ impl<'a> NativeDelegation<'a> {
         if run.steps.len() != proposal.tasks.len() {
             return Err("Task proposal must match the prepared specialist selection".into());
         }
-        let positions = run.steps.iter()
+        let positions = run
+            .steps
+            .iter()
             .map(|s| (s.tool.as_str(), s.position))
             .collect::<std::collections::BTreeMap<_, _>>();
-        if proposal.tasks.iter().any(|task| !positions.contains_key(task.role.as_str())) {
+        if proposal
+            .tasks
+            .iter()
+            .any(|task| !positions.contains_key(task.role.as_str()))
+        {
             return Err("Task proposal changed the approved tool allowlist".into());
         }
         let tx = self.db.connection().unchecked_transaction().map_err(err)?;
-        tx.execute("DELETE FROM native_delegation_dependencies WHERE run_id=?1", [run_id])
-            .map_err(err)?;
+        tx.execute(
+            "DELETE FROM native_delegation_dependencies WHERE run_id=?1",
+            [run_id],
+        )
+        .map_err(err)?;
         tx.execute("DELETE FROM native_task_intents WHERE run_id=?1", [run_id])
             .map_err(err)?;
         for task in &proposal.tasks {
@@ -123,8 +132,9 @@ impl<'a> NativeDelegation<'a> {
             tx.execute(
                 "INSERT INTO native_task_intents(run_id,position,role,objective)
                  VALUES (?1,?2,?3,?4)",
-                params![run_id,position,task.role,task.objective.trim()],
-            ).map_err(err)?;
+                params![run_id, position, task.role, task.objective.trim()],
+            )
+            .map_err(err)?;
             for required in &task.depends_on {
                 let predecessor = positions[required.as_str()];
                 if predecessor >= position {
@@ -133,8 +143,9 @@ impl<'a> NativeDelegation<'a> {
                 tx.execute(
                     "INSERT INTO native_delegation_dependencies(run_id,position,requires_position)
                      VALUES (?1,?2,?3)",
-                    params![run_id,position,predecessor],
-                ).map_err(err)?;
+                    params![run_id, position, predecessor],
+                )
+                .map_err(err)?;
             }
         }
         tx.commit().map_err(err)?;

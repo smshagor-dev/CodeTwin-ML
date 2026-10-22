@@ -282,7 +282,8 @@ impl<'a> NativeReviewReasoner<'a> {
             return Err("Review objective must be at most 2000 bytes".into());
         }
         let project = crate::WorkspaceService::new(self.db)
-            .get_project(project_id).map_err(to_error)?
+            .get_project(project_id)
+            .map_err(to_error)?
             .ok_or("Choose an indexed project")?;
         if project.last_indexed_at.is_none() || project.file_count == 0 {
             return Err("Index a nonempty project before planning".into());
@@ -293,7 +294,8 @@ impl<'a> NativeReviewReasoner<'a> {
             "symbol_count": project.symbol_count,
             "language_count": project.language_count,
             "allowed_order": ["scout","source","secrets","qa","database","runtime"],
-        }).to_string();
+        })
+        .to_string();
         let prompt = "Propose a small, non-destructive, read-only software security review task graph. \
             Return ONLY valid JSON with fields tasks and rationale. Each task has exact fields role, \
             objective, depends_on. Allowed unique roles, in order: scout, source, secrets, qa, \
