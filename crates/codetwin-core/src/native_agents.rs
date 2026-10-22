@@ -75,9 +75,9 @@ impl<'a> NativeAgents<'a> {
         roles: &[String],
     ) -> Result<AgentRun, String> {
         if !(2..=STEP_TOOLS.len()).contains(&roles.len())
-            || !roles.iter().any(|role| role == "scout")
-            || !roles.iter().any(|role| role == "source")
-            || roles.iter().any(|role| !STEP_TOOLS.iter().any(|(id, _)| role == id))
+            || !roles.iter().any(|role| role.as_str() == "scout")
+            || !roles.iter().any(|role| role.as_str() == "source")
+            || roles.iter().any(|role| !STEP_TOOLS.iter().any(|(id, _)| role.as_str() == *id))
             || roles.iter().enumerate().any(|(i, role)| roles[..i].contains(role))
         {
             return Err("Select unique supported roles; Project Recon and Source Auditor are required".into());
@@ -129,7 +129,7 @@ impl<'a> NativeAgents<'a> {
             params![id,project_id,objective.trim(),max_files,budget_seconds,assessment.id],
         ).map_err(to_error)?;
         for (position, (tool, role)) in STEP_TOOLS.iter().enumerate() {
-            if !roles.iter().any(|chosen| chosen == tool) {
+            if !roles.iter().any(|chosen| chosen.as_str() == *tool) {
                 continue;
             }
             tx.execute(
