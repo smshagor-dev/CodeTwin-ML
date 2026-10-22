@@ -5,6 +5,7 @@ pub use git_commit::{
     GitCommitRequest,
 };
 pub mod assessment_jobs;
+pub mod native_agents;
 pub mod tool_catalog;
 pub use tool_catalog::{CatalogRunSummary, CatalogTool, ToolCatalogService};
 pub mod git_review;
