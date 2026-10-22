@@ -537,7 +537,12 @@ mod tests {
             .search(&project_id, "", 50)
             .unwrap();
         assert_eq!(memories.len(), 2);
-        assert!(agents.report(&run.id).unwrap().contains("Source Auditor"));
+        let verified = crate::native_agent_handoffs::AgentHandoffs::new(&db)
+            .verify(&run.id)
+            .unwrap();
+        assert!(verified.verified, "{:?}", verified.issues);
+        assert_eq!(verified.checked_handoffs, 1);
+        assert!(agents.report(&run.id).unwrap().contains("Specialist Evidence Chain"));
     }
 
     #[test]
