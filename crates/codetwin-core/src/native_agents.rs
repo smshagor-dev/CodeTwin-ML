@@ -331,6 +331,9 @@ impl<'a> NativeAgents<'a> {
             .map_err(to_error)?;
         for step in &run.steps {
             self.boundary(&run.id, start, run.budget_seconds)?;
+            // Read and verify the exact predecessor evidence before dispatch.
+            crate::native_agent_handoffs::AgentHandoffs::new(self.db)
+                .check_incoming(&run.id, step.position)?;
             self.db
                 .connection()
                 .execute(
@@ -403,6 +406,8 @@ impl<'a> NativeAgents<'a> {
                     return Err(error);
                 }
             }
+            crate::native_agent_handoffs::AgentHandoffs::new(self.db)
+                .record(&run.id, step.position)?;
             self.boundary(&run.id, start, run.budget_seconds)?;
         }
         Ok(())
