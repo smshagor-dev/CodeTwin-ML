@@ -266,12 +266,12 @@ export function NativeAgentsPage() {
         <fieldset className="ws-form-stack">
           <legend>AI-suggested review roles</legend>
           <p className="ws-form-help">
-            The configured model receives your objective and aggregate index counts, never source files, project paths or saved findings. Suggestions cannot run tools or approve plans.
+            The configured model receives your objective, aggregate index counts and at most 12 prior specialist role/status pairs; never source files, project paths, report contents or verified findings. Suggestions cannot run tools or approve plans.
           </p>
           <label className="ws-field"><span>
             <input type="checkbox" checked={planConsent} disabled={!modelStatus?.configured || Boolean(busy)}
               onChange={event => setPlanConsent(event.target.checked)}/>
-            I consent to sending this objective and anonymous index counts to my configured model.
+            I consent to sending this objective, aggregate index counts and up to 12 earlier role/status pairs to my configured model.
           </span></label>
           <button className="ws-button ws-button-secondary"
             disabled={!modelStatus?.configured || !activeProjectId || !planConsent || !objective.trim() || Boolean(busy)}

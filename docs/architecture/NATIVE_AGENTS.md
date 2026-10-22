@@ -74,8 +74,10 @@ prevents LIKE wildcards from broadening user-entered search terms.
 
 CodeTwin can ask the configured OpenAI-compatible model to suggest **only** a subset of six
 registered passive specialist roles. The request contains the user-authored objective, indexed
-file count, indexed symbol count, language count and fixed available-role identifiers. It excludes
-local file paths, source code, credentials, project IDs, findings and prior scan outputs.
+file count, indexed symbol count, language count, at most twelve earlier role/status
+pairs from this project's review memory, and fixed available-role identifiers. It excludes
+local file paths, source code, credentials, project IDs, findings, prior scan outputs,
+previous review IDs and timestamps.
 
 The user must explicitly opt in each time. The Rust adapter limits the model request duration,
 response size and output tokens, rejects redirects, and validates a strict JSON schema.
