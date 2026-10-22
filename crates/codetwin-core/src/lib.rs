@@ -6,6 +6,7 @@ pub use git_commit::{
 };
 pub mod assessment_jobs;
 pub mod native_agents;
+pub mod native_agent_memory;
 pub mod native_agent_reasoning;
 pub mod tool_catalog;
 pub use tool_catalog::{CatalogRunSummary, CatalogTool, ToolCatalogService};

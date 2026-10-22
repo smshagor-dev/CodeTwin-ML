@@ -280,6 +280,8 @@ impl<'a> NativeAgents<'a> {
              WHERE run_id=?1 AND status IN ('pending','running')",
             params![id,status],
         ).map_err(to_error)?;
+        // Remember only non-sensitive role status and source-run provenance.
+        crate::native_agent_memory::AgentMemory::new(self.db).record_run(id)?;
         self.get(id)
     }
 
