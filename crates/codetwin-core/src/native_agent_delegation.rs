@@ -307,7 +307,12 @@ mod tests {
             .index_project(root.path())
             .unwrap()
             .project_id;
-        let roles = vec!["scout".into(), "source".into(), "qa".into(), "runtime".into()];
+        let roles = vec![
+            "scout".into(),
+            "source".into(),
+            "qa".into(),
+            "runtime".into(),
+        ];
         let run = NativeAgents::new(&db)
             .create_with_roles(&project, "Review", 10, 300, &roles)
             .unwrap();
@@ -315,25 +320,35 @@ mod tests {
         let proposal = crate::native_task_plans::TaskProposal {
             tasks: vec![
                 crate::native_task_plans::PlannedSpecialist {
-                    role:"scout".into(),objective:"Inventory project".into(),depends_on:vec![],
+                    role: "scout".into(),
+                    objective: "Inventory project".into(),
+                    depends_on: vec![],
                 },
                 crate::native_task_plans::PlannedSpecialist {
-                    role:"source".into(),objective:"Review code".into(),depends_on:vec!["scout".into()],
+                    role: "source".into(),
+                    objective: "Review code".into(),
+                    depends_on: vec!["scout".into()],
                 },
                 crate::native_task_plans::PlannedSpecialist {
-                    role:"qa".into(),objective:"Review tests".into(),depends_on:vec!["source".into()],
+                    role: "qa".into(),
+                    objective: "Review tests".into(),
+                    depends_on: vec!["source".into()],
                 },
                 crate::native_task_plans::PlannedSpecialist {
-                    role:"runtime".into(),objective:"Review runtime after tests".into(),
-                    depends_on:vec!["source".into(),"qa".into()],
+                    role: "runtime".into(),
+                    objective: "Review runtime after tests".into(),
+                    depends_on: vec!["source".into(), "qa".into()],
                 },
             ],
-            rationale:"Bounded passive source review".into(),
+            rationale: "Bounded passive source review".into(),
         };
         let graph = service.apply_proposal(&run.id, &proposal).unwrap();
         let runtime = graph.tasks.iter().find(|t| t.tool == "runtime").unwrap();
         assert_eq!(runtime.requires, vec![1, 3]);
-        assert_eq!(runtime.objective.as_deref(), Some("Review runtime after tests"));
+        assert_eq!(
+            runtime.objective.as_deref(),
+            Some("Review runtime after tests")
+        );
         NativeAgents::new(&db).approve(&run.id).unwrap();
         assert!(service.apply_proposal(&run.id, &proposal).is_err());
     }
