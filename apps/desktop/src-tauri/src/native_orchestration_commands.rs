@@ -55,7 +55,10 @@ pub fn native_knowledge_graph(
 
 #[tauri::command]
 pub fn clear_native_knowledge(project_id: String, app: tauri::AppHandle) -> Result<usize, String> {
-    AgentKnowledge::new(&db(&app)?).clear(&project_id)
+    let database = db(&app)?;
+    let lexical = AgentKnowledge::new(&database).clear(&project_id)?;
+    let neural = NeuralMemory::new(&database).clear(&project_id)?;
+    Ok(lexical + neural)
 }
 
 #[tauri::command]
