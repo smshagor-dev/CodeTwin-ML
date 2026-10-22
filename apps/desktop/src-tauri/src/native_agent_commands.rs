@@ -1,4 +1,4 @@
-use codetwin_core::{
+use codetwin_core::{native_agent_memory::{AgentMemory, MemoryEntry}, 
     native_agents::{AgentRun, NativeAgents},
     Database,
 };
@@ -76,4 +76,24 @@ pub async fn run_native_agent_review(
 pub fn native_agent_report(id: String, app: tauri::AppHandle) -> Result<String, String> {
     let db = open_db(&app)?;
     NativeAgents::new(&db).report(&id)
+}
+
+#[tauri::command]
+pub fn list_native_agent_memory(
+    project_id: String,
+    query: String,
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<Vec<MemoryEntry>, String> {
+    let db = open_db(&app)?;
+    AgentMemory::new(&db).search(&project_id, &query, limit)
+}
+
+#[tauri::command]
+pub fn clear_native_agent_memory(
+    project_id: String,
+    app: tauri::AppHandle,
+) -> Result<usize, String> {
+    let db = open_db(&app)?;
+    AgentMemory::new(&db).clear(&project_id)
 }
