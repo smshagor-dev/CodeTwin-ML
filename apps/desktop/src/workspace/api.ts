@@ -63,24 +63,26 @@ import type {
 export type ImportStage = "selecting" | "discovering" | "indexing" | "security" | "testing";
 
 export const workspaceApi = {
-  pentagiStatus() {
-    return invoke<{ configured: boolean; connected: boolean; detail: string; providers: Array<{ name: string; kind: string }> }>("pentagi_status");
+  createNativeAgentReview(projectId: string, objective: string, maxFiles: number, budgetSeconds: number) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("create_native_agent_review", { projectId, objective, maxFiles, budgetSeconds });
   },
-  pentagiFlows() {
-    return invoke<Array<{ id: string; title: string; status: string; provider: { name: string; kind: string }; created_at: string; updated_at: string }>>("pentagi_list_flows");
+  listNativeAgentReviews(projectId: string) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun[]>("list_native_agent_reviews", { projectId });
   },
-  pentagiCreateFlow(request: { target: string; objective: string; provider: string; authorized: boolean }) {
-    return invoke<{ id: string; title: string; status: string; provider: { name: string; kind: string }; created_at: string; updated_at: string }>("pentagi_create_flow", { request });
+  getNativeAgentReview(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("native_agent_review", { id });
   },
-  pentagiStopFlow(flowId: string) {
-    return invoke<boolean>("pentagi_stop_flow", { flowId });
+  approveNativeAgentReview(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("approve_native_agent_review", { id });
   },
-  pentagiFlowDetail(flowId: string) {
-    return invoke<{
-      tasks: Array<{ id: string; title: string; status: string; result: string; subtasks: Array<{ id: string; title: string; status: string; result: string }> }>;
-      agents: Array<{ id: string; executor: string; task: string; result: string; createdAt: string }>;
-      tools: Array<{ id: string; name: string; status: string; result: string; createdAt: string }>;
-    }>("pentagi_flow_detail", { flowId });
+  runNativeAgentReview(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("run_native_agent_review", { id });
+  },
+  cancelNativeAgentReview(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("cancel_native_agent_review", { id });
+  },
+  nativeAgentReport(id: string) {
+    return invoke<string>("native_agent_report", { id });
   },
   assessmentJobs(projectId: string) {
     return invoke<import("./types").AssessmentJob[]>("list_assessment_jobs", { projectId });

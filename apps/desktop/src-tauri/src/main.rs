@@ -3,7 +3,6 @@ mod database_commands;
 mod guided_security_commands;
 mod ml_commands;
 mod qa_commands;
-mod pentagi_commands;
 mod repair_commands;
 mod runtime_commands;
 mod security_campaign_commands;
@@ -11,6 +10,7 @@ mod security_fix_commands;
 mod supply_chain_commands;
 mod web_policy_commands;
 mod web_security_commands;
+mod native_agent_commands;
 mod workspace_commands;
 
 use std::{
@@ -57,9 +57,10 @@ use ml_commands::{
     ml_sidecar_capabilities, ml_sidecar_health, ml_sidecar_identity, run_ml_file_generation,
     run_ml_file_inference,
 };
-use pentagi_commands::{
-    pentagi_create_flow, pentagi_flow_detail, pentagi_list_flows, pentagi_status,
-    pentagi_stop_flow,
+use native_agent_commands::{
+    approve_native_agent_review, cancel_native_agent_review, create_native_agent_review,
+    list_native_agent_reviews, native_agent_report, native_agent_review,
+    run_native_agent_review,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
@@ -1006,6 +1007,9 @@ fn main() {
             codetwin_core::assessment_jobs::AssessmentJobs::new(&database)
                 .recover_interrupted()
                 .map_err(std::io::Error::other)?;
+            codetwin_core::native_agents::NativeAgents::new(&database)
+                .recover_interrupted()
+                .map_err(std::io::Error::other)?;
             let repair_backup_root = app_data_dir.join("repair-backups");
             RepairApplicationService::new(&database)
                 .recover_interrupted_applications(&repair_backup_root)
@@ -1036,11 +1040,13 @@ fn main() {
             list_assessment_jobs,
             cancel_assessment_job,
             run_assessment_job,
-            pentagi_status,
-            pentagi_list_flows,
-            pentagi_create_flow,
-            pentagi_stop_flow,
-            pentagi_flow_detail,
+            create_native_agent_review,
+            list_native_agent_reviews,
+            native_agent_review,
+            approve_native_agent_review,
+            run_native_agent_review,
+            cancel_native_agent_review,
+            native_agent_report,
             list_security_tools,
             recent_security_tool_runs,
             git_review_status,

@@ -2,8 +2,7 @@
 //! The role planner operates only on existing passive CodeTwin analyzers.
 //! It does not execute external commands, generate exploits or bypass user approvals.
 use crate::{
-    assessment_jobs::{AssessmentJobs, AssessmentPlanRequest}, CodeQualityService,
-    CodeSecurityService, Database, DatabaseAnalysisService, QaDiscoveryService,
+    assessment_jobs::{AssessmentJobs, AssessmentPlanRequest}, Database, DatabaseAnalysisService, QaDiscoveryService,
     RuntimeReliabilityService, SecretScanningService, WorkspaceService,
 };
 use rusqlite::{params, OptionalExtension};
@@ -245,13 +244,14 @@ impl<'a> NativeAgents<'a> {
                     }).to_string())
                 }
                 "source" => {
-                    let result = AssessmentJobs::new(self.db).execute(&assessment_id)?;
-                    if result.status != "completed" {
-                        Err(format!("Source review is {}; {}", result.status,
-                            result.message.unwrap_or_else(|| "check persisted evidence".into())))
-                    } else {
-                        Ok(serde_json::to_string(&result.steps).map_err(to_error)?)
-                    }
+                    AssessmentJobs::new(self.db).execute(&assessment_id).and_then(|result| {
+                        if result.status != "completed" {
+                            Err(format!("Source review is {}; {}", result.status,
+                                result.message.unwrap_or_else(|| "check persisted evidence".into())))
+                        } else {
+                            serde_json::to_string(&result.steps).map_err(to_error)
+                        }
+                    })
                 }
                 "secrets" => SecretScanningService::new(self.db)
                     .scan_project(&run.project_id)

@@ -2,10 +2,10 @@ import { Icon } from "../Icon";
 import { navigate } from "../routes";
 import { Disclosure, EmptyState, PageHeader, Panel, StatusBadge } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
-import { PentagiAgentsPage } from "./PentagiAgentsPage";
+import { NativeAgentsPage } from "./NativeAgentsPage";
 
 export function AgentsPage() {
-  return <PentagiAgentsPage/>;
+  return <NativeAgentsPage/>;
 }
 
 export function DeploymentsPage() {
