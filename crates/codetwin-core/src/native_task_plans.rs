@@ -72,6 +72,13 @@ pub fn validate_proposal(plan: &TaskProposal) -> Result<TaskSchedule, String> {
             return Err("Optional specialists must depend on verified source review".into());
         }
     }
+    if plan.tasks.windows(2).any(|pair| {
+        let first = ALLOWED.iter().position(|role| *role == pair[0].role);
+        let second = ALLOWED.iter().position(|role| *role == pair[1].role);
+        first >= second
+    }) {
+        return Err("Task order must preserve the audited specialist order".into());
+    }
     if positions["scout"] != 0 || positions["source"] != 1 {
         return Err("Approved role order must begin with reconnaissance and source review".into());
     }
