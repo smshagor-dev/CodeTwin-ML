@@ -233,7 +233,8 @@ impl<'a> NeuralMemory<'a> {
              WHERE project_id=?1 AND model_id=?2 ORDER BY rowid DESC
              LIMIT -1 OFFSET 500)",
             params![run.project_id, config.model],
-        ).map_err(err)?;
+        )
+        .map_err(err)?;
         tx.commit().map_err(err)?;
         Ok(steps.len())
     }
@@ -241,9 +242,13 @@ impl<'a> NeuralMemory<'a> {
         if project_id.trim().is_empty() || project_id.len() > 256 {
             return Err("Choose a valid project".into());
         }
-        self.db.connection().execute(
-            "DELETE FROM native_neural_embeddings WHERE project_id=?1", [project_id],
-        ).map_err(err)
+        self.db
+            .connection()
+            .execute(
+                "DELETE FROM native_neural_embeddings WHERE project_id=?1",
+                [project_id],
+            )
+            .map_err(err)
     }
 
     pub fn search(
