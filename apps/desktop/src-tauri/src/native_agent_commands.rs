@@ -21,10 +21,15 @@ pub fn create_native_agent_review(
     objective: String,
     max_files: usize,
     budget_seconds: u64,
+    roles: Option<Vec<String>>,
     app: tauri::AppHandle,
 ) -> Result<AgentRun, String> {
     let db = open_db(&app)?;
-    NativeAgents::new(&db).create(&project_id, &objective, max_files, budget_seconds)
+    let agents = NativeAgents::new(&db);
+    match roles {
+        Some(roles) => agents.create_with_roles(&project_id, &objective, max_files, budget_seconds, &roles),
+        None => agents.create(&project_id, &objective, max_files, budget_seconds),
+    }
 }
 
 #[tauri::command]

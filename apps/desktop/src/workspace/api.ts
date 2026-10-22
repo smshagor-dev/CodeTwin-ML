@@ -63,8 +63,8 @@ import type {
 export type ImportStage = "selecting" | "discovering" | "indexing" | "security" | "testing";
 
 export const workspaceApi = {
-  createNativeAgentReview(projectId: string, objective: string, maxFiles: number, budgetSeconds: number) {
-    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("create_native_agent_review", { projectId, objective, maxFiles, budgetSeconds });
+  createNativeAgentReview(projectId: string, objective: string, maxFiles: number, budgetSeconds: number, roles: string[]) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("create_native_agent_review", { projectId, objective, maxFiles, budgetSeconds, roles });
   },
   listNativeAgentReviews(projectId: string) {
     return invoke<import("./pages/NativeAgentsPage").NativeAgentRun[]>("list_native_agent_reviews", { projectId });

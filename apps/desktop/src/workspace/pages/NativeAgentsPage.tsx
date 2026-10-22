@@ -4,6 +4,15 @@ import { workspaceApi } from "../api";
 import { useWorkspace } from "../WorkspaceContext";
 import { PageHeader, Panel, ProjectSelect, StatusBadge } from "../ui";
 
+const roleChoices = [
+  { id: "scout", name: "Project Recon", mandatory: true },
+  { id: "source", name: "Source Auditor", mandatory: true },
+  { id: "secrets", name: "Secrets Auditor", mandatory: false },
+  { id: "qa", name: "Test Researcher", mandatory: false },
+  { id: "database", name: "Database Reviewer", mandatory: false },
+  { id: "runtime", name: "Runtime Reviewer", mandatory: false },
+] as const;
+
 export type NativeAgentStep = {
   position: number;
   role: string;
@@ -44,6 +53,7 @@ export function NativeAgentsPage() {
   const [objective, setObjective] = useState("Review the selected project's security, code quality and reliability. Report confirmed evidence and unresolved issues.");
   const [maxFiles, setMaxFiles] = useState(500);
   const [budget, setBudget] = useState(600);
+  const [selectedRoles, setSelectedRoles] = useState<string[]>(roleChoices.map(role => role.id));
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [modelStatus, setModelStatus] = useState<{ configured: boolean; detail: string } | null>(null);
@@ -105,7 +115,7 @@ export function NativeAgentsPage() {
     if (!activeProjectId) return;
     setError(""); setBusy("plan");
     try {
-      const run = await workspaceApi.createNativeAgentReview(activeProjectId, objective, maxFiles, budget);
+      const run = await workspaceApi.createNativeAgentReview(activeProjectId, objective, maxFiles, budget, selectedRoles);
       setSelectedId(run.id);
       await refresh();
     } catch (reason) {
@@ -116,7 +126,7 @@ export function NativeAgentsPage() {
   }
 
   async function approve(id: string) {
-    if (!window.confirm("Approve the six listed passive analyzers for this indexed project? No external commands or active network probes will run.")) return;
+    if (!window.confirm("Approve the selected passive analyzers for this indexed project? No external commands or active network probes will run.")) return;
     setBusy("approve"); setError("");
     try {
       await workspaceApi.approveNativeAgentReview(id);
@@ -189,6 +199,17 @@ export function NativeAgentsPage() {
         <label className="ws-field"><span>Review time budget in seconds (1–3600)</span>
           <input type="number" min={1} max={3600} value={budget} onChange={event => setBudget(Number(event.target.value))}/>
         </label>
+        <fieldset className="ws-form-stack">
+          <legend>Approved specialist roles</legend>
+          {roleChoices.map(role => <label className="ws-field" key={role.id}>
+            <span><input type="checkbox" checked={selectedRoles.includes(role.id)}
+              disabled={role.mandatory || Boolean(busy)}
+              onChange={event => setSelectedRoles(current =>
+                event.target.checked ? [...current, role.id] : current.filter(id => id !== role.id))}/>
+              {role.name}{role.mandatory ? " (required)" : ""}
+            </span>
+          </label>)}
+        </fieldset>
         <p className="ws-form-help">
           The planner uses the existing CodeTwin passive analyzers. It checks source hashes before the source-audit step, requires explicit approval and never runs generated shell commands or unapproved website attacks.
         </p>
