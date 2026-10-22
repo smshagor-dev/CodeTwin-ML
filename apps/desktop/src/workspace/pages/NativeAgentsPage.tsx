@@ -34,6 +34,14 @@ export function NativeAgentsPage() {
   const [budget, setBudget] = useState(600);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [modelStatus, setModelStatus] = useState<{ configured: boolean; detail: string } | null>(null);
+  const [insight, setInsight] = useState<{ content: string; created_at: string } | null>(null);
+  const [modelConsent, setModelConsent] = useState(false);
+
+  useEffect(() => {
+    void workspaceApi.nativeModelReadiness().then(setModelStatus)
+      .catch(reason => setError(String(reason)));
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!activeProjectId) {
@@ -51,6 +59,30 @@ export function NativeAgentsPage() {
     }, 3500);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  useEffect(() => {
+    const id = selectedId || runs[0]?.id;
+    if (!id) { setInsight(null); return; }
+    let active = true;
+    void workspaceApi.nativeAgentInsight(id)
+      .then(value => { if (active) setInsight(value); })
+      .catch(reason => { if (active) setError(String(reason)); });
+    return () => { active = false; };
+  }, [selectedId, runs]);
+
+  async function interpret(id: string) {
+    if (!modelConsent) return;
+    setBusy("reason"); setError("");
+    try {
+      const value = await workspaceApi.interpretNativeAgentReview(id, true);
+      setInsight(value);
+      setModelConsent(false);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
 
   async function createPlan() {
     if (!activeProjectId) return;
@@ -157,6 +189,18 @@ export function NativeAgentsPage() {
         </details>)}
       </div>
       {selected.message && <p className="ws-warning-box">{selected.message}</p>}
+      <div className="ws-form-stack">
+        <h3>Optional model interpretation</h3>
+        <p className="ws-form-help">{modelStatus?.detail ?? "Checking model configuration…"}. This does not create validated findings or control tools.</p>
+        {insight ? <div><p><strong>Unverified AI interpretation</strong> · {insight.created_at}</p><pre className="ws-diagnostics">{insight.content}</pre></div>
+        : <>
+          <label className="ws-field"><span><input type="checkbox" checked={modelConsent} onChange={event => setModelConsent(event.target.checked)}/>
+          I approve sending up to 9,000 characters of this local review report to my configured model endpoint for interpretation.</span></label>
+          <button className="ws-button ws-button-secondary" disabled={!modelStatus?.configured || !modelConsent || Boolean(busy) ||
+            !["completed","failed","cancelled","interrupted"].includes(selected.status)}
+            onClick={() => void interpret(selected.id)}>{busy === "reason" ? "Analyzing…" : "Generate AI interpretation"}</button>
+        </>}
+      </div>
       <div className="ws-top-actions">
         {selected.status === "planned" && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => void approve(selected.id)}>Approve plan</button>}
         {selected.status === "approved" && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => execute(selected.id)}>Run approved review</button>}

@@ -84,6 +84,15 @@ export const workspaceApi = {
   nativeAgentReport(id: string) {
     return invoke<string>("native_agent_report", { id });
   },
+  nativeModelReadiness() {
+    return invoke<{ configured: boolean; detail: string }>("native_model_readiness");
+  },
+  nativeAgentInsight(id: string) {
+    return invoke<{ run_id: string; content: string; created_at: string } | null>("native_agent_insight", { id });
+  },
+  interpretNativeAgentReview(id: string, consent: boolean) {
+    return invoke<{ run_id: string; content: string; created_at: string }>("interpret_native_agent_review", { id, consent });
+  },
   assessmentJobs(projectId: string) {
     return invoke<import("./types").AssessmentJob[]>("list_assessment_jobs", { projectId });
   },

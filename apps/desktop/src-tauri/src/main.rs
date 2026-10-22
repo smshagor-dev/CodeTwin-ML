@@ -3,6 +3,7 @@ mod database_commands;
 mod guided_security_commands;
 mod ml_commands;
 mod native_agent_commands;
+mod native_agent_reasoning_commands;
 mod qa_commands;
 mod repair_commands;
 mod runtime_commands;
@@ -56,6 +57,9 @@ use ml_commands::{
     link_ml_finding, list_ml_finding_links, ml_inference_history, ml_inference_plan, ml_models,
     ml_sidecar_capabilities, ml_sidecar_health, ml_sidecar_identity, run_ml_file_generation,
     run_ml_file_inference,
+};
+use native_agent_reasoning_commands::{
+    interpret_native_agent_review, native_agent_insight, native_model_readiness,
 };
 use native_agent_commands::{
     approve_native_agent_review, cancel_native_agent_review, create_native_agent_review,
@@ -1046,6 +1050,9 @@ fn main() {
             run_native_agent_review,
             cancel_native_agent_review,
             native_agent_report,
+            native_model_readiness,
+            native_agent_insight,
+            interpret_native_agent_review,
             list_security_tools,
             recent_security_tool_runs,
             git_review_status,
