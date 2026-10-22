@@ -40,17 +40,21 @@ impl<'a> AgentHandoffs<'a> {
             "SELECT run_id,from_position,to_position,from_role,to_role,evidence_sha256,created_at
              FROM native_agent_handoffs WHERE run_id=?1 ORDER BY from_position",
         ).map_err(err)?;
-        let values = query.query_map([run_id], |row| {
-            Ok(AgentHandoff {
-                run_id: row.get(0)?,
-                from_position: row.get(1)?,
-                to_position: row.get(2)?,
-                from_role: row.get(3)?,
-                to_role: row.get(4)?,
-                evidence_sha256: row.get(5)?,
-                created_at: row.get(6)?,
+        let values = query
+            .query_map([run_id], |row| {
+                Ok(AgentHandoff {
+                    run_id: row.get(0)?,
+                    from_position: row.get(1)?,
+                    to_position: row.get(2)?,
+                    from_role: row.get(3)?,
+                    to_role: row.get(4)?,
+                    evidence_sha256: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
             })
-        }).map_err(err)?.collect::<Result<Vec<_>, _>>().map_err(err)?;
+            .map_err(err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(err)?;
         Ok(values)
     }
 
@@ -61,7 +65,10 @@ impl<'a> AgentHandoffs<'a> {
         if run.status != "running" {
             return Err("Handoffs can only be recorded during a running review".into());
         }
-        let from = run.steps.iter().find(|s| s.position == from_position)
+        let from = run
+            .steps
+            .iter()
+            .find(|s| s.position == from_position)
             .ok_or("Unknown source specialist")?;
         if from.status != "completed" {
             return Err("Source specialist has not completed".into());
@@ -73,12 +80,22 @@ impl<'a> AgentHandoffs<'a> {
         }
         let result = from.result.as_deref().ok_or("Missing source evidence")?;
         let evidence_sha256 = format!("{:x}", Sha256::digest(result.as_bytes()));
-        self.db.connection().execute(
-            "INSERT INTO native_agent_handoffs
+        self.db
+            .connection()
+            .execute(
+                "INSERT INTO native_agent_handoffs
              (run_id,from_position,to_position,from_role,to_role,evidence_sha256)
              VALUES (?1,?2,?3,?4,?5,?6)",
-            params![run_id,from.position,to.position,from.role,to.role,evidence_sha256],
-        ).map_err(err)?;
+                params![
+                    run_id,
+                    from.position,
+                    to.position,
+                    from.role,
+                    to.role,
+                    evidence_sha256
+                ],
+            )
+            .map_err(err)?;
         Ok(true)
     }
 
@@ -86,24 +103,49 @@ impl<'a> AgentHandoffs<'a> {
     /// the supervisor attempts to skip a required predecessor.
     pub fn check_incoming(&self, run_id: &str, to_position: usize) -> Result<(), String> {
         let run = NativeAgents::new(self.db).get(run_id)?;
-        let dest = run.steps.iter().find(|s| s.position == to_position)
+        let dest = run
+            .steps
+            .iter()
+            .find(|s| s.position == to_position)
             .ok_or("Unknown destination specialist")?;
-        let previous = run.steps.iter().take_while(|s| s.position < to_position).last();
+        let previous = run
+            .steps
+            .iter()
+            .take_while(|s| s.position < to_position)
+            .last();
         let Some(from) = previous else { return Ok(()) };
         if from.status != "completed" {
             return Err("Previous specialist has not completed".into());
         }
-        let stored = self.db.connection().query_row(
-            "SELECT from_position,from_role,to_role,evidence_sha256
+        let stored = self
+            .db
+            .connection()
+            .query_row(
+                "SELECT from_position,from_role,to_role,evidence_sha256
              FROM native_agent_handoffs WHERE run_id=?1 AND to_position=?2",
-            params![run_id,to_position],
-            |row| Ok((row.get::<_,usize>(0)?,row.get::<_,String>(1)?,
-                       row.get::<_,String>(2)?,row.get::<_,String>(3)?)),
-        ).optional().map_err(err)?.ok_or("Verified specialist handoff is missing")?;
+                params![run_id, to_position],
+                |row| {
+                    Ok((
+                        row.get::<_, usize>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(err)?
+            .ok_or("Verified specialist handoff is missing")?;
         let (from_position, from_role, to_role, fingerprint) = stored;
-        let evidence = from.result.as_deref().ok_or("Predecessor evidence is missing")?;
-        if from_position != from.position || from_role != from.role || to_role != dest.role
-            || format!("{:x}", Sha256::digest(evidence.as_bytes())) != fingerprint {
+        let evidence = from
+            .result
+            .as_deref()
+            .ok_or("Predecessor evidence is missing")?;
+        if from_position != from.position
+            || from_role != from.role
+            || to_role != dest.role
+            || format!("{:x}", Sha256::digest(evidence.as_bytes())) != fingerprint
+        {
             return Err("Specialist handoff or evidence fingerprint mismatch".into());
         }
         Ok(())
@@ -113,7 +155,10 @@ impl<'a> AgentHandoffs<'a> {
         let run = NativeAgents::new(self.db).get(run_id)?;
         let mut issues = Vec::new();
         if run.status != "completed" {
-            issues.push(format!("Review status is {}; it is not fully completed", run.status));
+            issues.push(format!(
+                "Review status is {}; it is not fully completed",
+                run.status
+            ));
         }
         let mut checked = 0usize;
         for step in &run.steps {
@@ -127,10 +172,15 @@ impl<'a> AgentHandoffs<'a> {
                 Err(error) => issues.push(format!("{}: {error}", step.role)),
             }
         }
-        let count = self.db.connection().query_row(
-            "SELECT COUNT(*) FROM native_agent_handoffs WHERE run_id=?1",
-            [run_id], |row| row.get::<_,usize>(0),
-        ).map_err(err)?;
+        let count = self
+            .db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM native_agent_handoffs WHERE run_id=?1",
+                [run_id],
+                |row| row.get::<_, usize>(0),
+            )
+            .map_err(err)?;
         if count != run.steps.len().saturating_sub(1) {
             issues.push("Unexpected specialist handoff count".into());
         }
@@ -158,20 +208,29 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("x.ts"), "export const answer = 42;").unwrap();
         let project = crate::ProjectIndexService::new(&db)
-            .index_project(root.path()).unwrap().project_id;
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
         let roles = vec!["scout".to_string(), "source".to_string()];
         let run = NativeAgents::new(&db)
-            .create_with_roles(&project, "Review", 10, 300, &roles).unwrap();
+            .create_with_roles(&project, "Review", 10, 300, &roles)
+            .unwrap();
         let store = AgentHandoffs::new(&db);
         assert!(store.record(&run.id, 0).is_err());
         assert!(store.check_incoming(&run.id, 1).is_err());
-        db.connection().execute(
-            "UPDATE native_agent_runs SET status='running' WHERE id=?1", [&run.id],
-        ).unwrap();
-        db.connection().execute(
-            "UPDATE native_agent_steps SET status='completed',result_json='{}'
-             WHERE run_id=?1 AND position=0", [&run.id],
-        ).unwrap();
+        db.connection()
+            .execute(
+                "UPDATE native_agent_runs SET status='running' WHERE id=?1",
+                [&run.id],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "UPDATE native_agent_steps SET status='completed',result_json='{}'
+             WHERE run_id=?1 AND position=0",
+                [&run.id],
+            )
+            .unwrap();
         assert!(store.record(&run.id, 0).unwrap());
         assert!(store.check_incoming(&run.id, 1).is_ok());
         assert_eq!(store.list(&run.id).unwrap().len(), 1);
