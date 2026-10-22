@@ -58,12 +58,13 @@ use ml_commands::{
     ml_sidecar_capabilities, ml_sidecar_health, ml_sidecar_identity, run_ml_file_generation,
     run_ml_file_inference,
 };
+use native_agent_commands::{
+    approve_native_agent_review, cancel_native_agent_review, clear_native_agent_memory,
+    create_native_agent_review, list_native_agent_memory, list_native_agent_reviews,
+    native_agent_report, native_agent_review, run_native_agent_review,
+};
 use native_agent_reasoning_commands::{
     interpret_native_agent_review, native_agent_insight, native_model_readiness,
-};
-use native_agent_commands::{
-    approve_native_agent_review, cancel_native_agent_review, create_native_agent_review,
-    list_native_agent_reviews, list_native_agent_memory, clear_native_agent_memory, native_agent_report, native_agent_review, run_native_agent_review,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{

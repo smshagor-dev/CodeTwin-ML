@@ -16,7 +16,10 @@ impl Drop for RunGuard {
 }
 
 fn open_db(app: &tauri::AppHandle) -> Result<Database, String> {
-    let dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     Database::open(dir.join("codetwin.sqlite3")).map_err(|error| error.to_string())
 }

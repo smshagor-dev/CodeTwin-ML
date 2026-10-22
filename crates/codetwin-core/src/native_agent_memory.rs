@@ -41,7 +41,10 @@ impl<'a> AgentMemory<'a> {
             .optional()
             .map_err(to_error)?;
         let (project_id, status) = run.ok_or("Review not found")?;
-        if !matches!(status.as_str(), "completed" | "failed" | "cancelled" | "interrupted") {
+        if !matches!(
+            status.as_str(),
+            "completed" | "failed" | "cancelled" | "interrupted"
+        ) {
             return Err("Only finished reviews can be saved to memory".into());
         }
         let transaction = self
@@ -57,47 +60,65 @@ impl<'a> AgentMemory<'a> {
              AND r.status IN ('completed','failed','cancelled','interrupted')",
             [run_id],
         ).map_err(to_error)?;
-        transaction.execute(
-            "DELETE FROM native_agent_memory
+        transaction
+            .execute(
+                "DELETE FROM native_agent_memory
              WHERE rowid IN (SELECT rowid FROM native_agent_memory
                  WHERE project_id=?1 ORDER BY created_at DESC,rowid DESC LIMIT -1 OFFSET ?2)",
-            params![project_id,MAX_HISTORY],
-        ).map_err(to_error)?;
+                params![project_id, MAX_HISTORY],
+            )
+            .map_err(to_error)?;
         transaction.commit().map_err(to_error)?;
         Ok(changed)
     }
 
-    pub fn search(&self, project_id: &str, query: &str, limit: usize) -> Result<Vec<MemoryEntry>, String> {
+    pub fn search(
+        &self,
+        project_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryEntry>, String> {
         if project_id.trim().is_empty() || project_id.len() > 256 {
             return Err("Select a valid project".into());
         }
         if query.len() > 120 {
             return Err("Search must be 120 bytes or fewer".into());
         }
-        let escaped = query.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let escaped = query
+            .trim()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
         let pattern = format!("%{escaped}%");
         let limit = limit.clamp(1, MAX_SEARCH) as i64;
-        let mut statement = self.db.connection().prepare(
-            "SELECT project_id,run_id,position,role,tool,status,created_at
+        let mut statement = self
+            .db
+            .connection()
+            .prepare(
+                "SELECT project_id,run_id,position,role,tool,status,created_at
              FROM native_agent_memory
              WHERE project_id=?1 AND (role LIKE ?2 ESCAPE '\\'
                                   OR tool LIKE ?2 ESCAPE '\\'
                                   OR status LIKE ?2 ESCAPE '\\'
                                   OR run_id LIKE ?2 ESCAPE '\\')
              ORDER BY created_at DESC,rowid DESC LIMIT ?3",
-        ).map_err(to_error)?;
-        let results = statement.query_map(params![project_id,pattern,limit], |row| {
-            Ok(MemoryEntry {
-                project_id: row.get(0)?,
-                run_id: row.get(1)?,
-                position: row.get(2)?,
-                role: row.get(3)?,
-                tool: row.get(4)?,
-                status: row.get(5)?,
-                created_at: row.get(6)?,
+            )
+            .map_err(to_error)?;
+        let results = statement
+            .query_map(params![project_id, pattern, limit], |row| {
+                Ok(MemoryEntry {
+                    project_id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    position: row.get(2)?,
+                    role: row.get(3)?,
+                    tool: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
             })
-        }).map_err(to_error)?
-            .collect::<Result<Vec<_>, _>>().map_err(to_error)?;
+            .map_err(to_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_error)?;
         Ok(results)
     }
 
@@ -106,10 +127,13 @@ impl<'a> AgentMemory<'a> {
         if project_id.is_empty() || project_id.len() > 256 {
             return Err("Select a valid project".into());
         }
-        self.db.connection().execute(
-            "DELETE FROM native_agent_memory WHERE project_id=?1",
-            [project_id],
-        ).map_err(to_error)
+        self.db
+            .connection()
+            .execute(
+                "DELETE FROM native_agent_memory WHERE project_id=?1",
+                [project_id],
+            )
+            .map_err(to_error)
     }
 }
 
@@ -131,20 +155,31 @@ mod tests {
         std::fs::create_dir_all(&b).unwrap();
         std::fs::write(a.join("a.ts"), "export const a=1;").unwrap();
         std::fs::write(b.join("b.ts"), "export const b=1;").unwrap();
-        let a_id = crate::ProjectIndexService::new(&db).index_project(&a).unwrap().project_id;
-        let b_id = crate::ProjectIndexService::new(&db).index_project(&b).unwrap().project_id;
+        let a_id = crate::ProjectIndexService::new(&db)
+            .index_project(&a)
+            .unwrap()
+            .project_id;
+        let b_id = crate::ProjectIndexService::new(&db)
+            .index_project(&b)
+            .unwrap()
+            .project_id;
         let run = crate::native_agents::NativeAgents::new(&db)
-            .create(&a_id, "Review", 10, 300).unwrap();
+            .create(&a_id, "Review", 10, 300)
+            .unwrap();
         let store = AgentMemory::new(&db);
         assert!(store.record_run(&run.id).is_err());
-        db.connection().execute(
-            "UPDATE native_agent_steps SET status='completed' WHERE run_id=?1 AND position=0",
-            [&run.id],
-        ).unwrap();
-        db.connection().execute(
-            "UPDATE native_agent_runs SET status='completed' WHERE id=?1",
-            [&run.id],
-        ).unwrap();
+        db.connection()
+            .execute(
+                "UPDATE native_agent_steps SET status='completed' WHERE run_id=?1 AND position=0",
+                [&run.id],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "UPDATE native_agent_runs SET status='completed' WHERE id=?1",
+                [&run.id],
+            )
+            .unwrap();
         assert_eq!(store.record_run(&run.id).unwrap(), 1);
         assert_eq!(store.record_run(&run.id).unwrap(), 0);
         assert_eq!(store.search(&a_id, "Recon", 50).unwrap().len(), 1);

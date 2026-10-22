@@ -36,13 +36,18 @@ impl ModelConfig {
             return Err("Model identifier must be 1–200 bytes".into());
         }
         let url = validate_endpoint(&endpoint)?;
-        let token = env::var("CODETWIN_MODEL_TOKEN").ok().filter(|s| !s.is_empty());
-        let local = ["localhost", "127.0.0.1", "::1"]
-            .contains(&url.host_str().unwrap_or_default());
+        let token = env::var("CODETWIN_MODEL_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let local = ["localhost", "127.0.0.1", "::1"].contains(&url.host_str().unwrap_or_default());
         if !local && token.is_none() {
             return Err("Remote model requests require a configured API token".into());
         }
-        Ok(Self { endpoint: url, model, token })
+        Ok(Self {
+            endpoint: url,
+            model,
+            token,
+        })
     }
 
     fn generate(&self, report: &str) -> Result<String, String> {
@@ -66,16 +71,22 @@ impl ModelConfig {
         let mut request = Client::builder()
             .timeout(Duration::from_secs(45))
             .redirect(Policy::none())
-            .build().map_err(to_error)?
+            .build()
+            .map_err(to_error)?
             .post(self.endpoint.clone())
             .header("Content-Type", "application/json")
             .body(payload);
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
         }
-        let response = request.send().map_err(|e| format!("Could not reach configured model: {e}"))?;
+        let response = request
+            .send()
+            .map_err(|e| format!("Could not reach configured model: {e}"))?;
         if !response.status().is_success() {
-            return Err(format!("Model provider returned HTTP {}", response.status()));
+            return Err(format!(
+                "Model provider returned HTTP {}",
+                response.status()
+            ));
         }
         let text = response.text().map_err(to_error)?;
         if text.len() > 512_000 {
@@ -83,7 +94,8 @@ impl ModelConfig {
         }
         let value: Value = serde_json::from_str(&text)
             .map_err(|_| "Model returned a non-JSON chat response".to_string())?;
-        let answer = value.pointer("/choices/0/message/content")
+        let answer = value
+            .pointer("/choices/0/message/content")
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| "Model returned no usable text".to_string())?;
@@ -93,10 +105,16 @@ impl ModelConfig {
 
 fn validate_endpoint(value: &str) -> Result<Url, String> {
     let url = Url::parse(value).map_err(|_| "Invalid model endpoint".to_string())?;
-    if url.username() != "" || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+    if url.username() != ""
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
         return Err("Model endpoint must not contain credentials, query or fragment".into());
     }
-    let host = url.host_str().ok_or("Model endpoint is missing a hostname")?;
+    let host = url
+        .host_str()
+        .ok_or("Model endpoint is missing a hostname")?;
     let local = ["localhost", "127.0.0.1", "::1"].contains(&host);
     if url.scheme() != "https" && !(local && url.scheme() == "http") {
         return Err("Model API must use HTTPS except for loopback connections".into());
@@ -121,16 +139,29 @@ impl<'a> NativeReviewReasoner<'a> {
                 configured: true,
                 detail: "An optional OpenAI-compatible model endpoint is configured".into(),
             },
-            Err(error) => ModelReadiness { configured: false, detail: error },
+            Err(error) => ModelReadiness {
+                configured: false,
+                detail: error,
+            },
         }
     }
 
     pub fn existing(&self, run_id: &str) -> Result<Option<ModelInsight>, String> {
-        self.db.connection().query_row(
-            "SELECT run_id,content,created_at FROM native_agent_insights WHERE run_id=?1",
-            [run_id],
-            |r| Ok(ModelInsight { run_id:r.get(0)?, content:r.get(1)?, created_at:r.get(2)? }),
-        ).optional().map_err(to_error)
+        self.db
+            .connection()
+            .query_row(
+                "SELECT run_id,content,created_at FROM native_agent_insights WHERE run_id=?1",
+                [run_id],
+                |r| {
+                    Ok(ModelInsight {
+                        run_id: r.get(0)?,
+                        content: r.get(1)?,
+                        created_at: r.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(to_error)
     }
 
     pub fn interpret(&self, run_id: &str, consent: bool) -> Result<ModelInsight, String> {
@@ -147,12 +178,16 @@ impl<'a> NativeReviewReasoner<'a> {
         let model = ModelConfig::from_env()?;
         let report = NativeAgents::new(self.db).report(run_id)?;
         let content = model.generate(&report)?;
-        self.db.connection().execute(
-            "INSERT INTO native_agent_insights(run_id,content) VALUES(?1,?2)
+        self.db
+            .connection()
+            .execute(
+                "INSERT INTO native_agent_insights(run_id,content) VALUES(?1,?2)
              ON CONFLICT(run_id) DO NOTHING",
-            params![run_id,content],
-        ).map_err(to_error)?;
-        self.existing(run_id)?.ok_or_else(|| "Could not persist the model interpretation".into())
+                params![run_id, content],
+            )
+            .map_err(to_error)?;
+        self.existing(run_id)?
+            .ok_or_else(|| "Could not persist the model interpretation".into())
     }
 }
 

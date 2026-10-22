@@ -1,4 +1,5 @@
-use codetwin_core::{native_agent_memory::{AgentMemory, MemoryEntry}, 
+use codetwin_core::{
+    native_agent_memory::{AgentMemory, MemoryEntry},
     native_agents::{AgentRun, NativeAgents},
     Database,
 };
