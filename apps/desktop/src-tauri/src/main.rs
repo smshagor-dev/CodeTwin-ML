@@ -2,6 +2,7 @@ mod benchmark_commands;
 mod database_commands;
 mod guided_security_commands;
 mod ml_commands;
+mod native_agent_commands;
 mod qa_commands;
 mod repair_commands;
 mod runtime_commands;
@@ -10,7 +11,6 @@ mod security_fix_commands;
 mod supply_chain_commands;
 mod web_policy_commands;
 mod web_security_commands;
-mod native_agent_commands;
 mod workspace_commands;
 
 use std::{
@@ -59,8 +59,7 @@ use ml_commands::{
 };
 use native_agent_commands::{
     approve_native_agent_review, cancel_native_agent_review, create_native_agent_review,
-    list_native_agent_reviews, native_agent_report, native_agent_review,
-    run_native_agent_review,
+    list_native_agent_reviews, native_agent_report, native_agent_review, run_native_agent_review,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{

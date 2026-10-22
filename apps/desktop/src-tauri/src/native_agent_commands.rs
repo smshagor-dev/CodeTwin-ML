@@ -1,10 +1,16 @@
-use codetwin_core::{native_agents::{AgentRun, NativeAgents}, Database};
+use codetwin_core::{
+    native_agents::{AgentRun, NativeAgents},
+    Database,
+};
 use tauri::Manager;
 
 use crate::{reserve_assessment, AppState};
 
 fn open_db(app: &tauri::AppHandle) -> Result<Database, String> {
-    let dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     Database::open(dir.join("codetwin.sqlite3")).map_err(|error| error.to_string())
 }
@@ -22,10 +28,7 @@ pub fn create_native_agent_review(
 }
 
 #[tauri::command]
-pub fn native_agent_review(
-    id: String,
-    app: tauri::AppHandle,
-) -> Result<AgentRun, String> {
+pub fn native_agent_review(id: String, app: tauri::AppHandle) -> Result<AgentRun, String> {
     let db = open_db(&app)?;
     NativeAgents::new(&db).get(&id)
 }
@@ -40,19 +43,13 @@ pub fn list_native_agent_reviews(
 }
 
 #[tauri::command]
-pub fn approve_native_agent_review(
-    id: String,
-    app: tauri::AppHandle,
-) -> Result<AgentRun, String> {
+pub fn approve_native_agent_review(id: String, app: tauri::AppHandle) -> Result<AgentRun, String> {
     let db = open_db(&app)?;
     NativeAgents::new(&db).approve(&id)
 }
 
 #[tauri::command]
-pub fn cancel_native_agent_review(
-    id: String,
-    app: tauri::AppHandle,
-) -> Result<AgentRun, String> {
+pub fn cancel_native_agent_review(id: String, app: tauri::AppHandle) -> Result<AgentRun, String> {
     let db = open_db(&app)?;
     NativeAgents::new(&db).cancel(&id)
 }
@@ -70,14 +67,13 @@ pub async fn run_native_agent_review(
         let _reservations = reservations;
         let db = Database::open(path).map_err(|error| error.to_string())?;
         NativeAgents::new(&db).execute(&id)
-    }).await.map_err(|error| error.to_string())?
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn native_agent_report(
-    id: String,
-    app: tauri::AppHandle,
-) -> Result<String, String> {
+pub fn native_agent_report(id: String, app: tauri::AppHandle) -> Result<String, String> {
     let db = open_db(&app)?;
     NativeAgents::new(&db).report(&id)
 }
