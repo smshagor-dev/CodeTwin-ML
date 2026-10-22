@@ -319,6 +319,30 @@ mod tests {
         assert!((v.iter().map(|x| x * x).sum::<f32>() - 1.0).abs() < 0.0001);
     }
     #[test]
+    fn indexed_review_produces_searchable_nodes_and_verified_edges() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("sample.ts"), "export const value = true;").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(root.path()).unwrap().project_id;
+        let roles = vec!["scout".to_owned(), "source".to_owned()];
+        let agents = NativeAgents::new(&db);
+        let run = agents.create_with_roles(&project, "Review", 10, 300, &roles).unwrap();
+        agents.approve(&run.id).unwrap();
+        let result = agents.execute(&run.id).unwrap();
+        assert_eq!(result.status, "completed", "{:?}", result.message);
+        let knowledge = AgentKnowledge::new(&db);
+        assert_eq!(knowledge.ingest(&run.id).unwrap(), 0);
+        let hits = knowledge.search(&project, "source", 12).unwrap();
+        assert!(!hits.is_empty());
+        let graph = knowledge.graph(&project, &run.id).unwrap();
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(knowledge.clear(&project).unwrap(), 2);
+        assert!(knowledge.graph(&project, &run.id).unwrap().nodes.is_empty());
+    }
+
+    #[test]
     fn project_memory_is_not_cross_readable() {
         let db = Database::open_in_memory().unwrap();
         let k = AgentKnowledge::new(&db);
