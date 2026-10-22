@@ -95,24 +95,50 @@ fn container_user(output: &Path) -> Result<String, String> {
 }
 
 fn safe_mount_path(path: &Path) -> bool {
-    !path.to_string_lossy().chars().any(|c| c == ',' || c == '\n' || c == '\r')
+    !path
+        .to_string_lossy()
+        .chars()
+        .any(|c| c == ',' || c == '\n' || c == '\r')
 }
 
-fn build_args(settings: &WorkerSettings, project: &Path, output: &Path, name: &str, user: &str) -> Vec<String> {
+fn build_args(
+    settings: &WorkerSettings,
+    project: &Path,
+    output: &Path,
+    name: &str,
+    user: &str,
+) -> Vec<String> {
     vec![
-        "run".into(), "--rm".into(), "--pull=never".into(),
-        "--name".into(), name.into(),
-        "--network".into(), "none".into(),
-        "--read-only".into(), "--cap-drop=ALL".into(),
+        "run".into(),
+        "--rm".into(),
+        "--pull=never".into(),
+        "--name".into(),
+        name.into(),
+        "--network".into(),
+        "none".into(),
+        "--read-only".into(),
+        "--cap-drop=ALL".into(),
         "--security-opt=no-new-privileges".into(),
-        "--pids-limit=64".into(), "--memory=512m".into(),
-        "--cpus=1".into(), format!("--user={user}"),
+        "--pids-limit=64".into(),
+        "--memory=512m".into(),
+        "--cpus=1".into(),
+        format!("--user={user}"),
         "--tmpfs=/tmp:rw,noexec,nosuid,size=64m".into(),
-        "--mount".into(), format!("type=bind,src={},dst=/workspace,readonly",project.display()),
-        "--mount".into(), format!("type=bind,src={},dst=/out",output.display()),
+        "--mount".into(),
+        format!(
+            "type=bind,src={},dst=/workspace,readonly",
+            project.display()
+        ),
+        "--mount".into(),
+        format!("type=bind,src={},dst=/out", output.display()),
         settings.image.clone(),
-        "fs".into(), "--offline-scan".into(), "--skip-db-update".into(),
-        "--format".into(), "json".into(), "--output".into(), "/out/report.json".into(),
+        "fs".into(),
+        "--offline-scan".into(),
+        "--skip-db-update".into(),
+        "--format".into(),
+        "json".into(),
+        "--output".into(),
+        "/out/report.json".into(),
         "/workspace".into(),
     ]
 }
@@ -136,41 +162,57 @@ impl<'a> IsolatedWorker<'a> {
     }
 
     /// Explicit user action; never called automatically by an AI role or prompted suggestion.
-    pub fn scan(&self, run_id: &str, authorized: bool) -> Result<IsolatedScanReceipt,String> {
-        if !authorized {return Err("Explicit authorization to scan this local project is required".into());}
-        let run=NativeAgents::new(self.db).get(run_id)?;
-        if run.status!="approved" {
+    pub fn scan(&self, run_id: &str, authorized: bool) -> Result<IsolatedScanReceipt, String> {
+        if !authorized {
+            return Err("Explicit authorization to scan this local project is required".into());
+        }
+        let run = NativeAgents::new(self.db).get(run_id)?;
+        if run.status != "approved" {
             return Err("Approve the native review before a separate container scan".into());
         }
-        let project=WorkspaceService::new(self.db).get_project(&run.project_id)
-            .map_err(err)?.ok_or("Project not found")?;
-        let root=fs::canonicalize(&project.root_path).map_err(err)?;
-        if !root.is_dir() {return Err("Project root is not a directory".into());}
-        let settings=WorkerSettings::load()?;
-        let tmp=tempfile::tempdir().map_err(err)?;
+        let project = WorkspaceService::new(self.db)
+            .get_project(&run.project_id)
+            .map_err(err)?
+            .ok_or("Project not found")?;
+        let root = fs::canonicalize(&project.root_path).map_err(err)?;
+        if !root.is_dir() {
+            return Err("Project root is not a directory".into());
+        }
+        let settings = WorkerSettings::load()?;
+        let tmp = tempfile::tempdir().map_err(err)?;
         if !safe_mount_path(&root) || !safe_mount_path(tmp.path()) {
             return Err("Mount paths cannot contain Docker option separators".into());
         }
-        let user=container_user(tmp.path())?;
+        let user = container_user(tmp.path())?;
         // Scope output storage to an isolated temporary directory only.
-        let stamp=SystemTime::now().duration_since(UNIX_EPOCH).map_err(err)?.as_nanos();
-        let name=format!("codetwin-scan-{:x}",stamp);
-        let args=build_args(&settings,&root,tmp.path(),&name,&user);
-        let begin=Instant::now();
-        let mut child=Command::new(&settings.docker)
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(err)?
+            .as_nanos();
+        let name = format!("codetwin-scan-{:x}", stamp);
+        let args = build_args(&settings, &root, tmp.path(), &name, &user);
+        let begin = Instant::now();
+        let mut child = Command::new(&settings.docker)
             .args(&args)
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-            .spawn().map_err(|e|format!("Could not start isolated container: {e}"))?;
-        let status=loop {
-            if let Some(status)=child.try_wait().map_err(err)? {break status;}
-            if begin.elapsed()>Duration::from_secs(MAX_RUN_SECONDS) {
-                let _=child.kill();
-                let _=child.wait();
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Could not start isolated container: {e}"))?;
+        let status = loop {
+            if let Some(status) = child.try_wait().map_err(err)? {
+                break status;
+            }
+            if begin.elapsed() > Duration::from_secs(MAX_RUN_SECONDS) {
+                let _ = child.kill();
+                let _ = child.wait();
                 // Killing the Docker client may not terminate the daemon's container.
                 // Force-remove the uniquely named container before returning.
-                let _=Command::new(&settings.docker)
-                    .args(["rm","-f",&name])
-                    .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+                let _ = Command::new(&settings.docker)
+                    .args(["rm", "-f", &name])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
                     .status();
                 return Err("Isolated scan exceeded 90-second execution deadline".into());
             }
@@ -232,17 +274,25 @@ mod tests {
     use super::*;
     #[test]
     fn sandbox_args_disable_network_and_host_write() {
-        let fake=WorkerSettings {
-            docker:PathBuf::from("/opt/bin/docker"),
-            image:format!("local/trivy@sha256:{}", "a".repeat(64)),
+        let fake = WorkerSettings {
+            docker: PathBuf::from("/opt/bin/docker"),
+            image: format!("local/trivy@sha256:{}", "a".repeat(64)),
         };
-        let argv=build_args(&fake,Path::new("/source"),Path::new("/tmp/out"),"test","1000:1000");
-        assert!(argv.windows(2).any(|p|p==["--network","none"]));
-        assert!(argv.windows(2).any(|p|p==["--cap-drop=ALL","--security-opt=no-new-privileges"]));
-        assert!(argv.iter().any(|a|a.contains("dst=/workspace,readonly")));
-        assert!(argv.iter().any(|a|a=="--pull=never"));
-        assert!(!argv.iter().any(|a|a=="--privileged"));
-        assert!(argv.iter().any(|a|a=="--user=1000:1000"));
+        let argv = build_args(
+            &fake,
+            Path::new("/source"),
+            Path::new("/tmp/out"),
+            "test",
+            "1000:1000",
+        );
+        assert!(argv.windows(2).any(|p| p == ["--network", "none"]));
+        assert!(argv
+            .windows(2)
+            .any(|p| p == ["--cap-drop=ALL", "--security-opt=no-new-privileges"]));
+        assert!(argv.iter().any(|a| a.contains("dst=/workspace,readonly")));
+        assert!(argv.iter().any(|a| a == "--pull=never"));
+        assert!(!argv.iter().any(|a| a == "--privileged"));
+        assert!(argv.iter().any(|a| a == "--user=1000:1000"));
         assert!(!safe_mount_path(Path::new("/tmp/path,with-comma")));
     }
     #[test]
