@@ -115,6 +115,25 @@ export const workspaceApi = {
   runNativeIsolatedScan(id: string, authorized: boolean) {
     return invoke<import("./pages/NativeAgentsPage").IsolatedScanReceipt>("run_native_isolated_scan", { id, authorized });
   },
+  nativeWorkerAudit(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").WorkerAuditRecord[]>("native_worker_audit", { id });
+  },
+  nativeNeuralReadiness() {
+    return invoke<{ configured: boolean; detail: string }>("native_neural_readiness");
+  },
+  indexNativeNeuralMemory(id: string, consent: boolean) {
+    return invoke<number>("index_native_neural_memory", { id, consent });
+  },
+  searchNativeNeuralMemory(projectId: string, query: string, limit: number, consent: boolean) {
+    return invoke<import("./pages/NativeAgentsPage").NeuralMatch[]>("search_native_neural_memory", {
+      projectId, query, limit, consent,
+    });
+  },
+  reasonNativeKnowledgeGraph(projectId: string, id: string, position: number) {
+    return invoke<import("./pages/NativeAgentsPage").GraphInference>("reason_native_knowledge_graph", {
+      projectId, id, position,
+    });
+  },
   nativeAgentHandoffs(id: string) {
     return invoke<import("./pages/NativeAgentsPage").AgentHandoff[]>("list_native_agent_handoffs", { id });
   },
