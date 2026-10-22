@@ -255,6 +255,7 @@ mod tests {
         let service = NativeDelegation::new(&db);
         let graph = service.graph(&run.id).unwrap();
         assert_eq!(graph.tasks.len(), 3);
+        assert_eq!(graph.tasks[2].position, 3);
         assert_eq!(graph.tasks[2].requires, vec![1]);
         assert!(service.prepare(&run.id).is_err());
         assert!(service.start(&run.id, 1, "Source Auditor").is_err());
@@ -269,6 +270,6 @@ mod tests {
         service.finish(&run.id, 0, true).unwrap();
         service.start(&run.id, 1, "Source Auditor").unwrap();
         service.finish(&run.id, 1, true).unwrap();
-        service.start(&run.id, 2, "Test Researcher").unwrap();
+        service.start(&run.id, 3, "Test Researcher").unwrap();
     }
 }
