@@ -26,16 +26,16 @@ marked interrupted at next app startup, not automatically replayed.
 - Each step checks for cancellation and elapsed time at analyzer boundaries.
 - Concurrent index, semantic, source security and quality work is blocked through existing desktop reservations.
 - Current time limits are **cooperative at boundaries**. They do not forcibly terminate an individual long-running analyzer call.
-- Imported source stays on-device; no new AI provider calls or external server is configured by this implementation.
+- Passive analyzer execution stays on-device. An optional, explicitly consented model-interpretation action can send up to 9,000 characters of the report to a configured endpoint. It is not part of the automatic tool chain.
 - Run status records that tools finished; it is not a security assurance.
 
 ## What is not implemented
 
 This is a native **deterministic supervisor**, not yet a fully autonomous LLM-driven cybersecurity system. It does not yet implement:
-- dynamic LLM planning or model/provider configuration;
+- dynamic LLM planning, multi-model routing or arbitrary agent-driven tool calls;
 - embedded/vector memory, retrieval augmentation or a knowledge graph;
 - sandboxed arbitrary security-tool plugins, Docker worker execution or remote task dispatch;
-- a language-model critic/mentor, self-healing loops or streaming token generation;
+- automatic multi-agent model handoffs, self-healing loops or token streaming;
 - autonomous network penetration testing or exploit execution.
 
 These are separate features requiring threat modeling, explicit scoped approvals, tool sandboxing and integration tests before being enabled. Do not label the current implementation as providing those features.
@@ -45,3 +45,13 @@ These are separate features requiring threat modeling, explicit scoped approvals
 Run the existing Rust formatter, Clippy and test suite, and the desktop frontend typecheck.
 The unit test verifies that an indexed project and user approval are required, and that cancellation is terminal.
 An integration test with source-control and real project fixtures is still needed to validate all six analyzer outputs and report behavior.
+
+## Optional model interpretation
+
+Set `CODETWIN_MODEL_ENDPOINT` to the complete OpenAI-compatible `/chat/completions` endpoint,
+`CODETWIN_MODEL_ID` to a model accepted by the backend, and (for remote endpoints) `CODETWIN_MODEL_TOKEN`.
+Remote requests require HTTPS; local loopback HTTP is allowed. Credentials are read by Rust and are
+not exposed to the WebView. Model output is stored separately in the SQLite
+`native_agent_insights` table as **unverified interpretation**, never as a scan verdict.
+A completed or failed review and explicit per-request user consent are prerequisites. The optional
+model cannot call tools, change scope, patch code or turn incomplete evidence into passing tests.
