@@ -83,3 +83,28 @@ pub async fn run_native_isolated_scan(
     .await
     .map_err(|e| e.to_string())?
 }
+
+#[tauri::command]
+pub fn native_task_schedule(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<codetwin_core::native_task_plans::TaskSchedule, String> {
+    let graph = NativeDelegation::new(&db(&app)?).graph(&id)?;
+    let tasks = graph.tasks.iter().map(|task| {
+        let depends_on = task.requires.iter().map(|required| {
+            graph.tasks.iter().find(|candidate| candidate.position == *required)
+                .map(|candidate| candidate.tool.clone())
+                .ok_or_else(|| "Missing required specialist".to_string())
+        }).collect::<Result<Vec<_>, String>>()?;
+        Ok(codetwin_core::native_task_plans::PlannedSpecialist {
+            role: task.tool.clone(),
+            objective: task.objective.clone().unwrap_or_else(|| format!("Review {}",task.tool)),
+            depends_on,
+        })
+    }).collect::<Result<Vec<_>, String>>()?;
+    codetwin_core::native_task_plans::validate_proposal(
+        &codetwin_core::native_task_plans::TaskProposal {
+            tasks, rationale: "Persisted bounded review graph".into(),
+        }
+    )
+}

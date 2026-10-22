@@ -61,17 +61,17 @@ use ml_commands::{
 };
 use native_agent_commands::{
     approve_native_agent_review, cancel_native_agent_review, clear_native_agent_memory,
-    create_native_agent_review, list_native_agent_handoffs, list_native_agent_memory,
+    create_native_agent_review, create_native_task_review, list_native_agent_handoffs, list_native_agent_memory,
     list_native_agent_reviews, native_agent_report, native_agent_review, run_native_agent_review,
     verify_native_agent_run,
 };
 use native_agent_reasoning_commands::{
     interpret_native_agent_review, native_agent_insight, native_model_readiness,
-    suggest_native_agent_roles,
+    suggest_native_agent_roles, suggest_native_task_plan,
 };
 use native_orchestration_commands::{
     clear_native_knowledge, native_delegation_graph, native_isolated_scan_readiness,
-    native_knowledge_graph, run_native_isolated_scan, search_native_knowledge,
+    native_knowledge_graph, run_native_isolated_scan, search_native_knowledge, native_task_schedule,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
@@ -1052,6 +1052,8 @@ fn main() {
             cancel_assessment_job,
             run_assessment_job,
             create_native_agent_review,
+            create_native_task_review,
+            native_task_schedule,
             list_native_agent_reviews,
             native_agent_review,
             approve_native_agent_review,
@@ -1072,6 +1074,7 @@ fn main() {
             native_agent_insight,
             interpret_native_agent_review,
             suggest_native_agent_roles,
+            suggest_native_task_plan,
             list_security_tools,
             recent_security_tool_runs,
             git_review_status,

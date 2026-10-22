@@ -63,6 +63,20 @@ import type {
 export type ImportStage = "selecting" | "discovering" | "indexing" | "security" | "testing";
 
 export const workspaceApi = {
+  suggestNativeTaskPlan(projectId: string, objective: string, consent: boolean) {
+    return invoke<import("./pages/NativeAgentsPage").NativeTaskProposal>("suggest_native_task_plan", {
+      projectId, objective, consent,
+    });
+  },
+  createNativeTaskReview(projectId: string, objective: string, maxFiles: number, budgetSeconds: number,
+    proposal: import("./pages/NativeAgentsPage").NativeTaskProposal) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("create_native_task_review", {
+      projectId, objective, maxFiles, budgetSeconds, proposal,
+    });
+  },
+  nativeTaskSchedule(id: string) {
+    return invoke<{ batches: string[][]; max_parallel: number }>("native_task_schedule", { id });
+  },
   createNativeAgentReview(projectId: string, objective: string, maxFiles: number, budgetSeconds: number, roles: string[]) {
     return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("create_native_agent_review", { projectId, objective, maxFiles, budgetSeconds, roles });
   },
