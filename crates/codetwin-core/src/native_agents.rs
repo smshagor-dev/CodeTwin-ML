@@ -318,9 +318,12 @@ impl<'a> NativeAgents<'a> {
         // A completed run is only accepted after checking the whole handoff chain.
         if status == "completed" {
             let verdict = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
-            let delegation = crate::native_agent_delegation::NativeDelegation::new(self.db).verify(id);
+            let delegation =
+                crate::native_agent_delegation::NativeDelegation::new(self.db).verify(id);
             if !verdict.verified || delegation.is_err() {
-                let reason = delegation.err().unwrap_or_else(|| verdict.issues.join("; "));
+                let reason = delegation
+                    .err()
+                    .unwrap_or_else(|| verdict.issues.join("; "));
                 self.db.connection().execute(
                     "UPDATE native_agent_runs SET status='failed',message=?2 WHERE id=?1 AND status='completed'",
                     params![id, reason],
@@ -348,8 +351,11 @@ impl<'a> NativeAgents<'a> {
             // Read and verify the exact predecessor evidence before dispatch.
             crate::native_agent_handoffs::AgentHandoffs::new(self.db)
                 .check_incoming(&run.id, step.position)?;
-            crate::native_agent_delegation::NativeDelegation::new(self.db)
-                .start(&run.id, step.position, &step.role)?;
+            crate::native_agent_delegation::NativeDelegation::new(self.db).start(
+                &run.id,
+                step.position,
+                &step.role,
+            )?;
             self.db
                 .connection()
                 .execute(
@@ -407,8 +413,11 @@ impl<'a> NativeAgents<'a> {
             };
             match result {
                 Ok(summary) => {
-                    crate::native_agent_delegation::NativeDelegation::new(self.db)
-                        .finish(&run.id, step.position, true)?;
+                    crate::native_agent_delegation::NativeDelegation::new(self.db).finish(
+                        &run.id,
+                        step.position,
+                        true,
+                    )?;
                     self.db.connection().execute(
                         "UPDATE native_agent_steps SET status='completed',result_json=?3,finished_at=CURRENT_TIMESTAMP
                          WHERE run_id=?1 AND position=?2",
@@ -416,8 +425,11 @@ impl<'a> NativeAgents<'a> {
                     ).map_err(to_error)?;
                 }
                 Err(error) => {
-                    crate::native_agent_delegation::NativeDelegation::new(self.db)
-                        .finish(&run.id, step.position, false)?;
+                    crate::native_agent_delegation::NativeDelegation::new(self.db).finish(
+                        &run.id,
+                        step.position,
+                        false,
+                    )?;
                     self.db.connection().execute(
                         "UPDATE native_agent_steps SET status='failed',result_json=?3,finished_at=CURRENT_TIMESTAMP
                          WHERE run_id=?1 AND position=?2",

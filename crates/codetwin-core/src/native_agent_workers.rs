@@ -5,8 +5,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    env, fs, path::{Path, PathBuf}, process::{Command, Stdio},
-    thread, time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    env, fs,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const MAX_RUN_SECONDS: u64 = 90;
@@ -29,33 +32,47 @@ pub struct IsolatedScanReadiness {
     pub detail: String,
 }
 
-struct WorkerSettings { docker: PathBuf, image: String }
+struct WorkerSettings {
+    docker: PathBuf,
+    image: String,
+}
 
 impl WorkerSettings {
     fn load() -> Result<Self, String> {
-        let docker = env::var("CODETWIN_DOCKER_PATH")
-            .map_err(|_| "Set CODETWIN_DOCKER_PATH to an absolute trusted Docker CLI executable".to_string())?;
+        let docker = env::var("CODETWIN_DOCKER_PATH").map_err(|_| {
+            "Set CODETWIN_DOCKER_PATH to an absolute trusted Docker CLI executable".to_string()
+        })?;
         let path = PathBuf::from(docker);
         if !path.is_absolute() || !path.is_file() {
             return Err("Docker executable must be an existing absolute file path".into());
         }
-        let image=env::var("CODETWIN_TRIVY_IMAGE")
-            .map_err(|_| "Set CODETWIN_TRIVY_IMAGE to a locally available image pinned by sha256 digest".to_string())?;
-        let (_, digest)=image.rsplit_once("@sha256:")
+        let image = env::var("CODETWIN_TRIVY_IMAGE").map_err(|_| {
+            "Set CODETWIN_TRIVY_IMAGE to a locally available image pinned by sha256 digest"
+                .to_string()
+        })?;
+        let (_, digest) = image
+            .rsplit_once("@sha256:")
             .ok_or("Worker image must be pinned by sha256 digest")?;
-        if digest.len()!=64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
-            || image.contains(char::is_whitespace) || image.contains('\'')
+        if digest.len() != 64
+            || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+            || image.contains(char::is_whitespace)
+            || image.contains('\'')
             || image.starts_with('-')
         {
             return Err("Invalid trusted worker image digest".into());
         }
-        let repository=image.split("@sha256:").next().unwrap_or_default();
-        if repository.is_empty() || !repository.chars().all(|c|
-            c.is_ascii_alphanumeric() || matches!(c,'.' | '-' | '_' | '/' | ':' )
-        ) {
+        let repository = image.split("@sha256:").next().unwrap_or_default();
+        if repository.is_empty()
+            || !repository
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '/' | ':'))
+        {
             return Err("Invalid pinned image repository".into());
         }
-        Ok(Self { docker:path, image })
+        Ok(Self {
+            docker: path,
+            image,
+        })
     }
 }
 
@@ -100,9 +117,13 @@ fn build_args(settings: &WorkerSettings, project: &Path, output: &Path, name: &s
     ]
 }
 
-pub struct IsolatedWorker<'a> { db: &'a Database }
+pub struct IsolatedWorker<'a> {
+    db: &'a Database,
+}
 impl<'a> IsolatedWorker<'a> {
-    pub const fn new(db: &'a Database) -> Self { Self {db} }
+    pub const fn new(db: &'a Database) -> Self {
+        Self { db }
+    }
 
     pub fn readiness() -> IsolatedScanReadiness {
         match WorkerSettings::load() {
@@ -158,40 +179,53 @@ impl<'a> IsolatedWorker<'a> {
         if !status.success() {
             return Err(format!("Offline scanner failed (exit status {status}); check Docker image and preloaded vulnerability database"));
         }
-        let path=tmp.path().join("report.json");
-        let metadata=fs::metadata(&path).map_err(|_| "Scanner returned no report".to_string())?;
-        if metadata.len()>MAX_REPORT_BYTES {
+        let path = tmp.path().join("report.json");
+        let metadata = fs::metadata(&path).map_err(|_| "Scanner returned no report".to_string())?;
+        if metadata.len() > MAX_REPORT_BYTES {
             return Err("Scanner report exceeded the 2 MB safety limit".into());
         }
-        let bytes=fs::read(&path).map_err(err)?;
-        if bytes.len() as u64>MAX_REPORT_BYTES {
+        let bytes = fs::read(&path).map_err(err)?;
+        if bytes.len() as u64 > MAX_REPORT_BYTES {
             return Err("Scanner output exceeded safe limit".into());
         }
-        let json:Value=serde_json::from_slice(&bytes).map_err(|_| "Scanner returned invalid JSON".to_string())?;
-        let reports=json.get("Results").and_then(Value::as_array)
+        let json: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| "Scanner returned invalid JSON".to_string())?;
+        let reports = json
+            .get("Results")
+            .and_then(Value::as_array)
             .ok_or("Scanner report has no expected Results array")?;
-        let mut vulnerabilities=0usize;
-        let mut misconfigurations=0usize;
+        let mut vulnerabilities = 0usize;
+        let mut misconfigurations = 0usize;
         for item in reports.iter().take(2000) {
-            vulnerabilities=vulnerabilities.saturating_add(
-                item.get("Vulnerabilities").and_then(Value::as_array).map_or(0,Vec::len)
+            vulnerabilities = vulnerabilities.saturating_add(
+                item.get("Vulnerabilities")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len),
             );
-            misconfigurations=misconfigurations.saturating_add(
-                item.get("Misconfigurations").and_then(Value::as_array).map_or(0,Vec::len)
+            misconfigurations = misconfigurations.saturating_add(
+                item.get("Misconfigurations")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len),
             );
         }
         Ok(IsolatedScanReceipt {
-            run_id:run.id,image_digest:settings.image,
-            report_sha256:format!("{:x}",Sha256::digest(&bytes)),
-            vulnerability_count:vulnerabilities,
-            misconfiguration_count:misconfigurations,
-            runtime_seconds:begin.elapsed().as_secs(),
-            warnings:vec!["Offline scan results are provisional; verify findings against source evidence.".into()],
+            run_id: run.id,
+            image_digest: settings.image,
+            report_sha256: format!("{:x}", Sha256::digest(&bytes)),
+            vulnerability_count: vulnerabilities,
+            misconfiguration_count: misconfigurations,
+            runtime_seconds: begin.elapsed().as_secs(),
+            warnings: vec![
+                "Offline scan results are provisional; verify findings against source evidence."
+                    .into(),
+            ],
         })
     }
 }
 
-fn err(value: impl std::fmt::Display) -> String {value.to_string()}
+fn err(value: impl std::fmt::Display) -> String {
+    value.to_string()
+}
 
 #[cfg(test)]
 mod tests {
@@ -213,8 +247,8 @@ mod tests {
     }
     #[test]
     fn cannot_scan_unapproved_run_or_run_without_authorization() {
-        let db=Database::open_in_memory().unwrap();
-        assert!(IsolatedWorker::new(&db).scan("missing",false).is_err());
-        assert!(IsolatedWorker::new(&db).scan("missing",true).is_err());
+        let db = Database::open_in_memory().unwrap();
+        assert!(IsolatedWorker::new(&db).scan("missing", false).is_err());
+        assert!(IsolatedWorker::new(&db).scan("missing", true).is_err());
     }
 }
