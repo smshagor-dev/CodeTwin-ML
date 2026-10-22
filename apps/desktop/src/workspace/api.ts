@@ -63,6 +63,25 @@ import type {
 export type ImportStage = "selecting" | "discovering" | "indexing" | "security" | "testing";
 
 export const workspaceApi = {
+  pentagiStatus() {
+    return invoke<{ configured: boolean; connected: boolean; detail: string; providers: Array<{ name: string; kind: string }> }>("pentagi_status");
+  },
+  pentagiFlows() {
+    return invoke<Array<{ id: string; title: string; status: string; provider: { name: string; kind: string }; created_at: string; updated_at: string }>>("pentagi_list_flows");
+  },
+  pentagiCreateFlow(request: { target: string; objective: string; provider: string; authorized: boolean }) {
+    return invoke<{ id: string; title: string; status: string; provider: { name: string; kind: string }; created_at: string; updated_at: string }>("pentagi_create_flow", { request });
+  },
+  pentagiStopFlow(flowId: string) {
+    return invoke<boolean>("pentagi_stop_flow", { flowId });
+  },
+  pentagiFlowDetail(flowId: string) {
+    return invoke<{
+      tasks: Array<{ id: string; title: string; status: string; result: string; subtasks: Array<{ id: string; title: string; status: string; result: string }> }>;
+      agents: Array<{ id: string; executor: string; task: string; result: string; createdAt: string }>;
+      tools: Array<{ id: string; name: string; status: string; result: string; createdAt: string }>;
+    }>("pentagi_flow_detail", { flowId });
+  },
   assessmentJobs(projectId: string) {
     return invoke<import("./types").AssessmentJob[]>("list_assessment_jobs", { projectId });
   },
