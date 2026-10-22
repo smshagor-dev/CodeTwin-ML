@@ -79,6 +79,19 @@ export type KnowledgeGraph = {
   nodes: KnowledgeNode[];
   edges: { run_id: string; from_position: number; to_position: number; relation: string }[];
 };
+export type WorkerAuditRecord = {
+  id: number; run_id: string; status: string; image_digest: string | null;
+  report_sha256: string | null; vulnerability_count: number | null;
+  misconfiguration_count: number | null; error_code: string | null;
+  started_at: string; finished_at: string | null;
+};
+export type NeuralMatch = { run_id: string; position: number; role: string; status: string; score: number };
+export type GraphInference = {
+  run_id: string; selected_position: number; ancestors: number[];
+  downstream_dependents: number[]; shortest_paths: number[][];
+  reachable_nodes: number; orphaned_nodes: number[]; cycles_detected: boolean;
+};
+
 export type IsolatedScanReceipt = {
   run_id: string; image_digest: string; report_sha256: string;
   vulnerability_count: number; misconfiguration_count: number;
@@ -97,6 +110,12 @@ export function NativeAgentsPage() {
   const [workerStatus, setWorkerStatus] = useState<{ configured: boolean; detail: string } | null>(null);
   const [workerConsent, setWorkerConsent] = useState(false);
   const [workerReceipt, setWorkerReceipt] = useState<IsolatedScanReceipt | null>(null);
+  const [workerHistory, setWorkerHistory] = useState<WorkerAuditRecord[]>([]);
+  const [neuralReady, setNeuralReady] = useState<{ configured: boolean; detail: string } | null>(null);
+  const [neuralConsent, setNeuralConsent] = useState(false);
+  const [neuralHits, setNeuralHits] = useState<NeuralMatch[]>([]);
+  const [neuralQuery, setNeuralQuery] = useState("");
+  const [graphInference, setGraphInference] = useState<GraphInference | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [handoffs, setHandoffs] = useState<AgentHandoff[]>([]);
   const [verification, setVerification] = useState<AgentVerification | null>(null);
@@ -125,6 +144,8 @@ export function NativeAgentsPage() {
     void workspaceApi.nativeModelReadiness().then(setModelStatus)
       .catch(reason => setError(String(reason)));
     void workspaceApi.nativeIsolatedScanReadiness().then(setWorkerStatus)
+      .catch(reason => setError(String(reason)));
+    void workspaceApi.nativeNeuralReadiness().then(setNeuralReady)
       .catch(reason => setError(String(reason)));
   }, []);
 
@@ -187,8 +208,14 @@ export function NativeAgentsPage() {
       workspaceApi.nativeDelegationGraph(id),
       workspaceApi.nativeKnowledgeGraph(activeProjectId, id),
       workspaceApi.nativeTaskSchedule(id),
-    ]).then(([tasks, graph, schedule]) => {
-      if (active) { setDelegation(tasks); setKnowledgeGraph(graph); setTaskSchedule(schedule); }
+      workspaceApi.nativeWorkerAudit(id),
+    ]).then(([tasks, graph, schedule, history]) => {
+      if (active) {
+        setDelegation(tasks);
+        setKnowledgeGraph(graph);
+        setTaskSchedule(schedule);
+        setWorkerHistory(history);
+      }
     }).catch(reason => { if (active) setError(String(reason)); });
     return () => { active = false; };
   }, [activeProjectId, selectedId, runs]);
@@ -212,6 +239,34 @@ export function NativeAgentsPage() {
     finally { setBusy(""); }
   }
 
+  async function indexNeural(id: string) {
+    if (!neuralConsent) return;
+    setBusy("embedding"); setError("");
+    try {
+      const count = await workspaceApi.indexNativeNeuralMemory(id, true);
+      setNeuralConsent(false);
+      setError("Indexed " + count + " privacy-reduced specialist vectors.");
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+
+  async function searchNeural() {
+    if (!activeProjectId || !neuralConsent) return;
+    setBusy("neural-search"); setError("");
+    try {
+      setNeuralHits(await workspaceApi.searchNativeNeuralMemory(activeProjectId, neuralQuery, 12, true));
+      setNeuralConsent(false);
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+
+  async function reasonGraph(id: string, position: number) {
+    if (!activeProjectId) return;
+    setError("");
+    try { setGraphInference(await workspaceApi.reasonNativeKnowledgeGraph(activeProjectId, id, position)); }
+    catch (reason) { setError(String(reason)); }
+  }
+
   async function runWorker(id: string) {
     if (!workerConsent || !window.confirm("Run an offline, read-only Docker security scan of this approved local project?")) return;
     setBusy("worker"); setError("");
@@ -219,6 +274,7 @@ export function NativeAgentsPage() {
     try {
       const receipt = await workspaceApi.runNativeIsolatedScan(id, true);
       setWorkerReceipt(receipt);
+      setWorkerHistory(await workspaceApi.nativeWorkerAudit(id));
       setWorkerConsent(false);
     } catch (reason) { setError(String(reason)); }
     finally { setBusy(""); }
@@ -464,6 +520,27 @@ export function NativeAgentsPage() {
       </button>)}
     </Panel>
 
+    <Panel title="Neural embedding memory (optional)">
+      <p className="ws-form-help">
+        {neuralReady?.detail ?? "Checking model connection…"}.
+        Genuine model embeddings require an explicitly configured provider and user consent.
+        Only role, tool and status are embedded, never local files or scanner results.
+      </p>
+      <label className="ws-field"><span>Neural similarity query</span>
+        <input value={neuralQuery} maxLength={150} placeholder="Find past source review activity"
+          onChange={event => setNeuralQuery(event.target.value)}/>
+      </label>
+      <label className="ws-field"><span>
+        <input type="checkbox" checked={neuralConsent} onChange={event => setNeuralConsent(event.target.checked)}/>
+        I consent to sending short specialist provenance or this query to my configured embedding provider.
+      </span></label>
+      <button className="ws-button ws-button-secondary"
+        disabled={!neuralReady?.configured || !neuralConsent || !neuralQuery.trim() || !activeProjectId || Boolean(busy)}
+        onClick={() => void searchNeural()}>Search neural memory</button>
+      {neuralHits.map(hit => <button className="ws-button ws-button-secondary" key={hit.run_id + ":" + hit.position}
+        onClick={() => setSelectedId(hit.run_id)}>{hit.role} · cosine similarity {hit.score.toFixed(2)}</button>)}
+    </Panel>
+
     <Panel title="Saved reviews">
       {!runs.length && <p className="ws-inline-empty">Choose an indexed project to create your first local review.</p>}
       <div className="ws-history-list">{runs.map(run =>
@@ -498,6 +575,17 @@ export function NativeAgentsPage() {
           Group {index + 1}: {batch.join(", ")}
         </p>)}
         <h3>Stored knowledge graph</h3>
+        {knowledgeGraph?.nodes.map(node => <button key={node.run_id + ":" + node.position}
+          className="ws-button ws-button-secondary"
+          onClick={() => void reasonGraph(selected.id, node.position)}>
+          Explain {node.role} dependencies
+        </button>)}
+        {graphInference && graphInference.run_id === selected.id && <p className="ws-form-help">
+          Role {graphInference.selected_position}: {graphInference.ancestors.length} ancestors,
+          {" "}{graphInference.downstream_dependents.length} downstream roles,
+          {" "}{graphInference.reachable_nodes} reachable nodes.
+          {graphInference.cycles_detected ? " A graph cycle was detected." : ""}
+        </p>}
         <p className="ws-form-help">
           {knowledgeGraph?.nodes.length ?? 0} local evidence nodes · {knowledgeGraph?.edges.length ?? 0} verified handoff relations.
         </p>
@@ -535,6 +623,14 @@ export function NativeAgentsPage() {
         </>}
       </div>
       <section className="ws-form-stack">
+        <h3>Opt-in neural indexing</h3>
+        <p className="ws-form-help">No embedding call is automatic. Index only trusted role/status summaries from this finished review.</p>
+        <button className="ws-button ws-button-secondary"
+          disabled={!neuralReady?.configured || !neuralConsent || Boolean(busy) ||
+            !["completed","failed","cancelled","interrupted"].includes(selected.status)}
+          onClick={() => void indexNeural(selected.id)}>Index this review with neural embeddings</button>
+      </section>
+      <section className="ws-form-stack">
         <h3>Optional isolated security worker</h3>
         <p className="ws-form-help">{workerStatus?.detail ?? "Checking Docker worker configuration…"}</p>
         <p className="ws-form-help">Pinned Trivy image only · local Docker · no network · read-only source mount · fixed arguments · resource/time ceilings. Never launches arbitrary commands.</p>
@@ -547,6 +643,12 @@ export function NativeAgentsPage() {
           onClick={() => void runWorker(selected.id)}>
           {busy === "worker" ? "Running isolated scan…" : "Run approved offline scanner"}
         </button>
+        <h3>Persistent worker audit</h3>
+        {!workerHistory.length && <p className="ws-form-help">No recorded worker attempts for this review.</p>}
+        {workerHistory.map(event => <p className="ws-form-help" key={event.id}>
+          Attempt {event.id} · {event.status} · {event.started_at}
+          {event.report_sha256 ? " · evidence " + event.report_sha256.slice(0, 12) : ""}
+        </p>)}
         {workerReceipt && <p role="status">
           Offline scan finished · {workerReceipt.vulnerability_count} vulnerability records,
           {" "}{workerReceipt.misconfiguration_count} misconfiguration records.
