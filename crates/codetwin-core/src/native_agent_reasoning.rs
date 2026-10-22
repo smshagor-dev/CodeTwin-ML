@@ -250,8 +250,22 @@ impl<'a> NativeReviewReasoner<'a> {
             Never propose shell commands, exploits, active network probes, custom tools or unlisted roles. \
             Keep rationale under 1000 bytes, explain why optional roles are useful. \
             This is a proposal, not execution authorization.";
-        let output = ModelConfig::from_env()?.complete(prompt, &input, 450)?;
-        parse_role_suggestion(&output)
+        let model = ModelConfig::from_env()?;
+        let output = model.complete(prompt, &input, 450)?;
+        match parse_role_suggestion(&output) {
+            Ok(valid) => Ok(valid),
+            Err(_) => {
+                // One bounded, read-only correction attempt. Never execute or
+                // delegate any model-proposed tool call, even on retry.
+                let correction = format!(
+                    "{prompt} Your previous reply was rejected by the Rust validator. \
+                     Return a single JSON object with exact fields roles and rationale. \
+                     Do not add markdown, commentary, unknown tools or duplicated roles."
+                );
+                let output = model.complete(&correction, &input, 450)?;
+                parse_role_suggestion(&output)
+            }
+        }
     }
 
     pub fn existing(&self, run_id: &str) -> Result<Option<ModelInsight>, String> {
