@@ -1,6 +1,6 @@
 //! Durable, privacy-reduced local audit for separately authorized container workers.
 use crate::{native_agent_workers::IsolatedScanReceipt, Database};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,7 +89,7 @@ impl<'a> WorkerAudit<'a> {
              FROM native_worker_audit WHERE run_id=?1 ORDER BY id DESC LIMIT 50",
             )
             .map_err(err)?;
-        statement
+        let records = statement
             .query_map([run_id], |row| {
                 Ok(WorkerAuditRecord {
                     id: row.get(0)?,
@@ -106,7 +106,8 @@ impl<'a> WorkerAudit<'a> {
             })
             .map_err(err)?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(err)
+            .map_err(err)?;
+        Ok(records)
     }
 
     pub fn recover_interrupted(&self) -> Result<usize, String> {

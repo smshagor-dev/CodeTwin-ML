@@ -89,7 +89,7 @@ pub fn validate_proposal(plan: &TaskProposal) -> Result<TaskSchedule, String> {
     }
 
     let mut pending: BTreeSet<&str> = positions.keys().copied().collect();
-    let mut done = BTreeSet::new();
+    let mut done = BTreeSet::<String>::new();
     let mut batches = Vec::new();
     while !pending.is_empty() {
         let ready: Vec<String> = ALLOWED
@@ -113,7 +113,7 @@ pub fn validate_proposal(plan: &TaskProposal) -> Result<TaskSchedule, String> {
         }
         for role in &ready {
             pending.remove(role.as_str());
-            done.insert(role.as_str());
+            done.insert(role.clone());
         }
         batches.push(ready);
     }
@@ -190,7 +190,7 @@ mod tests {
         plan.tasks[2].depends_on = vec!["runtime".into(), "source".into()];
         assert!(validate_proposal(&plan).is_err());
         let mut json = serde_json::to_value(valid()).unwrap();
-        json["tasks"][0]["shell"] = "rm -rf /";
+        json["tasks"][0]["shell"] = "rm -rf /".into();
         assert!(parse_proposal(&json.to_string()).is_err());
     }
 }
