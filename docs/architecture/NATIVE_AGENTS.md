@@ -117,3 +117,59 @@ CodeTwin analyzers are the only tools these specialists can invoke.
 No model is allowed to add tools, run shell commands, bypass authorization, or
 expand the scan scope. All operations are local until a user explicitly consents to
 the separate optional model features.
+
+## Dependency-gated delegation
+
+Each approved review has a SQLite task DAG in `native_delegation_tasks` and
+`native_delegation_dependencies`. The graph is constructed before approval using the
+user-selected roles. Project Recon precedes Source Auditor, and optional passive
+specialists depend on the source review. The Rust supervisor checks the fixed role,
+pending status and completed prerequisites before dispatch, and checks task completion
+during final verification. Arbitrary model-proposed command execution is not supported;
+the current executor remains sequential, while the dependencies are explicit and
+persisted. Free-form recursive model-to-model delegation is not implemented.
+
+## Local knowledge vectors and provenance graph
+
+`native_knowledge_nodes` stores project-isolated role/tool/status nodes and
+64-dimensional deterministic, normalized hashed-token vectors. Similarity is
+cosine on those vectors; **this is lexical recall, not neural semantic search**.
+Only provenance from terminal review steps is indexed; no source text, raw scan
+output, secrets or AI response is embedded. Storage is bounded to 500 records
+per project. `native_knowledge_edges` stores previously verified specialist
+handoff relations. Users can query or explicitly clear this derived knowledge
+without deleting the original review history. A neural ONNX embeddings service,
+knowledge-graph reasoning and cross-project transfer remain separate future work.
+
+## Optional isolated offline worker
+
+The desktop exposes a separate, explicitly approved offline Trivy filesystem scan
+for a local indexed project in an already-approved review. This does **not** happen
+automatically or through an AI prompt. This worker is opt-in and **disabled**
+unless both environment settings are supplied:
+
+- `CODETWIN_DOCKER_PATH`: absolute path to a trusted Docker CLI executable.
+- `CODETWIN_TRIVY_IMAGE`: existing local image reference pinned as
+  `repository@sha256:<64 hex digits>`. Prepare it and its vulnerability database
+  independently. No image download is performed.
+
+The container runs without network access, Docker socket mounts, writable project
+access, elevated capabilities or shell command delegation. Arguments, mount points,
+read-only root filesystem and isolation settings are fixed in Rust. The container
+has limits for CPU, memory, process count and duration; untrusted output is
+parsed to aggregated finding counts and a SHA-256 report digest. The original
+report is temporary and not retained in the app database. Mount roots containing
+Docker option separators are rejected. On Unix, the worker uses the non-root host
+identity so a private temporary output directory remains writable.
+
+This is an initial **offline scanner integration**, not a generic container tool
+marketplace or a guarantee against a compromised Docker daemon or malicious scanner
+image. Local Docker availability, a pinned scanner image, a preloaded offline
+vulnerability database, supported Docker host platform and actual end-to-end
+execution must still be tested. A timeout kills the Docker client and requests
+forced removal of the named container, but recovery after a daemon crash is not
+yet independently verified.
+
+Do not enable network-enabled pentest workers or arbitrary tool execution without
+separate target authorization, network egress enforcement, security review and
+real isolated integration tests.
