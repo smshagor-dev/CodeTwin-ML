@@ -324,10 +324,14 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("sample.ts"), "export const value = true;").unwrap();
         let project = crate::ProjectIndexService::new(&db)
-            .index_project(root.path()).unwrap().project_id;
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
         let roles = vec!["scout".to_owned(), "source".to_owned()];
         let agents = NativeAgents::new(&db);
-        let run = agents.create_with_roles(&project, "Review", 10, 300, &roles).unwrap();
+        let run = agents
+            .create_with_roles(&project, "Review", 10, 300, &roles)
+            .unwrap();
         agents.approve(&run.id).unwrap();
         let result = agents.execute(&run.id).unwrap();
         assert_eq!(result.status, "completed", "{:?}", result.message);
