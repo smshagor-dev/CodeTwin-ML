@@ -173,3 +173,61 @@ yet independently verified.
 Do not enable network-enabled pentest workers or arbitrary tool execution without
 separate target authorization, network egress enforcement, security review and
 real isolated integration tests.
+
+## Model-decomposed review task plans
+
+The model can now return a structured task proposal with per-specialist objectives
+and named dependencies. Rust accepts only the six registered passive roles in
+their audited order and validates that Project Recon is initial, Source Auditor
+depends on it, and all optional roles require source review. Unexpected JSON
+fields, unapproved tools, cycles, duplicate roles, long explanations and
+forward references are rejected. Users inspect the proposed DAG in the UI.
+
+Accepted tasks are bound to a fresh, unapproved review and persisted in
+`native_task_intents` and `native_delegation_dependencies`. The default
+review still works without an AI model. Approval and starting the review are
+separate actions. A `native_task_schedule` API calculates dependency-ready
+batches capped at two specialists; **the native analyzer runtime still executes
+serially** because current shared SQLite analyzer state and linear handoffs
+have not been proven concurrency-safe.
+
+## Optional genuine neural vectors
+
+Configure `CODETWIN_EMBEDDING_ENDPOINT` with an OpenAI-compatible `/embeddings`
+URL, `CODETWIN_EMBEDDING_MODEL`, and `CODETWIN_EMBEDDING_TOKEN` for remote
+providers. Remote endpoints must use HTTPS. Only explicit, consented actions
+send short role/tool/status strings or a user-entered query to the configured
+embedding model. Response count, index, dimension (16–3072), finiteness and
+norm are validated. Vectors are isolated by project and model ID and stored
+in `native_neural_embeddings`. Neural cosine search is separate from the
+local hashed lexical fallback. No model, inference provider or live result
+is silently simulated. Neural recall has not been live-validated with a
+connected provider.
+
+## Graph reasoning
+
+`native_graph_reasoning.rs` can trace bounded predecessors, downstream
+dependents, shortest stored provenance paths and disconnected nodes within a
+single project's verified handoff graph. The graph view shows count and
+dependency explanations. These are **provenance relationships**, not a
+claim that vulnerabilities were proved, exploited, or eliminated.
+
+## Durable isolated-worker audit
+
+`native_worker_audit` records worker attempts, aggregated counts,
+status, report digest and timestamps. It does not retain raw scanner
+data, credentials, arbitrary arguments or source paths. An interrupted
+application marks unfinished audit entries accordingly after restart.
+An audit receipt is independent of the review's analyzer findings.
+
+## Real sandbox test harness
+
+`crates/codetwin-core/tests/native_real_sandbox.rs` invokes a real
+Docker daemon and validates the offline scanner's report digest and persisted
+audit, **only when** `CODETWIN_TEST_REAL_SANDBOX=1` is explicitly set.
+Provide `CODETWIN_DOCKER_PATH` and `CODETWIN_TRIVY_IMAGE` as described
+above. The manually triggered workflow `.github/workflows/offline-sandbox-smoke.yml`
+accepts a maintainer-approved digest-pinned image with its vulnerability DB
+already included, preloads it outside the sandbox, then runs the real
+network-disabled integration test. Merely compiling this harness does not
+mean a real sandbox test passed.
