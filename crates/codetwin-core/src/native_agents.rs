@@ -62,6 +62,26 @@ impl<'a> NativeAgents<'a> {
         max_files: usize,
         budget_seconds: u64,
     ) -> Result<AgentRun, String> {
+        let all_roles = STEP_TOOLS.iter().map(|(id, _)| (*id).to_string()).collect::<Vec<_>>();
+        self.create_with_roles(project_id, objective, max_files, budget_seconds, &all_roles)
+    }
+
+    pub fn create_with_roles(
+        &self,
+        project_id: &str,
+        objective: &str,
+        max_files: usize,
+        budget_seconds: u64,
+        roles: &[String],
+    ) -> Result<AgentRun, String> {
+        if !(2..=STEP_TOOLS.len()).contains(&roles.len())
+            || !roles.iter().any(|role| role == "scout")
+            || !roles.iter().any(|role| role == "source")
+            || roles.iter().any(|role| !STEP_TOOLS.iter().any(|(id, _)| role == id))
+            || roles.iter().enumerate().any(|(i, role)| roles[..i].contains(role))
+        {
+            return Err("Select unique supported roles; Project Recon and Source Auditor are required".into());
+        }
         if objective.trim().is_empty() || objective.len() > 2000 {
             return Err("Give a review objective of at most 2000 bytes".into());
         }
@@ -109,6 +129,9 @@ impl<'a> NativeAgents<'a> {
             params![id,project_id,objective.trim(),max_files,budget_seconds,assessment.id],
         ).map_err(to_error)?;
         for (position, (tool, role)) in STEP_TOOLS.iter().enumerate() {
+            if !roles.iter().any(|chosen| chosen == tool) {
+                continue;
+            }
             tx.execute(
                 "INSERT INTO native_agent_steps(run_id,position,role,tool) VALUES(?1,?2,?3,?4)",
                 params![id, position, role, tool],
@@ -455,5 +478,26 @@ mod tests {
         let cancelled = agent.cancel(&run.id).unwrap();
         assert_eq!(cancelled.status, "cancelled");
         assert!(agent.execute(&run.id).is_err());
+    }
+
+    #[test]
+    fn role_selection_rejects_unknown_duplicate_or_missing_required_roles() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("sample.ts"), "export const a = 1;").unwrap();
+        let project_id = crate::ProjectIndexService::new(&db)
+            .index_project(root.path()).unwrap().project_id;
+        let agents = NativeAgents::new(&db);
+        for bad in [
+            vec!["scout".to_string(), "qa".to_string()],
+            vec!["scout".to_string(), "source".to_string(), "unknown".to_string()],
+            vec!["scout".to_string(), "source".to_string(), "source".to_string()],
+        ] {
+            assert!(agents.create_with_roles(&project_id, "Review", 10, 60, &bad).is_err());
+        }
+        let roles = vec!["scout".to_string(), "source".to_string(), "secrets".to_string()];
+        let review = agents.create_with_roles(&project_id, "Review", 10, 60, &roles).unwrap();
+        assert_eq!(review.steps.iter().map(|step| step.tool.as_str()).collect::<Vec<_>>(),
+            vec!["scout", "source", "secrets"]);
     }
 }
