@@ -13,6 +13,11 @@ const roleChoices = [
   { id: "runtime", name: "Runtime Reviewer", mandatory: false },
 ] as const;
 
+export type NativeTaskProposal = {
+  tasks: { role: string; objective: string; depends_on: string[] }[];
+  rationale: string;
+};
+
 export type NativeAgentStep = {
   position: number;
   role: string;
@@ -99,6 +104,10 @@ export function NativeAgentsPage() {
   const [maxFiles, setMaxFiles] = useState(500);
   const [budget, setBudget] = useState(600);
   const [selectedRoles, setSelectedRoles] = useState<string[]>(roleChoices.map(role => role.id));
+  const [taskProposal, setTaskProposal] = useState<{
+    proposal: NativeTaskProposal; objective: string; projectId: string;
+  } | null>(null);
+  const [taskSchedule, setTaskSchedule] = useState<{ batches: string[][]; max_parallel: number } | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [modelStatus, setModelStatus] = useState<{ configured: boolean; detail: string } | null>(null);
@@ -177,8 +186,9 @@ export function NativeAgentsPage() {
     void Promise.all([
       workspaceApi.nativeDelegationGraph(id),
       workspaceApi.nativeKnowledgeGraph(activeProjectId, id),
-    ]).then(([tasks, graph]) => {
-      if (active) { setDelegation(tasks); setKnowledgeGraph(graph); }
+      workspaceApi.nativeTaskSchedule(id),
+    ]).then(([tasks, graph, schedule]) => {
+      if (active) { setDelegation(tasks); setKnowledgeGraph(graph); setTaskSchedule(schedule); }
     }).catch(reason => { if (active) setError(String(reason)); });
     return () => { active = false; };
   }, [activeProjectId, selectedId, runs]);
@@ -250,11 +260,30 @@ export function NativeAgentsPage() {
     }
   }
 
+  async function suggestDecomposition() {
+    if (!activeProjectId || !planConsent || !objective.trim()) return;
+    setBusy("decompose"); setError("");
+    const requestedProjectId = activeProjectId;
+    const requestedObjective = objective;
+    setTaskProposal(null);
+    try {
+      const proposal = await workspaceApi.suggestNativeTaskPlan(requestedProjectId, requestedObjective, true);
+      setTaskProposal({proposal, projectId: requestedProjectId, objective: requestedObjective});
+      setPlanConsent(false);
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+
   async function createPlan() {
     if (!activeProjectId) return;
     setError(""); setBusy("plan");
     try {
-      const run = await workspaceApi.createNativeAgentReview(activeProjectId, objective, maxFiles, budget, selectedRoles);
+      const selectedPlan = taskProposal?.objective === objective && taskProposal?.projectId === activeProjectId
+        ? taskProposal.proposal : null;
+      const run = selectedPlan
+        ? await workspaceApi.createNativeTaskReview(activeProjectId, objective, maxFiles, budget, selectedPlan)
+        : await workspaceApi.createNativeAgentReview(activeProjectId, objective, maxFiles, budget, selectedRoles);
+      setTaskProposal(null);
       setSelectedId(run.id);
       await refresh();
     } catch (reason) {
@@ -353,6 +382,22 @@ export function NativeAgentsPage() {
             onClick={() => void suggestRoles()}>
             {busy === "suggest" ? "Generating suggestion…" : "Suggest specialist roles"}
           </button>
+          <button className="ws-button ws-button-secondary"
+            disabled={!modelStatus?.configured || !activeProjectId || !planConsent || !objective.trim() || Boolean(busy)}
+            onClick={() => void suggestDecomposition()}>
+            {busy === "decompose" ? "Decomposing…" : "Propose multi-step task graph"}
+          </button>
+          {taskProposal && taskProposal.objective === objective && taskProposal.projectId === activeProjectId && <div>
+            <p><strong>Model-proposed task DAG (not approved)</strong></p>
+            {taskProposal.proposal.tasks.map(task => <p key={task.role}>
+              <strong>{task.role}</strong> · {task.objective} · depends on {task.depends_on.join(", ") || "none"}
+            </p>)}
+            <p>{taskProposal.proposal.rationale}</p>
+            <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
+              onClick={() => setSelectedRoles(taskProposal.proposal.tasks.map(task => task.role))}>
+              Use this reviewed task plan
+            </button>
+          </div>}
           {suggestion && suggestion.objective === objective && suggestion.projectId === activeProjectId && <div>
             <p><strong>Proposed roles:</strong> {suggestion.roles.map(role =>
               roleChoices.find(choice => choice.id === role)?.name ?? role).join(", ")}</p>
@@ -446,6 +491,11 @@ export function NativeAgentsPage() {
         {delegation?.tasks.map(task => <p key={task.position}>
           <strong>{task.role}</strong> · {task.status}
           {task.requires.length ? " · requires " + task.requires.join(", ") : " · initial task"}
+        </p>)}
+        <h3>Dependency-ready scheduling batches</h3>
+        <p className="ws-form-help">These are parallel-ready groups for planning. Existing analyzer execution is still serialized for database safety.</p>
+        {taskSchedule?.batches.map((batch, index) => <p key={index}>
+          Group {index + 1}: {batch.join(", ")}
         </p>)}
         <h3>Stored knowledge graph</h3>
         <p className="ws-form-help">
