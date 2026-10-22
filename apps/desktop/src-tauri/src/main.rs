@@ -3,6 +3,7 @@ mod database_commands;
 mod guided_security_commands;
 mod ml_commands;
 mod qa_commands;
+mod pentagi_commands;
 mod repair_commands;
 mod runtime_commands;
 mod security_campaign_commands;
@@ -55,6 +56,10 @@ use ml_commands::{
     link_ml_finding, list_ml_finding_links, ml_inference_history, ml_inference_plan, ml_models,
     ml_sidecar_capabilities, ml_sidecar_health, ml_sidecar_identity, run_ml_file_generation,
     run_ml_file_inference,
+};
+use pentagi_commands::{
+    pentagi_create_flow, pentagi_flow_detail, pentagi_list_flows, pentagi_status,
+    pentagi_stop_flow,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
@@ -1031,6 +1036,11 @@ fn main() {
             list_assessment_jobs,
             cancel_assessment_job,
             run_assessment_job,
+            pentagi_status,
+            pentagi_list_flows,
+            pentagi_create_flow,
+            pentagi_stop_flow,
+            pentagi_flow_detail,
             list_security_tools,
             recent_security_tool_runs,
             git_review_status,
