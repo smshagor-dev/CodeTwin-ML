@@ -96,6 +96,11 @@ export const workspaceApi = {
   nativeAgentInsight(id: string) {
     return invoke<{ run_id: string; content: string; created_at: string } | null>("native_agent_insight", { id });
   },
+  suggestNativeAgentRoles(projectId: string, objective: string, consent: boolean) {
+    return invoke<{ roles: string[]; rationale: string }>("suggest_native_agent_roles", {
+      projectId, objective, consent,
+    });
+  },
   interpretNativeAgentReview(id: string, consent: boolean) {
     return invoke<{ run_id: string; content: string; created_at: string }>("interpret_native_agent_review", { id, consent });
   },

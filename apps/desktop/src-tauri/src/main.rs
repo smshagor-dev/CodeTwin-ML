@@ -64,7 +64,7 @@ use native_agent_commands::{
     native_agent_report, native_agent_review, run_native_agent_review,
 };
 use native_agent_reasoning_commands::{
-    interpret_native_agent_review, native_agent_insight, native_model_readiness,
+    interpret_native_agent_review, native_agent_insight, native_model_readiness, suggest_native_agent_roles,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
@@ -1056,6 +1056,7 @@ fn main() {
             native_model_readiness,
             native_agent_insight,
             interpret_native_agent_review,
+            suggest_native_agent_roles,
             list_security_tools,
             recent_security_tool_runs,
             git_review_status,

@@ -59,6 +59,13 @@ export function NativeAgentsPage() {
   const [modelStatus, setModelStatus] = useState<{ configured: boolean; detail: string } | null>(null);
   const [insight, setInsight] = useState<{ content: string; created_at: string } | null>(null);
   const [modelConsent, setModelConsent] = useState(false);
+  const [planConsent, setPlanConsent] = useState(false);
+  const [suggestion, setSuggestion] = useState<{
+    roles: string[];
+    rationale: string;
+    objective: string;
+    projectId: string;
+  } | null>(null);
 
   useEffect(() => {
     void workspaceApi.nativeModelReadiness().then(setModelStatus)
@@ -104,6 +111,28 @@ export function NativeAgentsPage() {
       const value = await workspaceApi.interpretNativeAgentReview(id, true);
       setInsight(value);
       setModelConsent(false);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function suggestRoles() {
+    if (!activeProjectId || !planConsent || !objective.trim()) return;
+    setBusy("suggest"); setError("");
+    setSuggestion(null);
+    const requestedProjectId = activeProjectId;
+    const requestedObjective = objective;
+    try {
+      const result = await workspaceApi.suggestNativeAgentRoles(requestedProjectId, requestedObjective, true);
+      setSuggestion({
+        roles: result.roles,
+        rationale: result.rationale,
+        objective: requestedObjective,
+        projectId: requestedProjectId,
+      });
+      setPlanConsent(false);
     } catch (reason) {
       setError(String(reason));
     } finally {
@@ -199,6 +228,31 @@ export function NativeAgentsPage() {
         <label className="ws-field"><span>Review time budget in seconds (1–3600)</span>
           <input type="number" min={1} max={3600} value={budget} onChange={event => setBudget(Number(event.target.value))}/>
         </label>
+        <fieldset className="ws-form-stack">
+          <legend>AI-suggested review roles</legend>
+          <p className="ws-form-help">
+            The configured model receives your objective and aggregate index counts, never source files, project paths or saved findings. Suggestions cannot run tools or approve plans.
+          </p>
+          <label className="ws-field"><span>
+            <input type="checkbox" checked={planConsent} disabled={!modelStatus?.configured || Boolean(busy)}
+              onChange={event => setPlanConsent(event.target.checked)}/>
+            I consent to sending this objective and anonymous index counts to my configured model.
+          </span></label>
+          <button className="ws-button ws-button-secondary"
+            disabled={!modelStatus?.configured || !activeProjectId || !planConsent || !objective.trim() || Boolean(busy)}
+            onClick={() => void suggestRoles()}>
+            {busy === "suggest" ? "Generating suggestion…" : "Suggest specialist roles"}
+          </button>
+          {suggestion && suggestion.objective === objective && suggestion.projectId === activeProjectId && <div>
+            <p><strong>Proposed roles:</strong> {suggestion.roles.map(role =>
+              roleChoices.find(choice => choice.id === role)?.name ?? role).join(", ")}</p>
+            <p>{suggestion.rationale}</p>
+            <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
+              onClick={() => { setSelectedRoles(suggestion.roles); setSuggestion(null); }}>
+              Use suggested roles (review before approval)
+            </button>
+          </div>}
+        </fieldset>
         <fieldset className="ws-form-stack">
           <legend>Approved specialist roles</legend>
           {roleChoices.map(role => <label className="ws-field" key={role.id}>
