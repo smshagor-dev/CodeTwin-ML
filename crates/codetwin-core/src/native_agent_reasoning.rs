@@ -78,7 +78,7 @@ impl ModelConfig {
             .map_err(to_error)?
             .post(self.endpoint.clone())
             .header("Content-Type", "application/json")
-            .json(&body);
+            .body(serde_json::to_vec(&body).map_err(to_error)?);
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
         }
