@@ -30,6 +30,7 @@ const MIGRATION_0023: &str = include_str!("../migrations/0023_route_prefix_seman
 const MIGRATION_0024: &str = include_str!("../migrations/0024_campaign_regression_transitions.sql");
 const MIGRATION_0025: &str = include_str!("../migrations/0025_supply_chain_scanning.sql");
 const MIGRATION_0028: &str = include_str!("../migrations/0028_assessment_jobs.sql");
+const MIGRATION_0029: &str = include_str!("../migrations/0029_native_agents.sql");
 const MIGRATION_0027: &str = include_str!("../migrations/0027_security_finding_reviews.sql");
 const MIGRATION_0026: &str = include_str!("../migrations/0026_secret_history_scanning.sql");
 
@@ -104,6 +105,7 @@ impl Database {
         self.apply_migration(26, MIGRATION_0026)?;
         self.apply_migration(27, MIGRATION_0027)?;
         self.apply_migration(28, MIGRATION_0028)?;
+        self.apply_migration(29, MIGRATION_0029)?;
         Ok(())
     }
 
