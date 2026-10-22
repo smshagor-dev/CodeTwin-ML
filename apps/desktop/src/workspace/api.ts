@@ -81,6 +81,12 @@ export const workspaceApi = {
   cancelNativeAgentReview(id: string) {
     return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("cancel_native_agent_review", { id });
   },
+  nativeAgentHandoffs(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").AgentHandoff[]>("list_native_agent_handoffs", { id });
+  },
+  verifyNativeAgentRun(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").AgentVerification>("verify_native_agent_run", { id });
+  },
   nativeAgentReport(id: string) {
     return invoke<string>("native_agent_report", { id });
   },

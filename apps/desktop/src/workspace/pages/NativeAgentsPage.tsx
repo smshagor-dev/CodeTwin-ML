@@ -44,12 +44,32 @@ export type NativeAgentMemory = {
   created_at: string;
 };
 
+export type AgentHandoff = {
+  run_id: string;
+  from_position: number;
+  to_position: number;
+  from_role: string;
+  to_role: string;
+  evidence_sha256: string;
+  created_at: string;
+};
+
+export type AgentVerification = {
+  run_id: string;
+  verified: boolean;
+  checked_roles: number;
+  checked_handoffs: number;
+  issues: string[];
+};
+
 export function NativeAgentsPage() {
   const { projects, activeProjectId, setActiveProjectId } = useWorkspace();
   const [runs, setRuns] = useState<NativeAgentRun[]>([]);
   const [memory, setMemory] = useState<NativeAgentMemory[]>([]);
   const [memoryQuery, setMemoryQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
+  const [handoffs, setHandoffs] = useState<AgentHandoff[]>([]);
+  const [verification, setVerification] = useState<AgentVerification | null>(null);
   const [objective, setObjective] = useState("Review the selected project's security, code quality and reliability. Report confirmed evidence and unresolved issues.");
   const [maxFiles, setMaxFiles] = useState(500);
   const [budget, setBudget] = useState(600);
@@ -100,6 +120,21 @@ export function NativeAgentsPage() {
     let active = true;
     void workspaceApi.nativeAgentInsight(id)
       .then(value => { if (active) setInsight(value); })
+      .catch(reason => { if (active) setError(String(reason)); });
+    return () => { active = false; };
+  }, [selectedId, runs]);
+
+  useEffect(() => {
+    const id = selectedId || runs[0]?.id;
+    if (!id) { setHandoffs([]); setVerification(null); return; }
+    let active = true;
+    void Promise.all([workspaceApi.nativeAgentHandoffs(id), workspaceApi.verifyNativeAgentRun(id)])
+      .then(([edges, result]) => {
+        if (active) {
+          setHandoffs(edges);
+          setVerification(result);
+        }
+      })
       .catch(reason => { if (active) setError(String(reason)); });
     return () => { active = false; };
   }, [selectedId, runs]);
@@ -312,6 +347,26 @@ export function NativeAgentsPage() {
         </details>)}
       </div>
       {selected.message && <p className="ws-warning-box">{selected.message}</p>}
+      <section>
+        <h3>Specialist handoffs and verification</h3>
+        <p className="ws-form-help">
+          Each specialist passes only a SHA-256 evidence fingerprint and approved role identity to the next specialist.
+          The supervisor stops when a predecessor or its evidence does not validate.
+        </p>
+        {verification && <p role="status">
+          <strong>{verification.verified ? "Evidence chain verified" : "Evidence chain not yet verified"}</strong>
+          {" · "}{verification.checked_roles} specialists, {verification.checked_handoffs} verified handoffs.
+        </p>}
+        {verification?.issues.map((issue, index) =>
+          <p className="ws-warning-box" key={index}>{issue}</p>)}
+        <div className="ws-history-list">{handoffs.map(edge =>
+          <details key={edge.from_position + ":" + edge.to_position}>
+            <summary>{edge.from_role} → {edge.to_role}</summary>
+            <p className="ws-form-help">SHA-256: <code>{edge.evidence_sha256}</code></p>
+            <p className="ws-form-help">Recorded: {edge.created_at}</p>
+          </details>
+        )}</div>
+      </section>
       <div className="ws-form-stack">
         <h3>Optional model interpretation</h3>
         <p className="ws-form-help">{modelStatus?.detail ?? "Checking model configuration…"}. This does not create validated findings or control tools.</p>
