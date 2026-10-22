@@ -271,7 +271,7 @@ export function NativeAgentsPage() {
           <label className="ws-field"><span>
             <input type="checkbox" checked={planConsent} disabled={!modelStatus?.configured || Boolean(busy)}
               onChange={event => setPlanConsent(event.target.checked)}/>
-            I consent to sending this objective, aggregate index counts and up to 12 earlier role/status pairs to my configured model.
+            I consent to up to two model requests using this objective, aggregate index counts and up to 12 earlier role/status pairs (a second request is only used to correct invalid JSON).
           </span></label>
           <button className="ws-button ws-button-secondary"
             disabled={!modelStatus?.configured || !activeProjectId || !planConsent || !objective.trim() || Boolean(busy)}

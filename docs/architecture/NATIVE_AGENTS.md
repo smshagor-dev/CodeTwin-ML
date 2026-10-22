@@ -82,7 +82,9 @@ previous review IDs and timestamps.
 The user must explicitly opt in each time. The Rust adapter limits the model request duration,
 response size and output tokens, rejects redirects, and validates a strict JSON schema.
 Unknown/duplicate role identifiers, omitted mandatory `scout`/`source` roles, unexpected JSON
-fields and oversized explanations are rejected. The application always restores the audited
+fields and oversized explanations are rejected. A malformed model proposal gets at most one
+additional read-only correction attempt using the same privacy-reduced input. No speculative
+tool call is performed, and further malformed output is rejected. The application always restores the audited
 execution order instead of trusting any order proposed by the model.
 
 The UI shows the proposed specialists and explanation for review. Accepting a suggestion only
