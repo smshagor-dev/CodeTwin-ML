@@ -69,3 +69,24 @@ The Agents page provides project-scoped filtering and an explicit **Clear projec
 This erases only the derived memory rows, not the original review history. Memory storage is bounded
 to the latest 500 role outcomes per project, and retrieval is capped at 50 rows. Query escaping
 prevents LIKE wildcards from broadening user-entered search terms.
+
+## AI-assisted review planning
+
+CodeTwin can ask the configured OpenAI-compatible model to suggest **only** a subset of six
+registered passive specialist roles. The request contains the user-authored objective, indexed
+file count, indexed symbol count, language count and fixed available-role identifiers. It excludes
+local file paths, source code, credentials, project IDs, findings and prior scan outputs.
+
+The user must explicitly opt in each time. The Rust adapter limits the model request duration,
+response size and output tokens, rejects redirects, and validates a strict JSON schema.
+Unknown/duplicate role identifiers, omitted mandatory `scout`/`source` roles, unexpected JSON
+fields and oversized explanations are rejected. The application always restores the audited
+execution order instead of trusting any order proposed by the model.
+
+The UI shows the proposed specialists and explanation for review. Accepting a suggestion only
+updates the role selection. **Prepare review**, **Approve plan** and **Run approved review** remain
+distinct, manual actions. The objective or project changing invalidates the displayed suggestion.
+The model does not receive tool schemas and cannot execute commands, add privileges or widen scope.
+
+Without a configured model, the existing manual role selector and deterministic local review
+workflow continue to function without inference or network access.
