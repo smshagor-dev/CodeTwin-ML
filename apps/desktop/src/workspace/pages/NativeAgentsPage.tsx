@@ -127,6 +127,7 @@ export function NativeAgentsPage() {
     proposal: NativeTaskProposal; objective: string; projectId: string;
   } | null>(null);
   const [taskSchedule, setTaskSchedule] = useState<{ batches: string[][]; max_parallel: number } | null>(null);
+  const [acceptedTaskPlan, setAcceptedTaskPlan] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [modelStatus, setModelStatus] = useState<{ configured: boolean; detail: string } | null>(null);
@@ -322,6 +323,7 @@ export function NativeAgentsPage() {
     const requestedProjectId = activeProjectId;
     const requestedObjective = objective;
     setTaskProposal(null);
+    setAcceptedTaskPlan(false);
     try {
       const proposal = await workspaceApi.suggestNativeTaskPlan(requestedProjectId, requestedObjective, true);
       setTaskProposal({proposal, projectId: requestedProjectId, objective: requestedObjective});
@@ -334,12 +336,13 @@ export function NativeAgentsPage() {
     if (!activeProjectId) return;
     setError(""); setBusy("plan");
     try {
-      const selectedPlan = taskProposal?.objective === objective && taskProposal?.projectId === activeProjectId
+      const selectedPlan = acceptedTaskPlan && taskProposal?.objective === objective && taskProposal?.projectId === activeProjectId
         ? taskProposal.proposal : null;
       const run = selectedPlan
         ? await workspaceApi.createNativeTaskReview(activeProjectId, objective, maxFiles, budget, selectedPlan)
         : await workspaceApi.createNativeAgentReview(activeProjectId, objective, maxFiles, budget, selectedRoles);
       setTaskProposal(null);
+      setAcceptedTaskPlan(false);
       setSelectedId(run.id);
       await refresh();
     } catch (reason) {
@@ -450,7 +453,10 @@ export function NativeAgentsPage() {
             </p>)}
             <p>{taskProposal.proposal.rationale}</p>
             <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
-              onClick={() => setSelectedRoles(taskProposal.proposal.tasks.map(task => task.role))}>
+              onClick={() => {
+                setSelectedRoles(taskProposal.proposal.tasks.map(task => task.role));
+                setAcceptedTaskPlan(true);
+              }}>
               Use this reviewed task plan
             </button>
           </div>}
