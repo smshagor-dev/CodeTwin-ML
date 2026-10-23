@@ -200,6 +200,27 @@ impl<'a> NativeDelegation<'a> {
         })
     }
 
+    /// Resolve at most two dependency-ready tasks without altering their approved
+    /// execution privileges. A separate process-level runner is needed to execute
+    /// this batch concurrently; this method never starts tools.
+    pub fn ready_batch(&self, run_id: &str) -> Result<Vec<DelegatedTask>, String> {
+        let graph = self.graph(run_id)?;
+        let completed = graph.tasks.iter()
+            .filter(|task| task.status == "completed")
+            .map(|task| task.position)
+            .collect::<std::collections::BTreeSet<_>>();
+        let failed = graph.tasks.iter().any(|task|
+            task.status == "failed" || task.status == "cancelled");
+        if failed {
+            return Ok(Vec::new());
+        }
+        Ok(graph.tasks.into_iter()
+            .filter(|task| task.status == "pending"
+                && task.requires.iter().all(|dep| completed.contains(dep)))
+            .take(2)
+            .collect())
+    }
+
     /// Gate dispatch against an immutable role identity and all completed dependencies.
     pub fn start(&self, run_id: &str, position: usize, role: &str) -> Result<(), String> {
         let run = NativeAgents::new(self.db).get(run_id)?;
@@ -351,6 +372,29 @@ mod tests {
         );
         NativeAgents::new(&db).approve(&run.id).unwrap();
         assert!(service.apply_proposal(&run.id, &proposal).is_err());
+    }
+
+    #[test]
+    fn ready_batch_is_bounded_and_dependency_aware() {
+        let db = Database::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("demo.ts"), "export const ok = 1;").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(dir.path()).unwrap().project_id;
+        let roles = ["scout", "source", "secrets", "qa", "database", "runtime"]
+            .iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let run = NativeAgents::new(&db)
+            .create_with_roles(&project, "Audit code", 10, 300, &roles).unwrap();
+        let scheduler = NativeDelegation::new(&db);
+        assert_eq!(scheduler.ready_batch(&run.id).unwrap().len(), 1);
+        db.connection().execute(
+            "UPDATE native_delegation_tasks SET status='completed' WHERE run_id=?1 AND position IN (0,1)",
+            [&run.id],
+        ).unwrap();
+        let batch = scheduler.ready_batch(&run.id).unwrap();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].tool, "secrets");
+        assert_eq!(batch[1].tool, "qa");
     }
 
     #[test]
