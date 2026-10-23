@@ -1230,6 +1230,122 @@ mod tests {
     }
 
     #[test]
+    fn completed_review_requires_all_receipts_to_match_exact_specialist_evidence() {
+        for mutation in ["none", "digest", "result", "missing", "status"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let path = fixture.path().join("receipt-integrity.sqlite3");
+            let project_root = fixture.path().join("project");
+            std::fs::create_dir_all(&project_root).unwrap();
+            std::fs::write(project_root.join("safe.ts"), "export const safe = true;").unwrap();
+            let review_id = {
+                let db = Database::open(&path).unwrap();
+                let project = crate::ProjectIndexService::new(&db)
+                    .index_project(&project_root)
+                    .unwrap()
+                    .project_id;
+                let reviews = NativeAgents::new(&db);
+                let run = reviews
+                    .create_with_roles(
+                        &project,
+                        "Verify durable specialist receipts",
+                        10,
+                        120,
+                        &["scout".into(), "source".into()],
+                    )
+                    .unwrap();
+                reviews.approve(&run.id).unwrap();
+                db.connection()
+                    .execute(
+                        "UPDATE native_agent_runs SET status='running' WHERE id=?1",
+                        [&run.id],
+                    )
+                    .unwrap();
+                let receipts = crate::native_action_log::NativeActionLog::new(&db);
+                for step in &run.steps {
+                    receipts
+                        .begin_supervised(&run.id, step.position, &step.role, &step.tool)
+                        .unwrap();
+                    receipts
+                        .finish_supervised(
+                            &run.id,
+                            step.position,
+                            &step.tool,
+                            true,
+                            &format!("trusted-evidence-{}", step.position),
+                        )
+                        .unwrap();
+                    if step.position == 0 {
+                        crate::native_agent_handoffs::AgentHandoffs::new(&db)
+                            .record(&run.id, step.position)
+                            .unwrap();
+                    }
+                }
+                match mutation {
+                    "digest" => {
+                        db.connection()
+                            .execute(
+                                "UPDATE native_action_log SET result_sha256='incorrect'
+                                 WHERE run_id=?1 AND position=1",
+                                [&run.id],
+                            )
+                            .unwrap();
+                    }
+                    "result" => {
+                        db.connection()
+                            .execute(
+                                "UPDATE native_agent_steps SET result_json='altered evidence'
+                                 WHERE run_id=?1 AND position=1",
+                                [&run.id],
+                            )
+                            .unwrap();
+                    }
+                    "missing" => {
+                        db.connection()
+                            .execute(
+                                "DELETE FROM native_action_log
+                                 WHERE run_id=?1 AND position=1",
+                                [&run.id],
+                            )
+                            .unwrap();
+                    }
+                    "status" => {
+                        db.connection()
+                            .execute(
+                                "UPDATE native_action_log SET status='failed'
+                                 WHERE run_id=?1 AND position=1",
+                                [&run.id],
+                            )
+                            .unwrap();
+                    }
+                    "none" => {}
+                    _ => unreachable!(),
+                }
+                reviews.finalize_review(&run.id, None).unwrap();
+                let saved = reviews.get(&run.id).unwrap();
+                if mutation == "none" {
+                    assert_eq!(saved.status, "completed");
+                    receipts.verify_completed(&run.id).unwrap();
+                } else {
+                    assert_eq!(saved.status, "failed", "mutation={mutation}");
+                    assert!(saved
+                        .message
+                        .as_ref()
+                        .is_some_and(|reason| !reason.is_empty()));
+                    assert!(receipts.verify_completed(&run.id).is_err());
+                }
+                assert!(reviews.execute(&run.id).is_err());
+                run.id
+            };
+            let db = Database::open(&path).unwrap();
+            let persisted = NativeAgents::new(&db).get(&review_id).unwrap();
+            assert_eq!(
+                persisted.status,
+                if mutation == "none" { "completed" } else { "failed" }
+            );
+        }
+    }
+
+    #[test]
     fn finalization_honors_cross_connection_cancel_and_closes_receipts() {
         let scratch = tempfile::tempdir().unwrap();
         let path = scratch.path().join("cancel-before-finalize.sqlite3");
