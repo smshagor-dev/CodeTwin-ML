@@ -76,7 +76,21 @@ impl<'a> AgentHandoffs<'a> {
         let next = run.steps.iter().find(|s| s.position > from.position);
         let Some(to) = next else { return Ok(false) };
         if to.status != "pending" {
-            return Err("Destination specialist is not pending".into());
+            // A second, independently dependency-ready specialist may have
+            // started in the same approved batch. Signing its handoff remains
+            // ordered: only an already completed predecessor can authorize it.
+            if to.status != "running" {
+                return Err("Destination specialist is not pending".into());
+            }
+            let graph = crate::native_agent_delegation::NativeDelegation::new(self.db)
+                .graph(run_id)?;
+            let approved = graph.tasks.iter().find(|task| task.position == to.position)
+                .ok_or("Parallel destination is not in the delegated review")?;
+            if approved.role != to.role || approved.tool != to.tool
+                || approved.requires.contains(&from.position)
+            {
+                return Err("Running destination is not an independent specialist".into());
+            }
         }
         let result = from.result.as_deref().ok_or("Missing source evidence")?;
         let evidence_sha256 = format!("{:x}", Sha256::digest(result.as_bytes()));
