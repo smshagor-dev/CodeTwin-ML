@@ -107,6 +107,36 @@ pub async fn run_native_isolated_scan(
 }
 
 #[tauri::command]
+pub fn worker_cleanup_hold_count(app: tauri::AppHandle) -> Result<usize, String> {
+    WorkerAudit::new(&db(&app)?).cleanup_hold_count()
+}
+
+/// An explicit verification action lists containers in the configured Docker
+/// daemon. Never release a SQLite hold based solely on a UI confirmation.
+#[tauri::command]
+pub async fn verify_worker_cleanup(
+    confirmed: bool,
+    app: tauri::AppHandle,
+) -> Result<usize, String> {
+    if !confirmed {
+        return Err("Explicit Docker cleanup verification is required".into());
+    }
+    if WORKER_BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("Cannot verify cleanup during an active isolated scan".into());
+    }
+    let lease = WorkerLease;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lease = lease;
+        WorkerAudit::new(&db(&app)?).verify_and_release_cleanup_hold()
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub fn native_task_schedule(
     id: String,
     app: tauri::AppHandle,
