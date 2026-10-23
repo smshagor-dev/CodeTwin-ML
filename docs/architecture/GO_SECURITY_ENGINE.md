@@ -84,7 +84,9 @@ no model-generated proposal grants review approval.
 
 The Agents queue updates every 3.5 seconds while the page is mounted and
 displays a native progress indicator with **completed / total specialists** and
-the currently running role. Rust derives all these fields by reading the
+every currently running role (up to two concurrent specialists), ordered by
+its approved position. The legacy first-active-role field remains available
+for compatibility. Rust derives all these fields by reading the
 existing `native_agent_steps` table and the parent `native_agent_runs` status;
 no percentages are guessed, no additional migrations or background services
 are needed, and completed count is not confused with attempted count. Terminal
