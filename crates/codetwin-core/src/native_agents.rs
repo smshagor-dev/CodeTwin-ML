@@ -232,16 +232,42 @@ impl<'a> NativeAgents<'a> {
                 |r| r.get(0),
             )
             .map_err(to_error)?;
-        let changed = self.db.connection().execute(
-            "UPDATE native_agent_runs SET cancel_requested=1,
+        let tx = self
+            .db
+            .connection()
+            .unchecked_transaction()
+            .map_err(to_error)?;
+        let changed = tx
+            .execute(
+                "UPDATE native_agent_runs SET cancel_requested=1,
              status=CASE WHEN status IN ('planned','approved') THEN 'cancelled' ELSE status END,
              finished_at=CASE WHEN status IN ('planned','approved') THEN CURRENT_TIMESTAMP ELSE finished_at END
              WHERE id=?1 AND status IN ('planned','approved','running')",
-            [id],
-        ).map_err(to_error)?;
+                [id],
+            )
+            .map_err(to_error)?;
         if changed != 1 {
             return Err("Review is already finished or missing".into());
         }
+        // For not-yet-running reviews, no specialist may remain queued after
+        // cancellation. A running review is finalized by its own supervisor.
+        tx.execute(
+            "UPDATE native_agent_steps SET status='cancelled',
+             finished_at=CURRENT_TIMESTAMP WHERE run_id=?1 AND status='pending'
+             AND EXISTS (SELECT 1 FROM native_agent_runs
+                         WHERE id=?1 AND status='cancelled')",
+            [id],
+        )
+        .map_err(to_error)?;
+        tx.execute(
+            "UPDATE native_delegation_tasks SET status='cancelled'
+             WHERE run_id=?1 AND status='pending'
+             AND EXISTS (SELECT 1 FROM native_agent_runs
+                         WHERE id=?1 AND status='cancelled')",
+            [id],
+        )
+        .map_err(to_error)?;
+        tx.commit().map_err(to_error)?;
         // A running assessment reads its own cancellation flag at analyzer boundaries.
         let _ = AssessmentJobs::new(self.db).cancel(&assessment_id);
         self.get(id)
@@ -323,19 +349,40 @@ impl<'a> NativeAgents<'a> {
         } else {
             "completed"
         };
-        self.db
+        // Parent, unfinished native steps and unstarted delegated tasks
+        // must commit together, including on a denied Go scheduling decision.
+        let tx = self
+            .db
             .connection()
+            .unchecked_transaction()
+            .map_err(to_error)?;
+        let finished = tx
             .execute(
                 "UPDATE native_agent_runs SET status=?2,message=?3,finished_at=CURRENT_TIMESTAMP
              WHERE id=?1 AND status='running'",
                 params![id, status, message],
             )
             .map_err(to_error)?;
-        self.db.connection().execute(
-            "UPDATE native_agent_steps SET status=CASE WHEN ?2='cancelled' THEN 'cancelled' ELSE 'skipped' END
+        if finished != 1 {
+            return Err("Review state changed during finalization".into());
+        }
+        tx.execute(
+            "UPDATE native_agent_steps
+             SET status=CASE WHEN ?2='cancelled' THEN 'cancelled' ELSE 'skipped' END,
+                 finished_at=CURRENT_TIMESTAMP
              WHERE run_id=?1 AND status IN ('pending','running')",
-            params![id,status],
-        ).map_err(to_error)?;
+            params![id, status],
+        )
+        .map_err(to_error)?;
+        if status != "completed" {
+            tx.execute(
+                "UPDATE native_delegation_tasks SET status='cancelled'
+                 WHERE run_id=?1 AND status IN ('pending','running')",
+                [id],
+            )
+            .map_err(to_error)?;
+        }
+        tx.commit().map_err(to_error)?;
         // A completed run is only accepted after checking the whole handoff chain.
         if status == "completed" {
             let verdict = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
@@ -377,6 +424,9 @@ impl<'a> NativeAgents<'a> {
             self.boundary(&run.id, start, run.budget_seconds)?;
             if let Some(policy) = dispatch {
                 policy(self.db, run, step)?;
+                // Cancellation may arrive while the external policy evaluates.
+                // Revalidate before entering the native tool.
+                self.boundary(&run.id, start, run.budget_seconds)?;
             }
             // Read and verify the exact predecessor evidence before dispatch.
             crate::native_agent_handoffs::AgentHandoffs::new(self.db)
@@ -829,9 +879,79 @@ mod tests {
         let finished = agents.execute_with_dispatch(&run.id, &deny).unwrap();
         assert_eq!(finished.status, "failed");
         assert_eq!(called.get(), 1);
-        assert!(finished.steps.iter().all(|step| step.status != "completed"));
+        assert!(finished.steps.iter().all(|step| step.status == "skipped"));
+        let graph = crate::native_agent_delegation::NativeDelegation::new(&db)
+            .graph(&run.id)
+            .unwrap();
+        assert!(graph.tasks.iter().all(|task| task.status == "cancelled"));
         assert!(agents.execute_with_dispatch(&run.id, &deny).is_err());
         assert_eq!(called.get(), 1);
+    }
+
+    #[test]
+    fn planned_cancellation_closes_queued_sqlite_specialists() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.rs"), "pub fn safe() {}").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let reviews = NativeAgents::new(&db);
+        let run = reviews
+            .create_with_roles(
+                &project,
+                "Review scope",
+                10,
+                120,
+                &["scout".into(), "source".into()],
+            )
+            .unwrap();
+        let cancelled = reviews.cancel(&run.id).unwrap();
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(cancelled
+            .steps
+            .iter()
+            .all(|step| step.status == "cancelled"));
+        let graph = crate::native_agent_delegation::NativeDelegation::new(&db)
+            .graph(&run.id)
+            .unwrap();
+        assert!(graph.tasks.iter().all(|task| task.status == "cancelled"));
+        assert!(reviews.execute(&run.id).is_err());
+        assert!(reviews.cancel(&run.id).is_err());
+    }
+
+    #[test]
+    fn cancelling_during_go_policy_cannot_enter_native_tool() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.rs"), "pub fn safe() {}").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let reviews = NativeAgents::new(&db);
+        let run = reviews
+            .create_with_roles(
+                &project,
+                "Review approved source",
+                10,
+                120,
+                &["scout".into(), "source".into()],
+            )
+            .unwrap();
+        reviews.approve(&run.id).unwrap();
+        let policy = |database: &Database, run: &AgentRun, _step: &AgentStep| {
+            NativeAgents::new(database).cancel(&run.id)?;
+            Ok(())
+        };
+        let result = reviews.execute_with_dispatch(&run.id, &policy).unwrap();
+        assert_eq!(result.status, "cancelled");
+        assert!(result.steps.iter().all(|step| step.status == "cancelled"));
+        let graph = crate::native_agent_delegation::NativeDelegation::new(&db)
+            .graph(&run.id)
+            .unwrap();
+        assert!(graph.tasks.iter().all(|task| task.status == "cancelled"));
     }
 
     #[test]
