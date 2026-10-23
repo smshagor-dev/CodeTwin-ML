@@ -1,7 +1,7 @@
 //! Strictly authorized, single-target TCP service inventory with optional HTTPS trust checks.
 //! Deliberately excludes CIDR scanning, packet crafting, credential attacks and shell commands.
 use crate::Database;
-use reqwest::{blocking::Client, redirect::Policy, Url};
+use reqwest::{blocking::Client, header::HeaderMap, redirect::Policy, Url};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -23,12 +23,23 @@ pub struct NetworkAssessmentRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpsHeaderPosture {
+    pub http_status: u16,
+    pub hsts_state: String,
+    pub hsts_max_age_seconds: Option<u64>,
+    pub csp_observed: bool,
+    pub nosniff_observed: bool,
+    pub referrer_policy_observed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkProbe {
     pub port: u16,
     pub address: String,
     pub status: String,
     pub elapsed_ms: u64,
     pub tls_status: Option<String>,
+    pub https_posture: Option<HttpsHeaderPosture>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,18 +155,25 @@ impl<'a> NetworkAssessment<'a> {
             .db
             .connection()
             .prepare(
-                "SELECT port,address,status,elapsed_ms,tls_status FROM network_assessment_probes
+                "SELECT port,address,status,elapsed_ms,tls_status,https_posture_json FROM network_assessment_probes
              WHERE run_id=?1 ORDER BY port",
             )
             .map_err(err)?;
         run.probes = statement
             .query_map([id], |row| {
+                let raw_posture: Option<String> = row.get(5)?;
+                let https_posture = raw_posture
+                    .map(|value| {
+                        serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)
+                    })
+                    .transpose()?;
                 Ok(NetworkProbe {
                     port: row.get(0)?,
                     address: row.get(1)?,
                     status: row.get(2)?,
                     elapsed_ms: row.get(3)?,
                     tls_status: row.get(4)?,
+                    https_posture,
                 })
             })
             .map_err(err)?
@@ -270,62 +288,152 @@ impl<'a> NetworkAssessment<'a> {
                 return Err("Assessment time budget expired".into());
             }
             let connection = TcpStream::connect_timeout(&socket, timeout);
-            let (state, tls_status) = match connection {
+            let (state, tls_status, posture) = match connection {
                 Ok(stream) => {
                     drop(stream);
-                    let tls = if matches!(port, 443 | 8443) {
-                        Some(
-                            if tls_trust_check(
-                                &run.target,
-                                socket,
-                                remaining.min(Duration::from_secs(2)),
-                            ) {
-                                "verified"
-                            } else {
-                                "not_verified"
-                            }
-                            .to_string(),
-                        )
+                    if matches!(port, 443 | 8443) {
+                        // Time spent on the TCP connect counts toward the total budget.
+                        let tls_remaining = Duration::from_secs(budget_seconds as u64)
+                            .saturating_sub(deadline.elapsed())
+                            .min(Duration::from_secs(2));
+                        let observed = if tls_remaining.is_zero() {
+                            None
+                        } else {
+                            https_header_probe(&run.target, socket, tls_remaining)
+                        };
+                        let trust = if observed.is_some() {
+                            "verified"
+                        } else {
+                            "not_verified"
+                        };
+                        ("open", Some(trust.to_string()), observed)
                     } else {
-                        None
-                    };
-                    ("open", tls)
+                        ("open", None, None)
+                    }
                 }
-                Err(error) => (classify_error(&error), None),
+                Err(error) => (classify_error(&error), None, None),
             };
-            self.db.connection().execute(
-                "INSERT INTO network_assessment_probes(run_id,port,address,status,elapsed_ms,tls_status)
-                 VALUES(?1,?2,?3,?4,?5,?6)",
-                params![id,port,address.to_string(),state,started.elapsed().as_millis() as i64,tls_status],
-            ).map_err(err)?;
+            let posture_json = posture
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(err)?;
+            self.db
+                .connection()
+                .execute(
+                    "INSERT INTO network_assessment_probes
+                 (run_id,port,address,status,elapsed_ms,tls_status,https_posture_json)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    params![
+                        id,
+                        port,
+                        address.to_string(),
+                        state,
+                        started.elapsed().as_millis() as i64,
+                        tls_status,
+                        posture_json,
+                    ],
+                )
+                .map_err(err)?;
         }
         Ok(())
     }
 }
 
-/// HTTPS peer trust only; this deliberately does not audit cipher strength.
-fn tls_trust_check(target: &str, address: SocketAddr, timeout: Duration) -> bool {
-    let port = address.port();
+/// The approved hostname remains the TLS peer identity, and the TCP endpoint
+/// is pinned to the previously reviewed and revalidated DNS result.
+/// Headers are only observed after a successful platform-trusted HTTPS request.
+/// HEAD is bounded, has no request body and never follows redirects.
+fn https_header_probe(
+    target: &str,
+    address: SocketAddr,
+    timeout: Duration,
+) -> Option<HttpsHeaderPosture> {
+    if timeout.is_zero() {
+        return None;
+    }
     let authority = if target.contains(':') {
         format!("[{target}]")
     } else {
         target.to_owned()
     };
-    let url = match Url::parse(&format!("https://{authority}:{port}/")) {
-        Ok(url) => url,
-        Err(_) => return false,
-    };
-    let client = match Client::builder()
+    let url = Url::parse(&format!("https://{authority}:{}/", address.port())).ok()?;
+    let client = Client::builder()
         .timeout(timeout)
         .redirect(Policy::none())
         .no_proxy()
         .resolve(target, address)
         .build()
-    {
-        Ok(client) => client,
-        Err(_) => return false,
+        .ok()?;
+    let response = client.head(url).send().ok()?;
+    Some(classify_https_headers(
+        target,
+        response.status().as_u16(),
+        response.headers(),
+    ))
+}
+
+/// Absence from a HEAD response means "not observed", not a confirmed
+/// vulnerability: an application may emit different headers on other routes.
+fn classify_https_headers(
+    target: &str,
+    http_status: u16,
+    headers: &HeaderMap,
+) -> HttpsHeaderPosture {
+    let (hsts_state, hsts_max_age_seconds) = classify_hsts(target, headers);
+    HttpsHeaderPosture {
+        http_status,
+        hsts_state,
+        hsts_max_age_seconds,
+        csp_observed: headers.contains_key("content-security-policy"),
+        nosniff_observed: headers
+            .get("x-content-type-options")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("nosniff")),
+        referrer_policy_observed: headers.contains_key("referrer-policy"),
+    }
+}
+
+fn classify_hsts(target: &str, headers: &HeaderMap) -> (String, Option<u64>) {
+    if target.parse::<IpAddr>().is_ok() {
+        return ("not_applicable_ip".into(), None);
+    }
+    let values: Vec<_> = headers
+        .get_all("strict-transport-security")
+        .iter()
+        .collect();
+    if values.is_empty() {
+        return ("not_observed".into(), None);
+    }
+    if values.len() != 1 {
+        return ("invalid".into(), None);
+    }
+    let Ok(raw) = values[0].to_str() else {
+        return ("invalid".into(), None);
     };
-    client.head(url).send().is_ok()
+    let ages: Vec<_> = raw
+        .split(';')
+        .filter_map(|part| {
+            let (name, value) = part.trim().split_once('=')?;
+            name.trim()
+                .eq_ignore_ascii_case("max-age")
+                .then_some(value.trim().trim_matches('"'))
+        })
+        .collect();
+    if ages.len() != 1 || ages[0].is_empty() || !ages[0].bytes().all(|byte| byte.is_ascii_digit()) {
+        return ("invalid".into(), None);
+    }
+    let Ok(seconds) = ages[0].parse::<u64>() else {
+        return ("invalid".into(), None);
+    };
+    let state = if seconds == 0 {
+        "disabled"
+    } else if seconds < 31_536_000 {
+        "short_duration"
+    } else {
+        "long_duration"
+    };
+    (state.into(), Some(seconds))
 }
 
 fn validate_ports(ports: &[u16]) -> Result<Vec<u16>, String> {
@@ -453,6 +561,71 @@ fn err(e: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+    #[test]
+    fn https_header_observations_are_privacy_reduced_and_explicit() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "strict-transport-security",
+            "max-age=31536000; includeSubDomains".parse().unwrap(),
+        );
+        headers.insert(
+            "content-security-policy",
+            "default-src 'self'".parse().unwrap(),
+        );
+        headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+        let observed = classify_https_headers("example.test", 200, &headers);
+        assert_eq!(observed.hsts_state, "long_duration");
+        assert_eq!(observed.hsts_max_age_seconds, Some(31_536_000));
+        assert!(observed.csp_observed);
+        assert!(observed.nosniff_observed);
+        assert!(!observed.referrer_policy_observed);
+
+        let on_ip = classify_https_headers("127.0.0.1", 200, &headers);
+        assert_eq!(on_ip.hsts_state, "not_applicable_ip");
+        headers.insert("strict-transport-security", "max-age=0".parse().unwrap());
+        let disabled = classify_https_headers("example.test", 204, &headers);
+        assert_eq!(disabled.hsts_state, "disabled");
+        headers.insert(
+            "strict-transport-security",
+            "max-age=invalid".parse().unwrap(),
+        );
+        assert_eq!(
+            classify_https_headers("example.test", 200, &headers).hsts_state,
+            "invalid"
+        );
+        headers.remove("strict-transport-security");
+        assert_eq!(
+            classify_https_headers("example.test", 302, &headers).hsts_state,
+            "not_observed"
+        );
+    }
+
+    #[test]
+    fn migrated_evidence_round_trips_without_https_headers() {
+        let db = Database::open_in_memory().unwrap();
+        let service = NetworkAssessment::new(&db);
+        let run = service
+            .prepare(NetworkAssessmentRequest {
+                target: "127.0.0.1".into(),
+                ports: vec![8443],
+                authorization_confirmed: true,
+                allow_private_networks: true,
+                budget_seconds: 5,
+            })
+            .unwrap();
+        assert_eq!(service.get(&run.id).unwrap().probes.len(), 0);
+        let cols: i64 = db
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('network_assessment_probes') \
+             WHERE name='https_posture_json'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cols, 1);
+    }
+
     #[test]
     fn rejects_out_of_scope_and_unsafe_targets() {
         assert!(validate_target("127.0.0.1/24").is_err());
