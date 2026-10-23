@@ -1385,11 +1385,7 @@ mod tests {
                 })
                 .collect();
             let error = agents
-                .finish_verified_batch(
-                    &review,
-                    &[&review.steps[2], &review.steps[3]],
-                    outcomes,
-                )
+                .finish_verified_batch(&review, &[&review.steps[2], &review.steps[3]], outcomes)
                 .unwrap_err();
             assert_eq!(error, "Injected isolated specialist failure");
             let current = agents.get(&review.id).unwrap();
