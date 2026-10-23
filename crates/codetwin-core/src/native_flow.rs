@@ -7,7 +7,7 @@ use crate::{
     native_agents::NativeAgents,
     Database,
 };
-use rusqlite::{params, OptionalExtension};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
