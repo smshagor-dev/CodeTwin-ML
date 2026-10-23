@@ -65,7 +65,10 @@ approve/run the existing Rust review.
   alters the approved DAG. Rust persists each state transition and verifies all
   handoffs. The Go-gated path disables speculative parallel prefetch so no
   specialist runs before its own scheduling decision. This is not arbitrary
-  PentAGI tool execution.
+  PentAGI tool execution. Rust persists each Go-gated allowed/denied
+  decision in `go_dispatch_audit` (SQLite), including run, role, bounded ready
+  roles, reason and time. The Agents page can display that audit. No source
+  bytes, credentials or scanner output are saved in decision records.
 - Go chooses registered passive specialists; Rust checks the indexed project,
   hashes, user approval, budgets, dependencies, cancellation and audit state.
 - An unconfigured or unavailable binary is reported explicitly, not silently
