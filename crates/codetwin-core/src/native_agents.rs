@@ -1417,6 +1417,21 @@ mod tests {
             let one = reviews.audit_completed_history(&project, 1).unwrap();
             assert_eq!(one.checked, 1);
             assert_eq!(one.total_completed, 2);
+            let cursor = one.next_before_rowid.expect("An older review exists");
+            assert!(cursor > 0);
+            let older = reviews
+                .audit_completed_history_page(&project, 1, Some(cursor))
+                .unwrap();
+            assert_eq!(older.total_completed, 2);
+            assert_eq!(older.checked, 1);
+            assert_eq!(older.verified, 1);
+            assert_eq!(older.next_before_rowid, None);
+            assert!(reviews
+                .audit_completed_history_page(&project, 1, Some(0))
+                .is_err());
+            assert!(reviews
+                .audit_completed_history_page(&project, 1, Some(-1))
+                .is_err());
             assert!(reviews
                 .audit_completed_history(&other, 200)
                 .unwrap()
