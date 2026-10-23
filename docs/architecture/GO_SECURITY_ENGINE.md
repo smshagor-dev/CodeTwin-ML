@@ -89,9 +89,13 @@ approve/run the existing Rust review.
 - The same existing SQLite `native_agent_*` tables store approved reviews;
   no alternate database is created.
 - Each approved passive specialist dispatch creates a `native_action_log`
-  receipt in SQLite. Rust atomically claims the pending step and records the
-  running receipt before tool execution; finishing commits the step result and
-  a SHA-256-only receipt together. The action log stores role, timestamps,
+  receipt in SQLite. Rust atomically claims the pending step and records its
+  running receipt before ordinary sequential execution. For optional analyzers
+  speculatively prefetched by the existing Rust parallel executor, the receipt
+  instead tracks the supervisor's ordered **acceptance/commit** boundary, not
+  the worker's earlier start time; the concurrent worker produces no durable
+  handoff until Rust verifies and commits it. Finishing commits the step result
+  and a SHA-256-only receipt together. The action log stores role, timestamps,
   terminal status and result digest, not raw source or scan output. Crash
   recovery marks any unfinished action as `interrupted` without replay, and
   desktop Agents can display the receipts. Go never writes this table.
