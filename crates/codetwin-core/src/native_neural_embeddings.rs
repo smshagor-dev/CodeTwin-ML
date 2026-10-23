@@ -12,6 +12,14 @@ const MAX_DIM: usize = 3072;
 const MAX_RESPONSE_BYTES: u64 = 512_000;
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct NeuralProbe {
+    pub model: String,
+    pub dimensions: usize,
+    pub latency_ms: u64,
+    pub normalized: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NeuralReadiness {
     pub configured: bool,
     pub detail: String,
@@ -192,6 +200,22 @@ impl<'a> NeuralMemory<'a> {
             },
         }
     }
+    /// Live provider handshake using only fixed, non-sensitive test text.
+    /// A configured provider is not considered verified until this succeeds.
+    pub fn probe() -> Result<NeuralProbe, String> {
+        let config = EmbedConfig::load()?;
+        let started = std::time::Instant::now();
+        let vectors = config.embed(&["CodeTwin sample reviewer completed".to_owned()])?;
+        let vector = vectors.first().ok_or("Provider returned no embedding")?;
+        let magnitude = vector.iter().map(|v| v * v).sum::<f32>();
+        Ok(NeuralProbe {
+            model: config.model,
+            dimensions: vector.len(),
+            latency_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            normalized: (magnitude - 1.0).abs() < 0.001,
+        })
+    }
+
     /// Only short role/tool/status descriptions from a terminal review are sent to the model.
     pub fn index_run(&self, run_id: &str, consent: bool) -> Result<usize, String> {
         if !consent {
@@ -324,6 +348,58 @@ fn err(e: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn real_http_embedding_protocol_with_local_fixture() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            let header_end = loop {
+                let mut buffer = [0; 2048];
+                let received = socket.read(&mut buffer).unwrap();
+                assert!(received > 0 && request.len() < 16_384);
+                request.extend_from_slice(&buffer[..received]);
+                if let Some(end) = request.windows(4).position(|chunk| chunk == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            assert!(headers.starts_with("POST /v1/embeddings HTTP/1.1"));
+            let length: usize = headers.lines()
+                .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length: ")
+                    .and_then(|value| value.trim().parse::<usize>().ok()))
+                .expect("content length");
+            while request.len() - header_end < length {
+                let mut buffer = [0; 2048];
+                let count = socket.read(&mut buffer).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let body: Value = serde_json::from_slice(&request[header_end..header_end + length]).unwrap();
+            assert_eq!(body["model"], "test-neural-model");
+            assert_eq!(body["input"][0], "CodeTwin sample reviewer completed");
+            let response = json!({"data":[{"index":0,"embedding":(0..32)
+                .map(|i| if i == 0 { 2.0 } else { 0.0 }).collect::<Vec<f32>>()}]})
+                .to_string();
+            write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",response.len(),response).unwrap();
+        });
+        let config = EmbedConfig {
+            endpoint: Url::parse(&format!("http://{addr}/v1/embeddings")).unwrap(),
+            model: "test-neural-model".into(),token: None,
+        };
+        let result = config.embed(&["CodeTwin sample reviewer completed".to_string()]).unwrap();
+        server.join().unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].len(), 32);
+        assert!((result[0][0] - 1.0).abs() < 0.00001);
+    }
+
     #[test]
     fn rejects_malformed_nonfinite_wrong_size_and_duplicate_neural_vectors() {
         assert!(
