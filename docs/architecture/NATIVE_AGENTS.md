@@ -406,3 +406,21 @@ Docker daemon or Trivy correctness. The separate, explicitly authorized
 `native_real_sandbox` test remains the physical isolation and vulnerability
 database integration gate. Do not describe a green regular CI run as a
 successful real Docker/Trivy verification.
+
+## Real Docker launch contract evidence
+
+The opt-in `offline-sandbox-smoke.yml` workflow requires an operator-approved
+digest-pinned image and downloads a Trivy database outside the scan container.
+It now starts the actual Rust integration test through a narrowly scoped local
+Docker CLI wrapper. The wrapper fails closed if the real invocation lacks
+`--network none`, read-only root, dropped capabilities, no-new-privileges,
+pull-never, bounded process/memory/CPU options, non-root UID, three scoped
+mounts or auto-removal. The workflow also proves that an intentionally
+under-protected invocation is rejected **before Docker starts**, checks
+that the privacy-reduced report digest/counts match the durable SQLite audit
+and uploads only the static pass marker for those runtime arguments.
+
+Unlike ordinary Rust argument tests, this verifies the actual CLI contract
+used by the opt-in integration run. It still does not independently attest
+the Docker daemon's kernel-level enforcement, and no physical isolation
+result is claimed before the manually triggered workflow succeeds.
