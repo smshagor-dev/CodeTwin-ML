@@ -150,8 +150,19 @@ unless both environment settings are supplied:
 
 - `CODETWIN_DOCKER_PATH`: absolute path to a trusted Docker CLI executable.
 - `CODETWIN_TRIVY_IMAGE`: existing local image reference pinned as
-  `repository@sha256:<64 hex digits>`. Prepare it and its vulnerability database
-  independently. No image download is performed.
+  `repository@sha256:<64 hex digits>`. It is never pulled during a scan.
+- `CODETWIN_TRIVY_DB_DIR`: absolute path to an already-downloaded Trivy
+  vulnerability database directory containing `trivy.db` and `metadata.json`.
+  Download the DB explicitly beforehand, outside the worker (the optional
+  GitHub Actions sandbox workflow does this setup separately).
+
+CodeTwin mounts the vulnerability database **read-only** at
+`/tmp/trivy/db` under the container's writable in-memory `/tmp` filesystem,
+while the scanner uses `--cache-dir /tmp/trivy`, `--skip-db-update`,
+`--skip-java-db-update`, `--skip-check-update`, and `--offline-scan`.
+Only the vulnerability scanner is enabled in this offline worker; secrets
+and misconfiguration checks are separate CodeTwin analyzers. The host
+project directory remains read-only.
 
 The container runs without network access, Docker socket mounts, writable project
 access, elevated capabilities or shell command delegation. Arguments, mount points,
@@ -278,3 +289,50 @@ This live test is opt-in; without that environment variable it skips.
 separate consent-gated actions, and the ready-state check only verifies
 configuration, not live model availability. No live provider response is
 claimed until the probe or opt-in test actually succeeds.
+
+## Local pretrained neural embedding server (no remote API key)
+
+CodeTwin now includes an optional OpenAI-compatible HTTP embeddings server
+implemented in \`services/ml/codetwin_ml/embedding_api.py\`. It uses
+\`sentence-transformers\` to infer **actual pretrained neural vectors** from
+a model directory already downloaded on the user's computer. No pretrained
+weights ship with the app. The server refuses remote downloads and custom
+model code (\`local_files_only=True\`, \`trust_remote_code=False\`), listens
+on \`127.0.0.1\` only, and uses bounded requests.
+
+Install the optional dependencies into your Python virtual environment:
+
+\`\`\`bash
+python -m pip install -r services/ml/requirements-embeddings.txt
+\`\`\`
+
+Start CodeTwin's provider with a trusted, already-downloaded local
+SentenceTransformer model directory:
+
+\`\`\`bash
+PYTHONPATH=services/ml python -m codetwin_ml.embedding_api \
+  --model-dir /path/to/local/sentence-transformer --port 8765
+\`\`\`
+
+Windows PowerShell:
+
+\`\`\`powershell
+$env:PYTHONPATH = "services/ml"
+python -m codetwin_ml.embedding_api --model-dir "D:\models\my-sentence-transformer" --port 8765
+\`\`\`
+
+Point the desktop at this self-hosted model:
+
+\`\`\`text
+CODETWIN_EMBEDDING_ENDPOINT=http://127.0.0.1:8765/v1/embeddings
+CODETWIN_EMBEDDING_MODEL=codetwin-local-embedding
+\`\`\`
+
+Use the Agents page's **Test embedding connection** action, then explicitly
+consent to indexing/querying the provenance-only memory. A no-dependency
+HTTP contract fixture (\`test_local_embedding_api.py\`) runs in the normal
+Python CI; actual pretrained weights and an accelerated runtime remain
+optional and must be supplied by the operator. The server accepts only
+bounded batches of role/tool/status-style short text; avoid exposing the
+loopback port publicly. External HTTPS embedding providers continue to work
+through the same client API.
