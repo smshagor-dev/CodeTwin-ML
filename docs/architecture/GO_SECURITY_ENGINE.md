@@ -120,7 +120,9 @@ failed or digest-mismatched receipts downgrade the parent to `failed` inside
 the same finalization transaction; an unverified completed status is never
 visible to another SQLite connection. File-backed regression tests cover
 unchanged evidence, modified result bytes, modified digests, removed receipts
-and mismatched statuses. These digests provide SQLite evidence consistency,
+and mismatched statuses. The desktop review verification and exported review
+report re-run the same consistency audit on previously completed reviews,
+including mismatches introduced after their original successful finalization. These digests provide SQLite evidence consistency,
 **not** a cryptographic signature against an attacker who can rewrite the
 database and its fingerprints together.
 
