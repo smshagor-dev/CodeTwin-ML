@@ -368,8 +368,13 @@ mod tests {
         assert_eq!(queue.get(&id).unwrap().unwrap().status, "queued");
 
         queue.claim_next().unwrap().unwrap();
-        assert_eq!(NativeAgents::new(&db).execute(&id).unwrap().status, "completed");
-        queue.finish(&id, "completed", "Reviewed evidence committed").unwrap();
+        assert_eq!(
+            NativeAgents::new(&db).execute(&id).unwrap().status,
+            "completed"
+        );
+        queue
+            .finish(&id, "completed", "Reviewed evidence committed")
+            .unwrap();
     }
 
     #[test]
