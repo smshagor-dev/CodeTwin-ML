@@ -11,9 +11,9 @@ import (
 )
 
 type refineRequest struct {
-	ProtocolVersion int         `json:"protocol_version"`
-	Current         proposal    `json:"current"`
-	Operations      []refineOp  `json:"operations"`
+	ProtocolVersion int        `json:"protocol_version"`
+	Current         proposal   `json:"current"`
+	Operations      []refineOp `json:"operations"`
 }
 type refineOp struct {
 	Op        string `json:"op"`
@@ -21,6 +21,7 @@ type refineOp struct {
 	Objective string `json:"objective,omitempty"`
 	AfterRole string `json:"after_role,omitempty"`
 }
+
 var auditedRoles = []string{"scout", "source", "secrets", "qa", "database", "runtime"}
 
 func roleID(role string) int64 {
@@ -127,7 +128,7 @@ func refinePlan(req refineRequest) (proposal, error) {
 		return proposal{}, err
 	}
 	output := proposal{
-		Tasks: make([]task, 0, len(updated)),
+		Tasks:     make([]task, 0, len(updated)),
 		Rationale: "Local Go refinement of an unapproved passive review; Rust approval is still required.",
 	}
 	for _, item := range updated {

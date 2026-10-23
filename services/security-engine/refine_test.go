@@ -28,8 +28,7 @@ func TestRefineAddModifyRemoveAndRequireSeparateApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := []string{p.Tasks[0].Role, p.Tasks[1].Role, p.Tasks[2].Role, p.Tasks[3].Role};
-		strings.Join(got, ",") != "scout,source,qa,database" {
+	if got := []string{p.Tasks[0].Role, p.Tasks[1].Role, p.Tasks[2].Role, p.Tasks[3].Role}; strings.Join(got, ",") != "scout,source,qa,database" {
 		t.Fatalf("unexpected specialist selection: %v", got)
 	}
 	if p.Tasks[2].Objective != "Review all test coverage" ||
