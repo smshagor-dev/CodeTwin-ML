@@ -35,7 +35,7 @@ pub struct NetworkInspection {
     pub note: String,
 }
 
-fn safe_private_address(ip: IpAddr) -> bool {
+pub(crate) fn safe_private_address(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v) => {
             v.is_loopback()

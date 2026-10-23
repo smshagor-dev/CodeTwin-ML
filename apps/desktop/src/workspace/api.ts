@@ -118,6 +118,14 @@ export const workspaceApi = {
   nativeWorkerAudit(id: string) {
     return invoke<import("./pages/NativeAgentsPage").WorkerAuditRecord[]>("native_worker_audit", { id });
   },
+  inspectAuthorizedDns(scope: {
+    authorized: boolean;
+    hostname: string;
+    allowed_hostnames: string[];
+    allowed_addresses: string[];
+  }) {
+    return invoke<{ hostname: string; addresses: string[]; note: string }>("inspect_authorized_dns", { scope });
+  },
   networkInspectionHistory() {
     return invoke<{
       id: number;

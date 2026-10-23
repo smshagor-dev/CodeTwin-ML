@@ -7,6 +7,7 @@ use codetwin_core::{
     native_graph_reasoning::{GraphInference, GraphReasoner},
     native_neural_embeddings::{NeuralMatch, NeuralMemory, NeuralProbe, NeuralReadiness},
     native_worker_audit::{WorkerAudit, WorkerAuditRecord},
+    network_dns::{inspect_dns, DnsObservation, DnsScope},
     network_inspection::{inspect_tcp, NetworkInspection, NetworkScope},
     network_inspection_store::{NetworkInspectionRecord, NetworkInspectionStore},
     Database,
@@ -245,4 +246,14 @@ pub fn list_authorized_network_inspections(
     app: tauri::AppHandle,
 ) -> Result<Vec<NetworkInspectionRecord>, String> {
     NetworkInspectionStore::new(&db(&app)?).list(25)
+}
+
+#[tauri::command]
+pub async fn inspect_authorized_dns(
+    scope: DnsScope,
+) -> Result<DnsObservation, String> {
+    scope.validate()?;
+    tauri::async_runtime::spawn_blocking(move || inspect_dns(&scope))
+        .await
+        .map_err(|error| error.to_string())?
 }

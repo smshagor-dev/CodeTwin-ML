@@ -27,6 +27,13 @@ export function ToolsPage() {
   const [networkError, setNetworkError] = useState("");
   const [networkHistory, setNetworkHistory] = useState<Awaited<ReturnType<typeof workspaceApi.networkInspectionHistory>>>([]);
   const [networkHistoryError, setNetworkHistoryError] = useState("");
+  const [dnsHost, setDnsHost] = useState("localhost");
+  const [dnsAllowAddresses, setDnsAllowAddresses] = useState("127.0.0.1,::1");
+  const [dnsAuthorized, setDnsAuthorized] = useState(false);
+  const [dnsBusy, setDnsBusy] = useState(false);
+  const [dnsError, setDnsError] = useState("");
+  const [dnsResult, setDnsResult] = useState<{ hostname: string; addresses: string[]; note: string } | null>(null);
+
   useEffect(() => {
     let valid = true;
     void workspaceApi.networkInspectionHistory()
@@ -40,6 +47,21 @@ export function ToolsPage() {
     tested_ports: number;
     note: string;
   } | null>(null);
+
+  async function inspectDns() {
+    setDnsResult(null); setDnsError("");
+    if (!dnsAuthorized) { setDnsError("Confirm authorization first."); return; }
+    setDnsBusy(true);
+    try {
+      setDnsResult(await workspaceApi.inspectAuthorizedDns({
+        authorized: true,
+        hostname: dnsHost.trim(),
+        allowed_hostnames: [dnsHost.trim()],
+        allowed_addresses: dnsAllowAddresses.split(",").map(value => value.trim()).filter(Boolean),
+      }));
+    } catch (reason) { setDnsError(String(reason)); }
+    finally { setDnsBusy(false); }
+  }
 
   async function inspectNetwork() {
     setNetworkError(""); setNetworkResult(null);
@@ -128,6 +150,15 @@ export function ToolsPage() {
           {record.inspection && <span> · {record.inspection.observations.filter(item => item.state === "open").length} reachable</span>}
         </li>)}</ul>
       </Disclosure>
+    </Panel>
+    <Panel title="Authorized DNS address verification">
+      <p className="ws-form-help">Exact-name, explicit IP allowlist, private/loopback addresses only. Fails closed if DNS returns any unauthorized address. No subdomain discovery or DNSSEC assertion.</p>
+      <label className="ws-field"><span>Approved hostname</span><input value={dnsHost} onChange={event => { setDnsHost(event.target.value); setDnsAuthorized(false); setDnsResult(null); }}/></label>
+      <label className="ws-field"><span>Allowed resolved private IP addresses</span><input value={dnsAllowAddresses} onChange={event => { setDnsAllowAddresses(event.target.value); setDnsResult(null); }} placeholder="127.0.0.1,::1"/></label>
+      <label className="ws-field"><span><input type="checkbox" checked={dnsAuthorized} onChange={event => setDnsAuthorized(event.target.checked)}/> I am authorized to resolve this exact hostname and allowed IPs.</span></label>
+      <button className="ws-button ws-button-secondary" disabled={!dnsAuthorized || dnsBusy} onClick={() => void inspectDns()}>{dnsBusy ? "Resolving…" : "Verify DNS addresses"}</button>
+      {dnsError && <p role="alert">{dnsError}</p>}
+      {dnsResult && <div role="status"><p>{dnsResult.hostname}: {dnsResult.addresses.join(", ")}</p><p className="ws-form-help">{dnsResult.note}</p></div>}
     </Panel>
     <Panel title="Recent persisted runs" className="ws-tool-run-panel">
       <p className="ws-form-help">Latest 20 analysis, web and QA execution records in this project scope. Completed scans do not imply passing tests or complete security coverage.</p>
