@@ -802,7 +802,9 @@ mod tests {
             .cancel(&run.id)
             .unwrap();
         observation.port = 40002;
-        assert!(assessment.record_probe_if_running(&run.id, &observation).is_err());
+        assert!(assessment
+            .record_probe_if_running(&run.id, &observation)
+            .is_err());
         assert!(assessment.complete_if_running(&run.id).is_err());
         let saved = assessment.get(&run.id).unwrap();
         assert_eq!(saved.status, "cancelled");
