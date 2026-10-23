@@ -129,6 +129,8 @@ export function NativeAgentsPage() {
   } | null>(null);
   const [taskSchedule, setTaskSchedule] = useState<{ batches: string[][]; max_parallel: number } | null>(null);
   const [acceptedTaskPlan, setAcceptedTaskPlan] = useState(false);
+  const [refineRole, setRefineRole] = useState("qa");
+  const [refineObjective, setRefineObjective] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [goDispatchAudit, setGoDispatchAudit] = useState<{
@@ -358,6 +360,25 @@ export function NativeAgentsPage() {
     finally { setBusy(""); }
   }
 
+  async function refineGoDecomposition(op: "add" | "remove" | "modify") {
+    if (!goStatus?.configured || !activeProjectId || !taskProposal ||
+        taskProposal.projectId !== activeProjectId || taskProposal.objective !== objective) return;
+    setBusy("go-refine"); setError("");
+    const current = taskProposal.proposal;
+    const operation = op === "remove"
+      ? { op, role: refineRole }
+      : { op, role: refineRole, objective: refineObjective };
+    try {
+      const proposal = await workspaceApi.refineGoSecurityTaskPlan(
+        activeProjectId, current, [operation]
+      );
+      setTaskProposal({ proposal, projectId: activeProjectId, objective });
+      setAcceptedTaskPlan(false);
+      setRefineObjective("");
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+
   async function suggestGoDecomposition() {
     if (!activeProjectId || !objective.trim()) return;
     setBusy("go-decompose"); setError("");
@@ -524,6 +545,41 @@ export function NativeAgentsPage() {
               <strong>{task.role}</strong> · {task.objective} · depends on {task.depends_on.join(", ") || "none"}
             </p>)}
             <p>{taskProposal.proposal.rationale}</p>
+            {goStatus?.configured && <div className="ws-form-stack">
+              <p className="ws-form-help">Refine this unapproved task plan locally. Only registered passive specialists are allowed; no tools run until you create and approve the review.</p>
+              <label className="ws-field">
+                <span>Specialist to refine</span>
+                <select value={refineRole} disabled={Boolean(busy)}
+                  onChange={event => setRefineRole(event.target.value)}>
+                  {roleChoices.filter(role => !role.mandatory).map(role =>
+                    <option key={role.id} value={role.id}>{role.name}</option>)}
+                </select>
+              </label>
+              <label className="ws-field">
+                <span>Updated review objective (required for add or update)</span>
+                <input type="text" value={refineObjective} maxLength={300}
+                  placeholder="Describe the passive evidence to review"
+                  disabled={Boolean(busy)}
+                  onChange={event => setRefineObjective(event.target.value)} />
+              </label>
+              <div className="ws-button-row">
+                <button className="ws-button ws-button-secondary" disabled={Boolean(busy) ||
+                  taskProposal.proposal.tasks.some(task => task.role === refineRole) ||
+                  !refineObjective.trim()} onClick={() => void refineGoDecomposition("add")}>
+                  Add specialist
+                </button>
+                <button className="ws-button ws-button-secondary" disabled={Boolean(busy) ||
+                  !taskProposal.proposal.tasks.some(task => task.role === refineRole) ||
+                  !refineObjective.trim()} onClick={() => void refineGoDecomposition("modify")}>
+                  Update objective
+                </button>
+                <button className="ws-button ws-button-secondary" disabled={Boolean(busy) ||
+                  !taskProposal.proposal.tasks.some(task => task.role === refineRole)}
+                  onClick={() => void refineGoDecomposition("remove")}>
+                  Remove specialist
+                </button>
+              </div>
+            </div>}
             <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
               onClick={() => {
                 setSelectedRoles(taskProposal.proposal.tasks.map(task => task.role));

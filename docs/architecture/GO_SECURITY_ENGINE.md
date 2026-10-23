@@ -53,6 +53,18 @@ approve/run the existing Rust review.
   when appropriate. Every memory item must have a registered role and a
   terminal completed/failed status; unknown fields and oversized history fail
   closed. A memory suggestion never authorizes execution.
+- `--refine` accepts a bounded, unapproved task proposal and a strictly
+  typed add/remove/modify delta. Its two-pass delta algorithm is adapted
+  from PentAGI's MIT-licensed `backend/pkg/providers/subtask_patch.go`.
+  The original MIT license and provenance are retained under
+  `services/security-engine/licenses/pentagi/`. The Go code is independent
+  of PentAGI's PostgreSQL and provider runtime. Only registered optional
+  passive specialists may be added, removed, or modified; the audited role
+  order and mandatory task dependencies remain immutable. The desktop UI
+  can refine a proposed plan before creating a review. Rust independently
+  validates both the input and output task DAG, and the result is **not**
+  executed or stored as an approved review until the user explicitly
+  creates and approves it.
 - Go also provides a read-only `--dispatch` protocol that consumes an existing
   persisted SQLite specialist DAG and lifecycle state from Rust. It computes
   dependency-ready tasks with a maximum of two concurrent slots. Invalid,
@@ -95,7 +107,9 @@ approve/run the existing Rust review.
 
 PentAGI's Flow/Task/Subtask/Agent separation informed this adapter's design.
 **The original PentAGI orchestrator, exploit-tool packages, and
-PostgreSQL-based services have not been copied into this module.** They cannot
+PostgreSQL-based services have not been copied into this module.**
+The task-delta refinement logic is a separately licensed upstream-derived
+component, not a wholesale PentAGI backend transplant. They cannot
 be dropped unchanged into an SQLite-only desktop application. Reusing upstream
 source directly will require a separately reviewed SQLite storage adapter,
 dependency-license inventory, tool sandboxing, engagement authorization,
