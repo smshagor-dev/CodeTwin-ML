@@ -691,7 +691,9 @@ mod tests {
             .unwrap();
         db.connection()
             .execute(
-                "UPDATE native_agent_steps SET status='completed' WHERE run_id=?1 AND position=0",
+                "UPDATE native_agent_steps SET status='completed',
+                 result_json='{\"check\":\"preserved\"}'
+                 WHERE run_id=?1 AND position=0",
                 [&run.id],
             )
             .unwrap();
@@ -714,11 +716,24 @@ mod tests {
             )
             .unwrap();
 
+        db.connection()
+            .execute(
+                "INSERT INTO go_dispatch_audit
+                 (run_id,position,role,verdict,ready_json,reason)
+                 VALUES (?1,0,'scout','allowed','[\"scout\"]','approved role was ready')",
+                [&run.id],
+            )
+            .unwrap();
+
         agent.recover_interrupted().unwrap();
         let recovered = agent.get(&run.id).unwrap();
         assert_eq!(recovered.status, "interrupted");
         assert_eq!(recovered.steps.len(), 3);
         assert_eq!(recovered.steps[0].status, "completed");
+        assert_eq!(
+            recovered.steps[0].result.as_deref(),
+            Some("{\"check\":\"preserved\"}")
+        );
         assert_eq!(recovered.steps[1].status, "interrupted");
         assert_eq!(recovered.steps[2].status, "cancelled");
         let delegated = crate::native_agent_delegation::NativeDelegation::new(&db)
@@ -736,6 +751,15 @@ mod tests {
             )
             .unwrap();
         assert!(cancelled);
+        let retained_audits: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM go_dispatch_audit WHERE run_id=?1",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained_audits, 1);
         assert!(agent.execute(&run.id).is_err());
         agent.recover_interrupted().unwrap();
         assert_eq!(agent.get(&run.id).unwrap().status, "interrupted");
