@@ -54,6 +54,9 @@ impl<'a> NativeActionLog<'a> {
     }
 
     /// Complete both persisted step and action receipt in one transaction.
+    /// The parent must still be running and uncancelled at commit time.
+    /// A cancellation observed after a parallel worker begins rejects its
+    /// result even if the worker has already returned.
     /// The receipt stores a digest, not source, secrets or raw scan output.
     pub fn finish(
         &self,
@@ -70,7 +73,11 @@ impl<'a> NativeActionLog<'a> {
             .execute(
                 "UPDATE native_action_log SET status=?4,result_sha256=?5,
                    finished_at=CURRENT_TIMESTAMP
-                 WHERE run_id=?1 AND position=?2 AND role=?3 AND status='running'",
+                 WHERE run_id=?1 AND position=?2 AND role=?3 AND status='running'
+                   AND EXISTS (
+                     SELECT 1 FROM native_agent_runs
+                     WHERE id=?1 AND status='running' AND cancel_requested=0
+                   )",
                 params![run_id, position, role, state, digest],
             )
             .map_err(err)?;
