@@ -80,6 +80,18 @@ rejects a still-waiting queued flow, preventing the single-run entrypoint from
 bypassing FIFO order. Queue entries cannot add roles, targets or tools, and
 no model-generated proposal grants review approval.
 
+### Live queue progress
+
+The Agents queue updates every 3.5 seconds while the page is mounted and
+displays a native progress indicator with **completed / total specialists** and
+the currently running role. Rust derives all these fields by reading the
+existing `native_agent_steps` table and the parent `native_agent_runs` status;
+no percentages are guessed, no additional migrations or background services
+are needed, and completed count is not confused with attempted count. Terminal
+failure, cancellation and interruption retain their original queue receipt and
+the last completed specialist count. All reads are local to SQLite, without
+sending source data or findings to Go.
+
 ## Adaptive follow-up after failure or interruption
 
 After a fully approved automated review fails, the Go sidecar automatically
