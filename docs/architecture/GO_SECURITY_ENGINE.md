@@ -84,7 +84,9 @@ no model-generated proposal grants review approval.
 
 The Agents queue updates every 3.5 seconds while the page is mounted and
 displays a native progress indicator with **completed / total specialists** and
-the currently running role. Rust derives all these fields by reading the
+every currently running role (up to two concurrent specialists), ordered by
+its approved position. The legacy first-active-role field remains available
+for compatibility. Rust derives all these fields by reading the
 existing `native_agent_steps` table and the parent `native_agent_runs` status;
 no percentages are guessed, no additional migrations or background services
 are needed, and completed count is not confused with attempted count. Terminal
@@ -102,8 +104,13 @@ the persisted dependency graph; the native supervisor, not Go, owns the
 actual passive scanner execution and SQLite writes. Both results are joined
 before moving to the next batch. A denied role prevents that batch's tools
 from starting; a cancelled or failed batch cannot be replayed automatically.
-File-backed tests reopen SQLite and verify terminal receipts, approved role
-order and handoff fingerprints.
+Once both action receipts have been claimed, Rust checks cancellation again
+before launching workers. The SQLite action receipt also requires an uncancelled
+running parent **when committing results**: a worker returning after cancellation
+cannot silently overwrite the receipt with accepted evidence. On restart,
+both in-flight specialists and their receipts are retired without replay,
+while previously committed evidence remains intact. File-backed tests reopen
+SQLite and verify terminal receipts, approved role order and handoff fingerprints.
 
 ### Crash recovery for claimed queues
 

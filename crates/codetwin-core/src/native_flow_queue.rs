@@ -18,6 +18,9 @@ pub struct QueuedFlow {
     pub completed_steps: usize,
     pub total_steps: usize,
     pub active_role: Option<String>,
+    /// Every simultaneously running specialist in reviewed role order.
+    /// These labels are read from SQLite; no results or source files included.
+    pub active_roles: Vec<String>,
     pub review_status: String,
     /// First failed/interrupted specialist, or first cancelled specialist.
     /// Only the registered role and state are exposed, never analyzer output.
@@ -83,6 +86,10 @@ impl<'a> NativeFlowQueue<'a> {
                          WHERE s.run_id=q.review_id AND s.status='running'
                          ORDER BY s.position LIMIT 1),
                         r.status,
+                        (SELECT GROUP_CONCAT(role, char(31)) FROM
+                           (SELECT role FROM native_agent_steps
+                            WHERE run_id=q.review_id AND status='running'
+                            ORDER BY position)),
                         (SELECT s.role FROM native_agent_steps s
                          WHERE s.run_id=q.review_id
                            AND s.status IN ('failed','interrupted','cancelled')
@@ -120,6 +127,10 @@ impl<'a> NativeFlowQueue<'a> {
                          WHERE s.run_id=q.review_id AND s.status='running'
                          ORDER BY s.position LIMIT 1),
                         r.status,
+                        (SELECT GROUP_CONCAT(role, char(31)) FROM
+                           (SELECT role FROM native_agent_steps
+                            WHERE run_id=q.review_id AND status='running'
+                            ORDER BY position)),
                         (SELECT s.role FROM native_agent_steps s
                          WHERE s.run_id=q.review_id
                            AND s.status IN ('failed','interrupted','cancelled')
@@ -347,8 +358,15 @@ fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedFlow> {
         total_steps: row.get(9)?,
         active_role: row.get(10)?,
         review_status: row.get(11)?,
-        issue_role: row.get(12)?,
-        issue_status: row.get(13)?,
+        active_roles: row
+            .get::<_, Option<String>>(12)?
+            .unwrap_or_default()
+            .split('\u{1f}')
+            .filter(|role| !role.is_empty())
+            .map(str::to_string)
+            .collect(),
+        issue_role: row.get(13)?,
+        issue_status: row.get(14)?,
     })
 }
 
@@ -602,6 +620,74 @@ mod tests {
         assert!(saved.active_role.is_none());
         assert!(saved.issue_role.is_none());
         assert!(saved.issue_status.is_none());
+    }
+
+    #[test]
+    fn sqlite_queue_progress_exposes_both_concurrent_roles_and_failures() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.rs"), "pub fn safe() {}").unwrap();
+        let project = ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let run = NativeAgents::new(&db)
+            .create_with_roles(
+                &project,
+                "Concurrent approved review",
+                10,
+                120,
+                &[
+                    "scout".into(),
+                    "source".into(),
+                    "secrets".into(),
+                    "qa".into(),
+                ],
+            )
+            .unwrap();
+        NativeFlow::new(&db).prepare(&run.id).unwrap();
+        NativeFlow::new(&db).approve(&run.id).unwrap();
+        let queue = NativeFlowQueue::new(&db);
+        queue.enqueue(&run.id).unwrap();
+        queue.claim_next().unwrap().unwrap();
+
+        // Two separately claimed native specialists are visible at once.
+        db.connection()
+            .execute(
+                "UPDATE native_agent_steps SET status='running'
+                 WHERE run_id=?1 AND position IN (2,3)",
+                [&run.id],
+            )
+            .unwrap();
+        let current = queue.get(&run.id).unwrap().unwrap();
+        assert_eq!(current.active_role.as_deref(), Some("Secrets Auditor"));
+        assert_eq!(
+            current.active_roles,
+            vec!["Secrets Auditor", "Test Researcher"]
+        );
+        assert_eq!(queue.list().unwrap()[0].active_roles, current.active_roles);
+        assert_eq!(current.total_steps, 4);
+
+        db.connection()
+            .execute(
+                "UPDATE native_agent_steps SET status='failed'
+                 WHERE run_id=?1 AND position=2",
+                [&run.id],
+            )
+            .unwrap();
+        let failed = queue.get(&run.id).unwrap().unwrap();
+        assert_eq!(failed.active_roles, vec!["Test Researcher"]);
+        assert_eq!(failed.issue_role.as_deref(), Some("Secrets Auditor"));
+        assert_eq!(failed.issue_status.as_deref(), Some("failed"));
+
+        db.connection()
+            .execute(
+                "UPDATE native_agent_steps SET status='interrupted'
+                 WHERE run_id=?1 AND position=3",
+                [&run.id],
+            )
+            .unwrap();
+        assert!(queue.get(&run.id).unwrap().unwrap().active_roles.is_empty());
     }
 
     #[test]
