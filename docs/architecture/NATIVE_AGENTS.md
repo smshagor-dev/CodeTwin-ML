@@ -423,3 +423,21 @@ a Python/PyTorch inference runtime, so it is not part of normal PR CI.
 A passing normal unit suite is not proof of pretrained neural inference.
 Only a completed, successful `Real Local Neural Embedding Integration`
 workflow run provides that evidence.
+
+## Real Docker launch contract evidence
+
+The opt-in `offline-sandbox-smoke.yml` workflow requires an operator-approved
+digest-pinned image and downloads a Trivy database outside the scan container.
+It now starts the actual Rust integration test through a narrowly scoped local
+Docker CLI wrapper. The wrapper fails closed if the real invocation lacks
+`--network none`, read-only root, dropped capabilities, no-new-privileges,
+pull-never, bounded process/memory/CPU options, non-root UID, three scoped
+mounts or auto-removal. The workflow also proves that an intentionally
+under-protected invocation is rejected **before Docker starts**, checks
+that the privacy-reduced report digest/counts match the durable SQLite audit
+and uploads only the static pass marker for those runtime arguments.
+
+Unlike ordinary Rust argument tests, this verifies the actual CLI contract
+used by the opt-in integration run. It still does not independently attest
+the Docker daemon's kernel-level enforcement, and no physical isolation
+result is claimed before the manually triggered workflow succeeds.
