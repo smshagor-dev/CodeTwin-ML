@@ -95,6 +95,19 @@ role and status (never scanner output or secrets). Tests compare the current
 role to the persisted display label, not the lower-case tool identifier.
 All reads are local to SQLite, without sending source data or findings to Go.
 
+### Crash recovery for claimed queues
+
+When the queue has claimed a review but the Rust supervisor cannot start,
+its terminal `interrupted` receipt also retires the parent approval in the
+**same SQLite transaction**. Unfinished specialist steps, action receipts,
+and delegated tasks are explicitly closed without executing any analyzers.
+On desktop startup, recovery also reconciles older `interrupted` receipts
+that still have an `approved` parent. Direct review execution refuses both
+waiting and interrupted queue entries, even before reconciliation. Completed
+evidence is preserved; waiting flows are never started automatically. Users
+must create and approve a fresh review for any interrupted work.
+
+
 ## Adaptive follow-up after failure or interruption
 
 After a fully approved automated review fails, the Go sidecar automatically
