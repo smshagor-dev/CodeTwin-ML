@@ -7,7 +7,7 @@ CREATE TABLE network_assessment_runs (
   allow_private_networks INTEGER NOT NULL CHECK(allow_private_networks IN (0,1)),
   authorization_confirmed INTEGER NOT NULL CHECK(authorization_confirmed=1),
   budget_seconds INTEGER NOT NULL CHECK(budget_seconds BETWEEN 1 AND 60),
-  status TEXT NOT NULL CHECK(status IN ('planned','approved','running','completed','partial','failed','interrupted')),
+  status TEXT NOT NULL CHECK(status IN ('planned','approved','running','completed','partial','failed','interrupted','cancelled')),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   started_at TEXT,
   finished_at TEXT,

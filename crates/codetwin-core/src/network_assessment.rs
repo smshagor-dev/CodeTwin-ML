@@ -212,7 +212,6 @@ impl<'a> NetworkAssessment<'a> {
 
     /// Only HTTPS ports requested explicitly. Redirects and proxies are disabled.
     /// Success means the system trust store accepted the TLS peer; no cipher audit is claimed.
-    fn unused_placeholder(&self) {}
 }
 
 fn tls_trust_check(target:&str, address:SocketAddr)->bool {
@@ -281,7 +280,7 @@ fn allowed_address(ip:IpAddr,allow_private:bool)->bool {
             !local || allow_private
         }
         IpAddr::V6(v6)=>{
-            if let Some(v4)=v6.to_ipv4_mapped(){return allowed_address(IpAddr::V4(v4),allow_private);}
+            if let Some(v4)=v6.to_ipv4(){return allowed_address(IpAddr::V4(v4),allow_private);}
             if v6.is_unspecified() || v6.is_multicast(){return false;}
             let local=v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local();
             !local || allow_private
