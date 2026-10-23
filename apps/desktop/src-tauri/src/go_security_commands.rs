@@ -135,7 +135,11 @@ struct PlannerRequest<'a> {
     history: &'a [MemoryHint],
 }
 
-fn local_plan(binary: &Path, objective: &str, history: &[MemoryHint]) -> Result<TaskProposal, String> {
+fn local_plan(
+    binary: &Path,
+    objective: &str,
+    history: &[MemoryHint],
+) -> Result<TaskProposal, String> {
     probe_binary(binary)?;
     let request = serde_json::to_vec(&PlannerRequest {
         protocol_version: 1,
@@ -252,14 +256,21 @@ mod tests {
         let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("binaries")
             .join(format!("codetwin-security-{target}{suffix}"));
-        assert!(binary.is_file(), "build the target-specific Go companion before testing");
+        assert!(
+            binary.is_file(),
+            "build the target-specific Go companion before testing"
+        );
         let context = [MemoryHint {
             role: "secrets".to_owned(),
             status: "failed".to_owned(),
         }];
         let proposed = local_plan(&binary, "Review test coverage", &context)
             .expect("real Go process must complete the bounded protocol");
-        let roles = proposed.tasks.iter().map(|task| task.role.as_str()).collect::<Vec<_>>();
+        let roles = proposed
+            .tasks
+            .iter()
+            .map(|task| task.role.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(roles, ["scout", "source", "secrets", "qa"]);
     }
 }
