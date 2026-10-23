@@ -110,3 +110,18 @@ use single conditional SQLite statements, including across independent
 connections. The check does not forcibly interrupt a socket already
 inside a bounded TCP connect or HTTPS HEAD, but it prevents observations
 from that request being treated as authorized after cancellation.
+
+## Explicit TLS certificate observations (separate local command)
+
+For an owned or explicitly authorized host, a separate consent-gated Python
+command in `services/security/codetwin_security/tls_certificates.py` uses
+system trust (or an explicit trusted lab CA), checked host identity, pinned
+and revalidated DNS resolution, a bounded TLS connection, certificate
+not-before/not-after dates, days until expiry, negotiated TLS version and
+negotiated cipher. It returns only fixed error categories on failure, and
+never captures private keys or the full certificate bytes. A disposable
+local OpenSSL-signed loopback fixture tests successful trust and an identity
+mismatch in the default Python CI. The checker is *not* yet wired into the
+Network Assessment desktop table: this paragraph must not be interpreted as
+an added desktop capability. Usage and real-run prerequisites are in
+`docs/LOCAL_SECURITY_VALIDATION.md`.
