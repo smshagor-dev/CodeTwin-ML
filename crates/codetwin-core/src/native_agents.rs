@@ -1250,7 +1250,20 @@ mod tests {
             let result = NativeAgents::new(&db)
                 .execute_with_dispatch(&run.id, &allow)
                 .unwrap();
-            assert_eq!(result.status, "completed");
+            assert_eq!(
+                result.status,
+                "completed",
+                "Go-verified pair did not complete: message={:?}; steps={:?}; actions={:?}; delegation={:?}",
+                result.message,
+                result.steps,
+                crate::native_action_log::NativeActionLog::new(&db)
+                    .list(&run.id)
+                    .unwrap(),
+                crate::native_agent_delegation::NativeDelegation::new(&db)
+                    .graph(&run.id)
+                    .unwrap()
+                    .tasks,
+            );
             assert_eq!(
                 decisions.into_inner(),
                 vec!["scout", "source", "secrets", "qa"]
