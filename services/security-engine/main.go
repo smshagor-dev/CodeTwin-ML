@@ -77,6 +77,8 @@ func plan(r request) (proposal, error) {
 			}
 		}
 	}
+	// Historical failures must never narrow a broad review objective.
+	explicitMatch := found
 	// Historical failures can suggest a targeted follow-up, but cannot authorize it.
 	memorySuggested := false
 	for i, specialist := range specialists {
@@ -90,7 +92,7 @@ func plan(r request) (proposal, error) {
 	}
 	// Broad objectives receive the audited full passive review, never active probes.
 	for i, specialist := range specialists {
-		if matches[i] || !found {
+		if matches[i] || !explicitMatch {
 			tasks = append(tasks, task{
 				Role: specialist.role, Objective: specialist.objective, DependsOn: []string{"source"},
 			})

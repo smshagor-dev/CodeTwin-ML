@@ -94,3 +94,10 @@ func TestHistoryIsStrictlyBoundedAndUsesRegisteredRoles(t *testing.T) {
 		}
 	}
 }
+
+func TestBroadReviewStillIncludesAllSpecialistsWithPastFailures(t *testing.T) {
+	p, err := plan(request{ProtocolVersion: 1, Objective: "Review this project", History: []memoryHint{{Role: "secrets", Status: "failed"}}})
+	if err != nil || len(p.Tasks) != 6 {
+		t.Fatalf("unexpected narrowed broad review: %#v, %v", p, err)
+	}
+}
