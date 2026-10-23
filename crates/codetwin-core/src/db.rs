@@ -77,6 +77,27 @@ impl Database {
         Ok(database)
     }
 
+    /// Open an already migrated file-backed SQLite database for a short-lived
+    /// approved native specialist worker. Do not initialize schema, change
+    /// journal mode or accidentally create a missing database while two
+    /// analyzers start concurrently. The parent connection owns migrations.
+    pub(crate) fn open_native_worker(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
+        let connection = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        // Fail closed if called with an unrelated or uninitialized SQLite file.
+        let _: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(Self { connection })
+    }
+
     pub fn open_in_memory() -> Result<Self, DatabaseError> {
         let connection = Connection::open_in_memory()?;
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
@@ -1312,6 +1333,39 @@ mod tests {
             )
             .expect("QA provenance triggers");
         assert_eq!(trigger_count, 8);
+    }
+
+    #[test]
+    fn specialist_worker_opens_only_a_prepared_existing_sqlite_database() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("review.sqlite3");
+        // A worker must not create a database or bootstrap its own schema.
+        assert!(Database::open_native_worker(&path).is_err());
+        assert!(!path.exists());
+        let owner = Database::open(&path).unwrap();
+        let worker = Database::open_native_worker(&path).unwrap();
+        let foreign_keys: i64 = worker
+            .connection()
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        let wal: String = worker
+            .connection()
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(wal.to_ascii_lowercase(), "wal");
+        let migration_count: i64 = worker
+            .connection()
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .unwrap();
+        assert!(migration_count > 0);
+        // No worker connection needs a new migration or database file.
+        assert!(owner.connection().is_autocommit());
+        assert!(worker.connection().is_autocommit());
+
+        let invalid = root.path().join("uninitialized.sqlite3");
+        rusqlite::Connection::open(&invalid).unwrap();
+        assert!(Database::open_native_worker(&invalid).is_err());
     }
 
     #[test]

@@ -636,7 +636,7 @@ impl<'a> NativeAgents<'a> {
                                 let project = run.project_id.clone();
                                 let tool = step.tool.clone();
                                 scope.spawn(move || {
-                                    Database::open(&path)
+                                    Database::open_native_worker(&path)
                                         .map_err(to_error)
                                         .and_then(|db| run_passive_specialist(&db, &project, &tool))
                                 })
@@ -667,28 +667,50 @@ impl<'a> NativeAgents<'a> {
             // run before evidence is accepted; parent finalization will close
             // any claimed but unfinished action receipts on failure.
             self.boundary(&run.id, start, run.budget_seconds)?;
-            let mut first_failure = None;
-            for (step, outcome) in steps.iter().zip(outcomes) {
-                let passed = outcome.is_ok();
-                let summary = match outcome {
-                    Ok(summary) => summary,
-                    Err(reason) => {
-                        if first_failure.is_none() {
-                            first_failure = Some(reason.clone());
-                        }
-                        reason
-                    }
-                };
-                delegation.finish(&run.id, step.position, passed)?;
-                log.finish(&run.id, step.position, &step.tool, passed, &summary)?;
-                if passed {
-                    handoffs.record(&run.id, step.position)?;
-                }
-            }
-            if let Some(error) = first_failure {
-                return Err(error);
-            }
+            // Accept or reject each joined worker independently; a failing
+            // sibling cannot erase successful receipts or authorize a new DAG
+            // branch. Failures are retained in the original role order.
+            self.finish_verified_batch(run, &steps, outcomes)?;
             remaining -= steps.len();
+        }
+        Ok(())
+    }
+
+    fn finish_verified_batch(
+        &self,
+        run: &AgentRun,
+        steps: &[&AgentStep],
+        outcomes: Vec<Result<String, String>>,
+    ) -> Result<(), String> {
+        if outcomes.len() != steps.len() || steps.is_empty() || steps.len() > 2 {
+            return Err("Invalid bounded specialist result count".into());
+        }
+        let delegation = crate::native_agent_delegation::NativeDelegation::new(self.db);
+        let handoffs = crate::native_agent_handoffs::AgentHandoffs::new(self.db);
+        let log = crate::native_action_log::NativeActionLog::new(self.db);
+        let mut first_failure = None;
+        for (step, outcome) in steps.iter().zip(outcomes) {
+            let passed = outcome.is_ok();
+            let summary = match outcome {
+                Ok(summary) => summary,
+                Err(reason) => {
+                    if first_failure.is_none() {
+                        first_failure = Some(reason.clone());
+                    }
+                    reason
+                }
+            };
+            delegation.finish(&run.id, step.position, passed)?;
+            log.finish(&run.id, step.position, &step.tool, passed, &summary)?;
+            // Never create new downstream handoffs from a failed batch.
+            // The successful sibling's evidence remains visible in its own
+            // committed receipt, but dependent work cannot be dispatched.
+            if passed && first_failure.is_none() {
+                handoffs.record(&run.id, step.position)?;
+            }
+        }
+        if let Some(error) = first_failure {
+            return Err(error);
         }
         Ok(())
     }
@@ -749,7 +771,7 @@ impl<'a> NativeAgents<'a> {
                         let tool = task.tool.clone();
                         let position = task.position;
                         scope.spawn(move || {
-                            let result = Database::open(&path)
+                            let result = Database::open_native_worker(&path)
                                 .map_err(to_error)
                                 .and_then(|db| run_passive_specialist(&db, &project_id, &tool));
                             (position, result)
@@ -1250,7 +1272,20 @@ mod tests {
             let result = NativeAgents::new(&db)
                 .execute_with_dispatch(&run.id, &allow)
                 .unwrap();
-            assert_eq!(result.status, "completed");
+            assert_eq!(
+                result.status,
+                "completed",
+                "Go-verified pair did not complete: message={:?}; steps={:?}; actions={:?}; delegation={:?}",
+                result.message,
+                result.steps,
+                crate::native_action_log::NativeActionLog::new(&db)
+                    .list(&run.id)
+                    .unwrap(),
+                crate::native_agent_delegation::NativeDelegation::new(&db)
+                    .graph(&run.id)
+                    .unwrap()
+                    .tasks,
+            );
             assert_eq!(
                 decisions.into_inner(),
                 vec!["scout", "source", "secrets", "qa"]
@@ -1279,6 +1314,122 @@ mod tests {
                 .unwrap()
                 .verified
         );
+    }
+
+    #[test]
+    fn joined_specialists_preserve_successful_sibling_evidence_on_failure() {
+        for failure_position in [2, 3] {
+            let fixture = tempfile::tempdir().unwrap();
+            let db = Database::open(fixture.path().join("joined-failure.sqlite3")).unwrap();
+            let source = fixture.path().join("source");
+            std::fs::create_dir_all(&source).unwrap();
+            std::fs::write(source.join("file.ts"), "export const safe = true;").unwrap();
+            let project = crate::ProjectIndexService::new(&db)
+                .index_project(&source)
+                .unwrap()
+                .project_id;
+            let agents = NativeAgents::new(&db);
+            let review = agents
+                .create_with_roles(
+                    &project,
+                    "Independent joined specialist outcomes",
+                    10,
+                    120,
+                    &[
+                        "scout".into(),
+                        "source".into(),
+                        "secrets".into(),
+                        "qa".into(),
+                    ],
+                )
+                .unwrap();
+            agents.approve(&review.id).unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_runs SET status='running' WHERE id=?1",
+                    [&review.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_steps SET status='completed',
+                     result_json='previous reviewed evidence'
+                     WHERE run_id=?1 AND position IN (0,1)",
+                    [&review.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_delegation_tasks SET status='completed'
+                     WHERE run_id=?1 AND position IN (0,1)",
+                    [&review.id],
+                )
+                .unwrap();
+
+            let delegation = crate::native_agent_delegation::NativeDelegation::new(&db);
+            let log = crate::native_action_log::NativeActionLog::new(&db);
+            for step in &review.steps[2..] {
+                delegation
+                    .start(&review.id, step.position, &step.role)
+                    .unwrap();
+                log.begin(&review.id, step.position, &step.tool).unwrap();
+            }
+            let outcomes = review.steps[2..]
+                .iter()
+                .map(|step| {
+                    if step.position == failure_position {
+                        Err("Injected isolated specialist failure".to_string())
+                    } else {
+                        Ok("Verified independent specialist evidence".to_string())
+                    }
+                })
+                .collect();
+            let error = agents
+                .finish_verified_batch(
+                    &review,
+                    &[&review.steps[2], &review.steps[3]],
+                    outcomes,
+                )
+                .unwrap_err();
+            assert_eq!(error, "Injected isolated specialist failure");
+            let current = agents.get(&review.id).unwrap();
+            assert_eq!(current.steps[failure_position].status, "failed");
+            assert_eq!(current.steps[5 - failure_position].status, "completed");
+            let receipts = log.list(&review.id).unwrap();
+            assert_eq!(receipts.len(), 2);
+            assert_eq!(
+                receipts
+                    .iter()
+                    .filter(|receipt| receipt.status == "failed")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                receipts
+                    .iter()
+                    .filter(|receipt| receipt.status == "completed")
+                    .count(),
+                1
+            );
+            assert!(receipts.iter().all(|receipt| {
+                receipt
+                    .result_sha256
+                    .as_ref()
+                    .is_some_and(|digest| digest.len() == 64)
+            }));
+            assert!(delegation.ready_batch(&review.id).unwrap().is_empty());
+            let handoffs = crate::native_agent_handoffs::AgentHandoffs::new(&db)
+                .list(&review.id)
+                .unwrap();
+            assert_eq!(handoffs.len(), if failure_position == 2 { 0 } else { 1 });
+            agents.cancel(&review.id).unwrap();
+            agents.recover_interrupted().unwrap();
+            let retired = agents.get(&review.id).unwrap();
+            assert_eq!(retired.status, "interrupted");
+            assert_eq!(retired.steps[failure_position].status, "failed");
+            assert_eq!(retired.steps[5 - failure_position].status, "completed");
+            assert!(agents.execute(&review.id).is_err());
+        }
     }
 
     #[test]
