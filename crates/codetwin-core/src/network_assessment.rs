@@ -763,7 +763,10 @@ mod tests {
 
     #[test]
     fn cancellation_revokes_probe_storage_and_successful_finalization() {
-        let db = Database::open_in_memory().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("network-cancellation.sqlite3");
+        let db = Database::open(&path).unwrap();
+        let second_connection = Database::open(&path).unwrap();
         let assessment = NetworkAssessment::new(&db);
         let run = assessment
             .prepare(NetworkAssessmentRequest {
@@ -790,8 +793,14 @@ mod tests {
             https_posture: None,
             https_failure_kind: None,
         };
-        assessment.record_probe_if_running(&run.id, &observation).unwrap();
-        assessment.cancel(&run.id).unwrap();
+        assessment
+            .record_probe_if_running(&run.id, &observation)
+            .unwrap();
+        // Cancel from another WAL connection, as the real desktop command does
+        // while a scan executes on its own blocking worker thread.
+        NetworkAssessment::new(&second_connection)
+            .cancel(&run.id)
+            .unwrap();
         observation.port = 40002;
         assert!(assessment.record_probe_if_running(&run.id, &observation).is_err());
         assert!(assessment.complete_if_running(&run.id).is_err());
