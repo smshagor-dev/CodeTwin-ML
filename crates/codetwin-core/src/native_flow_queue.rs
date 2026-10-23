@@ -637,7 +637,12 @@ mod tests {
                 "Concurrent approved review",
                 10,
                 120,
-                &["scout".into(), "source".into(), "secrets".into(), "qa".into()],
+                &[
+                    "scout".into(),
+                    "source".into(),
+                    "secrets".into(),
+                    "qa".into(),
+                ],
             )
             .unwrap();
         NativeFlow::new(&db).prepare(&run.id).unwrap();
@@ -656,7 +661,10 @@ mod tests {
             .unwrap();
         let current = queue.get(&run.id).unwrap().unwrap();
         assert_eq!(current.active_role.as_deref(), Some("Secrets Auditor"));
-        assert_eq!(current.active_roles, vec!["Secrets Auditor", "Test Researcher"]);
+        assert_eq!(
+            current.active_roles,
+            vec!["Secrets Auditor", "Test Researcher"]
+        );
         assert_eq!(queue.list().unwrap()[0].active_roles, current.active_roles);
         assert_eq!(current.total_steps, 4);
 
