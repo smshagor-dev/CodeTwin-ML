@@ -77,6 +77,27 @@ impl Database {
         Ok(database)
     }
 
+    /// Open an already migrated file-backed SQLite database for a short-lived
+    /// approved native specialist worker. Do not initialize schema, change
+    /// journal mode or accidentally create a missing database while two
+    /// analyzers start concurrently. The parent connection owns migrations.
+    pub(crate) fn open_native_worker(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
+        let connection = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        // Fail closed if called with an unrelated or uninitialized SQLite file.
+        let _: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(Self { connection })
+    }
+
     pub fn open_in_memory() -> Result<Self, DatabaseError> {
         let connection = Connection::open_in_memory()?;
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
