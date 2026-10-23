@@ -25,6 +25,15 @@ export function ToolsPage() {
   const [networkAuthorized, setNetworkAuthorized] = useState(false);
   const [networkBusy, setNetworkBusy] = useState(false);
   const [networkError, setNetworkError] = useState("");
+  const [networkHistory, setNetworkHistory] = useState<Awaited<ReturnType<typeof workspaceApi.networkInspectionHistory>>>([]);
+  const [networkHistoryError, setNetworkHistoryError] = useState("");
+  useEffect(() => {
+    let valid = true;
+    void workspaceApi.networkInspectionHistory()
+      .then(rows => { if (valid) setNetworkHistory(rows); })
+      .catch(reason => { if (valid) setNetworkHistoryError(String(reason)); });
+    return () => { valid = false; };
+  }, []);
   const [networkResult, setNetworkResult] = useState<{
     target: string;
     observations: { port: number; state: string; elapsed_ms: number }[];
@@ -49,6 +58,10 @@ export function ToolsPage() {
         timeout_ms: 750,
       });
       setNetworkResult(result);
+      try {
+        setNetworkHistory(await workspaceApi.networkInspectionHistory());
+        setNetworkHistoryError("");
+      } catch (reason) { setNetworkHistoryError(String(reason)); }
     } catch (reason) { setNetworkError(String(reason)); }
     finally { setNetworkBusy(false); }
   }
@@ -106,6 +119,15 @@ export function ToolsPage() {
       <button className="ws-button ws-button-secondary" disabled={!networkAuthorized || networkBusy} onClick={() => void inspectNetwork()}>{networkBusy ? "Inspecting…" : "Inspect TCP services"}</button>
       {networkError && <p role="alert">{networkError}</p>}
       {networkResult && <div role="status"><p>{networkResult.tested_ports} ports checked on {networkResult.target}</p><ul>{networkResult.observations.map(item => <li key={item.port}>{item.port}/tcp · {item.state} · {item.elapsed_ms} ms</li>)}</ul><p className="ws-form-help">{networkResult.note}</p></div>}
+      <Disclosure title="Local network inspection history">
+        <p className="ws-form-help">Recent explicit local inspections are retained in SQLite with SHA-256 result-integrity checks. An open port is not a vulnerability finding.</p>
+        {networkHistoryError && <p role="alert">{networkHistoryError}</p>}
+        {!networkHistory.length && <p>No recorded network inspections.</p>}
+        <ul>{networkHistory.map(record => <li key={record.id}>
+          {record.target_ip} · {record.status} · {record.ports_tested}/{record.ports_requested} ports · {record.started_at}
+          {record.inspection && <span> · {record.inspection.observations.filter(item => item.state === "open").length} reachable</span>}
+        </li>)}</ul>
+      </Disclosure>
     </Panel>
     <Panel title="Recent persisted runs" className="ws-tool-run-panel">
       <p className="ws-form-help">Latest 20 analysis, web and QA execution records in this project scope. Completed scans do not imply passing tests or complete security coverage.</p>
