@@ -1477,6 +1477,76 @@ mod tests {
     }
 
     #[test]
+    fn history_cursor_keeps_older_pages_stable_when_new_reviews_arrive() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("review-root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("safe.rs"), "pub fn safe() {}").unwrap();
+        let db = Database::open(fixture.path().join("cursor-stability.sqlite3")).unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(&root)
+            .unwrap()
+            .project_id;
+        let reviews = NativeAgents::new(&db);
+        let create_completed = || {
+            let run = reviews
+                .create_with_roles(
+                    &project,
+                    "Historical evidence navigation",
+                    10,
+                    180,
+                    &["scout".into(), "source".into()],
+                )
+                .unwrap();
+            reviews.approve(&run.id).unwrap();
+            assert_eq!(reviews.execute(&run.id).unwrap().status, "completed");
+            run.id
+        };
+        let oldest = create_completed();
+        let _middle = create_completed();
+        let page_one = reviews
+            .audit_completed_history_page(&project, 1, None)
+            .unwrap();
+        assert_eq!(page_one.total_completed, 2);
+        assert_eq!(page_one.verified, 1);
+        let cursor = page_one.next_before_rowid.unwrap();
+
+        // A new completion does not push older rows to later OFFSET positions.
+        let newest = create_completed();
+        db.connection()
+            .execute(
+                "UPDATE native_action_log SET result_sha256=?2
+                 WHERE run_id=?1 AND position=1",
+                rusqlite::params![&oldest, "0".repeat(64)],
+            )
+            .unwrap();
+        let page_two = reviews
+            .audit_completed_history_page(&project, 1, Some(&cursor))
+            .unwrap();
+        assert_eq!(page_two.total_completed, 3);
+        assert_eq!(page_two.checked, 1);
+        assert_eq!(page_two.verified, 0);
+        assert_eq!(page_two.invalid.len(), 1);
+        assert_eq!(page_two.invalid[0].review_id, oldest);
+        assert_eq!(page_two.next_before_rowid, None);
+
+        let current_first = reviews
+            .audit_completed_history_page(&project, 1, None)
+            .unwrap();
+        assert_eq!(current_first.total_completed, 3);
+        assert_eq!(current_first.checked, 1);
+        assert_eq!(current_first.verified, 1);
+        assert!(current_first.next_before_rowid.is_some());
+        assert_eq!(reviews.get(&newest).unwrap().status, "completed");
+        assert!(reviews
+            .audit_completed_history_page(&project, 1, Some("not-an-integer"))
+            .is_err());
+        assert!(reviews
+            .audit_completed_history_page(&project, 1, Some("999999999999999999999"))
+            .is_err());
+    }
+
+    #[test]
     fn completed_review_requires_all_receipts_to_match_exact_specialist_evidence() {
         for mutation in [
             "none",
