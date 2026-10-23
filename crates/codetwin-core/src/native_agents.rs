@@ -636,7 +636,7 @@ impl<'a> NativeAgents<'a> {
                                 let project = run.project_id.clone();
                                 let tool = step.tool.clone();
                                 scope.spawn(move || {
-                                    Database::open(&path)
+                                    Database::open_native_worker(&path)
                                         .map_err(to_error)
                                         .and_then(|db| run_passive_specialist(&db, &project, &tool))
                                 })
@@ -771,7 +771,7 @@ impl<'a> NativeAgents<'a> {
                         let tool = task.tool.clone();
                         let position = task.position;
                         scope.spawn(move || {
-                            let result = Database::open(&path)
+                            let result = Database::open_native_worker(&path)
                                 .map_err(to_error)
                                 .and_then(|db| run_passive_specialist(&db, &project_id, &tool));
                             (position, result)
