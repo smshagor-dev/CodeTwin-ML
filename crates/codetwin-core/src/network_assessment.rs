@@ -519,10 +519,12 @@ mod tests {
         };
         let first = service.prepare(request.clone()).unwrap();
         service.approve(&first.id).unwrap();
-        db.connection().execute(
-            "UPDATE network_assessment_runs SET status='running' WHERE id=?1",
-            [&first.id],
-        ).unwrap();
+        db.connection()
+            .execute(
+                "UPDATE network_assessment_runs SET status='running' WHERE id=?1",
+                [&first.id],
+            )
+            .unwrap();
         let second = service.prepare(request).unwrap();
         service.approve(&second.id).unwrap();
         assert!(service.execute(&second.id).is_err());
