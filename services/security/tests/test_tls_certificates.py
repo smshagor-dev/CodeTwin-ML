@@ -66,7 +66,8 @@ class TlsCertificateChecks(unittest.TestCase):
 
     def test_certificate_validity_boundaries(self) -> None:
         now = datetime(2026, 10, 23, tzinfo=timezone.utc)
-        stamp = lambda moment: moment.strftime("%b %d %H:%M:%S %Y GMT")
+        def stamp(moment: datetime) -> str:
+            return moment.strftime("%b %d %H:%M:%S %Y GMT")
         cert = {
             "notBefore": stamp(now - timedelta(days=1)),
             "notAfter": stamp(now + timedelta(days=2)),
