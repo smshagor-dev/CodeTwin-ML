@@ -1340,6 +1340,88 @@ mod tests {
     }
 
     #[test]
+    fn historical_evidence_audit_is_scoped_bounded_and_detects_late_changes() {
+        let fixture = tempfile::tempdir().unwrap();
+        let db_path = fixture.path().join("history-audit.sqlite3");
+        let root = fixture.path().join("project");
+        let other_root = fixture.path().join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&other_root).unwrap();
+        std::fs::write(root.join("safe.ts"), "export const safe = true;").unwrap();
+        std::fs::write(other_root.join("safe.ts"), "export const other = true;").unwrap();
+        let (project, other, corrupted_id) = {
+            let db = Database::open(&db_path).unwrap();
+            let project = crate::ProjectIndexService::new(&db)
+                .index_project(&root)
+                .unwrap()
+                .project_id;
+            let other = crate::ProjectIndexService::new(&db)
+                .index_project(&other_root)
+                .unwrap()
+                .project_id;
+            let reviews = NativeAgents::new(&db);
+            assert!(reviews.audit_completed_history(&project, 0).is_err());
+            assert!(reviews.audit_completed_history(&project, 201).is_err());
+            let mut ids = Vec::new();
+            for _ in 0..2 {
+                let run = reviews
+                    .create_with_roles(
+                        &project,
+                        "Historical evidence",
+                        10,
+                        180,
+                        &["scout".into(), "source".into()],
+                    )
+                    .unwrap();
+                reviews.approve(&run.id).unwrap();
+                let finished = reviews.execute(&run.id).unwrap();
+                assert_eq!(finished.status, "completed", "{:?}", finished.message);
+                ids.push(run.id);
+            }
+            let good = reviews.audit_completed_history(&project, 200).unwrap();
+            assert_eq!(good.total_completed, 2);
+            assert_eq!(good.checked, 2);
+            assert_eq!(good.verified, 2);
+            assert!(good.invalid.is_empty());
+            let one = reviews.audit_completed_history(&project, 1).unwrap();
+            assert_eq!(one.checked, 1);
+            assert_eq!(one.total_completed, 2);
+            assert!(reviews
+                .audit_completed_history(&other, 200)
+                .unwrap()
+                .invalid
+                .is_empty());
+            assert_eq!(
+                reviews.audit_completed_history(&other, 200).unwrap().checked,
+                0
+            );
+            // Valid SQLite digest shape, incorrect bytes: audit must detect
+            // this without modifying the historical "completed" parent.
+            db.connection()
+                .execute(
+                    "UPDATE native_action_log SET result_sha256=?2
+                     WHERE run_id=?1 AND position=1",
+                    rusqlite::params![&ids[0], "0".repeat(64)],
+                )
+                .unwrap();
+            (project, other, ids[0].clone())
+        };
+        let db = Database::open(&db_path).unwrap();
+        let reviews = NativeAgents::new(&db);
+        let report = reviews.audit_completed_history(&project, 200).unwrap();
+        assert_eq!(report.total_completed, 2);
+        assert_eq!(report.checked, 2);
+        assert_eq!(report.verified, 1);
+        assert_eq!(report.invalid.len(), 1);
+        assert_eq!(report.invalid[0].review_id, corrupted_id);
+        assert!(!report.invalid[0].issues.is_empty());
+        assert_eq!(reviews.get(&corrupted_id).unwrap().status, "completed");
+        let other_report = reviews.audit_completed_history(&other, 200).unwrap();
+        assert_eq!(other_report.total_completed, 0);
+        assert_eq!(other_report.checked, 0);
+    }
+
+    #[test]
     fn completed_review_requires_all_receipts_to_match_exact_specialist_evidence() {
         for mutation in [
             "none",
