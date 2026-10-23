@@ -422,6 +422,9 @@ fn allowed_address(ip: IpAddr, allow_private: bool) -> bool {
             !local || allow_private
         }
         IpAddr::V6(v6) => {
+            if v6.is_loopback() {
+                return allow_private;
+            }
             if let Some(v4) = v6.to_ipv4() {
                 return allowed_address(IpAddr::V4(v4), allow_private);
             }
@@ -457,6 +460,8 @@ mod tests {
         assert!(validate_target("evil.example.org?x").is_err());
         assert!(!allowed_address("127.0.0.1".parse().unwrap(), false));
         assert!(allowed_address("127.0.0.1".parse().unwrap(), true));
+        assert!(allowed_address("::1".parse().unwrap(), true));
+        assert!(!allowed_address("::1".parse().unwrap(), false));
         assert!(!allowed_address("224.0.0.1".parse().unwrap(), true));
         assert!(!allowed_address("192.0.2.10".parse().unwrap(), true));
         assert!(validate_ports(&[22, 443, 22]).is_err());
