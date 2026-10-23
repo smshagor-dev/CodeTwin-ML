@@ -189,6 +189,16 @@ impl<'a> IsolatedWorker<'a> {
         }
     }
 
+    fn review_is_still_authorized(&self, run_id: &str) -> Result<bool, String> {
+        let allowed: i64 = self.db.connection().query_row(
+            "SELECT CASE WHEN status='approved' AND cancel_requested=0 THEN 1 ELSE 0 END
+             FROM native_agent_runs WHERE id=?1",
+            [run_id],
+            |row| row.get(0),
+        ).map_err(err)?;
+        Ok(allowed == 1)
+    }
+
     /// Explicit user action; never called automatically by an AI role or prompted suggestion.
     pub fn scan(&self, run_id: &str, authorized: bool) -> Result<IsolatedScanReceipt, String> {
         if !authorized {
@@ -219,6 +229,11 @@ impl<'a> IsolatedWorker<'a> {
             .as_nanos();
         let name = format!("codetwin-scan-{:x}", stamp);
         let args = build_args(&settings, &root, tmp.path(), &name, &user);
+        // Scope can be revoked while configuration is checked; fail closed
+        // before starting an external worker.
+        if !self.review_is_still_authorized(run_id)? {
+            return Err("Review authorization was cancelled before worker launch".into());
+        }
         let begin = Instant::now();
         let mut child = Command::new(&settings.docker)
             .args(&args)
@@ -228,6 +243,16 @@ impl<'a> IsolatedWorker<'a> {
             .spawn()
             .map_err(|e| format!("Could not start isolated container: {e}"))?;
         let status = loop {
+            // A cancelled review must stop the live Docker CLI, not merely
+            // change SQLite status while the container keeps running.
+            if !matches!(self.review_is_still_authorized(run_id), Ok(true)) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return match force_remove_container(&settings.docker, &name) {
+                    Ok(()) => Err("Worker stopped after review authorization was revoked; container removal confirmed".into()),
+                    Err(_) => Err("Worker stopped after authorization was revoked; container removal unconfirmed".into()),
+                };
+            }
             if let Some(status) = child.try_wait().map_err(err)? {
                 break status;
             }
@@ -252,6 +277,11 @@ impl<'a> IsolatedWorker<'a> {
             } else {
                 "Offline scanner exited unsuccessfully; container removal unconfirmed".into()
             });
+        }
+        // Also check after a successful child exit; consent can change
+        // before reading or committing any resulting scan evidence.
+        if !self.review_is_still_authorized(run_id)? {
+            return Err("Review authorization was revoked before recording worker results".into());
         }
         let path = tmp.path().join("report.json");
         let bytes = read_scanner_report(&path)?;
@@ -446,6 +476,25 @@ mod tests {
     #[test]
     fn cleanup_deadline_is_bounded() {
         assert!(CLEANUP_TIMEOUT < Duration::from_secs(MAX_RUN_SECONDS));
+    }
+
+    #[test]
+    fn cancelled_review_revokes_live_worker_permission() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file.ts"), "export const test=true;").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let agents = NativeAgents::new(&db);
+        let run = agents.create(&project, "Authorized scanner review", 10, 120).unwrap();
+        let worker = IsolatedWorker::new(&db);
+        assert!(!worker.review_is_still_authorized(&run.id).unwrap());
+        agents.approve(&run.id).unwrap();
+        assert!(worker.review_is_still_authorized(&run.id).unwrap());
+        agents.cancel(&run.id).unwrap();
+        assert!(!worker.review_is_still_authorized(&run.id).unwrap());
     }
 
     #[test]
