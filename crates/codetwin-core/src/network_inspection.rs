@@ -3,8 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
-    sync::mpsc,
+    net::{IpAddr, SocketAddr, TcpStream},
     thread,
     time::{Duration, Instant},
 };
@@ -124,7 +123,7 @@ pub fn inspect_tcp(scope: &NetworkScope) -> Result<NetworkInspection, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
+    use std::net::{Ipv4Addr, TcpListener};
 
     fn scope(port: u16) -> NetworkScope {
         NetworkScope {
