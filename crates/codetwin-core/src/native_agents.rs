@@ -582,8 +582,10 @@ impl<'a> NativeAgents<'a> {
                     .iter()
                     .find(|step| step.position == task.position)
                     .ok_or("Ready specialist does not match the approved review")?;
-                if !matches!(step.tool.as_str(), "secrets" | "qa" | "database" | "runtime")
-                    || step.role != task.role
+                if !matches!(
+                    step.tool.as_str(),
+                    "secrets" | "qa" | "database" | "runtime"
+                ) || step.role != task.role
                     || step.tool != task.tool
                 {
                     return Err("Go-ready batch contained an unregistered specialist".into());
@@ -648,9 +650,7 @@ impl<'a> NativeAgents<'a> {
                 } else {
                     steps
                         .iter()
-                        .map(|step| {
-                            run_passive_specialist(self.db, &run.project_id, &step.tool)
-                        })
+                        .map(|step| run_passive_specialist(self.db, &run.project_id, &step.tool))
                         .collect()
                 }
             } else {
@@ -1224,7 +1224,12 @@ mod tests {
                     "Approved passive team review",
                     10,
                     300,
-                    &["scout".into(), "source".into(), "secrets".into(), "qa".into()],
+                    &[
+                        "scout".into(),
+                        "source".into(),
+                        "secrets".into(),
+                        "qa".into(),
+                    ],
                 )
                 .unwrap();
             NativeAgents::new(&db).approve(&run.id).unwrap();
@@ -1246,10 +1251,12 @@ mod tests {
                 decisions.into_inner(),
                 vec!["scout", "source", "secrets", "qa"]
             );
-            assert!(crate::native_agent_handoffs::AgentHandoffs::new(&db)
-                .verify(&run.id)
-                .unwrap()
-                .verified);
+            assert!(
+                crate::native_agent_handoffs::AgentHandoffs::new(&db)
+                    .verify(&run.id)
+                    .unwrap()
+                    .verified
+            );
             let receipts = crate::native_action_log::NativeActionLog::new(&db)
                 .list(&run.id)
                 .unwrap();
@@ -1262,10 +1269,12 @@ mod tests {
         assert_eq!(saved.status, "completed");
         assert_eq!(saved.steps.len(), 4);
         assert!(saved.steps.iter().all(|step| step.status == "completed"));
-        assert!(crate::native_agent_handoffs::AgentHandoffs::new(&db)
-            .verify(&id)
-            .unwrap()
-            .verified);
+        assert!(
+            crate::native_agent_handoffs::AgentHandoffs::new(&db)
+                .verify(&id)
+                .unwrap()
+                .verified
+        );
     }
 
     #[test]
@@ -1285,7 +1294,12 @@ mod tests {
                 "Deny unverified parallel reviewer",
                 10,
                 300,
-                &["scout".into(), "source".into(), "secrets".into(), "qa".into()],
+                &[
+                    "scout".into(),
+                    "source".into(),
+                    "secrets".into(),
+                    "qa".into(),
+                ],
             )
             .unwrap();
         NativeAgents::new(&db).approve(&run.id).unwrap();
@@ -1300,7 +1314,9 @@ mod tests {
             .execute_with_dispatch(&run.id, &policy)
             .unwrap();
         assert_eq!(result.status, "failed");
-        assert!(result.steps[2..].iter().all(|step| step.status == "skipped"));
+        assert!(result.steps[2..]
+            .iter()
+            .all(|step| step.status == "skipped"));
         let receipts = crate::native_action_log::NativeActionLog::new(&db)
             .list(&run.id)
             .unwrap();
