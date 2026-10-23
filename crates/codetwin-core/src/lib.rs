@@ -17,6 +17,7 @@ pub mod native_neural_embeddings;
 pub mod native_task_plans;
 pub mod native_worker_audit;
 pub mod network_inspection;
+pub mod network_inspection_store;
 pub mod tool_catalog;
 pub use tool_catalog::{CatalogRunSummary, CatalogTool, ToolCatalogService};
 pub mod git_review;
