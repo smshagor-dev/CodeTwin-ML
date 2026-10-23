@@ -96,6 +96,24 @@ CodeTwin never bypasses certificate verification to diagnose a failure.
 Successful HTTPS observations still mean one platform-trusted HEAD request,
 not a complete certificate expiry, TLS version or cipher-suite assessment.
 
+## Trusted certificate identity
+
+For a successful, platform-trusted, DNS-pinned HTTPS HEAD request, reqwest
+optionally exposes the DER-encoded leaf certificate. CodeTwin computes its
+SHA-256 digest in memory and stores only that 64-character fingerprint inside
+the existing `https_posture_json`. A missing leaf or one exceeding 64 KiB is
+reported as **not observed**: the network review remains an ordinary trust
+check, and no certificate validity claim is inferred. No raw certificate,
+private key, issuer name or SAN is persisted, and this addition makes no
+second request to the target. Existing SQLite records without the new
+`certificate_sha256` JSON field still deserialize cleanly.
+
+A leaf fingerprint can help compare successive authorized assessments but
+is not by itself proof that the TLS configuration is secure. Issuer,
+subjectAltName, notBefore/notAfter, trust chains and protocol/cipher
+measurements remain outside the implemented scope. Neither an absent
+fingerprint nor a changed fingerprint independently proves a vulnerability.
+
 Changing the target, ports, budget or private-network option in the desktop
 review clears the authorization checkbox. The separate Tool Library
 private-network and DNS checks likewise require fresh confirmation when
