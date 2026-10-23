@@ -47,6 +47,21 @@ pub struct AgentRun {
     pub steps: Vec<AgentStep>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoricalEvidenceIssue {
+    pub review_id: String,
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoricalEvidenceAudit {
+    pub project_id: String,
+    pub total_completed: usize,
+    pub checked: usize,
+    pub verified: usize,
+    pub invalid: Vec<HistoricalEvidenceIssue>,
+}
+
 pub struct NativeAgents<'a> {
     db: &'a Database,
 }
@@ -205,6 +220,77 @@ impl<'a> NativeAgents<'a> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(to_error)?;
         ids.iter().map(|id| self.get(id)).collect()
+    }
+
+    /// Read-only, bounded historical integrity audit for a single project.
+    /// Include only completed reviews; a failed or cancelled review is not
+    /// misrepresented as verified evidence. Older runs without a complete
+    /// action ledger are reported as unverified rather than silently accepted.
+    pub fn audit_completed_history(
+        &self,
+        project_id: &str,
+        limit: usize,
+    ) -> Result<HistoricalEvidenceAudit, String> {
+        if !(1..=200).contains(&limit) {
+            return Err("History audit limit must be between 1 and 200".into());
+        }
+        WorkspaceService::new(self.db)
+            .get_project(project_id)
+            .map_err(to_error)?
+            .ok_or("Choose an indexed project")?;
+        let total_completed: usize = self
+            .db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM native_agent_runs
+                 WHERE project_id=?1 AND status='completed'",
+                [project_id],
+                |row| row.get(0),
+            )
+            .map_err(to_error)?;
+        let ids = {
+            let mut query = self
+                .db
+                .connection()
+                .prepare(
+                    "SELECT id FROM native_agent_runs
+                     WHERE project_id=?1 AND status='completed'
+                     ORDER BY rowid DESC LIMIT ?2",
+                )
+                .map_err(to_error)?;
+            query
+                .query_map(params![project_id, limit], |row| row.get::<_, String>(0))
+                .map_err(to_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(to_error)?
+        };
+        let mut verified = 0usize;
+        let mut invalid = Vec::new();
+        for id in &ids {
+            match self.verify_evidence(id) {
+                Ok(check) if check.verified => verified += 1,
+                Ok(check) => invalid.push(HistoricalEvidenceIssue {
+                    review_id: id.clone(),
+                    issues: check
+                        .issues
+                        .into_iter()
+                        .take(3)
+                        .map(|item| item.chars().take(200).collect())
+                        .collect(),
+                }),
+                Err(reason) => invalid.push(HistoricalEvidenceIssue {
+                    review_id: id.clone(),
+                    issues: vec![reason.chars().take(200).collect()],
+                }),
+            }
+        }
+        Ok(HistoricalEvidenceAudit {
+            project_id: project_id.to_string(),
+            total_completed,
+            checked: ids.len(),
+            verified,
+            invalid,
+        })
     }
 
     pub fn approve(&self, id: &str) -> Result<AgentRun, String> {
