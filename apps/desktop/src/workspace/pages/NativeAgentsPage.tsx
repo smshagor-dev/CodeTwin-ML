@@ -1160,7 +1160,10 @@ export function NativeAgentsPage() {
               Verified {historyAudit.verified} of {historyAudit.checked} checked completed reviews
               {" · "}{historyAudit.total_completed} total completed.
               {historyAudit.next_before_rowid
-                ? " Older completed reviews remain unaudited." : " All currently reachable pages were checked."}
+                ? " Older completed reviews remain unaudited."
+                : historyAudit.checked < historyAudit.total_completed
+                  ? " No older pages remain; restart the audit to include reviews created during pagination."
+                  : " All completed reviews in this audit were checked."}
             </p>
             {historyAudit.next_before_rowid && <button
               className="ws-button ws-button-secondary"
