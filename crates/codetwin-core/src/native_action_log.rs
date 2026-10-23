@@ -200,7 +200,9 @@ mod tests {
             let receipts = log.list(&run.id).unwrap();
             assert_eq!(receipts.len(), 2);
             assert!(receipts.iter().all(|receipt| receipt.status == "running"));
-            assert!(receipts.iter().all(|receipt| receipt.result_sha256.is_none()));
+            assert!(receipts
+                .iter()
+                .all(|receipt| receipt.result_sha256.is_none()));
             run.id
         };
 
@@ -211,9 +213,7 @@ mod tests {
         agents.recover_interrupted().unwrap();
         let run = agents.get(&run_id).unwrap();
         assert_eq!(run.status, "interrupted");
-        assert!(run.steps[..2]
-            .iter()
-            .all(|step| step.status == "completed"));
+        assert!(run.steps[..2].iter().all(|step| step.status == "completed"));
         assert!(run.steps[2..]
             .iter()
             .all(|step| step.status == "interrupted"));
