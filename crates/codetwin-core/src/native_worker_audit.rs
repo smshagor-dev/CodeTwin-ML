@@ -30,13 +30,21 @@ impl<'a> WorkerAudit<'a> {
         if run.status != "approved" {
             return Err("Worker run requires an approved local review".into());
         }
-        self.db
+        // The authorization check and insert must happen in the same SQLite
+        // statement, so cancellation cannot race a previously read snapshot.
+        let inserted = self
+            .db
             .connection()
             .execute(
-                "INSERT INTO native_worker_audit(run_id) VALUES(?1)",
+                "INSERT INTO native_worker_audit(run_id)
+                 SELECT id FROM native_agent_runs
+                 WHERE id=?1 AND status='approved' AND cancel_requested=0",
                 [run_id],
             )
             .map_err(err)?;
+        if inserted != 1 {
+            return Err("Worker authorization was revoked before starting".into());
+        }
         Ok(self.db.connection().last_insert_rowid())
     }
 
@@ -45,57 +53,97 @@ impl<'a> WorkerAudit<'a> {
         audit_id: i64,
         outcome: &Result<IsolatedScanReceipt, String>,
     ) -> Result<(), String> {
-        let changed = match outcome {
-            Ok(receipt) => self
-                .db
-                .connection()
-                .execute(
-                    "UPDATE native_worker_audit SET status='success',image_digest=?2,
-                 report_sha256=?3,vulnerability_count=?4,misconfiguration_count=?5,
-                 finished_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='running'",
-                    params![
-                        audit_id,
-                        receipt.image_digest,
-                        receipt.report_sha256,
-                        receipt.vulnerability_count,
-                        receipt.misconfiguration_count
-                    ],
-                )
-                .map_err(err)?,
-            Err(_) => {
-                // Read the approved review's cancellation flag, not the
-                // untrusted worker error string; error codes never persist paths.
-                let cancelled: i64 = self
+        match outcome {
+            Ok(receipt) => {
+                // Never accept a receipt from another review. Atomic SQLite
+                // authorization check prevents a cancellation/commit race.
+                let changed = self
                     .db
                     .connection()
-                    .query_row(
-                        "SELECT n.cancel_requested FROM native_agent_runs n
-                     JOIN native_worker_audit a ON a.run_id=n.id WHERE a.id=?1",
-                        [audit_id],
-                        |row| row.get(0),
-                    )
-                    .map_err(err)?;
-                self.db
-                    .connection()
                     .execute(
-                        "UPDATE native_worker_audit SET status='failed',error_code=?2,
-                         finished_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='running'",
+                        "UPDATE native_worker_audit SET status='success',image_digest=?2,
+                         report_sha256=?3,vulnerability_count=?4,misconfiguration_count=?5,
+                         finished_at=CURRENT_TIMESTAMP
+                         WHERE id=?1 AND run_id=?6 AND status='running'
+                         AND EXISTS (
+                           SELECT 1 FROM native_agent_runs
+                           WHERE id=native_worker_audit.run_id
+                             AND status='approved' AND cancel_requested=0
+                         )",
                         params![
                             audit_id,
-                            if cancelled != 0 {
+                            receipt.image_digest,
+                            receipt.report_sha256,
+                            receipt.vulnerability_count,
+                            receipt.misconfiguration_count,
+                            receipt.run_id
+                        ],
+                    )
+                    .map_err(err)?;
+                if changed == 1 {
+                    return Ok(());
+                }
+                // A revoked review is a terminal failed attempt. Never
+                // persist its scanner findings as a successful receipt.
+                let revoked = self
+                    .db
+                    .connection()
+                    .execute(
+                        "UPDATE native_worker_audit
+                         SET status='failed',error_code='worker_cancelled',
+                             finished_at=CURRENT_TIMESTAMP
+                         WHERE id=?1 AND status='running'
+                         AND EXISTS (
+                           SELECT 1 FROM native_agent_runs
+                           WHERE id=native_worker_audit.run_id
+                             AND (status!='approved' OR cancel_requested!=0)
+                         )",
+                        [audit_id],
+                    )
+                    .map_err(err)?;
+                if revoked == 1 {
+                    return Err("Worker receipt rejected after review authorization changed".into());
+                }
+                Err("Worker receipt does not match its active audit entry".into())
+            }
+            Err(reason) => {
+                let cleanup_unconfirmed = cleanup_unconfirmed(reason);
+                // Only fixed codes reach the durable ledger; never raw
+                // Docker stderr, local paths, target data or credentials.
+                let changed = self
+                    .db
+                    .connection()
+                    .execute(
+                        "UPDATE native_worker_audit
+                         SET status='failed',
+                             error_code=CASE WHEN EXISTS (
+                               SELECT 1 FROM native_agent_runs
+                               WHERE id=native_worker_audit.run_id
+                                 AND (status!='approved' OR cancel_requested!=0)
+                             ) THEN ?2 ELSE ?3 END,
+                             finished_at=CURRENT_TIMESTAMP
+                         WHERE id=?1 AND status='running'",
+                        params![
+                            audit_id,
+                            if cleanup_unconfirmed {
+                                "worker_cancelled_cleanup_unconfirmed"
+                            } else {
                                 "worker_cancelled"
+                            },
+                            if cleanup_unconfirmed {
+                                "worker_cleanup_unconfirmed"
                             } else {
                                 "worker_failed"
                             }
                         ],
                     )
-                    .map_err(err)?
+                    .map_err(err)?;
+                if changed != 1 {
+                    return Err("Worker audit cannot be finalized twice".into());
+                }
+                Ok(())
             }
-        };
-        if changed != 1 {
-            return Err("Worker audit cannot be finalized twice".into());
         }
-        Ok(())
     }
 
     pub fn list(&self, run_id: &str) -> Result<Vec<WorkerAuditRecord>, String> {
@@ -145,6 +193,17 @@ impl<'a> WorkerAudit<'a> {
     pub fn latest(&self, run_id: &str) -> Result<Option<WorkerAuditRecord>, String> {
         Ok(self.list(run_id)?.into_iter().next())
     }
+}
+
+/// Recognize only our own fixed supervisor outcomes. Untrusted process
+/// errors cannot inject arbitrary classifications or audit text.
+fn cleanup_unconfirmed(reason: &str) -> bool {
+    matches!(
+        reason,
+        "Worker stopped after authorization was revoked; container removal unconfirmed"
+            | "Isolated scan timed out; Docker container removal could not be confirmed"
+            | "Offline scanner exited unsuccessfully; container removal unconfirmed"
+    )
 }
 
 fn err(error: impl std::fmt::Display) -> String {
@@ -204,4 +263,101 @@ mod tests {
             "interrupted"
         );
     }
+    #[test]
+    fn rejected_success_after_cancellation_never_persists_findings() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file.ts"), "export const ok=true;").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let agents = crate::native_agents::NativeAgents::new(&db);
+        let run = agents.create(&project, "Scope", 10, 120).unwrap();
+        agents.approve(&run.id).unwrap();
+        let audit = WorkerAudit::new(&db);
+        let ticket = audit.begin(&run.id).unwrap();
+        let receipt = IsolatedScanReceipt {
+            run_id: run.id.clone(),
+            image_digest: format!("scanner@sha256:{}", "a".repeat(64)),
+            report_sha256: "b".repeat(64),
+            vulnerability_count: 9,
+            misconfiguration_count: 2,
+            runtime_seconds: 1,
+            warnings: Vec::new(),
+        };
+        agents.cancel(&run.id).unwrap();
+        assert!(audit.finish(ticket, &Ok(receipt)).is_err());
+        let record = audit.latest(&run.id).unwrap().unwrap();
+        assert_eq!(record.status, "failed");
+        assert_eq!(record.error_code.as_deref(), Some("worker_cancelled"));
+        assert!(record.report_sha256.is_none());
+        assert!(record.vulnerability_count.is_none());
+    }
+
+    #[test]
+    fn mismatched_receipt_cannot_finish_another_reviews_audit() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file.ts"), "export const test=1;").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let agents = crate::native_agents::NativeAgents::new(&db);
+        let run = agents.create(&project, "Scope", 10, 120).unwrap();
+        agents.approve(&run.id).unwrap();
+        let audit = WorkerAudit::new(&db);
+        let ticket = audit.begin(&run.id).unwrap();
+        let mut receipt = IsolatedScanReceipt {
+            run_id: "different-review".into(),
+            image_digest: format!("scanner@sha256:{}", "a".repeat(64)),
+            report_sha256: "b".repeat(64),
+            vulnerability_count: 1,
+            misconfiguration_count: 0,
+            runtime_seconds: 1,
+            warnings: Vec::new(),
+        };
+        assert!(audit.finish(ticket, &Ok(receipt)).is_err());
+        assert_eq!(audit.latest(&run.id).unwrap().unwrap().status, "running");
+        receipt.run_id = run.id.clone();
+        audit.finish(ticket, &Ok(receipt)).unwrap();
+        assert_eq!(audit.latest(&run.id).unwrap().unwrap().status, "success");
+    }
+
+    #[test]
+    fn cleanup_failures_receive_fixed_audit_codes() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file.ts"), "export const test=1;").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let agents = crate::native_agents::NativeAgents::new(&db);
+        let run = agents.create(&project, "Scope", 10, 120).unwrap();
+        agents.approve(&run.id).unwrap();
+        let audit = WorkerAudit::new(&db);
+        let ticket = audit.begin(&run.id).unwrap();
+        audit.finish(
+            ticket,
+            &Err("Offline scanner exited unsuccessfully; container removal unconfirmed".into()),
+        ).unwrap();
+        assert_eq!(
+            audit.latest(&run.id).unwrap().unwrap().error_code.as_deref(),
+            Some("worker_cleanup_unconfirmed")
+        );
+        let next = audit.begin(&run.id).unwrap();
+        agents.cancel(&run.id).unwrap();
+        audit.finish(
+            next,
+            &Err("Worker stopped after authorization was revoked; container removal unconfirmed".into()),
+        ).unwrap();
+        assert_eq!(
+            audit.latest(&run.id).unwrap().unwrap().error_code.as_deref(),
+            Some("worker_cancelled_cleanup_unconfirmed")
+        );
+        assert!(!cleanup_unconfirmed("untrusted error: container removal unconfirmed"));
+    }
+
 }
