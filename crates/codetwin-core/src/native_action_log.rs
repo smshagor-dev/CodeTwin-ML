@@ -66,6 +66,32 @@ impl<'a> NativeActionLog<'a> {
         successful: bool,
         result: &str,
     ) -> Result<(), String> {
+        self.finish_internal(run_id, position, role, successful, result, false)
+    }
+
+    /// Used by the Rust review supervisor after a registered specialist joins.
+    /// Commits delegation, step result and action digest together. This avoids
+    /// a crashed supervisor leaving completed delegation without evidence.
+    pub(crate) fn finish_supervised(
+        &self,
+        run_id: &str,
+        position: usize,
+        role: &str,
+        successful: bool,
+        result: &str,
+    ) -> Result<(), String> {
+        self.finish_internal(run_id, position, role, successful, result, true)
+    }
+
+    fn finish_internal(
+        &self,
+        run_id: &str,
+        position: usize,
+        role: &str,
+        successful: bool,
+        result: &str,
+        supervised: bool,
+    ) -> Result<(), String> {
         let digest = format!("{:x}", Sha256::digest(result.as_bytes()));
         let state = if successful { "completed" } else { "failed" };
         let tx = self.db.connection().unchecked_transaction().map_err(err)?;
@@ -94,6 +120,18 @@ impl<'a> NativeActionLog<'a> {
             .map_err(err)?;
         if changed != 1 {
             return Err("Action step changed before completion".into());
+        }
+        if supervised {
+            let changed = tx
+                .execute(
+                    "UPDATE native_delegation_tasks SET status=?4
+                     WHERE run_id=?1 AND position=?2 AND tool=?3 AND status='running'",
+                    params![run_id, position, role, state],
+                )
+                .map_err(err)?;
+            if changed != 1 {
+                return Err("Delegated specialist changed before evidence commit".into());
+            }
         }
         tx.commit().map_err(err)
     }
