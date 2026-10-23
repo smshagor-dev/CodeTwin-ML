@@ -667,28 +667,50 @@ impl<'a> NativeAgents<'a> {
             // run before evidence is accepted; parent finalization will close
             // any claimed but unfinished action receipts on failure.
             self.boundary(&run.id, start, run.budget_seconds)?;
-            let mut first_failure = None;
-            for (step, outcome) in steps.iter().zip(outcomes) {
-                let passed = outcome.is_ok();
-                let summary = match outcome {
-                    Ok(summary) => summary,
-                    Err(reason) => {
-                        if first_failure.is_none() {
-                            first_failure = Some(reason.clone());
-                        }
-                        reason
-                    }
-                };
-                delegation.finish(&run.id, step.position, passed)?;
-                log.finish(&run.id, step.position, &step.tool, passed, &summary)?;
-                if passed {
-                    handoffs.record(&run.id, step.position)?;
-                }
-            }
-            if let Some(error) = first_failure {
-                return Err(error);
-            }
+            // Accept or reject each joined worker independently; a failing
+            // sibling cannot erase successful receipts or authorize a new DAG
+            // branch. Failures are retained in the original role order.
+            self.finish_verified_batch(run, &steps, outcomes)?;
             remaining -= steps.len();
+        }
+        Ok(())
+    }
+
+    fn finish_verified_batch(
+        &self,
+        run: &AgentRun,
+        steps: &[&AgentStep],
+        outcomes: Vec<Result<String, String>>,
+    ) -> Result<(), String> {
+        if outcomes.len() != steps.len() || steps.is_empty() || steps.len() > 2 {
+            return Err("Invalid bounded specialist result count".into());
+        }
+        let delegation = crate::native_agent_delegation::NativeDelegation::new(self.db);
+        let handoffs = crate::native_agent_handoffs::AgentHandoffs::new(self.db);
+        let log = crate::native_action_log::NativeActionLog::new(self.db);
+        let mut first_failure = None;
+        for (step, outcome) in steps.iter().zip(outcomes) {
+            let passed = outcome.is_ok();
+            let summary = match outcome {
+                Ok(summary) => summary,
+                Err(reason) => {
+                    if first_failure.is_none() {
+                        first_failure = Some(reason.clone());
+                    }
+                    reason
+                }
+            };
+            delegation.finish(&run.id, step.position, passed)?;
+            log.finish(&run.id, step.position, &step.tool, passed, &summary)?;
+            // Never create new downstream handoffs from a failed batch.
+            // The successful sibling's evidence remains visible in its own
+            // committed receipt, but dependent work cannot be dispatched.
+            if passed && first_failure.is_none() {
+                handoffs.record(&run.id, step.position)?;
+            }
+        }
+        if let Some(error) = first_failure {
+            return Err(error);
         }
         Ok(())
     }
