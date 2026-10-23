@@ -39,6 +39,35 @@ export type NativeAgentRun = {
   steps: NativeAgentStep[];
 };
 
+export type AutomatedSecurityFlow = {
+  review_id: string;
+  project_id: string;
+  objective: string;
+  mode: string;
+  status: string;
+  created_at: string;
+  approved_at: string | null;
+  completed_subtasks: number;
+  total_subtasks: number;
+  tasks: {
+    title: string;
+    subtasks: {
+      position: number;
+      role: string;
+      status: string;
+      requires: number[];
+      actions: {
+        position: number;
+        role: string;
+        status: string;
+        result_sha256: string | null;
+        started_at: string;
+        finished_at: string | null;
+      }[];
+    }[];
+  }[];
+};
+
 export type NativeAgentMemory = {
   project_id: string;
   run_id: string;
@@ -118,6 +147,7 @@ export function NativeAgentsPage() {
   const [neuralQuery, setNeuralQuery] = useState("");
   const [graphInference, setGraphInference] = useState<GraphInference | null>(null);
   const [selectedId, setSelectedId] = useState("");
+  const [automatedFlow, setAutomatedFlow] = useState<AutomatedSecurityFlow | null>(null);
   const [handoffs, setHandoffs] = useState<AgentHandoff[]>([]);
   const [verification, setVerification] = useState<AgentVerification | null>(null);
   const [objective, setObjective] = useState("Review the selected project's security, code quality and reliability. Report confirmed evidence and unresolved issues.");
@@ -240,6 +270,28 @@ export function NativeAgentsPage() {
     }).catch(reason => { if (active) setError(String(reason)); });
     return () => { active = false; };
   }, [activeProjectId, selectedId, runs]);
+
+  useEffect(() => {
+    const id = selectedId || runs[0]?.id;
+    if (!id) { setAutomatedFlow(null); return; }
+    let active = true;
+    void workspaceApi.getAutomatedSecurityFlow(id)
+      .then(result => { if (active) setAutomatedFlow(result); })
+      .catch(reason => { if (active) setError(String(reason)); });
+    return () => { active = false; };
+  }, [selectedId, runs]);
+
+  useEffect(() => {
+    if (busy !== "auto-flow") return;
+    const id = selectedId || runs[0]?.id;
+    if (!id) return;
+    const poll = window.setInterval(() => {
+      void workspaceApi.getAutomatedSecurityFlow(id)
+        .then(result => setAutomatedFlow(result))
+        .catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(poll);
+  }, [busy, selectedId, runs]);
 
   async function searchKnowledge() {
     if (!activeProjectId) return;
@@ -453,6 +505,37 @@ export function NativeAgentsPage() {
     } finally {
       setBusy("");
     }
+  }
+
+  async function prepareAutomatedFlow(id: string) {
+    if (!goStatus?.configured) return;
+    setBusy("auto-prepare"); setError("");
+    try {
+      setAutomatedFlow(await workspaceApi.prepareAutomatedSecurityFlow(id));
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+
+  async function runApprovedAutomatedFlow(id: string) {
+    setBusy("auto-flow"); setError("");
+    try {
+      setAutomatedFlow(await workspaceApi.runAutomatedSecurityFlow(id));
+      await refresh();
+    } catch (reason) { setError(String(reason)); await refresh(); }
+    finally { setBusy(""); }
+  }
+
+  async function approveAndRunAutomatedFlow(id: string) {
+    if (!goStatus?.configured || !window.confirm(
+      "Approve the displayed passive specialist DAG and automatically run every dependency-ready task? Rust retains tool permissions and SQLite evidence; any failure or cancellation stops the flow."
+    )) return;
+    setBusy("auto-flow"); setError("");
+    try {
+      setAutomatedFlow(await workspaceApi.approveAutomatedSecurityFlow(id));
+      setAutomatedFlow(await workspaceApi.runAutomatedSecurityFlow(id));
+      await refresh();
+    } catch (reason) { setError(String(reason)); await refresh(); }
+    finally { setBusy(""); }
   }
 
   function executeWithGo(id: string) {
@@ -716,6 +799,21 @@ export function NativeAgentsPage() {
     {selected && <Panel title="Review execution">
       <p><StatusBadge status={selected.status}/> <strong>{selected.objective}</strong></p>
       <p className="ws-form-help">Bounded to {selected.max_files} indexed files and {selected.budget_seconds} seconds at analyzer boundaries. Agents never bypass CodeTwin's existing security approval rules.</p>
+      {automatedFlow?.review_id === selected.id && <section>
+        <h3>Automated security flow</h3>
+        <p className="ws-form-help" role="status">
+          Flow {automatedFlow.status} · {automatedFlow.completed_subtasks} of {automatedFlow.total_subtasks} subtasks complete.
+          After one approval, the Go scheduler checks dependencies while Rust runs the approved passive specialists automatically.
+        </p>
+        {automatedFlow.tasks.map(task => <details key={task.title} open>
+          <summary><strong>{task.title}</strong></summary>
+          {task.subtasks.map(subtask => <p className="ws-form-help" key={subtask.position}>
+            {subtask.role} · {subtask.status}
+            {" · "}depends on: {subtask.requires.join(", ") || "none"}
+            {" · "}actions: {subtask.actions.map(action => action.status).join(", ") || "not started"}
+          </p>)}
+        </details>)}
+      </section>}
       <div className="ws-history-list">
         {selected.steps.map(step => <details key={step.position}>
           <summary><strong>{step.role}</strong> · {step.status}</summary>
@@ -864,9 +962,20 @@ export function NativeAgentsPage() {
         </p>}
       </section>
       <div className="ws-top-actions">
-        {selected.status === "planned" && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => void approve(selected.id)}>Approve plan</button>}
-        {selected.status === "approved" && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => execute(selected.id)}>Run approved review</button>}
-        {selected.status === "approved" && <button className="ws-button ws-button-secondary"
+        {selected.status === "planned" && !automatedFlow && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => void approve(selected.id)}>Approve plan</button>}
+        {selected.status === "planned" && !automatedFlow && <button className="ws-button ws-button-secondary"
+          disabled={!goStatus?.configured || Boolean(busy)}
+          onClick={() => void prepareAutomatedFlow(selected.id)}>Prepare automated flow</button>}
+        {selected.status === "planned" && automatedFlow?.review_id === selected.id && <button className="ws-button ws-button-primary"
+          disabled={!goStatus?.configured || Boolean(busy)}
+          onClick={() => void approveAndRunAutomatedFlow(selected.id)}>
+          {busy === "auto-flow" ? "Running approved flow…" : "Approve and run complete flow"}
+        </button>}
+        {selected.status === "approved" && automatedFlow?.review_id === selected.id && automatedFlow.approved_at && <button className="ws-button ws-button-primary"
+          disabled={!goStatus?.configured || Boolean(busy)}
+          onClick={() => void runApprovedAutomatedFlow(selected.id)}>Run approved automated flow</button>}
+        {selected.status === "approved" && !automatedFlow && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => execute(selected.id)}>Run approved review</button>}
+        {selected.status === "approved" && !automatedFlow && <button className="ws-button ws-button-secondary"
           disabled={!goStatus?.configured || Boolean(busy)}
           onClick={() => executeWithGo(selected.id)}>
           {busy === "go-run" ? "Running Go-verified review…" : "Run with Go scheduling checks"}

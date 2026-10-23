@@ -9,6 +9,7 @@ use std::{
 use codetwin_core::{
     native_agent_delegation::NativeDelegation,
     native_agent_memory::AgentMemory,
+    native_flow::{AutomatedFlow, NativeFlow},
     native_agents::{AgentRun, AgentStep, NativeAgents},
     native_task_plans::{parse_proposal, validate_proposal, TaskProposal},
     Database, WorkspaceService,
@@ -631,6 +632,77 @@ pub fn list_go_dispatch_audit(
         .collect()
 }
 
+/// A flow is an indexed, reviewed DAG. One explicit approval covers the
+/// full allowlisted chain; Go verifies every subsequent specialist decision.
+fn flow_db(app: &tauri::AppHandle) -> Result<Database, String> {
+    let dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    Database::open(dir.join("codetwin.sqlite3")).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn prepare_automated_security_flow(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<AutomatedFlow, String> {
+    let binary = binary_path()?;
+    probe_binary(&binary)?;
+    let db = flow_db(&app)?;
+    NativeFlow::new(&db).prepare(&id)
+}
+
+#[tauri::command]
+pub fn get_automated_security_flow(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Option<AutomatedFlow>, String> {
+    let db = flow_db(&app)?;
+    NativeFlow::new(&db).get(&id)
+}
+
+#[tauri::command]
+pub fn approve_automated_security_flow(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<AutomatedFlow, String> {
+    let binary = binary_path()?;
+    probe_binary(&binary)?;
+    let db = flow_db(&app)?;
+    NativeFlow::new(&db).approve(&id)
+}
+
+#[tauri::command]
+pub async fn run_automated_security_flow(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<AutomatedFlow, String> {
+    let binary = binary_path()?;
+    probe_binary(&binary)?;
+    let reservation = reserve_assessment(&state)?;
+    let path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _reservation = reservation;
+        let db = Database::open(path).map_err(|error| error.to_string())?;
+        let existing = NativeFlow::new(&db)
+            .get(&id)?
+            .ok_or("Prepare an automated flow before running it")?;
+        if existing.status != "approved" || existing.approved_at.is_none() {
+            return Err("Explicit flow approval is required before automated execution".into());
+        }
+        let check = |db: &Database, review: &AgentRun, task: &AgentStep| {
+            verify_and_record_go_step(db, review, task, &binary)
+        };
+        // The Rust supervisor automatically traverses the approved DAG,
+        // verifies each Go recommendation, and persists every SQLite receipt.
+        NativeAgents::new(&db).execute_with_dispatch(&id, &check)?;
+        NativeFlow::new(&db)
+            .get(&id)?
+            .ok_or("Completed flow could not be reloaded".into())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// Run the existing approved Rust specialists with a Go dispatch-policy check
 /// before *each* step. No unapproved sidecar command is ever executed.
 #[tauri::command]
@@ -727,7 +799,13 @@ mod tests {
                 &["scout".to_string(), "source".to_string()],
             )
             .expect("prepare source review");
-        reviews.approve(&run.id).expect("explicitly approve review");
+        let flow = codetwin_core::native_flow::NativeFlow::new(&db)
+            .prepare(&run.id)
+            .expect("prepare automated review hierarchy");
+        assert_eq!(flow.total_subtasks, 2);
+        codetwin_core::native_flow::NativeFlow::new(&db)
+            .approve(&run.id)
+            .expect("explicitly approve entire reviewed flow");
         let check = |db: &super::Database, run: &super::AgentRun, step: &super::AgentStep| {
             super::verify_and_record_go_step(db, run, step, &binary)
         };
@@ -749,6 +827,12 @@ mod tests {
             )
             .expect("count persisted scheduling decisions");
         assert_eq!(allowed, 2);
+        let flow = codetwin_core::native_flow::NativeFlow::new(&db)
+            .get(&run.id)
+            .expect("read persisted automated flow")
+            .expect("automated flow exists");
+        assert_eq!(flow.status, "completed");
+        assert_eq!(flow.completed_subtasks, flow.total_subtasks);
         let receipts = codetwin_core::native_action_log::NativeActionLog::new(&db)
             .list(&run.id)
             .expect("read Go-gated specialist action receipts");

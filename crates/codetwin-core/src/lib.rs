@@ -6,6 +6,7 @@ pub use git_commit::{
 };
 pub mod assessment_jobs;
 pub mod native_action_log;
+pub mod native_flow;
 pub mod native_agent_delegation;
 pub mod native_agent_handoffs;
 pub mod native_agent_knowledge;
