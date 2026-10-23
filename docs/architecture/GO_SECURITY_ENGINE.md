@@ -89,8 +89,11 @@ existing `native_agent_steps` table and the parent `native_agent_runs` status;
 no percentages are guessed, no additional migrations or background services
 are needed, and completed count is not confused with attempted count. Terminal
 failure, cancellation and interruption retain their original queue receipt and
-the last completed specialist count. All reads are local to SQLite, without
-sending source data or findings to Go.
+the last completed specialist count. When a specialist has failed, been
+interrupted, or been cancelled, the queue also shows its persisted display
+role and status (never scanner output or secrets). Tests compare the current
+role to the persisted display label, not the lower-case tool identifier.
+All reads are local to SQLite, without sending source data or findings to Go.
 
 ## Adaptive follow-up after failure or interruption
 
