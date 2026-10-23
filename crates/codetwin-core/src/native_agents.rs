@@ -375,6 +375,16 @@ impl<'a> NativeAgents<'a> {
         )
         .map_err(to_error)?;
         if status != "completed" {
+            // A panic or cancellation may leave an action in-flight after the
+            // specialist step was already claimed. Preserve the receipt, but
+            // close it as interrupted instead of pretending it never ran.
+            tx.execute(
+                "UPDATE native_action_log SET status='interrupted',
+                 finished_at=CURRENT_TIMESTAMP
+                 WHERE run_id=?1 AND status='running'",
+                [id],
+            )
+            .map_err(to_error)?;
             tx.execute(
                 "UPDATE native_delegation_tasks SET status='cancelled'
                  WHERE run_id=?1 AND status IN ('pending','running')",
