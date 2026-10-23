@@ -60,6 +60,9 @@ pub struct HistoricalEvidenceAudit {
     pub checked: usize,
     pub verified: usize,
     pub invalid: Vec<HistoricalEvidenceIssue>,
+    /// Exclusive, stable SQLite rowid cursor for the next older page.
+    /// None means the end of the completed-review history.
+    pub next_before_rowid: Option<i64>,
 }
 
 pub struct NativeAgents<'a> {
@@ -222,17 +225,31 @@ impl<'a> NativeAgents<'a> {
         ids.iter().map(|id| self.get(id)).collect()
     }
 
-    /// Read-only, bounded historical integrity audit for a single project.
-    /// Include only completed reviews; a failed or cancelled review is not
-    /// misrepresented as verified evidence. Older runs without a complete
-    /// action ledger are reported as unverified rather than silently accepted.
+    /// Read-only bounded integrity audit for completed reviews of one project.
+    /// Keep the original entrypoint for existing consumers and tests.
     pub fn audit_completed_history(
         &self,
         project_id: &str,
         limit: usize,
     ) -> Result<HistoricalEvidenceAudit, String> {
+        self.audit_completed_history_page(project_id, limit, None)
+    }
+
+    /// Cursor-based, oldest-remaining-page traversal over immutable SQLite
+    /// rowids. Newer reviews created between calls do not shift older pages;
+    /// a caller must start with None for a fresh latest-first audit.
+    /// A rowid cursor is a navigation hint, never an authorization boundary.
+    pub fn audit_completed_history_page(
+        &self,
+        project_id: &str,
+        limit: usize,
+        before_rowid: Option<i64>,
+    ) -> Result<HistoricalEvidenceAudit, String> {
         if !(1..=200).contains(&limit) {
             return Err("History audit limit must be between 1 and 200".into());
+        }
+        if before_rowid.is_some_and(|cursor| cursor <= 0) {
+            return Err("History audit cursor must be positive".into());
         }
         WorkspaceService::new(self.db)
             .get_project(project_id)
@@ -248,24 +265,37 @@ impl<'a> NativeAgents<'a> {
                 |row| row.get(0),
             )
             .map_err(to_error)?;
-        let ids = {
-            let mut query = self
+        // Fetch one extra row to determine if an older page exists. Unlike
+        // OFFSET, insertion of newer reviews will not duplicate or skip the
+        // previously visible older rows.
+        let mut records = {
+            let mut statement = self
                 .db
                 .connection()
                 .prepare(
-                    "SELECT id FROM native_agent_runs
+                    "SELECT rowid, id FROM native_agent_runs
                      WHERE project_id=?1 AND status='completed'
+                       AND (?3 IS NULL OR rowid < ?3)
                      ORDER BY rowid DESC LIMIT ?2",
                 )
                 .map_err(to_error)?;
-            let rows = query
-                .query_map(params![project_id, limit], |row| row.get::<_, String>(0))
+            let rows = statement
+                .query_map(params![project_id, limit + 1, before_rowid], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
                 .map_err(to_error)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(to_error)?
         };
+        let has_more = records.len() > limit;
+        records.truncate(limit);
+        let next_before_rowid = if has_more {
+            records.last().map(|(rowid, _)| *rowid)
+        } else {
+            None
+        };
         let mut verified = 0usize;
         let mut invalid = Vec::new();
-        for id in &ids {
+        for (_, id) in &records {
             match self.verify_evidence(id) {
                 Ok(check) if check.verified => verified += 1,
                 Ok(check) => invalid.push(HistoricalEvidenceIssue {
@@ -286,9 +316,10 @@ impl<'a> NativeAgents<'a> {
         Ok(HistoricalEvidenceAudit {
             project_id: project_id.to_string(),
             total_completed,
-            checked: ids.len(),
+            checked: records.len(),
             verified,
             invalid,
+            next_before_rowid,
         })
     }
 
