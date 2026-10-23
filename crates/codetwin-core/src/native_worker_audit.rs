@@ -65,21 +65,32 @@ impl<'a> WorkerAudit<'a> {
             Err(_) => {
                 // Read the approved review's cancellation flag, not the
                 // untrusted worker error string; error codes never persist paths.
-                let cancelled: i64 = self.db.connection().query_row(
-                    "SELECT n.cancel_requested FROM native_agent_runs n
+                let cancelled: i64 = self
+                    .db
+                    .connection()
+                    .query_row(
+                        "SELECT n.cancel_requested FROM native_agent_runs n
                      JOIN native_worker_audit a ON a.run_id=n.id WHERE a.id=?1",
-                    [audit_id],
-                    |row| row.get(0),
-                ).map_err(err)?;
+                        [audit_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(err)?;
                 self.db
                     .connection()
                     .execute(
                         "UPDATE native_worker_audit SET status='failed',error_code=?2,
                          finished_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='running'",
-                        params![audit_id, if cancelled != 0 { "worker_cancelled" } else { "worker_failed" }],
+                        params![
+                            audit_id,
+                            if cancelled != 0 {
+                                "worker_cancelled"
+                            } else {
+                                "worker_failed"
+                            }
+                        ],
                     )
                     .map_err(err)?
-            },
+            }
         };
         if changed != 1 {
             return Err("Worker audit cannot be finalized twice".into());
@@ -168,9 +179,16 @@ mod tests {
         assert!(audit.finish(id, &Err("retry".into())).is_err());
         let cancelled = audit.begin(&run.id).unwrap();
         agents.cancel(&run.id).unwrap();
-        audit.finish(cancelled, &Err("ignored raw worker output".into())).unwrap();
+        audit
+            .finish(cancelled, &Err("ignored raw worker output".into()))
+            .unwrap();
         assert_eq!(
-            audit.latest(&run.id).unwrap().unwrap().error_code.as_deref(),
+            audit
+                .latest(&run.id)
+                .unwrap()
+                .unwrap()
+                .error_code
+                .as_deref(),
             Some("worker_cancelled")
         );
         // An already cancelled review must not start another worker.
