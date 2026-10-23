@@ -76,6 +76,13 @@ approve/run the existing Rust review.
   findings or stored report content.
 - The same existing SQLite `native_agent_*` tables store approved reviews;
   no alternate database is created.
+- On restart after an interrupted active review, Rust atomically changes the
+  running specialist to `interrupted`, queued specialist steps to `cancelled`,
+  and unfinished delegated tasks to `cancelled`. Completed evidence and Go
+  scheduling audit records remain intact. The parent review becomes
+  `interrupted` with its cancellation flag set. Neither Go nor Rust will
+  automatically resume any of those tasks: a new review and approval are
+  required. Recovery can safely run more than once.
 
 ## Upstream and scope
 
