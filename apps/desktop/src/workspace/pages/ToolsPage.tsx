@@ -67,8 +67,8 @@ export function ToolsPage() {
     setNetworkError(""); setNetworkResult(null);
     if (!networkAuthorized) { setNetworkError("Confirm authorization first."); return; }
     const ports = networkPorts.split(",").map(part => Number(part.trim()));
-    if (!ports.length || ports.length > 32 || ports.some(port => !Number.isInteger(port) || port < 1 || port > 65535)) {
-      setNetworkError("Provide 1-32 comma-separated TCP ports."); return;
+    if (!ports.length || ports.length > 32 || ports.some(port => !Number.isInteger(port) || port < 1 || port > 65535) || new Set(ports).size !== ports.length) {
+      setNetworkError("Provide 1-32 unique comma-separated TCP ports."); return;
     }
     setNetworkBusy(true);
     try {
@@ -132,11 +132,11 @@ export function ToolsPage() {
       })}</div>
     </>}
     <Panel title="Authorized private-network TCP inspection">
-      <p className="ws-form-help">TCP connection reachability only. Supports explicitly approved private/loopback IP addresses, up to 32 ports and four concurrent connections. No public networks, DNS discovery, exploitation or command execution. Results are local to this screen.</p>
+      <p className="ws-form-help">TCP connection reachability only. Supports explicitly approved private/loopback IP addresses, up to 32 ports and four concurrent connections. No public networks, DNS discovery, exploitation or command execution. Results are persisted in local SQLite and can be reviewed below.</p>
       <label className="ws-field"><span>Authorized private or loopback IP address</span>
         <input value={networkTarget} onChange={event => { setNetworkTarget(event.target.value); setNetworkResult(null); setNetworkAuthorized(false); }} placeholder="127.0.0.1"/></label>
       <label className="ws-field"><span>TCP ports (comma-separated)</span>
-        <input value={networkPorts} onChange={event => setNetworkPorts(event.target.value)} placeholder="80,443,3000"/></label>
+        <input value={networkPorts} onChange={event => { setNetworkPorts(event.target.value); setNetworkAuthorized(false); setNetworkResult(null); }} placeholder="80,443,3000"/></label>
       <label className="ws-field"><span><input type="checkbox" checked={networkAuthorized} onChange={event => setNetworkAuthorized(event.target.checked)}/> I own or am explicitly authorized to inspect this target.</span></label>
       <button className="ws-button ws-button-secondary" disabled={!networkAuthorized || networkBusy} onClick={() => void inspectNetwork()}>{networkBusy ? "Inspecting…" : "Inspect TCP services"}</button>
       {networkError && <p role="alert">{networkError}</p>}
@@ -154,7 +154,7 @@ export function ToolsPage() {
     <Panel title="Authorized DNS address verification">
       <p className="ws-form-help">Exact-name, explicit IP allowlist, private/loopback addresses only. Fails closed if DNS returns any unauthorized address. No subdomain discovery or DNSSEC assertion.</p>
       <label className="ws-field"><span>Approved hostname</span><input value={dnsHost} onChange={event => { setDnsHost(event.target.value); setDnsAuthorized(false); setDnsResult(null); }}/></label>
-      <label className="ws-field"><span>Allowed resolved private IP addresses</span><input value={dnsAllowAddresses} onChange={event => { setDnsAllowAddresses(event.target.value); setDnsResult(null); }} placeholder="127.0.0.1,::1"/></label>
+      <label className="ws-field"><span>Allowed resolved private IP addresses</span><input value={dnsAllowAddresses} onChange={event => { setDnsAllowAddresses(event.target.value); setDnsAuthorized(false); setDnsResult(null); }} placeholder="127.0.0.1,::1"/></label>
       <label className="ws-field"><span><input type="checkbox" checked={dnsAuthorized} onChange={event => setDnsAuthorized(event.target.checked)}/> I am authorized to resolve this exact hostname and allowed IPs.</span></label>
       <button className="ws-button ws-button-secondary" disabled={!dnsAuthorized || dnsBusy} onClick={() => void inspectDns()}>{dnsBusy ? "Resolving…" : "Verify DNS addresses"}</button>
       {dnsError && <p role="alert">{dnsError}</p>}

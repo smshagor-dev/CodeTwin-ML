@@ -11,6 +11,21 @@ export type HttpsHeaderPosture = {
   referrer_policy_observed: boolean;
 };
 
+type HttpsFailureKind =
+  | "budget_exhausted"
+  | "setup_failed"
+  | "timeout"
+  | "connection_or_tls_failure"
+  | "request_failed";
+
+const httpsFailureLabels: Record<HttpsFailureKind, string> = {
+  budget_exhausted: "time budget exhausted",
+  setup_failed: "request setup failed",
+  timeout: "HTTPS request timed out",
+  connection_or_tls_failure: "connection or TLS handshake/trust failed",
+  request_failed: "HTTPS request failed",
+};
+
 export type NetworkProbe = {
   port: number;
   address: string;
@@ -18,6 +33,7 @@ export type NetworkProbe = {
   elapsed_ms: number;
   tls_status: "verified" | "not_verified" | null;
   https_posture: HttpsHeaderPosture | null;
+  https_failure_kind: HttpsFailureKind | null;
 };
 
 export type NetworkAssessmentRun = {
@@ -135,21 +151,21 @@ export function NetworkAssessmentPanel() {
       </p>
       <div className="ws-form-grid">
         <label className="ws-field"><span>Exact hostname or IP</span>
-          <input value={target} maxLength={253} onChange={event => setTarget(event.target.value)}
+          <input value={target} maxLength={253} onChange={event => { setTarget(event.target.value); setConsent(false); }}
             placeholder="127.0.0.1 or approved.example.org" />
         </label>
         <label className="ws-field"><span>TCP ports (max 16)</span>
-          <input value={ports} onChange={event => setPorts(event.target.value)}
+          <input value={ports} onChange={event => { setPorts(event.target.value); setConsent(false); }}
             placeholder="22,80,443,8080"/>
         </label>
         <label className="ws-field"><span>Overall budget (seconds)</span>
           <input type="number" value={budget} min={1} max={60}
-            onChange={event => setBudget(Math.max(1, Math.min(60, Number(event.target.value) || 1)))}/>
+            onChange={event => { setBudget(Math.max(1, Math.min(60, Number(event.target.value) || 1))); setConsent(false); }}/>
         </label>
       </div>
       <label className="ws-field">
         <span><input type="checkbox" checked={allowPrivate}
-          onChange={event => setAllowPrivate(event.target.checked)}/>
+          onChange={event => { setAllowPrivate(event.target.checked); setConsent(false); }}/>
           Permit private/loopback IPs for my authorized local or staging environment
         </span>
       </label>
@@ -203,7 +219,8 @@ export function NetworkAssessmentPanel() {
         <th>Port</th><th>TCP</th><th>Resolved address</th><th>Latency</th><th>HTTPS trust</th><th>HTTPS headers</th>
       </tr></thead><tbody>{selected.probes.map(result => <tr key={result.port}>
         <td>{result.port}</td><td>{result.status}</td><td>{result.address}</td>
-        <td>{result.elapsed_ms} ms</td><td>{result.tls_status ?? "Not checked"}</td>
+        <td>{result.elapsed_ms} ms</td><td>{result.tls_status ?? "Not checked"}
+          {result.https_failure_kind && ` · ${httpsFailureLabels[result.https_failure_kind]}`}</td>
         <td>{result.https_posture
           ? <span>HTTP {result.https_posture.http_status} · HSTS: {result.https_posture.hsts_state.replaceAll("_", " ")}
               {result.https_posture.hsts_max_age_seconds !== null && ` (max-age ${result.https_posture.hsts_max_age_seconds}s)`}
@@ -213,7 +230,7 @@ export function NetworkAssessmentPanel() {
           : "Not observed"}</td>
       </tr>)}</tbody></table>}
       <p className="ws-form-help">Evidence is scoped to this run. TLS verification checks
-        system trust for a single HTTPS HEAD request. Header presence is observational (a HEAD response may differ from other routes); it does not audit cipher suites, protocol versions or certificate expiry.</p>
+        system trust for a single HTTPS HEAD request. Header presence is observational (a HEAD response may differ from other routes); it does not audit cipher suites, protocol versions or certificate expiry. A failed HTTPS request is only classified into a short diagnostic category, not attributed to a specific certificate defect.</p>
     </Panel>}
   </div>;
 }

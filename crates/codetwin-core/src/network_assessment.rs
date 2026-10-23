@@ -40,6 +40,8 @@ pub struct NetworkProbe {
     pub elapsed_ms: u64,
     pub tls_status: Option<String>,
     pub https_posture: Option<HttpsHeaderPosture>,
+    /// Fixed diagnostic category only; never stores network errors or certificate details.
+    pub https_failure_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,7 +157,7 @@ impl<'a> NetworkAssessment<'a> {
             .db
             .connection()
             .prepare(
-                "SELECT port,address,status,elapsed_ms,tls_status,https_posture_json FROM network_assessment_probes
+                "SELECT port,address,status,elapsed_ms,tls_status,https_posture_json,https_failure_kind FROM network_assessment_probes
              WHERE run_id=?1 ORDER BY port",
             )
             .map_err(err)?;
@@ -174,6 +176,7 @@ impl<'a> NetworkAssessment<'a> {
                     elapsed_ms: row.get(3)?,
                     tls_status: row.get(4)?,
                     https_posture,
+                    https_failure_kind: row.get(6)?,
                 })
             })
             .map_err(err)?
@@ -288,7 +291,7 @@ impl<'a> NetworkAssessment<'a> {
                 return Err("Assessment time budget expired".into());
             }
             let connection = TcpStream::connect_timeout(&socket, timeout);
-            let (state, tls_status, posture) = match connection {
+            let (state, tls_status, posture, https_failure_kind) = match connection {
                 Ok(stream) => {
                     drop(stream);
                     if matches!(port, 443 | 8443) {
@@ -296,8 +299,8 @@ impl<'a> NetworkAssessment<'a> {
                         let tls_remaining = Duration::from_secs(budget_seconds as u64)
                             .saturating_sub(deadline.elapsed())
                             .min(Duration::from_secs(2));
-                        let observed = if tls_remaining.is_zero() {
-                            None
+                        let (observed, failure_kind) = if tls_remaining.is_zero() {
+                            (None, Some("budget_exhausted"))
                         } else {
                             https_header_probe(&run.target, socket, tls_remaining)
                         };
@@ -306,12 +309,17 @@ impl<'a> NetworkAssessment<'a> {
                         } else {
                             "not_verified"
                         };
-                        ("open", Some(trust.to_string()), observed)
+                        (
+                            "open",
+                            Some(trust.to_string()),
+                            observed,
+                            failure_kind.map(str::to_owned),
+                        )
                     } else {
-                        ("open", None, None)
+                        ("open", None, None, None)
                     }
                 }
-                Err(error) => (classify_error(&error), None, None),
+                Err(error) => (classify_error(&error), None, None, None),
             };
             let posture_json = posture
                 .as_ref()
@@ -322,8 +330,8 @@ impl<'a> NetworkAssessment<'a> {
                 .connection()
                 .execute(
                     "INSERT INTO network_assessment_probes
-                 (run_id,port,address,status,elapsed_ms,tls_status,https_posture_json)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                 (run_id,port,address,status,elapsed_ms,tls_status,https_posture_json,https_failure_kind)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
                     params![
                         id,
                         port,
@@ -332,6 +340,7 @@ impl<'a> NetworkAssessment<'a> {
                         started.elapsed().as_millis() as i64,
                         tls_status,
                         posture_json,
+                        https_failure_kind,
                     ],
                 )
                 .map_err(err)?;
@@ -348,29 +357,43 @@ fn https_header_probe(
     target: &str,
     address: SocketAddr,
     timeout: Duration,
-) -> Option<HttpsHeaderPosture> {
+) -> (Option<HttpsHeaderPosture>, Option<&'static str>) {
     if timeout.is_zero() {
-        return None;
+        return (None, Some("budget_exhausted"));
     }
     let authority = if target.contains(':') {
         format!("[{target}]")
     } else {
         target.to_owned()
     };
-    let url = Url::parse(&format!("https://{authority}:{}/", address.port())).ok()?;
-    let client = Client::builder()
+    let Ok(url) = Url::parse(&format!("https://{authority}:{}/", address.port())) else {
+        return (None, Some("setup_failed"));
+    };
+    let client = match Client::builder()
         .timeout(timeout)
         .redirect(Policy::none())
         .no_proxy()
         .resolve(target, address)
         .build()
-        .ok()?;
-    let response = client.head(url).send().ok()?;
-    Some(classify_https_headers(
-        target,
-        response.status().as_u16(),
-        response.headers(),
-    ))
+    {
+        Ok(client) => client,
+        Err(_) => return (None, Some("setup_failed")),
+    };
+    match client.head(url).send() {
+        Ok(response) => (
+            Some(classify_https_headers(
+                target,
+                response.status().as_u16(),
+                response.headers(),
+            )),
+            None,
+        ),
+        Err(error) if error.is_timeout() => (None, Some("timeout")),
+        // Connection failures also include TLS and trust errors. Do not claim
+        // a certificate is invalid without certificate-chain evidence.
+        Err(error) if error.is_connect() => (None, Some("connection_or_tls_failure")),
+        Err(_) => (None, Some("request_failed")),
+    }
 }
 
 /// Absence from a HEAD response means "not observed", not a confirmed
@@ -538,7 +561,10 @@ fn allowed_address(ip: IpAddr, allow_private: bool) -> bool {
             if let Some(v4) = v6.to_ipv4() {
                 return allowed_address(IpAddr::V4(v4), allow_private);
             }
-            if v6.is_unspecified() || v6.is_multicast() {
+            if v6.is_unspecified()
+                || v6.is_multicast()
+                || (v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0db8)
+            {
                 return false;
             }
             let local = v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local();
@@ -624,6 +650,53 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cols, 1);
+        let diagnostic_cols: i64 = db
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('network_assessment_probes') \
+                 WHERE name='https_failure_kind'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(diagnostic_cols, 1);
+    }
+
+    #[test]
+    fn https_failure_categories_are_sanitized_and_round_trip() {
+        let db = Database::open_in_memory().unwrap();
+        let service = NetworkAssessment::new(&db);
+        let run = service
+            .prepare(NetworkAssessmentRequest {
+                target: "127.0.0.1".into(),
+                ports: vec![8443],
+                authorization_confirmed: true,
+                allow_private_networks: true,
+                budget_seconds: 5,
+            })
+            .unwrap();
+        db.connection()
+            .execute(
+                "INSERT INTO network_assessment_probes
+                 (run_id,port,address,status,elapsed_ms,tls_status,https_failure_kind)
+                 VALUES(?1,8443,'127.0.0.1','open',80,'not_verified','timeout')",
+                [&run.id],
+            )
+            .unwrap();
+        let restored = service.get(&run.id).unwrap();
+        assert_eq!(
+            restored.probes[0].https_failure_kind.as_deref(),
+            Some("timeout")
+        );
+        assert_eq!(
+            restored.probes[0].tls_status.as_deref(),
+            Some("not_verified")
+        );
+        assert!(restored.probes[0].https_posture.is_none());
+        let socket: SocketAddr = "127.0.0.1:8443".parse().unwrap();
+        let (posture, reason) = https_header_probe("127.0.0.1", socket, Duration::ZERO);
+        assert!(posture.is_none());
+        assert_eq!(reason, Some("budget_exhausted"));
     }
 
     #[test]
@@ -639,6 +712,7 @@ mod tests {
         assert!(!allowed_address("::1".parse().unwrap(), false));
         assert!(!allowed_address("224.0.0.1".parse().unwrap(), true));
         assert!(!allowed_address("192.0.2.10".parse().unwrap(), true));
+        assert!(!allowed_address("2001:db8::1".parse().unwrap(), true));
         assert!(validate_ports(&[22, 443, 22]).is_err());
         assert!(validate_ports(&[0]).is_err());
         assert!(validate_ports(&(1..=17).collect::<Vec<_>>()).is_err());
