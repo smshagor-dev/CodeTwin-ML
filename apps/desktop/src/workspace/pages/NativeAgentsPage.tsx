@@ -618,6 +618,20 @@ export function NativeAgentsPage() {
     finally { setBusy(""); }
   }
 
+  async function approveAndQueueAutomatedFlow(id: string) {
+    if (!goStatus?.configured || !window.confirm(
+      "Approve this exact passive specialist plan and add it to the SQLite queue? It will not run until you start the approved flow queue."
+    )) return;
+    setBusy("auto-queue"); setError("");
+    try {
+      setAutomatedFlow(await workspaceApi.approveAutomatedSecurityFlow(id));
+      await workspaceApi.enqueueApprovedSecurityFlow(id);
+      setFlowQueue(await workspaceApi.listApprovedFlowQueue());
+      await refresh();
+    } catch (reason) { setError(String(reason)); await refresh(); }
+    finally { setBusy(""); }
+  }
+
   async function approveAndRunAutomatedFlow(id: string) {
     if (!goStatus?.configured || !window.confirm(
       "Approve the displayed passive specialist DAG and automatically run every dependency-ready task? Rust retains tool permissions and SQLite evidence; any failure or cancellation stops the flow."
@@ -1113,6 +1127,11 @@ export function NativeAgentsPage() {
         {selected.status === "planned" && automatedFlow?.review_id !== selected.id && <button className="ws-button ws-button-secondary"
           disabled={!goStatus?.configured || Boolean(busy)}
           onClick={() => void prepareAutomatedFlow(selected.id)}>Prepare automated flow</button>}
+        {selected.status === "planned" && automatedFlow?.review_id === selected.id && <button className="ws-button ws-button-secondary"
+          disabled={!goStatus?.configured || Boolean(busy)}
+          onClick={() => void approveAndQueueAutomatedFlow(selected.id)}>
+          {busy === "auto-queue" ? "Approving and queuing…" : "Approve and queue flow"}
+        </button>}
         {selected.status === "planned" && automatedFlow?.review_id === selected.id && <button className="ws-button ws-button-primary"
           disabled={!goStatus?.configured || Boolean(busy)}
           onClick={() => void approveAndRunAutomatedFlow(selected.id)}>
