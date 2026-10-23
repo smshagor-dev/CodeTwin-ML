@@ -503,12 +503,7 @@ impl<'a> NativeAgents<'a> {
             };
             match result {
                 Ok(summary) => {
-                    crate::native_agent_delegation::NativeDelegation::new(self.db).finish(
-                        &run.id,
-                        step.position,
-                        true,
-                    )?;
-                    crate::native_action_log::NativeActionLog::new(self.db).finish(
+                    crate::native_action_log::NativeActionLog::new(self.db).finish_supervised(
                         &run.id,
                         step.position,
                         &step.tool,
@@ -517,12 +512,7 @@ impl<'a> NativeAgents<'a> {
                     )?;
                 }
                 Err(error) => {
-                    crate::native_agent_delegation::NativeDelegation::new(self.db).finish(
-                        &run.id,
-                        step.position,
-                        false,
-                    )?;
-                    crate::native_action_log::NativeActionLog::new(self.db).finish(
+                    crate::native_action_log::NativeActionLog::new(self.db).finish_supervised(
                         &run.id,
                         step.position,
                         &step.tool,
@@ -685,7 +675,6 @@ impl<'a> NativeAgents<'a> {
         if outcomes.len() != steps.len() || steps.is_empty() || steps.len() > 2 {
             return Err("Invalid bounded specialist result count".into());
         }
-        let delegation = crate::native_agent_delegation::NativeDelegation::new(self.db);
         let handoffs = crate::native_agent_handoffs::AgentHandoffs::new(self.db);
         let log = crate::native_action_log::NativeActionLog::new(self.db);
         let mut first_failure = None;
@@ -700,8 +689,7 @@ impl<'a> NativeAgents<'a> {
                     reason
                 }
             };
-            delegation.finish(&run.id, step.position, passed)?;
-            log.finish(&run.id, step.position, &step.tool, passed, &summary)?;
+            log.finish_supervised(&run.id, step.position, &step.tool, passed, &summary)?;
             // Never create new downstream handoffs from a failed batch.
             // The successful sibling's evidence remains visible in its own
             // committed receipt, but dependent work cannot be dispatched.
