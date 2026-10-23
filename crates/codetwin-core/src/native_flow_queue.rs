@@ -19,6 +19,10 @@ pub struct QueuedFlow {
     pub total_steps: usize,
     pub active_role: Option<String>,
     pub review_status: String,
+    /// First failed/interrupted specialist, or first cancelled specialist.
+    /// Only the registered role and state are exposed, never analyzer output.
+    pub issue_role: Option<String>,
+    pub issue_status: Option<String>,
 }
 
 pub struct NativeFlowQueue<'a> {
@@ -74,7 +78,19 @@ impl<'a> NativeFlowQueue<'a> {
                         (SELECT s.role FROM native_agent_steps s
                          WHERE s.run_id=q.review_id AND s.status='running'
                          ORDER BY s.position LIMIT 1),
-                        r.status
+                        r.status,
+                        (SELECT s.role FROM native_agent_steps s
+                         WHERE s.run_id=q.review_id
+                           AND s.status IN ('failed','interrupted','cancelled')
+                         ORDER BY CASE s.status
+                           WHEN 'failed' THEN 0 WHEN 'interrupted' THEN 1
+                           ELSE 2 END, s.position LIMIT 1),
+                        (SELECT s.status FROM native_agent_steps s
+                         WHERE s.run_id=q.review_id
+                           AND s.status IN ('failed','interrupted','cancelled')
+                         ORDER BY CASE s.status
+                           WHEN 'failed' THEN 0 WHEN 'interrupted' THEN 1
+                           ELSE 2 END, s.position LIMIT 1)
                  FROM native_flow_queue q
                  JOIN native_agent_runs r ON r.id=q.review_id
                  WHERE q.review_id=?1",
@@ -99,7 +115,19 @@ impl<'a> NativeFlowQueue<'a> {
                         (SELECT s.role FROM native_agent_steps s
                          WHERE s.run_id=q.review_id AND s.status='running'
                          ORDER BY s.position LIMIT 1),
-                        r.status
+                        r.status,
+                        (SELECT s.role FROM native_agent_steps s
+                         WHERE s.run_id=q.review_id
+                           AND s.status IN ('failed','interrupted','cancelled')
+                         ORDER BY CASE s.status
+                           WHEN 'failed' THEN 0 WHEN 'interrupted' THEN 1
+                           ELSE 2 END, s.position LIMIT 1),
+                        (SELECT s.status FROM native_agent_steps s
+                         WHERE s.run_id=q.review_id
+                           AND s.status IN ('failed','interrupted','cancelled')
+                         ORDER BY CASE s.status
+                           WHEN 'failed' THEN 0 WHEN 'interrupted' THEN 1
+                           ELSE 2 END, s.position LIMIT 1)
                  FROM native_flow_queue q
                  JOIN native_agent_runs r ON r.id=q.review_id
                  ORDER BY q.id DESC LIMIT 64",
@@ -252,6 +280,8 @@ fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedFlow> {
         total_steps: row.get(9)?,
         active_role: row.get(10)?,
         review_status: row.get(11)?,
+        issue_role: row.get(12)?,
+        issue_status: row.get(13)?,
     })
 }
 
@@ -442,7 +472,33 @@ mod tests {
             let snapshot = queue.get(&id).unwrap().unwrap();
             assert_eq!(snapshot.completed_steps, 1);
             assert_eq!(snapshot.total_steps, 2);
-            assert_eq!(snapshot.active_role.as_deref(), Some("source"));
+            // Roles are user-facing specialist labels (e.g. Source Auditor),
+            // whereas the registered tool key is "source".
+            let label: String = db
+                .connection()
+                .query_row(
+                    "SELECT role FROM native_agent_steps
+                     WHERE run_id=?1 AND position=1 AND tool='source'",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(snapshot.active_role.as_deref(), Some(label.as_str()));
+            assert!(snapshot.issue_role.is_none());
+            assert!(snapshot.issue_status.is_none());
+
+            // A failed specialist becomes visible without exposing its report.
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_steps SET status='failed'
+                     WHERE run_id=?1 AND position=1",
+                    [&id],
+                )
+                .unwrap();
+            let failure = queue.get(&id).unwrap().unwrap();
+            assert_eq!(failure.issue_role.as_deref(), Some(label.as_str()));
+            assert_eq!(failure.issue_status.as_deref(), Some("failed"));
+            assert!(failure.active_role.is_none());
 
             // Restore the fixture before executing the real Rust review.
             db.connection()
@@ -467,6 +523,8 @@ mod tests {
         assert_eq!(saved.completed_steps, saved.total_steps);
         assert_eq!(saved.total_steps, 2);
         assert!(saved.active_role.is_none());
+        assert!(saved.issue_role.is_none());
+        assert!(saved.issue_status.is_none());
     }
 
     #[test]
