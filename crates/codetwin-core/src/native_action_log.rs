@@ -171,6 +171,75 @@ mod tests {
     use crate::{native_agents::NativeAgents, ProjectIndexService};
 
     #[test]
+    fn supervisor_evidence_commit_rolls_back_when_delegation_state_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Database::open(root.path().join("atomic-specialists.sqlite3")).unwrap();
+        let project_dir = root.path().join("source");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(project_dir.join("safe.rs"), "pub fn safe() {}").unwrap();
+        let project = ProjectIndexService::new(&db)
+            .index_project(&project_dir)
+            .unwrap()
+            .project_id;
+        let agents = NativeAgents::new(&db);
+        let run = agents
+            .create_with_roles(
+                &project,
+                "Atomic specialist result",
+                10,
+                120,
+                &["scout".into(), "source".into()],
+            )
+            .unwrap();
+        agents.approve(&run.id).unwrap();
+        db.connection()
+            .execute(
+                "UPDATE native_agent_runs SET status='running' WHERE id=?1",
+                [&run.id],
+            )
+            .unwrap();
+        let delegation = crate::native_agent_delegation::NativeDelegation::new(&db);
+        delegation
+            .start(&run.id, 0, &run.steps[0].role)
+            .unwrap();
+        let log = NativeActionLog::new(&db);
+        log.begin(&run.id, 0, "scout").unwrap();
+        // A corrupted or concurrently retired delegation must cause the
+        // entire evidence transaction to roll back, not commit a partial step.
+        db.connection()
+            .execute(
+                "UPDATE native_delegation_tasks SET status='failed'
+                 WHERE run_id=?1 AND position=0",
+                [&run.id],
+            )
+            .unwrap();
+        assert!(log
+            .finish_supervised(&run.id, 0, "scout", true, "unaccepted evidence")
+            .is_err());
+        assert_eq!(log.list(&run.id).unwrap()[0].status, "running");
+        assert!(log.list(&run.id).unwrap()[0].result_sha256.is_none());
+        assert_eq!(agents.get(&run.id).unwrap().steps[0].status, "running");
+        db.connection()
+            .execute(
+                "UPDATE native_delegation_tasks SET status='running'
+                 WHERE run_id=?1 AND position=0",
+                [&run.id],
+            )
+            .unwrap();
+        log.finish_supervised(&run.id, 0, "scout", true, "verified evidence")
+            .unwrap();
+        assert_eq!(log.list(&run.id).unwrap()[0].status, "completed");
+        assert_eq!(agents.get(&run.id).unwrap().steps[0].status, "completed");
+        assert_eq!(
+            delegation.graph(&run.id).unwrap().tasks[0].status,
+            "completed"
+        );
+        assert!(log
+            .finish_supervised(&run.id, 0, "scout", true, "duplicate")
+            .is_err());
+    }
+
+    #[test]
     fn concurrent_claimed_receipts_reject_late_results_after_cancel_and_restart() {
         let scratch = tempfile::tempdir().unwrap();
         let path = scratch.path().join("cancelled-parallel.sqlite3");
