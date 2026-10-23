@@ -127,8 +127,15 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--health" {
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"engine": "codetwin-security", "protocol_version": protocolVersion,
-			"storage": "rust-sqlite", "functions": []string{"plan"},
+			"storage": "rust-sqlite", "functions": []string{"plan", "dispatch"},
 		})
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--dispatch" {
+		if err := runDispatch(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "security engine rejected dispatch:", err)
+			os.Exit(1)
+		}
 		return
 	}
 	if len(os.Args) != 1 {

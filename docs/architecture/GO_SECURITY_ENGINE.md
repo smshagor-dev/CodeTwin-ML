@@ -30,7 +30,9 @@ At runtime, Rust locates the bundled executable next to the desktop binary.
 absolute file path. A two-second `--health` handshake checks protocol identity
 before accepting a plan; no PostgreSQL daemon is started.
 
-Use **Agents → Propose with local Go** after indexing a project. Inspect the
+Use **Agents → Propose with local Go** after indexing a project. For an
+existing review, **Inspect dependency-ready Go schedule** checks its current
+SQLite-backed state. This preview does not dispatch tools. Inspect the
 proposed DAG, choose **Use this reviewed task plan**, then create and separately
 approve/run the existing Rust review.
 
@@ -48,6 +50,12 @@ approve/run the existing Rust review.
   when appropriate. Every memory item must have a registered role and a
   terminal completed/failed status; unknown fields and oversized history fail
   closed. A memory suggestion never authorizes execution.
+- Go also provides a read-only `--dispatch` protocol that consumes an existing
+  persisted SQLite specialist DAG and lifecycle state from Rust. It computes
+  dependency-ready tasks with a maximum of two concurrent slots. Invalid,
+  cyclic, unregistered, failed or cancelled task states fail closed. The Rust
+  desktop independently checks the ready set against its SQLite graph before
+  showing it; no Go suggestion can approve, execute or expand a tool budget.
 - Go chooses registered passive specialists; Rust checks the indexed project,
   hashes, user approval, budgets, dependencies, cancellation and audit state.
 - An unconfigured or unavailable binary is reported explicitly, not silently
