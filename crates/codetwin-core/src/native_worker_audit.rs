@@ -336,6 +336,7 @@ mod tests {
         audit.finish(first, &Err("fixture failure".into())).unwrap();
         let second = audit.begin(&run.id).unwrap();
         audit.finish(second, &Err("fixture failure".into())).unwrap();
+        agents.cancel(&run.id).unwrap();
 
         // A review already added to the approved FIFO flow queue must not
         // separately launch an isolated scanner while it awaits dispatch.
