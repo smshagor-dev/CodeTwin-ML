@@ -131,6 +131,10 @@ export function NativeAgentsPage() {
   const [acceptedTaskPlan, setAcceptedTaskPlan] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [goDispatch, setGoDispatch] = useState<{
+    id: string;
+    advice: { ready: string[]; waiting: string[]; running: string[]; terminal: boolean; reason: string };
+  } | null>(null);
   const [goStatus, setGoStatus] = useState<{ configured: boolean; detail: string } | null>(null);
   const [modelStatus, setModelStatus] = useState<{ configured: boolean; detail: string } | null>(null);
   const [insight, setInsight] = useState<{ content: string; created_at: string } | null>(null);
@@ -327,6 +331,17 @@ export function NativeAgentsPage() {
     } finally {
       setBusy("");
     }
+  }
+
+  async function inspectGoScheduling(id: string) {
+    if (!goStatus?.configured) return;
+    setBusy("go-dispatch"); setError("");
+    setGoDispatch(null);
+    try {
+      const advice = await workspaceApi.goSecurityDispatchPreview(id);
+      setGoDispatch({ id, advice });
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
   }
 
   async function suggestGoDecomposition() {
@@ -626,6 +641,22 @@ export function NativeAgentsPage() {
         {taskSchedule?.batches.map((batch, index) => <p key={index}>
           Group {index + 1}: {batch.join(", ")}
         </p>)}
+        <h3>Local Go scheduler</h3>
+        <p className="ws-form-help">
+          Reads the persisted SQLite review lifecycle and approved role DAG.
+          This is a read-only scheduling preview; it does not approve, execute or retry tasks.
+        </p>
+        <button className="ws-button ws-button-secondary"
+          disabled={!goStatus?.configured || Boolean(busy)}
+          onClick={() => void inspectGoScheduling(selected.id)}>
+          {busy === "go-dispatch" ? "Checking schedule…" : "Inspect dependency-ready Go schedule"}
+        </button>
+        {goDispatch?.id === selected.id && <p role="status">
+          {goDispatch.advice.terminal ? "Terminal review" : "Schedule preview"}
+          {" · "}ready: {goDispatch.advice.ready.join(", ") || "none"}
+          {" · "}running: {goDispatch.advice.running.join(", ") || "none"}
+          {" · "}waiting: {goDispatch.advice.waiting.join(", ") || "none"}
+        </p>}
         <h3>Stored knowledge graph</h3>
         {knowledgeGraph?.nodes.map(node => <button key={node.run_id + ":" + node.position}
           className="ws-button ws-button-secondary"

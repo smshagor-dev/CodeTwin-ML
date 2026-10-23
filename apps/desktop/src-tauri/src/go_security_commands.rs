@@ -7,7 +7,9 @@ use std::{
 };
 
 use codetwin_core::{
+    native_agent_delegation::NativeDelegation,
     native_agent_memory::AgentMemory,
+    native_agents::NativeAgents,
     native_task_plans::{parse_proposal, TaskProposal},
     Database, WorkspaceService,
 };
@@ -86,6 +88,7 @@ fn probe_binary(binary: &Path) -> Result<(), String> {
                     || health.protocol_version != 1
                     || health.storage != "rust-sqlite"
                     || !health.functions.iter().any(|feature| feature == "plan")
+                    || !health.functions.iter().any(|feature| feature == "dispatch")
                 {
                     return Err("Incompatible Go security engine protocol".into());
                 }
@@ -202,6 +205,165 @@ fn local_plan(
     }
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoDispatchAdvice {
+    pub ready: Vec<String>,
+    pub waiting: Vec<String>,
+    pub running: Vec<String>,
+    pub terminal: bool,
+    pub reason: String,
+}
+
+/// Sidecar-proposed schedule is advisory; Rust independently checks the ready set.
+fn local_dispatch(binary: &Path, request: &serde_json::Value) -> Result<GoDispatchAdvice, String> {
+    probe_binary(binary)?;
+    let body = serde_json::to_vec(request).map_err(|_| "Cannot encode approved task graph")?;
+    if body.len() > 8192 {
+        return Err("Approved task graph exceeds protocol limit".into());
+    }
+    let mut child = Command::new(binary)
+        .arg("--dispatch")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Cannot start local Go scheduler")?;
+    let write_result = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Go scheduler stdin is unavailable".to_string())
+        .and_then(|mut stdin| {
+            stdin
+                .write_all(&body)
+                .map_err(|_| "Go scheduler input failed".to_string())
+        });
+    if let Err(error) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|_| "Cannot read local Go scheduler output")?;
+                if !status.success() || output.stdout.len() > 4096 {
+                    return Err("Local Go scheduler rejected the persisted graph".into());
+                }
+                return serde_json::from_slice(&output.stdout)
+                    .map_err(|_| "Invalid Go scheduling response".into());
+            }
+            Ok(None) if start.elapsed() < PLANNER_TIMEOUT => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Local Go scheduler timed out".into());
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Local Go scheduler process failed".into());
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn go_security_dispatch_preview(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<GoDispatchAdvice, String> {
+    let binary = binary_path()?;
+    let folder = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let db =
+            Database::open(folder.join("codetwin.sqlite3")).map_err(|error| error.to_string())?;
+        let run = NativeAgents::new(&db).get(&id)?;
+        let graph = NativeDelegation::new(&db).graph(&id)?;
+        if graph.run_id != run.id || graph.tasks.len() != run.steps.len() {
+            return Err("Persisted review graph mismatch".into());
+        }
+        let positions = graph
+            .tasks
+            .iter()
+            .map(|task| (task.position, task.tool.as_str()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let tasks = graph
+            .tasks
+            .iter()
+            .map(|task| {
+                let depends_on = task
+                    .requires
+                    .iter()
+                    .map(|position| {
+                        positions
+                            .get(position)
+                            .copied()
+                            .ok_or("Missing predecessor")
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(serde_json::json!({
+                    "role": task.tool,
+                    "status": task.status,
+                    "depends_on": depends_on
+                }))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let request = serde_json::json!({
+            "protocol_version": 1,
+            "run_status": run.status,
+            "max_parallel": 2,
+            "tasks": tasks
+        });
+        let advice = local_dispatch(&binary, &request)?;
+        let running = graph
+            .tasks
+            .iter()
+            .filter(|task| task.status == "running")
+            .count();
+        let has_failure = graph
+            .tasks
+            .iter()
+            .any(|task| task.status == "failed" || task.status == "cancelled");
+        let can_dispatch =
+            matches!(run.status.as_str(), "approved" | "running") && !has_failure && running <= 2;
+        let expected = if can_dispatch {
+            graph
+                .tasks
+                .iter()
+                .filter(|task| task.status == "pending")
+                .filter(|task| {
+                    task.requires.iter().all(|required| {
+                        graph.tasks.iter().any(|predecessor| {
+                            predecessor.position == *required && predecessor.status == "completed"
+                        })
+                    })
+                })
+                .take(2usize.saturating_sub(running))
+                .map(|task| task.tool.clone())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if advice.ready != expected {
+            return Err(
+                "Go scheduling recommendation did not match Rust authorization graph".into(),
+            );
+        }
+        Ok(advice)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub async fn suggest_go_security_task_plan(
     project_id: String,
@@ -271,5 +433,19 @@ mod tests {
             .map(|task| task.role.as_str())
             .collect::<Vec<_>>();
         assert_eq!(roles, ["scout", "source", "secrets", "qa"]);
+        let input = serde_json::json!({
+            "protocol_version": 1,
+            "run_status": "approved",
+            "max_parallel": 2,
+            "tasks": [
+                {"role":"scout","status":"pending","depends_on":[]},
+                {"role":"source","status":"pending","depends_on":["scout"]},
+                {"role":"qa","status":"pending","depends_on":["source"]}
+            ]
+        });
+        let preview = super::local_dispatch(&binary, &input)
+            .expect("real Go process must validate approved specialist dependency graph");
+        assert_eq!(preview.ready, ["scout"]);
+        assert!(!preview.terminal);
     }
 }
