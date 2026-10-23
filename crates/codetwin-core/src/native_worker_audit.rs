@@ -500,14 +500,18 @@ mod tests {
             .unwrap()
             .project_id;
         let agents = crate::native_agents::NativeAgents::new(&db);
-        let first = agents.create(&first_project, "First scan", 10, 120).unwrap();
+        let first = agents
+            .create(&first_project, "First scan", 10, 120)
+            .unwrap();
         agents.approve(&first.id).unwrap();
         let audit = WorkerAudit::new(&db);
         audit.begin(&first.id).unwrap();
         assert_eq!(audit.recover_interrupted().unwrap(), 1);
         assert_eq!(audit.cleanup_hold_count().unwrap(), 1);
 
-        let second = agents.create(&second_project, "Second scan", 10, 120).unwrap();
+        let second = agents
+            .create(&second_project, "Second scan", 10, 120)
+            .unwrap();
         agents.approve(&second.id).unwrap();
         assert!(audit.begin(&second.id).is_err());
         assert_eq!(audit.cleanup_hold_count().unwrap(), 1);
@@ -517,11 +521,18 @@ mod tests {
         assert_eq!(audit.release_after_confirmed_probe().unwrap(), 1);
         assert_eq!(audit.cleanup_hold_count().unwrap(), 0);
         assert_eq!(
-            audit.latest(&first.id).unwrap().unwrap().error_code.as_deref(),
+            audit
+                .latest(&first.id)
+                .unwrap()
+                .unwrap()
+                .error_code
+                .as_deref(),
             Some("application_restarted_cleanup_checked")
         );
         let ticket = audit.begin(&second.id).unwrap();
-        audit.finish(ticket, &Err("fixture completed".into())).unwrap();
+        audit
+            .finish(ticket, &Err("fixture completed".into()))
+            .unwrap();
         assert_eq!(audit.release_after_confirmed_probe().unwrap(), 0);
     }
 
