@@ -1227,6 +1227,127 @@ mod tests {
     }
 
     #[test]
+    fn finalization_honors_cross_connection_cancel_and_closes_receipts() {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("cancel-before-finalize.sqlite3");
+        let root = scratch.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("safe.ts"), "export const a = true;").unwrap();
+        let id = {
+            let db = Database::open(&path).unwrap();
+            let project = crate::ProjectIndexService::new(&db)
+                .index_project(&root)
+                .unwrap()
+                .project_id;
+            let reviews = NativeAgents::new(&db);
+            let run = reviews
+                .create_with_roles(
+                    &project,
+                    "Reviewed scope",
+                    10,
+                    120,
+                    &["scout".into(), "source".into()],
+                )
+                .unwrap();
+            reviews.approve(&run.id).unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_runs SET status='running' WHERE id=?1",
+                    [&run.id],
+                )
+                .unwrap();
+            crate::native_action_log::NativeActionLog::new(&db)
+                .begin_supervised(&run.id, 0, &run.steps[0].role, "scout")
+                .unwrap();
+            let other = Database::open(&path).unwrap();
+            NativeAgents::new(&other).cancel(&run.id).unwrap();
+            // No execution error: a stale supervisor would previously have
+            // recorded a completed review despite the independent cancellation.
+            reviews.finalize_review(&run.id, None).unwrap();
+            let updated = reviews.get(&run.id).unwrap();
+            assert_eq!(updated.status, "cancelled");
+            assert_eq!(updated.steps[0].status, "cancelled");
+            assert_eq!(updated.steps[1].status, "cancelled");
+            assert_eq!(
+                crate::native_action_log::NativeActionLog::new(&db)
+                    .list(&run.id)
+                    .unwrap()[0]
+                    .status,
+                "interrupted"
+            );
+            let graph = crate::native_agent_delegation::NativeDelegation::new(&db)
+                .graph(&run.id)
+                .unwrap();
+            assert!(graph.tasks.iter().all(|task| task.status == "cancelled"));
+            assert!(reviews.execute(&run.id).is_err());
+            run.id
+        };
+        let db = Database::open(&path).unwrap();
+        let saved = NativeAgents::new(&db).get(&id).unwrap();
+        assert_eq!(saved.status, "cancelled");
+        assert!(saved.steps.iter().all(|step| step.status == "cancelled"));
+    }
+
+    #[test]
+    fn invalid_evidence_never_commits_an_observable_completed_review() {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("invalid-final-evidence.sqlite3");
+        let root = scratch.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("safe.ts"), "export const a = true;").unwrap();
+        let id = {
+            let db = Database::open(&path).unwrap();
+            let project = crate::ProjectIndexService::new(&db)
+                .index_project(&root)
+                .unwrap()
+                .project_id;
+            let reviews = NativeAgents::new(&db);
+            let run = reviews
+                .create_with_roles(
+                    &project,
+                    "Verify evidence before publishing",
+                    10,
+                    120,
+                    &["scout".into(), "source".into()],
+                )
+                .unwrap();
+            reviews.approve(&run.id).unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_runs SET status='running' WHERE id=?1",
+                    [&run.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_steps SET status='completed',
+                     result_json='persisted fixture evidence'
+                     WHERE run_id=?1",
+                    [&run.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_delegation_tasks SET status='completed'
+                     WHERE run_id=?1",
+                    [&run.id],
+                )
+                .unwrap();
+            // Omit the signed scout-to-source handoff. Step/delegation status
+            // alone cannot authorize the parent to become completed.
+            reviews.finalize_review(&run.id, None).unwrap();
+            let saved = reviews.get(&run.id).unwrap();
+            assert_eq!(saved.status, "failed");
+            assert!(saved.message.as_ref().is_some_and(|message| !message.is_empty()));
+            assert!(saved.steps.iter().all(|step| step.status == "completed"));
+            assert!(reviews.execute(&run.id).is_err());
+            run.id
+        };
+        let db = Database::open(&path).unwrap();
+        assert_eq!(NativeAgents::new(&db).get(&id).unwrap().status, "failed");
+    }
+
+    #[test]
     fn file_backed_go_verified_pair_finishes_with_signed_handoffs() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("go-batch.sqlite3");
