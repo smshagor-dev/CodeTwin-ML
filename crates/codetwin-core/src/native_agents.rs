@@ -330,6 +330,10 @@ impl<'a> NativeAgents<'a> {
                AND NOT EXISTS (
                  SELECT 1 FROM native_flow_queue
                  WHERE review_id=?1 AND status IN ('queued','interrupted')
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM native_worker_audit
+                 WHERE run_id=?1 AND status='running'
                )",
                 [id],
             )
