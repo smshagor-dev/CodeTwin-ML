@@ -14,6 +14,11 @@ pub struct QueuedFlow {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub detail: String,
+    /// Derived from existing specialist steps; no duplicated mutable progress.
+    pub completed_steps: usize,
+    pub total_steps: usize,
+    pub active_role: Option<String>,
+    pub review_status: String,
 }
 
 pub struct NativeFlowQueue<'a> {
@@ -61,7 +66,15 @@ impl<'a> NativeFlowQueue<'a> {
             .connection()
             .query_row(
                 "SELECT q.id,q.review_id,r.project_id,q.status,q.created_at,
-                        q.started_at,q.finished_at,q.detail
+                        q.started_at,q.finished_at,q.detail,
+                        (SELECT COUNT(*) FROM native_agent_steps s
+                         WHERE s.run_id=q.review_id AND s.status='completed'),
+                        (SELECT COUNT(*) FROM native_agent_steps s
+                         WHERE s.run_id=q.review_id),
+                        (SELECT s.role FROM native_agent_steps s
+                         WHERE s.run_id=q.review_id AND s.status='running'
+                         ORDER BY s.position LIMIT 1),
+                        r.status
                  FROM native_flow_queue q
                  JOIN native_agent_runs r ON r.id=q.review_id
                  WHERE q.review_id=?1",
@@ -78,7 +91,15 @@ impl<'a> NativeFlowQueue<'a> {
             .connection()
             .prepare(
                 "SELECT q.id,q.review_id,r.project_id,q.status,q.created_at,
-                        q.started_at,q.finished_at,q.detail
+                        q.started_at,q.finished_at,q.detail,
+                        (SELECT COUNT(*) FROM native_agent_steps s
+                         WHERE s.run_id=q.review_id AND s.status='completed'),
+                        (SELECT COUNT(*) FROM native_agent_steps s
+                         WHERE s.run_id=q.review_id),
+                        (SELECT s.role FROM native_agent_steps s
+                         WHERE s.run_id=q.review_id AND s.status='running'
+                         ORDER BY s.position LIMIT 1),
+                        r.status
                  FROM native_flow_queue q
                  JOIN native_agent_runs r ON r.id=q.review_id
                  ORDER BY q.id DESC LIMIT 64",
@@ -227,6 +248,10 @@ fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedFlow> {
         started_at: row.get(5)?,
         finished_at: row.get(6)?,
         detail: row.get(7)?,
+        completed_steps: row.get(8)?,
+        total_steps: row.get(9)?,
+        active_role: row.get(10)?,
+        review_status: row.get(11)?,
     })
 }
 
@@ -375,6 +400,71 @@ mod tests {
         queue
             .finish(&id, "completed", "Reviewed evidence committed")
             .unwrap();
+    }
+
+    #[test]
+    fn queue_progress_tracks_durable_steps_without_changing_the_flow() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("progress.sqlite3");
+        let source = temp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("safe.rs"), "pub fn safe() {}").unwrap();
+        let id = {
+            let db = Database::open(&path).unwrap();
+            let project = ProjectIndexService::new(&db)
+                .index_project(&source)
+                .unwrap()
+                .project_id;
+            let id = approved(&db, &project);
+            let queue = NativeFlowQueue::new(&db);
+            let initial = queue.enqueue(&id).unwrap();
+            assert_eq!(initial.completed_steps, 0);
+            assert_eq!(initial.total_steps, 2);
+            assert!(initial.active_role.is_none());
+            assert_eq!(initial.review_status, "approved");
+            queue.claim_next().unwrap().unwrap();
+
+            // Simulate an in-progress specialist snapshot between boundaries.
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_steps
+                     SET status='completed' WHERE run_id=?1 AND position=0",
+                    [&id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_steps
+                     SET status='running' WHERE run_id=?1 AND position=1",
+                    [&id],
+                )
+                .unwrap();
+            let snapshot = queue.get(&id).unwrap().unwrap();
+            assert_eq!(snapshot.completed_steps, 1);
+            assert_eq!(snapshot.total_steps, 2);
+            assert_eq!(snapshot.active_role.as_deref(), Some("source"));
+
+            // Restore the fixture before executing the real Rust review.
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_steps
+                     SET status='pending' WHERE run_id=?1",
+                    [&id],
+                )
+                .unwrap();
+            let completed = NativeAgents::new(&db).execute(&id).unwrap();
+            assert_eq!(completed.status, "completed");
+            queue.finish(&id, "completed", "Reviewed evidence committed").unwrap();
+            id
+        };
+        // Progress is read from persisted SQLite state after closing the first DB.
+        let db = Database::open(&path).unwrap();
+        let saved = NativeFlowQueue::new(&db).get(&id).unwrap().unwrap();
+        assert_eq!(saved.status, "completed");
+        assert_eq!(saved.review_status, "completed");
+        assert_eq!(saved.completed_steps, saved.total_steps);
+        assert_eq!(saved.total_steps, 2);
+        assert!(saved.active_role.is_none());
     }
 
     #[test]
