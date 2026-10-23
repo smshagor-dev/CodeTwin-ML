@@ -59,6 +59,13 @@ approve/run the existing Rust review.
   cyclic, unregistered, failed or cancelled task states fail closed. The Rust
   desktop independently checks the ready set against its SQLite graph before
   showing it; no Go suggestion can approve, execute or expand a tool budget.
+- For an **already approved** passive review, **Run with Go scheduling checks**
+  invokes the Go scheduler before each registered Rust specialist. Go can deny
+  the next role; it never executes the scanner, touches the SQLite database or
+  alters the approved DAG. Rust persists each state transition and verifies all
+  handoffs. The Go-gated path disables speculative parallel prefetch so no
+  specialist runs before its own scheduling decision. This is not arbitrary
+  PentAGI tool execution.
 - Go chooses registered passive specialists; Rust checks the indexed project,
   hashes, user approval, budgets, dependencies, cancellation and audit state.
 - An unconfigured or unavailable binary is reported explicitly, not silently

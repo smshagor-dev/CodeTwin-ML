@@ -9,12 +9,14 @@ use std::{
 use codetwin_core::{
     native_agent_delegation::NativeDelegation,
     native_agent_memory::AgentMemory,
-    native_agents::NativeAgents,
+    native_agents::{AgentRun, AgentStep, NativeAgents},
     native_task_plans::{parse_proposal, TaskProposal},
     Database, WorkspaceService,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
+
+use crate::{reserve_assessment, AppState};
 
 const MAX_RESPONSE_BYTES: usize = 6000;
 const PLANNER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -283,6 +285,81 @@ fn local_dispatch(binary: &Path, request: &serde_json::Value) -> Result<GoDispat
     }
 }
 
+/// The Go suggestion is untrusted until it matches the Rust/SQLite dependency graph.
+fn verified_dispatch(db: &Database, id: &str, binary: &Path) -> Result<GoDispatchAdvice, String> {
+    let run = NativeAgents::new(db).get(id)?;
+    let graph = NativeDelegation::new(db).graph(id)?;
+    if graph.run_id != run.id || graph.tasks.len() != run.steps.len() {
+        return Err("Persisted review graph mismatch".into());
+    }
+    let positions = graph
+        .tasks
+        .iter()
+        .map(|task| (task.position, task.tool.as_str()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let tasks = graph
+        .tasks
+        .iter()
+        .map(|task| {
+            let depends_on = task
+                .requires
+                .iter()
+                .map(|position| {
+                    positions
+                        .get(position)
+                        .copied()
+                        .ok_or("Missing predecessor")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(serde_json::json!({
+                "role": task.tool,
+                "status": task.status,
+                "depends_on": depends_on
+            }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let request = serde_json::json!({
+        "protocol_version": 1,
+        "run_status": run.status,
+        "max_parallel": 2,
+        "tasks": tasks
+    });
+    let advice = local_dispatch(binary, &request)?;
+    let running = graph
+        .tasks
+        .iter()
+        .filter(|task| task.status == "running")
+        .count();
+    let has_failure = graph
+        .tasks
+        .iter()
+        .any(|task| task.status == "failed" || task.status == "cancelled");
+    let can_dispatch =
+        matches!(run.status.as_str(), "approved" | "running") && !has_failure && running <= 2;
+    let expected = if can_dispatch {
+        graph
+            .tasks
+            .iter()
+            .filter(|task| task.status == "pending")
+            .filter(|task| {
+                task.requires.iter().all(|required| {
+                    graph.tasks.iter().any(|predecessor| {
+                        predecessor.position == *required && predecessor.status == "completed"
+                    })
+                })
+            })
+            .take(2usize.saturating_sub(running))
+            .map(|task| task.tool.clone())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    if advice.ready != expected {
+        return Err("Go scheduling recommendation did not match Rust authorization graph".into());
+    }
+    Ok(advice)
+}
+
 #[tauri::command]
 pub async fn go_security_dispatch_preview(
     id: String,
@@ -296,79 +373,34 @@ pub async fn go_security_dispatch_preview(
     tauri::async_runtime::spawn_blocking(move || {
         let db =
             Database::open(folder.join("codetwin.sqlite3")).map_err(|error| error.to_string())?;
-        let run = NativeAgents::new(&db).get(&id)?;
-        let graph = NativeDelegation::new(&db).graph(&id)?;
-        if graph.run_id != run.id || graph.tasks.len() != run.steps.len() {
-            return Err("Persisted review graph mismatch".into());
-        }
-        let positions = graph
-            .tasks
-            .iter()
-            .map(|task| (task.position, task.tool.as_str()))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        let tasks = graph
-            .tasks
-            .iter()
-            .map(|task| {
-                let depends_on = task
-                    .requires
-                    .iter()
-                    .map(|position| {
-                        positions
-                            .get(position)
-                            .copied()
-                            .ok_or("Missing predecessor")
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(serde_json::json!({
-                    "role": task.tool,
-                    "status": task.status,
-                    "depends_on": depends_on
-                }))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let request = serde_json::json!({
-            "protocol_version": 1,
-            "run_status": run.status,
-            "max_parallel": 2,
-            "tasks": tasks
-        });
-        let advice = local_dispatch(&binary, &request)?;
-        let running = graph
-            .tasks
-            .iter()
-            .filter(|task| task.status == "running")
-            .count();
-        let has_failure = graph
-            .tasks
-            .iter()
-            .any(|task| task.status == "failed" || task.status == "cancelled");
-        let can_dispatch =
-            matches!(run.status.as_str(), "approved" | "running") && !has_failure && running <= 2;
-        let expected = if can_dispatch {
-            graph
-                .tasks
-                .iter()
-                .filter(|task| task.status == "pending")
-                .filter(|task| {
-                    task.requires.iter().all(|required| {
-                        graph.tasks.iter().any(|predecessor| {
-                            predecessor.position == *required && predecessor.status == "completed"
-                        })
-                    })
-                })
-                .take(2usize.saturating_sub(running))
-                .map(|task| task.tool.clone())
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
+        verified_dispatch(&db, &id, &binary)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Run the existing approved Rust specialists with a Go dispatch-policy check
+/// before *each* step. No unapproved sidecar command is ever executed.
+#[tauri::command]
+pub async fn run_native_go_review(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<AgentRun, String> {
+    let reservations = reserve_assessment(&state)?;
+    let binary = binary_path()?;
+    let path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _reservations = reservations;
+        let db = Database::open(path).map_err(|error| error.to_string())?;
+        let check = |db: &Database, run: &AgentRun, step: &AgentStep| {
+            let advice = verified_dispatch(db, &run.id, &binary)?;
+            if advice.ready.iter().any(|role| role == &step.tool) {
+                Ok(())
+            } else {
+                Err("Go scheduler refused the next unverified specialist".into())
+            }
         };
-        if advice.ready != expected {
-            return Err(
-                "Go scheduling recommendation did not match Rust authorization graph".into(),
-            );
-        }
-        Ok(advice)
+        NativeAgents::new(&db).execute_with_dispatch(&id, &check)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -416,6 +448,57 @@ pub async fn suggest_go_security_task_plan(
 mod tests {
     use super::{local_plan, MemoryHint};
     use std::path::PathBuf;
+
+    #[test]
+    fn bundled_go_process_executes_approved_rust_review_with_sqlite() {
+        if std::env::var("CODETWIN_TEST_GO_SIDECAR").ok().as_deref() != Some("1") {
+            return;
+        }
+        let target = env!("TAURI_ENV_TARGET_TRIPLE");
+        let suffix = if cfg!(windows) { ".exe" } else { "" };
+        let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("codetwin-security-{target}{suffix}"));
+        let sandbox = tempfile::tempdir().expect("isolated SQLite fixture");
+        let db = super::Database::open(sandbox.path().join("review.sqlite3"))
+            .expect("open SQLite WAL database");
+        let source = sandbox.path().join("project");
+        std::fs::create_dir_all(&source).expect("create indexed project");
+        std::fs::write(source.join("source.ts"), "export const valid = true;")
+            .expect("write benign test source");
+        let project_id = codetwin_core::ProjectIndexService::new(&db)
+            .index_project(&source)
+            .expect("index approved source")
+            .project_id;
+        let reviews = super::NativeAgents::new(&db);
+        let run = reviews
+            .create_with_roles(
+                &project_id,
+                "Review source for quality and security",
+                10,
+                300,
+                &["scout".to_string(), "source".to_string()],
+            )
+            .expect("prepare source review");
+        reviews.approve(&run.id).expect("explicitly approve review");
+        let check = |db: &super::Database, run: &super::AgentRun, step: &super::AgentStep| {
+            let advice = super::verified_dispatch(db, &run.id, &binary)?;
+            if advice.ready.iter().any(|role| role == &step.tool) {
+                Ok(())
+            } else {
+                Err("Go scheduler refused the next role".to_string())
+            }
+        };
+        let result = reviews
+            .execute_with_dispatch(&run.id, &check)
+            .expect("complete Rust review with real Go dispatch checks");
+        assert_eq!(result.status, "completed", "{:?}", result.message);
+        assert!(result.steps.iter().all(|step| step.status == "completed"));
+        let evidence = codetwin_core::native_agent_handoffs::AgentHandoffs::new(&db)
+            .verify(&run.id)
+            .expect("verify persisted SQLite evidence handoff");
+        assert!(evidence.verified, "{:?}", evidence.issues);
+    }
 
     #[test]
     fn bundled_go_process_roundtrips_review_memory() {

@@ -87,6 +87,9 @@ export const workspaceApi = {
     return invoke<import("./security/NetworkAssessmentPanel").NetworkAssessmentRun>(
       "get_network_assessment", { id });
   },
+  runNativeGoReview(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("run_native_go_review", { id });
+  },
   goSecurityDispatchPreview(id: string) {
     return invoke<{ ready: string[]; waiting: string[]; running: string[]; terminal: boolean; reason: string }>(
       "go_security_dispatch_preview", { id });

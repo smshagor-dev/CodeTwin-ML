@@ -267,6 +267,26 @@ impl<'a> NativeAgents<'a> {
     }
 
     pub fn execute(&self, id: &str) -> Result<AgentRun, String> {
+        self.execute_internal(id, None)
+    }
+
+    /// Execute approved passive analyzers only when an external policy verifies
+    /// the next role against the durable SQLite delegation graph at each boundary.
+    /// The policy cannot add roles or invoke tools; the native Rust supervisor owns
+    /// authorization, execution, cancellation and all database writes.
+    pub fn execute_with_dispatch(
+        &self,
+        id: &str,
+        dispatch: &dyn Fn(&Database, &AgentRun, &AgentStep) -> Result<(), String>,
+    ) -> Result<AgentRun, String> {
+        self.execute_internal(id, Some(dispatch))
+    }
+
+    fn execute_internal(
+        &self,
+        id: &str,
+        dispatch: Option<&dyn Fn(&Database, &AgentRun, &AgentStep) -> Result<(), String>>,
+    ) -> Result<AgentRun, String> {
         let run = self.get(id)?;
         if run.status != "approved" {
             return Err("Approve this review before running it".into());
@@ -284,7 +304,7 @@ impl<'a> NativeAgents<'a> {
             return Err("Review state changed before execution".into());
         }
         let start = Instant::now();
-        let result = catch_unwind(AssertUnwindSafe(|| self.run_steps(&run, start)))
+        let result = catch_unwind(AssertUnwindSafe(|| self.run_steps(&run, start, dispatch)))
             .unwrap_or_else(|_| Err("Review encountered a worker panic".into()));
         let message = result.err();
         let cancelled: bool = self
@@ -337,7 +357,12 @@ impl<'a> NativeAgents<'a> {
         self.get(id)
     }
 
-    fn run_steps(&self, run: &AgentRun, start: Instant) -> Result<(), String> {
+    fn run_steps(
+        &self,
+        run: &AgentRun,
+        start: Instant,
+        dispatch: Option<&dyn Fn(&Database, &AgentRun, &AgentStep) -> Result<(), String>>,
+    ) -> Result<(), String> {
         let assessment_id: String = self
             .db
             .connection()
@@ -350,6 +375,9 @@ impl<'a> NativeAgents<'a> {
         let mut prepared: BTreeMap<usize, Result<String, String>> = BTreeMap::new();
         for step in &run.steps {
             self.boundary(&run.id, start, run.budget_seconds)?;
+            if let Some(policy) = dispatch {
+                policy(self.db, run, step)?;
+            }
             // Read and verify the exact predecessor evidence before dispatch.
             crate::native_agent_handoffs::AgentHandoffs::new(self.db)
                 .check_incoming(&run.id, step.position)?;
@@ -433,7 +461,7 @@ impl<'a> NativeAgents<'a> {
             }
             crate::native_agent_handoffs::AgentHandoffs::new(self.db)
                 .record(&run.id, step.position)?;
-            if step.tool == "source" {
+            if step.tool == "source" && dispatch.is_none() {
                 prepared = self.parallel_optional_specialists(run, start)?;
             }
             self.boundary(&run.id, start, run.budget_seconds)?;
@@ -637,6 +665,41 @@ mod tests {
         let cancelled = agent.cancel(&run.id).unwrap();
         assert_eq!(cancelled.status, "cancelled");
         assert!(agent.execute(&run.id).is_err());
+    }
+
+    #[test]
+    fn external_dispatch_cannot_bypass_approval_or_execute_unapproved_tools() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("sample.ts"), "export const safe = true;").unwrap();
+        let project_id = crate::ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let agents = NativeAgents::new(&db);
+        let run = agents
+            .create_with_roles(
+                &project_id,
+                "Review source",
+                10,
+                300,
+                &["scout".to_string(), "source".to_string()],
+            )
+            .unwrap();
+        let called = std::cell::Cell::new(0);
+        let deny = |_database: &Database, _run: &AgentRun, _step: &AgentStep| {
+            called.set(called.get() + 1);
+            Err("Go scheduling denied an unverified role".to_string())
+        };
+        assert!(agents.execute_with_dispatch(&run.id, &deny).is_err());
+        assert_eq!(called.get(), 0);
+        agents.approve(&run.id).unwrap();
+        let finished = agents.execute_with_dispatch(&run.id, &deny).unwrap();
+        assert_eq!(finished.status, "failed");
+        assert_eq!(called.get(), 1);
+        assert!(finished.steps.iter().all(|step| step.status != "completed"));
+        assert!(agents.execute_with_dispatch(&run.id, &deny).is_err());
+        assert_eq!(called.get(), 1);
     }
 
     #[test]
