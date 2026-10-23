@@ -402,34 +402,51 @@ mod tests {
             rationale: "Review incomplete approved QA evidence".into(),
             tasks: vec![
                 crate::native_task_plans::PlannedSpecialist {
-                    role: "scout".into(), objective: "Inventory".into(), depends_on: vec![],
+                    role: "scout".into(),
+                    objective: "Inventory".into(),
+                    depends_on: vec![],
                 },
                 crate::native_task_plans::PlannedSpecialist {
-                    role: "source".into(), objective: "Review".into(), depends_on: vec!["scout".into()],
+                    role: "source".into(),
+                    objective: "Review".into(),
+                    depends_on: vec!["scout".into()],
                 },
                 crate::native_task_plans::PlannedSpecialist {
-                    role: "qa".into(), objective: "QA".into(), depends_on: vec!["source".into()],
+                    role: "qa".into(),
+                    objective: "QA".into(),
+                    depends_on: vec!["source".into()],
                 },
             ],
         };
         assert!(flow.suggest_followup(&review.id, &proposal).is_err());
-        let deny = |_db: &Database, _run: &crate::native_agents::AgentRun,
+        let deny = |_db: &Database,
+                    _run: &crate::native_agents::AgentRun,
                     _step: &crate::native_agents::AgentStep| {
             Err("Denied role by policy".to_string())
         };
         assert_eq!(
-            reviews.execute_with_dispatch(&review.id, &deny).unwrap().status,
+            reviews
+                .execute_with_dispatch(&review.id, &deny)
+                .unwrap()
+                .status,
             "failed"
         );
         let suggestion = flow.suggest_followup(&review.id, &proposal).unwrap();
         assert_eq!(suggestion.proposal.tasks.len(), 3);
         assert!(flow.suggest_followup(&review.id, &proposal).is_err());
         let mut expanded = proposal.clone();
-        expanded.tasks.push(crate::native_task_plans::PlannedSpecialist {
-            role: "runtime".into(), objective: "Runtime".into(), depends_on: vec!["source".into()],
-        });
+        expanded
+            .tasks
+            .push(crate::native_task_plans::PlannedSpecialist {
+                role: "runtime".into(),
+                objective: "Runtime".into(),
+                depends_on: vec!["source".into()],
+            });
         assert!(flow.suggest_followup(&review.id, &expanded).is_err());
-        assert_eq!(flow.get_followup(&review.id).unwrap().unwrap().review_id, review.id);
+        assert_eq!(
+            flow.get_followup(&review.id).unwrap().unwrap().review_id,
+            review.id
+        );
     }
 
     #[test]

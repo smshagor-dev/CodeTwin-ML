@@ -783,7 +783,9 @@ fn local_adaptive_followup(binary: &Path, run: &AgentRun) -> Result<Option<TaskP
                     }
                     return Ok(None);
                 }
-                let proposal = advice.proposal.ok_or("Missing adaptive follow-up proposal")?;
+                let proposal = advice
+                    .proposal
+                    .ok_or("Missing adaptive follow-up proposal")?;
                 validate_proposal(&proposal)?;
                 // Go may *narrow* the prior reviewed specialists, never expand them.
                 if proposal
@@ -842,7 +844,10 @@ pub async fn suggest_automated_flow_followup(
     app: tauri::AppHandle,
 ) -> Result<Option<FlowFollowup>, String> {
     let binary = binary_path()?;
-    let dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         let db = Database::open(dir.join("codetwin.sqlite3")).map_err(|error| error.to_string())?;
         derive_and_save_adaptive_followup(&db, &binary, &id)
@@ -1011,16 +1016,25 @@ mod tests {
             finished_at: None,
             steps: vec![
                 super::AgentStep {
-                    position: 0, role: "Project Recon".into(), tool: "scout".into(),
-                    status: "completed".into(), result: None,
+                    position: 0,
+                    role: "Project Recon".into(),
+                    tool: "scout".into(),
+                    status: "completed".into(),
+                    result: None,
                 },
                 super::AgentStep {
-                    position: 1, role: "Source Auditor".into(), tool: "source".into(),
-                    status: "completed".into(), result: None,
+                    position: 1,
+                    role: "Source Auditor".into(),
+                    tool: "source".into(),
+                    status: "completed".into(),
+                    result: None,
                 },
                 super::AgentStep {
-                    position: 3, role: "Test Researcher".into(), tool: "qa".into(),
-                    status: "failed".into(), result: None,
+                    position: 3,
+                    role: "Test Researcher".into(),
+                    tool: "qa".into(),
+                    status: "failed".into(),
+                    result: None,
                 },
             ],
         };
@@ -1029,7 +1043,10 @@ mod tests {
             .expect("A failed approved specialist requires a follow-up");
         assert_eq!(next.tasks.len(), 3);
         assert_eq!(next.tasks[2].role, "qa");
-        assert!(next.tasks.iter().all(|task| run.steps.iter().any(|step| step.tool == task.role)));
+        assert!(next
+            .tasks
+            .iter()
+            .all(|task| run.steps.iter().any(|step| step.tool == task.role)));
     }
 
     #[test]
