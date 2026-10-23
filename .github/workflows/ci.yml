@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# Superseded pull-request commits do not need to consume additional CI minutes.
+# Preserve main push verification even if another main run is triggered.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   rust:
     runs-on: ubuntu-latest
