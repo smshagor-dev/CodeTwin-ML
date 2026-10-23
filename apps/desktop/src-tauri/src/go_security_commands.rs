@@ -399,20 +399,22 @@ fn record_dispatch(
     allowed: bool,
     reason: &str,
 ) -> Result<(), String> {
-    let ready_json = serde_json::to_string(ready)
-        .map_err(|_| "Cannot encode Go scheduling audit")?;
-    db.connection().execute(
-        "INSERT INTO go_dispatch_audit(run_id,position,role,verdict,ready_json,reason)
+    let ready_json =
+        serde_json::to_string(ready).map_err(|_| "Cannot encode Go scheduling audit")?;
+    db.connection()
+        .execute(
+            "INSERT INTO go_dispatch_audit(run_id,position,role,verdict,ready_json,reason)
          VALUES (?1,?2,?3,?4,?5,?6)",
-        params![
-            run.id,
-            step.position,
-            step.tool,
-            if allowed { "allowed" } else { "denied" },
-            ready_json,
-            reason,
-        ],
-    ).map_err(|error| error.to_string())?;
+            params![
+                run.id,
+                step.position,
+                step.tool,
+                if allowed { "allowed" } else { "denied" },
+                ready_json,
+                reason,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -431,7 +433,11 @@ fn verify_and_record_go_step(
                 step,
                 &advice.ready,
                 allowed,
-                if allowed { "approved role is dependency-ready" } else { "role was not dependency-ready" },
+                if allowed {
+                    "approved role is dependency-ready"
+                } else {
+                    "role was not dependency-ready"
+                },
             )?;
             if allowed {
                 Ok(())
@@ -451,32 +457,49 @@ pub fn list_go_dispatch_audit(
     id: String,
     app: tauri::AppHandle,
 ) -> Result<Vec<GoDispatchAuditRecord>, String> {
-    let folder = app.path().app_data_dir().map_err(|error| error.to_string())?;
-    let db = Database::open(folder.join("codetwin.sqlite3"))
+    let folder = app
+        .path()
+        .app_data_dir()
         .map_err(|error| error.to_string())?;
+    let db = Database::open(folder.join("codetwin.sqlite3")).map_err(|error| error.to_string())?;
     let _ = NativeAgents::new(&db).get(&id)?;
-    let mut statement = db.connection().prepare(
-        "SELECT id,position,role,verdict,ready_json,reason,created_at
-         FROM go_dispatch_audit WHERE run_id=?1 ORDER BY id DESC LIMIT 100"
-    ).map_err(|error| error.to_string())?;
-    let saved = statement.query_map([id], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, usize>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, String>(5)?,
-            row.get::<_, String>(6)?,
-        ))
-    }).map_err(|error| error.to_string())?;
-    saved.map(|row| {
-        let (id, position, role, verdict, ready_json, reason, created_at) =
-            row.map_err(|error| error.to_string())?;
-        let ready = serde_json::from_str(&ready_json)
-            .map_err(|_| "Invalid persisted Go audit payload")?;
-        Ok(GoDispatchAuditRecord { id, position, role, verdict, ready, reason, created_at })
-    }).collect()
+    let mut statement = db
+        .connection()
+        .prepare(
+            "SELECT id,position,role,verdict,ready_json,reason,created_at
+         FROM go_dispatch_audit WHERE run_id=?1 ORDER BY id DESC LIMIT 100",
+        )
+        .map_err(|error| error.to_string())?;
+    let saved = statement
+        .query_map([id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, usize>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    saved
+        .map(|row| {
+            let (id, position, role, verdict, ready_json, reason, created_at) =
+                row.map_err(|error| error.to_string())?;
+            let ready = serde_json::from_str(&ready_json)
+                .map_err(|_| "Invalid persisted Go audit payload")?;
+            Ok(GoDispatchAuditRecord {
+                id,
+                position,
+                role,
+                verdict,
+                ready,
+                reason,
+                created_at,
+            })
+        })
+        .collect()
 }
 
 /// Run the existing approved Rust specialists with a Go dispatch-policy check
@@ -588,11 +611,14 @@ mod tests {
             .verify(&run.id)
             .expect("verify persisted SQLite evidence handoff");
         assert!(evidence.verified, "{:?}", evidence.issues);
-        let allowed: i64 = db.connection().query_row(
-            "SELECT COUNT(*) FROM go_dispatch_audit WHERE run_id=?1 AND verdict='allowed'",
-            [&run.id],
-            |row| row.get(0),
-        ).expect("count persisted scheduling decisions");
+        let allowed: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM go_dispatch_audit WHERE run_id=?1 AND verdict='allowed'",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .expect("count persisted scheduling decisions");
         assert_eq!(allowed, 2);
     }
 
