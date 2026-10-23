@@ -765,7 +765,9 @@ pub async fn run_approved_security_flow_queue(
             match outcome {
                 Ok(flow) => {
                     let receipt = match flow.status.as_str() {
-                        "completed" | "failed" | "cancelled" | "interrupted" => flow.status.as_str(),
+                        "completed" | "failed" | "cancelled" | "interrupted" => {
+                            flow.status.as_str()
+                        }
                         _ => "interrupted",
                     };
                     let detail = if receipt == "completed" {
