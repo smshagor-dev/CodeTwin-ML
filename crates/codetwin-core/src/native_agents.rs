@@ -258,11 +258,10 @@ impl<'a> NativeAgents<'a> {
                      ORDER BY rowid DESC LIMIT ?2",
                 )
                 .map_err(to_error)?;
-            query
+            let rows = query
                 .query_map(params![project_id, limit], |row| row.get::<_, String>(0))
-                .map_err(to_error)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(to_error)?
+                .map_err(to_error)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(to_error)?
         };
         let mut verified = 0usize;
         let mut invalid = Vec::new();
