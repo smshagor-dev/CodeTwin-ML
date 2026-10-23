@@ -1231,7 +1231,7 @@ mod tests {
 
     #[test]
     fn completed_review_requires_all_receipts_to_match_exact_specialist_evidence() {
-        for mutation in ["none", "digest", "result", "missing", "status"] {
+        for mutation in ["none", "digest", "result", "missing", "status", "after"] {
             let fixture = tempfile::tempdir().unwrap();
             let path = fixture.path().join("receipt-integrity.sqlite3");
             let project_root = fixture.path().join("project");
@@ -1317,14 +1317,26 @@ mod tests {
                             )
                             .unwrap();
                     }
-                    "none" => {}
+                    "none" | "after" => {}
                     _ => unreachable!(),
                 }
                 reviews.finalize_review(&run.id, None).unwrap();
                 let saved = reviews.get(&run.id).unwrap();
-                if mutation == "none" {
+                if matches!(mutation, "none" | "after") {
                     assert_eq!(saved.status, "completed");
                     receipts.verify_completed(&run.id).unwrap();
+                    if mutation == "after" {
+                        // The desktop verifier must also detect a digest
+                        // altered after a previously valid finalization.
+                        db.connection()
+                            .execute(
+                                "UPDATE native_action_log SET result_sha256='changed-later'
+                                 WHERE run_id=?1 AND position=1",
+                                [&run.id],
+                            )
+                            .unwrap();
+                        assert!(receipts.verify_completed(&run.id).is_err());
+                    }
                 } else {
                     assert_eq!(saved.status, "failed", "mutation={mutation}");
                     assert!(saved
@@ -1340,8 +1352,17 @@ mod tests {
             let persisted = NativeAgents::new(&db).get(&review_id).unwrap();
             assert_eq!(
                 persisted.status,
-                if mutation == "none" { "completed" } else { "failed" }
+                if matches!(mutation, "none" | "after") {
+                    "completed"
+                } else {
+                    "failed"
+                }
             );
+            if mutation == "after" {
+                assert!(crate::native_action_log::NativeActionLog::new(&db)
+                    .verify_completed(&review_id)
+                    .is_err());
+            }
         }
     }
 
