@@ -46,13 +46,21 @@ impl<'a> WorkerAudit<'a> {
                    AND NOT EXISTS (
                      SELECT 1 FROM native_flow_queue
                      WHERE review_id=?1 AND status IN ('queued','running')
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM native_worker_audit
+                     WHERE error_code IN (
+                       'application_restarted_cleanup_unconfirmed',
+                       'worker_cleanup_unconfirmed',
+                       'worker_cancelled_cleanup_unconfirmed'
+                     )
                    )",
                 [run_id],
             )
             .map_err(err)?;
         if inserted != 1 {
             return Err(
-                "Worker requires an unqueued approved review without an active worker".into(),
+                "Worker requires an approved unqueued review, no active worker, and verified cleanup of earlier scans".into(),
             );
         }
         Ok(self.db.connection().last_insert_rowid())
@@ -244,6 +252,68 @@ impl<'a> WorkerAudit<'a> {
         Ok(changed)
     }
 
+    /// Fail closed across the whole desktop profile until Docker cleanup has
+    /// been explicitly verified. A different review may not bypass this hold.
+    pub fn cleanup_hold_count(&self) -> Result<usize, String> {
+        self.db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM native_worker_audit WHERE error_code IN (
+                  'application_restarted_cleanup_unconfirmed',
+                  'worker_cleanup_unconfirmed',
+                  'worker_cancelled_cleanup_unconfirmed'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(err)
+    }
+
+    /// The public entrypoint always checks the currently configured Docker
+    /// daemon. A caller cannot clear the hold based on UI confirmation alone.
+    pub fn verify_and_release_cleanup_hold(&self) -> Result<usize, String> {
+        if self.cleanup_hold_count()? == 0 {
+            return Ok(0);
+        }
+        crate::native_agent_workers::verify_no_leftover_containers()?;
+        self.release_after_confirmed_probe()
+    }
+
+    fn release_after_confirmed_probe(&self) -> Result<usize, String> {
+        let tx = self.db.connection().unchecked_transaction().map_err(err)?;
+        let active: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM native_worker_audit WHERE status='running'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(err)?;
+        if active != 0 {
+            return Err("Cannot release cleanup hold while a worker is active".into());
+        }
+        let updated = tx
+            .execute(
+                "UPDATE native_worker_audit
+                 SET error_code=CASE error_code
+                   WHEN 'application_restarted_cleanup_unconfirmed'
+                     THEN 'application_restarted_cleanup_checked'
+                   WHEN 'worker_cleanup_unconfirmed'
+                     THEN 'worker_cleanup_checked'
+                   WHEN 'worker_cancelled_cleanup_unconfirmed'
+                     THEN 'worker_cancelled_cleanup_checked'
+                 END
+                 WHERE error_code IN (
+                   'application_restarted_cleanup_unconfirmed',
+                   'worker_cleanup_unconfirmed',
+                   'worker_cancelled_cleanup_unconfirmed'
+                 )",
+                [],
+            )
+            .map_err(err)?;
+        tx.commit().map_err(err)?;
+        Ok(updated)
+    }
+
     pub fn latest(&self, run_id: &str) -> Result<Option<WorkerAuditRecord>, String> {
         Ok(self.list(run_id)?.into_iter().next())
     }
@@ -412,6 +482,66 @@ mod tests {
             .unwrap();
         agents.approve(&replacement.id).unwrap();
         assert!(audit.begin(&replacement.id).is_ok());
+    }
+
+    #[test]
+    fn unconfirmed_cleanup_blocks_other_projects_until_verified() {
+        let db = Database::open_in_memory().unwrap();
+        let first_root = tempfile::tempdir().unwrap();
+        let second_root = tempfile::tempdir().unwrap();
+        std::fs::write(first_root.path().join("one.ts"), "export const x=1;").unwrap();
+        std::fs::write(second_root.path().join("two.ts"), "export const y=2;").unwrap();
+        let first_project = crate::ProjectIndexService::new(&db)
+            .index_project(first_root.path())
+            .unwrap()
+            .project_id;
+        let second_project = crate::ProjectIndexService::new(&db)
+            .index_project(second_root.path())
+            .unwrap()
+            .project_id;
+        let agents = crate::native_agents::NativeAgents::new(&db);
+        let first = agents.create(&first_project, "First scan", 10, 120).unwrap();
+        agents.approve(&first.id).unwrap();
+        let audit = WorkerAudit::new(&db);
+        audit.begin(&first.id).unwrap();
+        assert_eq!(audit.recover_interrupted().unwrap(), 1);
+        assert_eq!(audit.cleanup_hold_count().unwrap(), 1);
+
+        let second = agents.create(&second_project, "Second scan", 10, 120).unwrap();
+        agents.approve(&second.id).unwrap();
+        assert!(audit.begin(&second.id).is_err());
+        assert_eq!(audit.cleanup_hold_count().unwrap(), 1);
+        // Explicit confirmation by the Docker probe is required before
+        // changing the durable hold. These internal tests exercise only the
+        // SQLite transition; the public method always performs the probe.
+        assert_eq!(audit.release_after_confirmed_probe().unwrap(), 1);
+        assert_eq!(audit.cleanup_hold_count().unwrap(), 0);
+        assert_eq!(
+            audit.latest(&first.id).unwrap().unwrap().error_code.as_deref(),
+            Some("application_restarted_cleanup_checked")
+        );
+        let ticket = audit.begin(&second.id).unwrap();
+        audit.finish(ticket, &Err("fixture completed".into())).unwrap();
+        assert_eq!(audit.release_after_confirmed_probe().unwrap(), 0);
+    }
+
+    #[test]
+    fn verification_cannot_release_hold_while_a_worker_is_running() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.rs"), "pub fn safe() {}").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let agents = crate::native_agents::NativeAgents::new(&db);
+        let review = agents.create(&project, "Review", 10, 120).unwrap();
+        agents.approve(&review.id).unwrap();
+        let audit = WorkerAudit::new(&db);
+        let ticket = audit.begin(&review.id).unwrap();
+        assert!(audit.release_after_confirmed_probe().is_err());
+        audit.finish(ticket, &Err("failed".into())).unwrap();
+        assert_eq!(audit.release_after_confirmed_probe().unwrap(), 0);
     }
 
     #[test]
