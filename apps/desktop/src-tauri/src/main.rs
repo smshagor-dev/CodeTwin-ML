@@ -49,10 +49,10 @@ use database_commands::{
     list_database_rules, run_database_analysis,
 };
 use go_security_commands::{
-    approve_automated_security_flow, get_automated_security_flow, go_security_dispatch_preview,
-    go_security_engine_readiness, list_go_dispatch_audit, prepare_automated_security_flow,
-    refine_go_security_task_plan, run_automated_security_flow, run_native_go_review,
-    suggest_go_security_task_plan,
+    approve_automated_security_flow, get_automated_flow_followup, get_automated_security_flow,
+    go_security_dispatch_preview, go_security_engine_readiness, list_go_dispatch_audit,
+    prepare_automated_security_flow, refine_go_security_task_plan, run_automated_security_flow,
+    run_native_go_review, suggest_automated_flow_followup, suggest_go_security_task_plan,
 };
 use guided_security_commands::{
     approve_guided_security_plan, compare_guided_security_scans, correlate_guided_security_sources,
@@ -1085,6 +1085,8 @@ fn main() {
             go_security_dispatch_preview,
             prepare_automated_security_flow,
             get_automated_security_flow,
+            get_automated_flow_followup,
+            suggest_automated_flow_followup,
             approve_automated_security_flow,
             run_automated_security_flow,
             list_go_dispatch_audit,

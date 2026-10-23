@@ -103,6 +103,14 @@ export const workspaceApi = {
     return invoke<import("./pages/NativeAgentsPage").AutomatedSecurityFlow>(
       "approve_automated_security_flow", { id });
   },
+  getAutomatedFlowFollowup(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").AdaptiveFlowFollowup | null>(
+      "get_automated_flow_followup", { id });
+  },
+  suggestAutomatedFlowFollowup(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").AdaptiveFlowFollowup | null>(
+      "suggest_automated_flow_followup", { id });
+  },
   runAutomatedSecurityFlow(id: string) {
     return invoke<import("./pages/NativeAgentsPage").AutomatedSecurityFlow>(
       "run_automated_security_flow", { id });
