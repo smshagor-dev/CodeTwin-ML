@@ -763,23 +763,42 @@ pub async fn run_approved_security_flow_queue(
             };
             let outcome = run_preapproved_flow(&db, &binary, &item.review_id);
             match outcome {
-                Ok(flow) if flow.status == "completed" => {
-                    queue.finish(&item.review_id, "completed", "Approved evidence committed")?;
-                }
                 Ok(flow) => {
-                    queue.finish(
-                        &item.review_id,
-                        "failed",
-                        &format!("Flow stopped with status {}", flow.status),
-                    )?;
-                    break;
+                    let receipt = match flow.status.as_str() {
+                        "completed" | "failed" | "cancelled" | "interrupted" => {
+                            flow.status.as_str()
+                        }
+                        _ => "interrupted",
+                    };
+                    let detail = if receipt == "completed" {
+                        "Approved evidence committed".to_string()
+                    } else {
+                        format!("Flow stopped with status {}", flow.status)
+                    };
+                    queue.finish(&item.review_id, receipt, &detail)?;
+                    if receipt != "completed" {
+                        break;
+                    }
                 }
                 Err(_error) => {
-                    queue.finish(
-                        &item.review_id,
-                        "interrupted",
-                        "Rust supervisor aborted; inspect original review before retry",
-                    )?;
+                    // Cancellation may race with the queue claim before the
+                    // Rust supervisor starts. Retain its real terminal status.
+                    let cancelled = NativeAgents::new(&db)
+                        .get(&item.review_id)
+                        .is_ok_and(|run| run.status == "cancelled");
+                    if cancelled {
+                        queue.finish(
+                            &item.review_id,
+                            "cancelled",
+                            "Parent review was cancelled before or during execution",
+                        )?;
+                    } else {
+                        queue.finish(
+                            &item.review_id,
+                            "interrupted",
+                            "Rust supervisor aborted; inspect original review before retry",
+                        )?;
+                    }
                     break;
                 }
             }
