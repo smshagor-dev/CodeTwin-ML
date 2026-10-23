@@ -5,6 +5,7 @@ pub use git_commit::{
     GitCommitRequest,
 };
 pub mod assessment_jobs;
+pub mod native_action_log;
 pub mod native_agent_delegation;
 pub mod native_agent_handoffs;
 pub mod native_agent_knowledge;

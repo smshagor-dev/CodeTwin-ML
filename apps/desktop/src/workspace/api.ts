@@ -130,6 +130,11 @@ export const workspaceApi = {
   listNativeAgentReviews(projectId: string) {
     return invoke<import("./pages/NativeAgentsPage").NativeAgentRun[]>("list_native_agent_reviews", { projectId });
   },
+  listNativeActionReceipts(id: string) {
+    return invoke<{ position: number; role: string; status: string;
+      result_sha256: string | null; started_at: string; finished_at: string | null }[]>(
+      "list_native_action_receipts", { id });
+  },
   getNativeAgentReview(id: string) {
     return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("native_agent_review", { id });
   },

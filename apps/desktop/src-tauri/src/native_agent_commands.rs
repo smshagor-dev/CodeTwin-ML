@@ -1,4 +1,5 @@
 use codetwin_core::{
+    native_action_log::{ActionReceipt, NativeActionLog},
     native_agent_handoffs::{AgentHandoff, AgentHandoffs, AgentVerification},
     native_agent_memory::{AgentMemory, MemoryEntry},
     native_agents::{AgentRun, NativeAgents},
@@ -85,6 +86,16 @@ pub async fn run_native_agent_review(
 pub fn native_agent_report(id: String, app: tauri::AppHandle) -> Result<String, String> {
     let db = open_db(&app)?;
     NativeAgents::new(&db).report(&id)
+}
+
+#[tauri::command]
+pub fn list_native_action_receipts(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<ActionReceipt>, String> {
+    let db = open_db(&app)?;
+    let _ = NativeAgents::new(&db).get(&id)?;
+    NativeActionLog::new(&db).list(&id)
 }
 
 #[tauri::command]
