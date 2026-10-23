@@ -118,6 +118,7 @@ export type HistoricalEvidenceAudit = {
   checked: number;
   verified: number;
   invalid: { review_id: string; issues: string[] }[];
+  next_before_rowid: string | null;
 };
 
 export type AgentVerification = {
@@ -733,14 +734,28 @@ export function NativeAgentsPage() {
     }
   }
 
-  async function auditEvidenceHistory() {
+  async function auditEvidenceHistory(loadOlder = false) {
     if (!activeProjectId || busy) return;
+    const projectId = activeProjectId;
+    const previous = loadOlder && historyAudit?.project_id === projectId ? historyAudit : null;
+    if (loadOlder && !previous?.next_before_rowid) return;
     setBusy("evidence-history");
     setError("");
-    setHistoryAudit(null);
+    if (!loadOlder) setHistoryAudit(null);
     try {
-      const audit = await workspaceApi.auditNativeEvidenceHistory(activeProjectId, 100);
-      setHistoryAudit(audit);
+      const audit = await workspaceApi.auditNativeEvidenceHistory(
+        projectId, 100, previous?.next_before_rowid ?? null,
+      );
+      if (previous) {
+        setHistoryAudit({
+          ...audit,
+          checked: previous.checked + audit.checked,
+          verified: previous.verified + audit.verified,
+          invalid: [...previous.invalid, ...audit.invalid],
+        });
+      } else {
+        setHistoryAudit(audit);
+      }
     } catch (reason) {
       setError("Historical evidence audit failed: " + String(reason));
     } finally {
@@ -1144,9 +1159,15 @@ export function NativeAgentsPage() {
             <p className="ws-form-help">
               Verified {historyAudit.verified} of {historyAudit.checked} checked completed reviews
               {" · "}{historyAudit.total_completed} total completed.
-              {historyAudit.checked < historyAudit.total_completed
-                ? " Only the 100 most recent reviews were checked." : ""}
+              {historyAudit.next_before_rowid
+                ? " Older completed reviews remain unaudited." : " All currently reachable pages were checked."}
             </p>
+            {historyAudit.next_before_rowid && <button
+              className="ws-button ws-button-secondary"
+              disabled={Boolean(busy)}
+              onClick={() => void auditEvidenceHistory(true)}>
+              {busy === "evidence-history" ? "Checking older reviews…" : "Audit next 100 older reviews"}
+            </button>}
             {historyAudit.invalid.map(item => <div className="ws-warning-box" key={item.review_id}>
               <strong>Unverified review <code>{item.review_id}</code></strong>
               {item.issues.map((issue, index) => <p key={index}>{issue}</p>)}
