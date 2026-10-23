@@ -62,15 +62,24 @@ impl<'a> WorkerAudit<'a> {
                     ],
                 )
                 .map_err(err)?,
-            Err(_) => self
-                .db
-                .connection()
-                .execute(
-                    "UPDATE native_worker_audit SET status='failed',error_code='worker_failed',
-                 finished_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='running'",
+            Err(_) => {
+                // Read the approved review's cancellation flag, not the
+                // untrusted worker error string; error codes never persist paths.
+                let cancelled: i64 = self.db.connection().query_row(
+                    "SELECT n.cancel_requested FROM native_agent_runs n
+                     JOIN native_worker_audit a ON a.run_id=n.id WHERE a.id=?1",
                     [audit_id],
-                )
-                .map_err(err)?,
+                    |row| row.get(0),
+                ).map_err(err)?;
+                self.db
+                    .connection()
+                    .execute(
+                        "UPDATE native_worker_audit SET status='failed',error_code=?2,
+                         finished_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='running'",
+                        params![audit_id, if cancelled != 0 { "worker_cancelled" } else { "worker_failed" }],
+                    )
+                    .map_err(err)?
+            },
         };
         if changed != 1 {
             return Err("Worker audit cannot be finalized twice".into());
@@ -157,7 +166,19 @@ mod tests {
             Some("worker_failed")
         );
         assert!(audit.finish(id, &Err("retry".into())).is_err());
-        let unfinished = audit.begin(&run.id).unwrap();
+        let cancelled = audit.begin(&run.id).unwrap();
+        agents.cancel(&run.id).unwrap();
+        audit.finish(cancelled, &Err("ignored raw worker output".into())).unwrap();
+        assert_eq!(
+            audit.latest(&run.id).unwrap().unwrap().error_code.as_deref(),
+            Some("worker_cancelled")
+        );
+        // An already cancelled review must not start another worker.
+        assert!(audit.begin(&run.id).is_err());
+        // Restart recovery is checked on a separate approved review.
+        let next = agents.create(&project, "Follow-up", 10, 120).unwrap();
+        agents.approve(&next.id).unwrap();
+        let unfinished = audit.begin(&next.id).unwrap();
         assert!(unfinished > id);
         assert_eq!(audit.recover_interrupted().unwrap(), 1);
         assert_eq!(
