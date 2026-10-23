@@ -592,6 +592,16 @@ impl<'a> NativeAgents<'a> {
             .connection()
             .unchecked_transaction()
             .map_err(to_error)?;
+        // Finish the whole delegation graph before retiring its parent run.
+        // A killed process cannot safely resume tasks that might have produced
+        // partial results outside this transaction. Never replay on startup.
+        tx.execute(
+            "UPDATE native_delegation_tasks SET status='cancelled'
+             WHERE status IN ('pending','running') AND run_id IN
+             (SELECT id FROM native_agent_runs WHERE status='running')",
+            [],
+        )
+        .map_err(to_error)?;
         tx.execute(
             "UPDATE native_agent_steps SET status='interrupted',finished_at=CURRENT_TIMESTAMP
              WHERE status='running' AND run_id IN
@@ -600,7 +610,15 @@ impl<'a> NativeAgents<'a> {
         )
         .map_err(to_error)?;
         tx.execute(
-            "UPDATE native_agent_runs SET status='interrupted',finished_at=CURRENT_TIMESTAMP,
+            "UPDATE native_agent_steps SET status='cancelled',finished_at=CURRENT_TIMESTAMP
+             WHERE status='pending' AND run_id IN
+             (SELECT id FROM native_agent_runs WHERE status='running')",
+            [],
+        )
+        .map_err(to_error)?;
+        tx.execute(
+            "UPDATE native_agent_runs SET status='interrupted',cancel_requested=1,
+             finished_at=CURRENT_TIMESTAMP,
              message='Application closed during review; create a fresh plan'
              WHERE status='running'",
             [],
@@ -641,6 +659,96 @@ fn to_error(err: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crash_recovery_retires_unfinished_sqlite_delegation_without_reexecution() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("source.rs"), "pub fn safe() {}").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let agent = NativeAgents::new(&db);
+        let run = agent
+            .create_with_roles(
+                &project,
+                "Review approved local source",
+                10,
+                120,
+                &["scout".into(), "source".into(), "qa".into()],
+            )
+            .unwrap();
+        agent.approve(&run.id).unwrap();
+
+        // Simulate a crash after the first specialist completed and the
+        // next specialist started; the final specialist was still queued.
+        db.connection()
+            .execute(
+                "UPDATE native_agent_runs SET status='running' WHERE id=?1",
+                [&run.id],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "UPDATE native_agent_steps SET status='completed' WHERE run_id=?1 AND position=0",
+                [&run.id],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "UPDATE native_delegation_tasks SET status='completed' WHERE run_id=?1 AND position=0",
+                [&run.id],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "UPDATE native_agent_steps SET status='running' WHERE run_id=?1 AND position=1",
+                [&run.id],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "UPDATE native_delegation_tasks SET status='running' WHERE run_id=?1 AND position=1",
+                [&run.id],
+            )
+            .unwrap();
+
+        agent.recover_interrupted().unwrap();
+        let recovered = agent.get(&run.id).unwrap();
+        assert_eq!(recovered.status, "interrupted");
+        assert_eq!(recovered.steps.len(), 3);
+        assert_eq!(recovered.steps[0].status, "completed");
+        assert_eq!(recovered.steps[1].status, "interrupted");
+        assert_eq!(recovered.steps[2].status, "cancelled");
+        let delegated = crate::native_agent_delegation::NativeDelegation::new(&db)
+            .graph(&run.id)
+            .unwrap();
+        assert_eq!(delegated.tasks[0].status, "completed");
+        assert_eq!(delegated.tasks[1].status, "cancelled");
+        assert_eq!(delegated.tasks[2].status, "cancelled");
+        let cancelled: bool = db
+            .connection()
+            .query_row(
+                "SELECT cancel_requested FROM native_agent_runs WHERE id=?1",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(cancelled);
+        assert!(agent.execute(&run.id).is_err());
+        agent.recover_interrupted().unwrap();
+        assert_eq!(agent.get(&run.id).unwrap().status, "interrupted");
+        assert!(agent
+            .create_with_roles(
+                &project,
+                "Fresh review after restart",
+                10,
+                120,
+                &["scout".into(), "source".into()],
+            )
+            .is_ok());
+    }
 
     #[test]
     fn requires_indexed_project_and_explicit_approval() {
