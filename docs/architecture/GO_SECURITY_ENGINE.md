@@ -125,9 +125,18 @@ approve a fresh review.
 
 **Important:** a killed Docker CLI is not proof that its daemon-side container
 was removed. The audit records the fixed
-`application_restarted_cleanup_unconfirmed` code; an operator must verify
-container cleanup before launching another isolated scanner. Restart recovery
-does **not** auto-run a scanner, auto-retry or claim confirmed cleanup.
+`application_restarted_cleanup_unconfirmed` code. Any such receipt, including
+a failed worker with an unconfirmed cleanup, now **blocks all new isolated
+worker claims across projects**, not only the original review. The Agents page
+shows the saved cleanup hold count. An operator must explicitly request a
+bounded, read-only Docker verification: `docker ps --all --filter
+name=^/codetwin-scan- --format {{.Names}}` using the configured trusted CLI.
+Only a successful empty container listing for the current configured daemon
+allows SQLite to replace the outstanding codes with traceable
+`*_cleanup_checked` codes. A failed command, timeout or any matching container
+keeps the block. Operators must also ensure Docker is pointed at the correct
+daemon/context; checking a different daemon does not prove earlier cleanup.
+Restart recovery does **not** auto-run a scanner, auto-retry or delete containers.
 
 ## Adaptive follow-up after failure or interruption
 
