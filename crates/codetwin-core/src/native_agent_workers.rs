@@ -432,10 +432,7 @@ fn verify_no_leftovers_with_cli(executable: &Path) -> Result<(), String> {
     }
     output.rewind().map_err(err)?;
     let mut names = Vec::new();
-    output
-        .take(16_385)
-        .read_to_end(&mut names)
-        .map_err(err)?;
+    output.take(16_385).read_to_end(&mut names).map_err(err)?;
     if names.len() > 16_384 {
         return Err("Docker scanner container list exceeded the verification limit".into());
     }
@@ -573,10 +570,7 @@ mod tests {
             "#!/bin/sh\n[ \"$1\" = ps ] && [ \"$2\" = --all ] || exit 8\nexit 0\n",
         );
         assert!(verify_no_leftovers_with_cli(&script).is_ok());
-        write_fixture_script(
-            &script,
-            "#!/bin/sh\nprintf 'codetwin-scan-leftover\\n'\n",
-        );
+        write_fixture_script(&script, "#!/bin/sh\nprintf 'codetwin-scan-leftover\\n'\n");
         assert!(verify_no_leftovers_with_cli(&script).is_err());
         write_fixture_script(&script, "#!/bin/sh\nexit 9\n");
         assert!(verify_no_leftovers_with_cli(&script).is_err());
