@@ -6,7 +6,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs},
+    net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
     time::{Duration, Instant},
 };
 
