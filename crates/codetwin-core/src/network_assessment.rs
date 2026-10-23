@@ -44,12 +44,19 @@ pub struct NetworkAssessmentRun {
     pub probes: Vec<NetworkProbe>,
 }
 
-pub struct NetworkAssessment<'a> { db: &'a Database }
+pub struct NetworkAssessment<'a> {
+    db: &'a Database,
+}
 
 impl<'a> NetworkAssessment<'a> {
-    pub const fn new(db: &'a Database) -> Self { Self { db } }
+    pub const fn new(db: &'a Database) -> Self {
+        Self { db }
+    }
 
-    pub fn prepare(&self, request: NetworkAssessmentRequest) -> Result<NetworkAssessmentRun, String> {
+    pub fn prepare(
+        &self,
+        request: NetworkAssessmentRequest,
+    ) -> Result<NetworkAssessmentRun, String> {
         if !request.authorization_confirmed {
             return Err("Confirm ownership or explicit testing permission first".into());
         }
@@ -60,9 +67,15 @@ impl<'a> NetworkAssessment<'a> {
         }
         // Host resolution happens before persistence; every resulting IP must be in scope.
         let addresses = resolve_target(&target, ports[0], request.allow_private_networks)?;
-        let id: String = self.db.connection().query_row(
-            "SELECT 'network_' || lower(hex(randomblob(16)))", [], |row| row.get(0),
-        ).map_err(err)?;
+        let id: String = self
+            .db
+            .connection()
+            .query_row(
+                "SELECT 'network_' || lower(hex(randomblob(16)))",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(err)?;
         self.db.connection().execute(
             "INSERT INTO network_assessment_runs
              (id,target,ports_json,addresses_json,allow_private_networks,authorization_confirmed,budget_seconds,status)
@@ -78,11 +91,18 @@ impl<'a> NetworkAssessment<'a> {
     }
 
     pub fn approve(&self, id: &str) -> Result<NetworkAssessmentRun, String> {
-        let changed = self.db.connection().execute(
-            "UPDATE network_assessment_runs SET status='approved'
-             WHERE id=?1 AND status='planned'", [id],
-        ).map_err(err)?;
-        if changed != 1 { return Err("Assessment is missing or no longer awaiting approval".into()); }
+        let changed = self
+            .db
+            .connection()
+            .execute(
+                "UPDATE network_assessment_runs SET status='approved'
+             WHERE id=?1 AND status='planned'",
+                [id],
+            )
+            .map_err(err)?;
+        if changed != 1 {
+            return Err("Assessment is missing or no longer awaiting approval".into());
+        }
         self.get(id)
     }
 
@@ -92,7 +112,9 @@ impl<'a> NetworkAssessment<'a> {
              SET status='cancelled',finished_at=CURRENT_TIMESTAMP,message='Stopped at an assessment boundary'
              WHERE id=?1 AND status IN ('planned','approved','running')", [id],
         ).map_err(err)?;
-        if changed != 1 { return Err("No cancellable network assessment found".into()); }
+        if changed != 1 {
+            return Err("No cancellable network assessment found".into());
+        }
         self.get(id)
     }
 
@@ -118,17 +140,27 @@ impl<'a> NetworkAssessment<'a> {
                 status,created_at,message,probes:Vec::new(),
             })
         }).ok_or("Network assessment not found")??;
-        let mut statement=self.db.connection().prepare(
-            "SELECT port,address,status,elapsed_ms,tls_status FROM network_assessment_probes
-             WHERE run_id=?1 ORDER BY port"
-        ).map_err(err)?;
-        run.probes=statement.query_map([id], |row| {
-            Ok(NetworkProbe {
-                port:row.get(0)?,address:row.get(1)?,
-                status:row.get(2)?,elapsed_ms:row.get(3)?,
-                tls_status:row.get(4)?,
+        let mut statement = self
+            .db
+            .connection()
+            .prepare(
+                "SELECT port,address,status,elapsed_ms,tls_status FROM network_assessment_probes
+             WHERE run_id=?1 ORDER BY port",
+            )
+            .map_err(err)?;
+        run.probes = statement
+            .query_map([id], |row| {
+                Ok(NetworkProbe {
+                    port: row.get(0)?,
+                    address: row.get(1)?,
+                    status: row.get(2)?,
+                    elapsed_ms: row.get(3)?,
+                    tls_status: row.get(4)?,
+                })
             })
-        }).map_err(err)?.collect::<Result<Vec<_>,_>>().map_err(err)?;
+            .map_err(err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(err)?;
         Ok(run)
     }
 
@@ -136,20 +168,30 @@ impl<'a> NetworkAssessment<'a> {
         let mut statement=self.db.connection().prepare(
             "SELECT id FROM network_assessment_runs ORDER BY created_at DESC,rowid DESC LIMIT ?1"
         ).map_err(err)?;
-        let ids=statement.query_map([limit.clamp(1,100) as i64], |row|row.get::<_,String>(0))
-            .map_err(err)?.collect::<Result<Vec<_>,_>>().map_err(err)?;
-        ids.iter().map(|id|self.get(id)).collect()
+        let ids = statement
+            .query_map([limit.clamp(1, 100) as i64], |row| row.get::<_, String>(0))
+            .map_err(err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(err)?;
+        ids.iter().map(|id| self.get(id)).collect()
     }
 
     /// Bounded sequential TCP connect checks. All DNS answers must match the approved snapshot.
     /// Failure/cancellation retains partial observations, never reports a clean assessment.
     pub fn execute(&self, id: &str) -> Result<NetworkAssessmentRun, String> {
-        let changed=self.db.connection().execute(
-            "UPDATE network_assessment_runs SET status='running',started_at=CURRENT_TIMESTAMP
-             WHERE id=?1 AND status='approved'", [id],
-        ).map_err(err)?;
-        if changed != 1 { return Err("Approve this exact network assessment before starting".into()); }
-        let result=self.execute_inner(id);
+        let changed = self
+            .db
+            .connection()
+            .execute(
+                "UPDATE network_assessment_runs SET status='running',started_at=CURRENT_TIMESTAMP
+             WHERE id=?1 AND status='approved'",
+                [id],
+            )
+            .map_err(err)?;
+        if changed != 1 {
+            return Err("Approve this exact network assessment before starting".into());
+        }
+        let result = self.execute_inner(id);
         if let Err(ref reason) = result {
             self.db.connection().execute(
                 "UPDATE network_assessment_runs SET status='failed',message=?2,finished_at=CURRENT_TIMESTAMP
@@ -166,40 +208,72 @@ impl<'a> NetworkAssessment<'a> {
     }
 
     fn execute_inner(&self, id: &str) -> Result<(), String> {
-        let run=self.get(id)?;
-        let budget_seconds:i64=self.db.connection().query_row(
-            "SELECT budget_seconds FROM network_assessment_runs WHERE id=?1",[id],|row|row.get(0)
-        ).map_err(err)?;
-        let deadline=Instant::now();
-        let expected=run.addresses;
+        let run = self.get(id)?;
+        let budget_seconds: i64 = self
+            .db
+            .connection()
+            .query_row(
+                "SELECT budget_seconds FROM network_assessment_runs WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(err)?;
+        let deadline = Instant::now();
+        let expected = run.addresses;
         for port in run.ports {
-            let status:String=self.db.connection().query_row(
-                "SELECT status FROM network_assessment_runs WHERE id=?1",[id],|row|row.get(0)
-            ).map_err(err)?;
-            if status != "running" {return Err("Assessment was cancelled".into());}
+            let status: String = self
+                .db
+                .connection()
+                .query_row(
+                    "SELECT status FROM network_assessment_runs WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .map_err(err)?;
+            if status != "running" {
+                return Err("Assessment was cancelled".into());
+            }
             if deadline.elapsed() >= Duration::from_secs(budget_seconds as u64) {
                 return Err("Network time budget expired; remaining ports were not checked".into());
             }
-            let fresh=resolve_target(&run.target, port, run.allow_private_networks)?;
+            let fresh = resolve_target(&run.target, port, run.allow_private_networks)?;
             if fresh != expected {
-                return Err("DNS answer changed after approval; stop and prepare a new review".into());
+                return Err(
+                    "DNS answer changed after approval; stop and prepare a new review".into(),
+                );
             }
-            let address:IpAddr=expected[0].parse().map_err(err)?;
-            let socket=SocketAddr::new(address,port);
-            let started=Instant::now();
-            let remaining=Duration::from_secs(budget_seconds as u64).saturating_sub(deadline.elapsed());
-            let timeout=PER_PORT_TIMEOUT.min(remaining);
-            if timeout.is_zero() { return Err("Assessment time budget expired".into()); }
-            let connection=TcpStream::connect_timeout(&socket,timeout);
-            let (state,tls_status)=match connection {
-                Ok(stream)=>{
+            let address: IpAddr = expected[0].parse().map_err(err)?;
+            let socket = SocketAddr::new(address, port);
+            let started = Instant::now();
+            let remaining =
+                Duration::from_secs(budget_seconds as u64).saturating_sub(deadline.elapsed());
+            let timeout = PER_PORT_TIMEOUT.min(remaining);
+            if timeout.is_zero() {
+                return Err("Assessment time budget expired".into());
+            }
+            let connection = TcpStream::connect_timeout(&socket, timeout);
+            let (state, tls_status) = match connection {
+                Ok(stream) => {
                     drop(stream);
-                    let tls=if matches!(port,443|8443) {
-                        Some(if tls_trust_check(&run.target,socket,remaining.min(Duration::from_secs(2))) {"verified"} else {"not_verified"}.to_string())
-                    } else {None};
-                    ("open",tls)
+                    let tls = if matches!(port, 443 | 8443) {
+                        Some(
+                            if tls_trust_check(
+                                &run.target,
+                                socket,
+                                remaining.min(Duration::from_secs(2)),
+                            ) {
+                                "verified"
+                            } else {
+                                "not_verified"
+                            }
+                            .to_string(),
+                        )
+                    } else {
+                        None
+                    };
+                    ("open", tls)
                 }
-                Err(error) => (classify_error(&error),None),
+                Err(error) => (classify_error(&error), None),
             };
             self.db.connection().execute(
                 "INSERT INTO network_assessment_probes(run_id,port,address,status,elapsed_ms,tls_status)
@@ -209,92 +283,145 @@ impl<'a> NetworkAssessment<'a> {
         }
         Ok(())
     }
-
 }
 
 /// HTTPS peer trust only; this deliberately does not audit cipher strength.
-fn tls_trust_check(target:&str, address:SocketAddr,timeout:Duration)->bool {
-    let port=address.port();
-    let authority=if target.contains(':') {format!("[{target}]")} else {target.to_owned()};
-    let url=match Url::parse(&format!("https://{authority}:{port}/")) {
-        Ok(url)=>url,Err(_)=>return false,
+fn tls_trust_check(target: &str, address: SocketAddr, timeout: Duration) -> bool {
+    let port = address.port();
+    let authority = if target.contains(':') {
+        format!("[{target}]")
+    } else {
+        target.to_owned()
     };
-    let client=match Client::builder()
+    let url = match Url::parse(&format!("https://{authority}:{port}/")) {
+        Ok(url) => url,
+        Err(_) => return false,
+    };
+    let client = match Client::builder()
         .timeout(timeout)
         .redirect(Policy::none())
         .no_proxy()
-        .resolve(target,address)
+        .resolve(target, address)
         .build()
-    {Ok(client)=>client,Err(_)=>return false};
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
     client.head(url).send().is_ok()
 }
 
-fn validate_ports(ports:&[u16])->Result<Vec<u16>,String> {
-    if ports.is_empty() || ports.len()>MAX_PORTS || ports.contains(&0) {
+fn validate_ports(ports: &[u16]) -> Result<Vec<u16>, String> {
+    if ports.is_empty() || ports.len() > MAX_PORTS || ports.contains(&0) {
         return Err("Select 1-16 explicit TCP ports, each between 1 and 65535".into());
     }
-    let mut result=ports.to_vec();
+    let mut result = ports.to_vec();
     result.sort_unstable();
     result.dedup();
-    if result.len()!=ports.len(){return Err("Duplicate TCP ports are not allowed".into());}
+    if result.len() != ports.len() {
+        return Err("Duplicate TCP ports are not allowed".into());
+    }
     Ok(result)
 }
-fn validate_target(raw:&str)->Result<String,String>{
-    let target=raw.trim().trim_end_matches('.').to_ascii_lowercase();
-    if target.is_empty() || target.len()>253
-        || target.contains('/') || target.contains('\\') || target.contains('@')
-        || target.contains('%') || target.contains(' ') || target.contains('?')
-        || target.contains('#') || target.contains('*')
-    {return Err("Supply one exact hostname or IP, not a URL, wildcard, range or CIDR".into());}
-    if target.parse::<IpAddr>().is_ok(){return Ok(target);}
-    if target.contains(':') || target.split('.').any(|label|
-        label.is_empty() || label.len()>63 || label.starts_with('-') || label.ends_with('-')
-        || !label.bytes().all(|c|c.is_ascii_alphanumeric() || c==b'-'))
-    {return Err("Invalid exact DNS hostname".into());}
+fn validate_target(raw: &str) -> Result<String, String> {
+    let target = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+    if target.is_empty()
+        || target.len() > 253
+        || target.contains('/')
+        || target.contains('\\')
+        || target.contains('@')
+        || target.contains('%')
+        || target.contains(' ')
+        || target.contains('?')
+        || target.contains('#')
+        || target.contains('*')
+    {
+        return Err("Supply one exact hostname or IP, not a URL, wildcard, range or CIDR".into());
+    }
+    if target.parse::<IpAddr>().is_ok() {
+        return Ok(target);
+    }
+    if target.contains(':')
+        || target.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        })
+    {
+        return Err("Invalid exact DNS hostname".into());
+    }
     Ok(target)
 }
-fn resolve_target(host:&str,port:u16,allow_private:bool)->Result<Vec<String>,String>{
-    let addresses:Vec<SocketAddr>=(host,port).to_socket_addrs()
-        .map_err(|_|"Unable to resolve authorized target".to_string())?.collect();
-    if addresses.is_empty(){return Err("Target has no DNS addresses".into());}
-    let mut results:Vec<String>=addresses.iter().map(|socket|socket.ip().to_string()).collect();
-    results.sort();results.dedup();
-    if results.len()>16 {return Err("Too many DNS addresses for bounded assessment".into());}
+fn resolve_target(host: &str, port: u16, allow_private: bool) -> Result<Vec<String>, String> {
+    let addresses: Vec<SocketAddr> = (host, port)
+        .to_socket_addrs()
+        .map_err(|_| "Unable to resolve authorized target".to_string())?
+        .collect();
+    if addresses.is_empty() {
+        return Err("Target has no DNS addresses".into());
+    }
+    let mut results: Vec<String> = addresses
+        .iter()
+        .map(|socket| socket.ip().to_string())
+        .collect();
+    results.sort();
+    results.dedup();
+    if results.len() > 16 {
+        return Err("Too many DNS addresses for bounded assessment".into());
+    }
     for address in &results {
-        let ip:IpAddr=address.parse().map_err(err)?;
-        if !allowed_address(ip,allow_private) {
-            return Err(format!("DNS resolved to a blocked or unapproved address: {address}"));
+        let ip: IpAddr = address.parse().map_err(err)?;
+        if !allowed_address(ip, allow_private) {
+            return Err(format!(
+                "DNS resolved to a blocked or unapproved address: {address}"
+            ));
         }
     }
     Ok(results)
 }
-fn allowed_address(ip:IpAddr,allow_private:bool)->bool {
+fn allowed_address(ip: IpAddr, allow_private: bool) -> bool {
     match ip {
-        IpAddr::V4(v4)=>{
-            let [a,b,_,_]=v4.octets();
-            let dangerous=v4.is_unspecified() || v4.is_multicast() || v4.is_broadcast()
-                || v4.is_documentation() || a>=240 || a==0 || (a==100 && (64..=127).contains(&b))
-                || (a==198 && (b==18 || b==19));
-            if dangerous {return false;}
-            let local=v4.is_loopback() || v4.is_private() || v4.is_link_local();
+        IpAddr::V4(v4) => {
+            let [a, b, _, _] = v4.octets();
+            let dangerous = v4.is_unspecified()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || a >= 240
+                || a == 0
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 198 && (b == 18 || b == 19));
+            if dangerous {
+                return false;
+            }
+            let local = v4.is_loopback() || v4.is_private() || v4.is_link_local();
             !local || allow_private
         }
-        IpAddr::V6(v6)=>{
-            if let Some(v4)=v6.to_ipv4(){return allowed_address(IpAddr::V4(v4),allow_private);}
-            if v6.is_unspecified() || v6.is_multicast(){return false;}
-            let local=v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local();
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4() {
+                return allowed_address(IpAddr::V4(v4), allow_private);
+            }
+            if v6.is_unspecified() || v6.is_multicast() {
+                return false;
+            }
+            let local = v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local();
             !local || allow_private
         }
     }
 }
-fn classify_error(e:&io::Error)->&'static str {
-    match e.kind(){
-        io::ErrorKind::ConnectionRefused=>"closed",
-        io::ErrorKind::TimedOut|io::ErrorKind::WouldBlock=>"timeout",
-        _=>"unreachable",
+fn classify_error(e: &io::Error) -> &'static str {
+    match e.kind() {
+        io::ErrorKind::ConnectionRefused => "closed",
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => "timeout",
+        _ => "unreachable",
     }
 }
-fn err(e:impl std::fmt::Display)->String {e.to_string()}
+fn err(e: impl std::fmt::Display) -> String {
+    e.to_string()
+}
 
 #[cfg(test)]
 mod tests {
@@ -306,51 +433,65 @@ mod tests {
         assert!(validate_target("https://example.org").is_err());
         assert!(validate_target("my-host.example.org").is_ok());
         assert!(validate_target("evil.example.org?x").is_err());
-        assert!(!allowed_address("127.0.0.1".parse().unwrap(),false));
-        assert!(allowed_address("127.0.0.1".parse().unwrap(),true));
-        assert!(!allowed_address("224.0.0.1".parse().unwrap(),true));
-        assert!(!allowed_address("192.0.2.10".parse().unwrap(),true));
-        assert!(validate_ports(&[22,443,22]).is_err());
+        assert!(!allowed_address("127.0.0.1".parse().unwrap(), false));
+        assert!(allowed_address("127.0.0.1".parse().unwrap(), true));
+        assert!(!allowed_address("224.0.0.1".parse().unwrap(), true));
+        assert!(!allowed_address("192.0.2.10".parse().unwrap(), true));
+        assert!(validate_ports(&[22, 443, 22]).is_err());
         assert!(validate_ports(&[0]).is_err());
         assert!(validate_ports(&(1..=17).collect::<Vec<_>>()).is_err());
     }
 
     #[test]
     fn approved_loopback_scan_persists_evidence_without_out_of_scope_requests() {
-        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
-        let port=listener.local_addr().unwrap().port();
-        let db=Database::open_in_memory().unwrap();
-        let service=NetworkAssessment::new(&db);
-        let request=NetworkAssessmentRequest{
-            target:"127.0.0.1".into(),ports:vec![port],
-            authorization_confirmed:true,allow_private_networks:true,budget_seconds:10
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let db = Database::open_in_memory().unwrap();
+        let service = NetworkAssessment::new(&db);
+        let request = NetworkAssessmentRequest {
+            target: "127.0.0.1".into(),
+            ports: vec![port],
+            authorization_confirmed: true,
+            allow_private_networks: true,
+            budget_seconds: 10,
         };
-        let prepared=service.prepare(request.clone()).unwrap();
-        assert_eq!(prepared.status,"planned");
+        let prepared = service.prepare(request.clone()).unwrap();
+        assert_eq!(prepared.status, "planned");
         assert!(service.execute(&prepared.id).is_err());
-        let approved=service.approve(&prepared.id).unwrap();
-        assert_eq!(approved.status,"approved");
-        let result=service.execute(&prepared.id).unwrap();
-        assert_eq!(result.status,"completed");
-        assert_eq!(result.probes.len(),1);
-        assert_eq!(result.probes[0].status,"open");
-        assert_eq!(service.list(10).unwrap().len(),1);
+        let approved = service.approve(&prepared.id).unwrap();
+        assert_eq!(approved.status, "approved");
+        let result = service.execute(&prepared.id).unwrap();
+        assert_eq!(result.status, "completed");
+        assert_eq!(result.probes.len(), 1);
+        assert_eq!(result.probes[0].status, "open");
+        assert_eq!(service.list(10).unwrap().len(), 1);
         assert!(service.execute(&prepared.id).is_err());
-        assert!(service.prepare(NetworkAssessmentRequest {
-            authorization_confirmed:false,..request.clone()
-        }).is_err());
-        assert!(service.prepare(NetworkAssessmentRequest {
-            allow_private_networks:false,..request
-        }).is_err());
+        assert!(service
+            .prepare(NetworkAssessmentRequest {
+                authorization_confirmed: false,
+                ..request.clone()
+            })
+            .is_err());
+        assert!(service
+            .prepare(NetworkAssessmentRequest {
+                allow_private_networks: false,
+                ..request
+            })
+            .is_err());
     }
     #[test]
     fn cancelled_plan_cannot_dispatch() {
-        let db=Database::open_in_memory().unwrap();
-        let service=NetworkAssessment::new(&db);
-        let run=service.prepare(NetworkAssessmentRequest{
-            target:"127.0.0.1".into(),ports:vec![12345],authorization_confirmed:true,
-            allow_private_networks:true,budget_seconds:5
-        }).unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let service = NetworkAssessment::new(&db);
+        let run = service
+            .prepare(NetworkAssessmentRequest {
+                target: "127.0.0.1".into(),
+                ports: vec![12345],
+                authorization_confirmed: true,
+                allow_private_networks: true,
+                budget_seconds: 5,
+            })
+            .unwrap();
         service.cancel(&run.id).unwrap();
         assert!(service.approve(&run.id).is_err());
         assert!(service.execute(&run.id).is_err());
