@@ -2,12 +2,22 @@ import { useCallback, useEffect, useState } from "react";
 import { workspaceApi } from "../api";
 import { Panel, StatusBadge } from "../ui";
 
+export type HttpsHeaderPosture = {
+  http_status: number;
+  hsts_state: "not_applicable_ip" | "not_observed" | "invalid" | "disabled" | "short_duration" | "long_duration";
+  hsts_max_age_seconds: number | null;
+  csp_observed: boolean;
+  nosniff_observed: boolean;
+  referrer_policy_observed: boolean;
+};
+
 export type NetworkProbe = {
   port: number;
   address: string;
   status: "open" | "closed" | "timeout" | "unreachable";
   elapsed_ms: number;
   tls_status: "verified" | "not_verified" | null;
+  https_posture: HttpsHeaderPosture | null;
 };
 
 export type NetworkAssessmentRun = {
@@ -119,7 +129,7 @@ export function NetworkAssessmentPanel() {
     <Panel title="Authorized network service assessment">
       <p className="ws-form-help">
         Explicit single-host TCP discovery, DNS address verification and optional HTTPS
-        certificate trust checks on ports 443/8443. No CIDR ranges, exploit payloads,
+        certificate trust and bounded HTTPS response-header observations on ports 443/8443. No CIDR ranges, exploit payloads,
         credentials, arbitrary commands or stealth scanning. A completed run does not
         mean the target is secure.
       </p>
@@ -190,13 +200,20 @@ export function NetworkAssessmentPanel() {
       </div>
       {selected.message && <p role="alert" className="ws-warning-box">{selected.message}</p>}
       {selected.probes.length > 0 && <table className="ws-table"><thead><tr>
-        <th>Port</th><th>TCP</th><th>Resolved address</th><th>Latency</th><th>HTTPS trust</th>
+        <th>Port</th><th>TCP</th><th>Resolved address</th><th>Latency</th><th>HTTPS trust</th><th>HTTPS headers</th>
       </tr></thead><tbody>{selected.probes.map(result => <tr key={result.port}>
         <td>{result.port}</td><td>{result.status}</td><td>{result.address}</td>
         <td>{result.elapsed_ms} ms</td><td>{result.tls_status ?? "Not checked"}</td>
+        <td>{result.https_posture
+          ? <span>HTTP {result.https_posture.http_status} · HSTS: {result.https_posture.hsts_state.replaceAll("_", " ")}
+              {result.https_posture.hsts_max_age_seconds !== null && ` (max-age ${result.https_posture.hsts_max_age_seconds}s)`}
+              {" · "}CSP {result.https_posture.csp_observed ? "observed" : "not observed"}
+              {" · "}nosniff {result.https_posture.nosniff_observed ? "observed" : "not observed"}
+              {" · "}Referrer-Policy {result.https_posture.referrer_policy_observed ? "observed" : "not observed"}</span>
+          : "Not observed"}</td>
       </tr>)}</tbody></table>}
       <p className="ws-form-help">Evidence is scoped to this run. TLS verification checks
-        system trust for a single HTTPS request; it does not audit cipher suites or protocol versions.</p>
+        system trust for a single HTTPS HEAD request. Header presence is observational (a HEAD response may differ from other routes); it does not audit cipher suites, protocol versions or certificate expiry.</p>
     </Panel>}
   </div>;
 }
