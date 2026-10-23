@@ -534,10 +534,157 @@ impl<'a> NativeAgents<'a> {
             }
             crate::native_agent_handoffs::AgentHandoffs::new(self.db)
                 .record(&run.id, step.position)?;
-            if step.tool == "source" && dispatch.is_none() {
+            if step.tool == "source" {
+                if let Some(policy) = dispatch {
+                    // Each optional specialist is independently checked by Go
+                    // *before* its durable running receipt and tool dispatch.
+                    // The supervisor owns every claim, join and evidence write.
+                    return self.run_verified_optional_batches(run, start, policy);
+                }
                 prepared = self.parallel_optional_specialists(run, start)?;
             }
             self.boundary(&run.id, start, run.budget_seconds)?;
+        }
+        Ok(())
+    }
+
+    /// Execute the exact dependency-ready set from the approved SQLite DAG.
+    /// Go verifies each specialist in the set while all are still pending;
+    /// Rust then commits both running receipts before starting native analyzers.
+    /// No tools or unverified roles are accepted from Go. Joined workers finish
+    /// before the supervisor commits evidence and admits another batch.
+    fn run_verified_optional_batches(
+        &self,
+        run: &AgentRun,
+        start: Instant,
+        policy: &dyn Fn(&Database, &AgentRun, &AgentStep) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let delegation = crate::native_agent_delegation::NativeDelegation::new(self.db);
+        let handoffs = crate::native_agent_handoffs::AgentHandoffs::new(self.db);
+        let log = crate::native_action_log::NativeActionLog::new(self.db);
+        let mut remaining = run.steps.len().saturating_sub(2);
+        while remaining != 0 {
+            self.boundary(&run.id, start, run.budget_seconds)?;
+            let mut ready = delegation.ready_batch(&run.id)?;
+            // Handoff evidence is chained in registered role order. Only
+            // consecutive independent positions can execute in one batch.
+            // Other ready tasks run after the missing predecessor commits.
+            if ready.len() == 2 && ready[1].position != ready[0].position + 1 {
+                ready.truncate(1);
+            }
+            if ready.is_empty() || ready.len() > 2 || ready.len() > remaining {
+                return Err("No bounded dependency-ready specialist batch".into());
+            }
+            let mut steps: Vec<&AgentStep> = Vec::with_capacity(ready.len());
+            for task in &ready {
+                let step = run
+                    .steps
+                    .iter()
+                    .find(|step| step.position == task.position)
+                    .ok_or("Ready specialist does not match the approved review")?;
+                if !matches!(
+                    step.tool.as_str(),
+                    "secrets" | "qa" | "database" | "runtime"
+                ) || step.role != task.role
+                    || step.tool != task.tool
+                {
+                    return Err("Go-ready batch contained an unregistered specialist".into());
+                }
+                // Verify the full batch before claiming any running receipts.
+                // Policy writes only its bounded decision audit, never tools.
+                policy(self.db, run, step)?;
+                self.boundary(&run.id, start, run.budget_seconds)?;
+                if steps.is_empty() {
+                    handoffs.check_incoming(&run.id, step.position)?;
+                } else {
+                    // The second task was independently ready in the same
+                    // persisted DAG and has no dependency on the first task.
+                    // Its handoff is signed after the predecessor completes,
+                    // before the second result is accepted.
+                    let predecessor = steps[0];
+                    if step.position != predecessor.position + 1
+                        || task.requires.contains(&predecessor.position)
+                    {
+                        return Err("Parallel specialists have dependent handoffs".into());
+                    }
+                }
+                steps.push(step);
+            }
+            for step in &steps {
+                self.boundary(&run.id, start, run.budget_seconds)?;
+                delegation.start(&run.id, step.position, &step.role)?;
+                log.begin(&run.id, step.position, &step.tool)?;
+            }
+
+            let filename = self
+                .db
+                .connection()
+                .path()
+                .filter(|path| *path != ":memory:")
+                .map(std::path::PathBuf::from);
+            let outcomes: Vec<Result<String, String>> = if steps.len() == 2 {
+                if let Some(path) = filename {
+                    std::thread::scope(|scope| {
+                        let handles = steps
+                            .iter()
+                            .map(|step| {
+                                let path = path.clone();
+                                let project = run.project_id.clone();
+                                let tool = step.tool.clone();
+                                scope.spawn(move || {
+                                    Database::open(&path)
+                                        .map_err(to_error)
+                                        .and_then(|db| run_passive_specialist(&db, &project, &tool))
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        handles
+                            .into_iter()
+                            .map(|handle| {
+                                handle.join().unwrap_or_else(|_| {
+                                    Err("Concurrent native specialist panicked".into())
+                                })
+                            })
+                            .collect()
+                    })
+                } else {
+                    steps
+                        .iter()
+                        .map(|step| run_passive_specialist(self.db, &run.project_id, &step.tool))
+                        .collect()
+                }
+            } else {
+                steps
+                    .iter()
+                    .map(|step| run_passive_specialist(self.db, &run.project_id, &step.tool))
+                    .collect()
+            };
+            // Every native thread has joined. Cancellation and deadline checks
+            // run before evidence is accepted; parent finalization will close
+            // any claimed but unfinished action receipts on failure.
+            self.boundary(&run.id, start, run.budget_seconds)?;
+            let mut first_failure = None;
+            for (step, outcome) in steps.iter().zip(outcomes) {
+                let passed = outcome.is_ok();
+                let summary = match outcome {
+                    Ok(summary) => summary,
+                    Err(reason) => {
+                        if first_failure.is_none() {
+                            first_failure = Some(reason.clone());
+                        }
+                        reason
+                    }
+                };
+                delegation.finish(&run.id, step.position, passed)?;
+                log.finish(&run.id, step.position, &step.tool, passed, &summary)?;
+                if passed {
+                    handoffs.record(&run.id, step.position)?;
+                }
+            }
+            if let Some(error) = first_failure {
+                return Err(error);
+            }
+            remaining -= steps.len();
         }
         Ok(())
     }
@@ -1056,6 +1203,126 @@ mod tests {
         assert!(graph.tasks.iter().all(|task| task.status == "cancelled"));
         assert!(agents.execute_with_dispatch(&run.id, &deny).is_err());
         assert_eq!(called.get(), 1);
+    }
+
+    #[test]
+    fn file_backed_go_verified_pair_finishes_with_signed_handoffs() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("go-batch.sqlite3");
+        let source = temp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("safe.ts"), "export const safe = true;").unwrap();
+        let id = {
+            let db = Database::open(&path).unwrap();
+            let project = crate::ProjectIndexService::new(&db)
+                .index_project(&source)
+                .unwrap()
+                .project_id;
+            let run = NativeAgents::new(&db)
+                .create_with_roles(
+                    &project,
+                    "Approved passive team review",
+                    10,
+                    300,
+                    &[
+                        "scout".into(),
+                        "source".into(),
+                        "secrets".into(),
+                        "qa".into(),
+                    ],
+                )
+                .unwrap();
+            NativeAgents::new(&db).approve(&run.id).unwrap();
+            let decisions = std::cell::RefCell::new(Vec::new());
+            let allow = |db: &Database, run: &AgentRun, step: &AgentStep| {
+                let ready = crate::native_agent_delegation::NativeDelegation::new(db)
+                    .ready_batch(&run.id)?;
+                if !ready.iter().any(|task| task.tool == step.tool) {
+                    return Err("Go refused dependency-unready specialist".into());
+                }
+                decisions.borrow_mut().push(step.tool.clone());
+                Ok(())
+            };
+            let result = NativeAgents::new(&db)
+                .execute_with_dispatch(&run.id, &allow)
+                .unwrap();
+            assert_eq!(result.status, "completed");
+            assert_eq!(
+                decisions.into_inner(),
+                vec!["scout", "source", "secrets", "qa"]
+            );
+            assert!(
+                crate::native_agent_handoffs::AgentHandoffs::new(&db)
+                    .verify(&run.id)
+                    .unwrap()
+                    .verified
+            );
+            let receipts = crate::native_action_log::NativeActionLog::new(&db)
+                .list(&run.id)
+                .unwrap();
+            assert_eq!(receipts.len(), 4);
+            assert!(receipts.iter().all(|item| item.status == "completed"));
+            run.id
+        };
+        let db = Database::open(&path).unwrap();
+        let saved = NativeAgents::new(&db).get(&id).unwrap();
+        assert_eq!(saved.status, "completed");
+        assert_eq!(saved.steps.len(), 4);
+        assert!(saved.steps.iter().all(|step| step.status == "completed"));
+        assert!(
+            crate::native_agent_handoffs::AgentHandoffs::new(&db)
+                .verify(&id)
+                .unwrap()
+                .verified
+        );
+    }
+
+    #[test]
+    fn go_denial_of_second_ready_specialist_starts_neither_optional_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Database::open(temp.path().join("denied-pair.sqlite3")).unwrap();
+        let project_root = temp.path().join("source");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::write(project_root.join("safe.ts"), "export const value = 1;").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(&project_root)
+            .unwrap()
+            .project_id;
+        let run = NativeAgents::new(&db)
+            .create_with_roles(
+                &project,
+                "Deny unverified parallel reviewer",
+                10,
+                300,
+                &[
+                    "scout".into(),
+                    "source".into(),
+                    "secrets".into(),
+                    "qa".into(),
+                ],
+            )
+            .unwrap();
+        NativeAgents::new(&db).approve(&run.id).unwrap();
+        let policy = |_: &Database, _: &AgentRun, step: &AgentStep| {
+            if step.tool == "qa" {
+                Err("Go denied a parallel specialist".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let result = NativeAgents::new(&db)
+            .execute_with_dispatch(&run.id, &policy)
+            .unwrap();
+        assert_eq!(result.status, "failed");
+        assert!(result.steps[2..]
+            .iter()
+            .all(|step| step.status == "skipped"));
+        let receipts = crate::native_action_log::NativeActionLog::new(&db)
+            .list(&run.id)
+            .unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert!(receipts.iter().all(|item| item.status == "completed"));
+        assert!(NativeAgents::new(&db).execute(&run.id).is_err());
     }
 
     #[test]

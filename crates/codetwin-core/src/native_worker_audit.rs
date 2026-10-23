@@ -481,7 +481,10 @@ mod tests {
             .create(&run.project_id, "Fresh reviewed scope", 10, 120)
             .unwrap();
         agents.approve(&replacement.id).unwrap();
-        assert!(audit.begin(&replacement.id).is_ok());
+        // A fresh plan may be approved, but the abandoned Docker container
+        // still needs a real cleanup verification before any new scan.
+        assert_eq!(audit.cleanup_hold_count().unwrap(), 1);
+        assert!(audit.begin(&replacement.id).is_err());
     }
 
     #[test]
@@ -647,6 +650,10 @@ mod tests {
                 .as_deref(),
             Some("worker_cleanup_unconfirmed")
         );
+        // The unresolved first container must block all new worker claims.
+        assert_eq!(audit.cleanup_hold_count().unwrap(), 1);
+        assert!(audit.begin(&run.id).is_err());
+        assert_eq!(audit.release_after_confirmed_probe().unwrap(), 1);
         let next = audit.begin(&run.id).unwrap();
         agents.cancel(&run.id).unwrap();
         audit
