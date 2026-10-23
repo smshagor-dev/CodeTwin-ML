@@ -235,3 +235,31 @@ pub async fn suggest_go_security_task_plan(
     .await
     .map_err(|error| error.to_string())?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{local_plan, MemoryHint};
+    use std::path::PathBuf;
+
+    #[test]
+    fn bundled_go_process_roundtrips_review_memory() {
+        if std::env::var("CODETWIN_TEST_GO_SIDECAR").ok().as_deref() != Some("1") {
+            return;
+        }
+        let target = option_env!("TAURI_ENV_TARGET_TRIPLE")
+            .expect("Tauri build script must supply the platform target triple");
+        let suffix = if cfg!(windows) { ".exe" } else { "" };
+        let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("codetwin-security-{target}{suffix}"));
+        assert!(binary.is_file(), "build the target-specific Go companion before testing");
+        let context = [MemoryHint {
+            role: "secrets".to_owned(),
+            status: "failed".to_owned(),
+        }];
+        let proposed = local_plan(&binary, "Review test coverage", &context)
+            .expect("real Go process must complete the bounded protocol");
+        let roles = proposed.tasks.iter().map(|task| task.role.as_str()).collect::<Vec<_>>();
+        assert_eq!(roles, ["scout", "source", "secrets", "qa"]);
+    }
+}
