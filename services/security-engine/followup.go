@@ -76,7 +76,7 @@ func planFollowup(req followupRequest) (followupAdvice, error) {
 		}
 	}
 	p := proposal{
-		Tasks: tasks,
+		Tasks:     tasks,
 		Rationale: "Adaptive follow-up for incomplete previously authorized passive roles; review and new approval required. No new role or target is authorized.",
 	}
 	if err := validTaskProposal(p); err != nil {
