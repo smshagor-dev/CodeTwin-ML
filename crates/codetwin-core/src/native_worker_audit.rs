@@ -339,25 +339,43 @@ mod tests {
         agents.approve(&run.id).unwrap();
         let audit = WorkerAudit::new(&db);
         let ticket = audit.begin(&run.id).unwrap();
-        audit.finish(
-            ticket,
-            &Err("Offline scanner exited unsuccessfully; container removal unconfirmed".into()),
-        ).unwrap();
+        audit
+            .finish(
+                ticket,
+                &Err("Offline scanner exited unsuccessfully; container removal unconfirmed".into()),
+            )
+            .unwrap();
         assert_eq!(
-            audit.latest(&run.id).unwrap().unwrap().error_code.as_deref(),
+            audit
+                .latest(&run.id)
+                .unwrap()
+                .unwrap()
+                .error_code
+                .as_deref(),
             Some("worker_cleanup_unconfirmed")
         );
         let next = audit.begin(&run.id).unwrap();
         agents.cancel(&run.id).unwrap();
-        audit.finish(
-            next,
-            &Err("Worker stopped after authorization was revoked; container removal unconfirmed".into()),
-        ).unwrap();
+        audit
+            .finish(
+                next,
+                &Err(
+                    "Worker stopped after authorization was revoked; container removal unconfirmed"
+                        .into(),
+                ),
+            )
+            .unwrap();
         assert_eq!(
-            audit.latest(&run.id).unwrap().unwrap().error_code.as_deref(),
+            audit
+                .latest(&run.id)
+                .unwrap()
+                .unwrap()
+                .error_code
+                .as_deref(),
             Some("worker_cancelled_cleanup_unconfirmed")
         );
-        assert!(!cleanup_unconfirmed("untrusted error: container removal unconfirmed"));
+        assert!(!cleanup_unconfirmed(
+            "untrusted error: container removal unconfirmed"
+        ));
     }
-
 }
