@@ -179,10 +179,10 @@ mod tests {
         let next = agents.create(&project, "Follow-up", 10, 120).unwrap();
         agents.approve(&next.id).unwrap();
         let unfinished = audit.begin(&next.id).unwrap();
-        assert!(unfinished > id);
+        assert!(unfinished > cancelled);
         assert_eq!(audit.recover_interrupted().unwrap(), 1);
         assert_eq!(
-            audit.latest(&run.id).unwrap().unwrap().status,
+            audit.latest(&next.id).unwrap().unwrap().status,
             "interrupted"
         );
     }
