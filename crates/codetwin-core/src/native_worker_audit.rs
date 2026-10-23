@@ -38,12 +38,22 @@ impl<'a> WorkerAudit<'a> {
             .execute(
                 "INSERT INTO native_worker_audit(run_id)
                  SELECT id FROM native_agent_runs
-                 WHERE id=?1 AND status='approved' AND cancel_requested=0",
+                 WHERE id=?1 AND status='approved' AND cancel_requested=0
+                   AND NOT EXISTS (
+                     SELECT 1 FROM native_worker_audit
+                     WHERE run_id=?1 AND status='running'
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM native_flow_queue
+                     WHERE review_id=?1 AND status IN ('queued','running')
+                   )",
                 [run_id],
             )
             .map_err(err)?;
         if inserted != 1 {
-            return Err("Worker authorization was revoked before starting".into());
+            return Err(
+                "Worker requires an unqueued approved review without an active worker".into(),
+            );
         }
         Ok(self.db.connection().last_insert_rowid())
     }
@@ -178,16 +188,60 @@ impl<'a> WorkerAudit<'a> {
         Ok(records)
     }
 
+    /// Close unfinished worker audits after a desktop restart. A killed Docker
+    /// CLI does not prove daemon-side container removal; the fixed error code
+    /// deliberately requires manual inspection of possible leftover workers.
+    /// Its old parent approval is retired in the same SQLite transaction.
     pub fn recover_interrupted(&self) -> Result<usize, String> {
-        self.db
-            .connection()
+        let tx = self.db.connection().unchecked_transaction().map_err(err)?;
+        tx.execute(
+            "UPDATE native_agent_runs
+             SET status='interrupted',cancel_requested=1,
+                 finished_at=CURRENT_TIMESTAMP,
+                 message='Desktop stopped during isolated scan; approve a fresh review'
+             WHERE status='approved'
+               AND id IN (SELECT run_id FROM native_worker_audit
+                          WHERE status='running')",
+            [],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "UPDATE native_agent_steps SET status='cancelled',
+             finished_at=CURRENT_TIMESTAMP
+             WHERE status='pending'
+               AND run_id IN (SELECT run_id FROM native_worker_audit
+                              WHERE status='running')
+               AND EXISTS (
+                 SELECT 1 FROM native_agent_runs r
+                 WHERE r.id=native_agent_steps.run_id AND r.status='interrupted'
+               )",
+            [],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "UPDATE native_delegation_tasks SET status='cancelled'
+             WHERE status IN ('pending','running')
+               AND run_id IN (SELECT run_id FROM native_worker_audit
+                              WHERE status='running')
+               AND EXISTS (
+                 SELECT 1 FROM native_agent_runs r
+                 WHERE r.id=native_delegation_tasks.run_id AND r.status='interrupted'
+               )",
+            [],
+        )
+        .map_err(err)?;
+        let changed = tx
             .execute(
-                "UPDATE native_worker_audit SET status='interrupted',
-             error_code='application_restarted',finished_at=CURRENT_TIMESTAMP
-             WHERE status='running'",
+                "UPDATE native_worker_audit
+                 SET status='interrupted',
+                     error_code='application_restarted_cleanup_unconfirmed',
+                     finished_at=CURRENT_TIMESTAMP
+                 WHERE status='running'",
                 [],
             )
-            .map_err(err)
+            .map_err(err)?;
+        tx.commit().map_err(err)?;
+        Ok(changed)
     }
 
     pub fn latest(&self, run_id: &str) -> Result<Option<WorkerAuditRecord>, String> {
