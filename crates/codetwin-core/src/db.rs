@@ -1336,6 +1336,39 @@ mod tests {
     }
 
     #[test]
+    fn specialist_worker_opens_only_a_prepared_existing_sqlite_database() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("review.sqlite3");
+        // A worker must not create a database or bootstrap its own schema.
+        assert!(Database::open_native_worker(&path).is_err());
+        assert!(!path.exists());
+        let owner = Database::open(&path).unwrap();
+        let worker = Database::open_native_worker(&path).unwrap();
+        let foreign_keys: i64 = worker
+            .connection()
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        let wal: String = worker
+            .connection()
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(wal.to_ascii_lowercase(), "wal");
+        let migration_count: i64 = worker
+            .connection()
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .unwrap();
+        assert!(migration_count > 0);
+        // No worker connection needs a new migration or database file.
+        assert!(owner.connection().is_autocommit());
+        assert!(worker.connection().is_autocommit());
+
+        let invalid = root.path().join("uninitialized.sqlite3");
+        rusqlite::Connection::open(&invalid).unwrap();
+        assert!(Database::open_native_worker(&invalid).is_err());
+    }
+
+    #[test]
     fn file_database_uses_wal_and_foreign_keys() {
         let file = NamedTempFile::new().expect("temp db");
         let db = Database::open(file.path()).expect("open file db");
