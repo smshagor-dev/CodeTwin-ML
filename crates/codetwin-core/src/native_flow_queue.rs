@@ -615,7 +615,9 @@ mod tests {
         queue.claim_next().unwrap().unwrap();
 
         // The external Go preflight fails after the claim, before any step.
-        queue.finish(&id, "interrupted", "Go policy verification unavailable").unwrap();
+        queue
+            .finish(&id, "interrupted", "Go policy verification unavailable")
+            .unwrap();
         let receipt = queue.get(&id).unwrap().unwrap();
         assert_eq!(receipt.status, "interrupted");
         assert_eq!(receipt.review_status, "interrupted");
@@ -625,7 +627,9 @@ mod tests {
         assert!(cancellation_requested(&db, &id));
         assert!(run.steps.iter().all(|step| step.status == "cancelled"));
         assert!(NativeAgents::new(&db).execute(&id).is_err());
-        assert!(queue.finish(&id, "completed", "cannot finish twice").is_err());
+        assert!(queue
+            .finish(&id, "completed", "cannot finish twice")
+            .is_err());
         assert!(queue.claim_next().unwrap().is_none());
 
         // The interrupted approval does not lock a fresh reviewed plan.
@@ -665,10 +669,16 @@ mod tests {
         assert!(NativeAgents::new(&db).execute(&id).is_err());
 
         queue.recover_interrupted().unwrap();
-        assert_eq!(NativeAgents::new(&db).get(&id).unwrap().status, "interrupted");
+        assert_eq!(
+            NativeAgents::new(&db).get(&id).unwrap().status,
+            "interrupted"
+        );
         assert_eq!(queue.get(&id).unwrap().unwrap().status, "interrupted");
         queue.recover_interrupted().unwrap();
-        assert_eq!(NativeAgents::new(&db).get(&id).unwrap().status, "interrupted");
+        assert_eq!(
+            NativeAgents::new(&db).get(&id).unwrap().status,
+            "interrupted"
+        );
     }
 
     #[test]
