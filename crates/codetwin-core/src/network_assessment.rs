@@ -163,8 +163,9 @@ impl<'a> NetworkAssessment<'a> {
             .query_map([id], |row| {
                 let raw_posture: Option<String> = row.get(5)?;
                 let https_posture = raw_posture
-                    .map(|value| serde_json::from_str(&value)
-                        .map_err(|_| rusqlite::Error::InvalidQuery))
+                    .map(|value| {
+                        serde_json::from_str(&value).map_err(|_| rusqlite::Error::InvalidQuery)
+                    })
                     .transpose()?;
                 Ok(NetworkProbe {
                     port: row.get(0)?,
@@ -317,15 +318,23 @@ impl<'a> NetworkAssessment<'a> {
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(err)?;
-            self.db.connection().execute(
-                "INSERT INTO network_assessment_probes
+            self.db
+                .connection()
+                .execute(
+                    "INSERT INTO network_assessment_probes
                  (run_id,port,address,status,elapsed_ms,tls_status,https_posture_json)
                  VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![
-                    id, port, address.to_string(), state,
-                    started.elapsed().as_millis() as i64, tls_status, posture_json,
-                ],
-            ).map_err(err)?;
+                    params![
+                        id,
+                        port,
+                        address.to_string(),
+                        state,
+                        started.elapsed().as_millis() as i64,
+                        tls_status,
+                        posture_json,
+                    ],
+                )
+                .map_err(err)?;
         }
         Ok(())
     }
@@ -389,7 +398,10 @@ fn classify_hsts(target: &str, headers: &HeaderMap) -> (String, Option<u64>) {
     if target.parse::<IpAddr>().is_ok() {
         return ("not_applicable_ip".into(), None);
     }
-    let values: Vec<_> = headers.get_all("strict-transport-security").iter().collect();
+    let values: Vec<_> = headers
+        .get_all("strict-transport-security")
+        .iter()
+        .collect();
     if values.is_empty() {
         return ("not_observed".into(), None);
     }
@@ -408,10 +420,7 @@ fn classify_hsts(target: &str, headers: &HeaderMap) -> (String, Option<u64>) {
                 .then_some(value.trim().trim_matches('"'))
         })
         .collect();
-    if ages.len() != 1
-        || ages[0].is_empty()
-        || !ages[0].bytes().all(|byte| byte.is_ascii_digit())
-    {
+    if ages.len() != 1 || ages[0].is_empty() || !ages[0].bytes().all(|byte| byte.is_ascii_digit()) {
         return ("invalid".into(), None);
     }
     let Ok(seconds) = ages[0].parse::<u64>() else {
@@ -555,8 +564,14 @@ mod tests {
     #[test]
     fn https_header_observations_are_privacy_reduced_and_explicit() {
         let mut headers = HeaderMap::new();
-        headers.insert("strict-transport-security", "max-age=31536000; includeSubDomains".parse().unwrap());
-        headers.insert("content-security-policy", "default-src 'self'".parse().unwrap());
+        headers.insert(
+            "strict-transport-security",
+            "max-age=31536000; includeSubDomains".parse().unwrap(),
+        );
+        headers.insert(
+            "content-security-policy",
+            "default-src 'self'".parse().unwrap(),
+        );
         headers.insert("x-content-type-options", "nosniff".parse().unwrap());
         let observed = classify_https_headers("example.test", 200, &headers);
         assert_eq!(observed.hsts_state, "long_duration");
@@ -570,30 +585,44 @@ mod tests {
         headers.insert("strict-transport-security", "max-age=0".parse().unwrap());
         let disabled = classify_https_headers("example.test", 204, &headers);
         assert_eq!(disabled.hsts_state, "disabled");
-        headers.insert("strict-transport-security", "max-age=invalid".parse().unwrap());
-        assert_eq!(classify_https_headers("example.test", 200, &headers).hsts_state, "invalid");
+        headers.insert(
+            "strict-transport-security",
+            "max-age=invalid".parse().unwrap(),
+        );
+        assert_eq!(
+            classify_https_headers("example.test", 200, &headers).hsts_state,
+            "invalid"
+        );
         headers.remove("strict-transport-security");
-        assert_eq!(classify_https_headers("example.test", 302, &headers).hsts_state, "not_observed");
+        assert_eq!(
+            classify_https_headers("example.test", 302, &headers).hsts_state,
+            "not_observed"
+        );
     }
 
     #[test]
     fn migrated_evidence_round_trips_without_https_headers() {
         let db = Database::open_in_memory().unwrap();
         let service = NetworkAssessment::new(&db);
-        let run = service.prepare(NetworkAssessmentRequest {
-            target: "127.0.0.1".into(),
-            ports: vec![8443],
-            authorization_confirmed: true,
-            allow_private_networks: true,
-            budget_seconds: 5,
-        }).unwrap();
+        let run = service
+            .prepare(NetworkAssessmentRequest {
+                target: "127.0.0.1".into(),
+                ports: vec![8443],
+                authorization_confirmed: true,
+                allow_private_networks: true,
+                budget_seconds: 5,
+            })
+            .unwrap();
         assert_eq!(service.get(&run.id).unwrap().probes.len(), 0);
-        let cols: i64 = db.connection().query_row(
-            "SELECT count(*) FROM pragma_table_info('network_assessment_probes') \
+        let cols: i64 = db
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('network_assessment_probes') \
              WHERE name='https_posture_json'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(cols, 1);
     }
 
