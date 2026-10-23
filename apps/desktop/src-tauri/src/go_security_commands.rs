@@ -749,6 +749,11 @@ mod tests {
             )
             .expect("count persisted scheduling decisions");
         assert_eq!(allowed, 2);
+        let receipts = codetwin_core::native_action_log::NativeActionLog::new(&db)
+            .list(&run.id)
+            .expect("read Go-gated specialist action receipts");
+        assert_eq!(receipts.len(), 2);
+        assert!(receipts.iter().all(|receipt| receipt.status == "completed"));
     }
 
     #[test]
