@@ -1342,6 +1342,15 @@ mod tests {
                             )
                             .unwrap();
                     }
+                    "timestamp" => {
+                        db.connection()
+                            .execute(
+                                "UPDATE native_action_log SET finished_at=''
+                                 WHERE run_id=?1 AND position=1",
+                                [&run.id],
+                            )
+                            .unwrap();
+                    }
                     "none" | "after" => {}
                     _ => unreachable!(),
                 }
