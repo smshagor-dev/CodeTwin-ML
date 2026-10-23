@@ -45,13 +45,23 @@ fn binary_path() -> Result<PathBuf, String> {
         .parent()
         .ok_or("Cannot resolve CodeTwin desktop binary directory")?
         .join(name);
-    if !path.is_file() {
-        return Err(
-            "Bundled Go security engine missing; rebuild the Tauri application with Go installed"
-                .into(),
-        );
+    if path.is_file() {
+        return Ok(path);
     }
-    Ok(path)
+    // Tauri dev builds compile the companion into the Tauri source tree,
+    // while release bundles install it alongside the desktop executable.
+    #[cfg(debug_assertions)]
+    {
+        let target = env!("TAURI_ENV_TARGET_TRIPLE");
+        let suffix = if cfg!(windows) { ".exe" } else { "" };
+        let candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("codetwin-security-{target}{suffix}"));
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err("Go security companion was not found; build it with npm run build:go-sidecar".into())
 }
 
 #[derive(Deserialize)]
