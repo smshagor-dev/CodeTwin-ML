@@ -87,10 +87,11 @@ def resolve_target(host: str, port: int, allow_private: bool) -> tuple[str, ...]
     if not addresses or len(addresses) > 16:
         raise TlsCheckError("dns_scope_failed")
     try:
-        if not all(address_allowed(value, allow_private) for value in addresses):
-            raise TlsCheckError("address_out_of_scope")
+        permitted = all(address_allowed(value, allow_private) for value in addresses)
     except ValueError as error:
         raise TlsCheckError("dns_scope_failed") from error
+    if not permitted:
+        raise TlsCheckError("address_out_of_scope")
     return tuple(sorted(addresses))
 
 
