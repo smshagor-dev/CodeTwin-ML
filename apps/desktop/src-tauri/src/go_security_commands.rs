@@ -250,8 +250,7 @@ mod tests {
         if std::env::var("CODETWIN_TEST_GO_SIDECAR").ok().as_deref() != Some("1") {
             return;
         }
-        let target = option_env!("TAURI_ENV_TARGET_TRIPLE")
-            .expect("Tauri build script must supply the platform target triple");
+        let target = env!("TAURI_ENV_TARGET_TRIPLE");
         let suffix = if cfg!(windows) { ".exe" } else { "" };
         let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("binaries")
