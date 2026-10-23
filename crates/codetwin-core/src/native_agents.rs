@@ -1206,6 +1206,110 @@ mod tests {
     }
 
     #[test]
+    fn file_backed_go_verified_pair_finishes_with_signed_handoffs() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("go-batch.sqlite3");
+        let source = temp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("safe.ts"), "export const safe = true;").unwrap();
+        let id = {
+            let db = Database::open(&path).unwrap();
+            let project = crate::ProjectIndexService::new(&db)
+                .index_project(&source)
+                .unwrap()
+                .project_id;
+            let run = NativeAgents::new(&db)
+                .create_with_roles(
+                    &project,
+                    "Approved passive team review",
+                    10,
+                    300,
+                    &["scout".into(), "source".into(), "secrets".into(), "qa".into()],
+                )
+                .unwrap();
+            NativeAgents::new(&db).approve(&run.id).unwrap();
+            let decisions = std::cell::RefCell::new(Vec::new());
+            let allow = |db: &Database, run: &AgentRun, step: &AgentStep| {
+                let ready = crate::native_agent_delegation::NativeDelegation::new(db)
+                    .ready_batch(&run.id)?;
+                if !ready.iter().any(|task| task.tool == step.tool) {
+                    return Err("Go refused dependency-unready specialist".into());
+                }
+                decisions.borrow_mut().push(step.tool.clone());
+                Ok(())
+            };
+            let result = NativeAgents::new(&db)
+                .execute_with_dispatch(&run.id, &allow)
+                .unwrap();
+            assert_eq!(result.status, "completed");
+            assert_eq!(
+                decisions.into_inner(),
+                vec!["scout", "source", "secrets", "qa"]
+            );
+            assert!(crate::native_agent_handoffs::AgentHandoffs::new(&db)
+                .verify(&run.id)
+                .unwrap()
+                .verified);
+            let receipts = crate::native_action_log::NativeActionLog::new(&db)
+                .list(&run.id)
+                .unwrap();
+            assert_eq!(receipts.len(), 4);
+            assert!(receipts.iter().all(|item| item.status == "completed"));
+            run.id
+        };
+        let db = Database::open(&path).unwrap();
+        let saved = NativeAgents::new(&db).get(&id).unwrap();
+        assert_eq!(saved.status, "completed");
+        assert_eq!(saved.steps.len(), 4);
+        assert!(saved.steps.iter().all(|step| step.status == "completed"));
+        assert!(crate::native_agent_handoffs::AgentHandoffs::new(&db)
+            .verify(&id)
+            .unwrap()
+            .verified);
+    }
+
+    #[test]
+    fn go_denial_of_second_ready_specialist_starts_neither_optional_tool() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = Database::open(temp.path().join("denied-pair.sqlite3")).unwrap();
+        let project_root = temp.path().join("source");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::write(project_root.join("safe.ts"), "export const value = 1;").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(&project_root)
+            .unwrap()
+            .project_id;
+        let run = NativeAgents::new(&db)
+            .create_with_roles(
+                &project,
+                "Deny unverified parallel reviewer",
+                10,
+                300,
+                &["scout".into(), "source".into(), "secrets".into(), "qa".into()],
+            )
+            .unwrap();
+        NativeAgents::new(&db).approve(&run.id).unwrap();
+        let policy = |_: &Database, _: &AgentRun, step: &AgentStep| {
+            if step.tool == "qa" {
+                Err("Go denied a parallel specialist".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let result = NativeAgents::new(&db)
+            .execute_with_dispatch(&run.id, &policy)
+            .unwrap();
+        assert_eq!(result.status, "failed");
+        assert!(result.steps[2..].iter().all(|step| step.status == "skipped"));
+        let receipts = crate::native_action_log::NativeActionLog::new(&db)
+            .list(&run.id)
+            .unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert!(receipts.iter().all(|item| item.status == "completed"));
+        assert!(NativeAgents::new(&db).execute(&run.id).is_err());
+    }
+
+    #[test]
     fn planned_cancellation_closes_queued_sqlite_specialists() {
         let db = Database::open_in_memory().unwrap();
         let root = tempfile::tempdir().unwrap();
