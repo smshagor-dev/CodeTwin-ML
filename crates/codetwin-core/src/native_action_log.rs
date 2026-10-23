@@ -278,7 +278,10 @@ mod tests {
         assert!(log
             .begin_supervised(&run.id, 0, &run.steps[0].role, "scout")
             .is_err());
-        assert_eq!(delegation.graph(&run.id).unwrap().tasks[0].status, "pending");
+        assert_eq!(
+            delegation.graph(&run.id).unwrap().tasks[0].status,
+            "pending"
+        );
         assert!(log.list(&run.id).unwrap().is_empty());
         db.connection()
             .execute(
@@ -289,7 +292,10 @@ mod tests {
             .unwrap();
         log.begin_supervised(&run.id, 0, &run.steps[0].role, "scout")
             .unwrap();
-        assert_eq!(delegation.graph(&run.id).unwrap().tasks[0].status, "running");
+        assert_eq!(
+            delegation.graph(&run.id).unwrap().tasks[0].status,
+            "running"
+        );
         // A corrupted or concurrently retired delegation must cause the
         // entire evidence transaction to roll back, not commit a partial step.
         db.connection()
