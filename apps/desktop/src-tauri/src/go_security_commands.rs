@@ -286,11 +286,7 @@ fn local_dispatch(binary: &Path, request: &serde_json::Value) -> Result<GoDispat
 }
 
 /// The Go suggestion is untrusted until it matches the Rust/SQLite dependency graph.
-fn verified_dispatch(
-    db: &Database,
-    id: &str,
-    binary: &Path,
-) -> Result<GoDispatchAdvice, String> {
+fn verified_dispatch(db: &Database, id: &str, binary: &Path) -> Result<GoDispatchAdvice, String> {
     let run = NativeAgents::new(&db).get(id)?;
     let graph = NativeDelegation::new(&db).graph(id)?;
     if graph.run_id != run.id || graph.tasks.len() != run.steps.len() {
@@ -359,9 +355,7 @@ fn verified_dispatch(
         Vec::new()
     };
     if advice.ready != expected {
-        return Err(
-            "Go scheduling recommendation did not match Rust authorization graph".into(),
-        );
+        return Err("Go scheduling recommendation did not match Rust authorization graph".into());
     }
     Ok(advice)
 }
