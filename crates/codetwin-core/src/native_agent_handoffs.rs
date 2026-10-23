@@ -82,11 +82,15 @@ impl<'a> AgentHandoffs<'a> {
             if to.status != "running" {
                 return Err("Destination specialist is not pending".into());
             }
-            let graph = crate::native_agent_delegation::NativeDelegation::new(self.db)
-                .graph(run_id)?;
-            let approved = graph.tasks.iter().find(|task| task.position == to.position)
+            let graph =
+                crate::native_agent_delegation::NativeDelegation::new(self.db).graph(run_id)?;
+            let approved = graph
+                .tasks
+                .iter()
+                .find(|task| task.position == to.position)
                 .ok_or("Parallel destination is not in the delegated review")?;
-            if approved.role != to.role || approved.tool != to.tool
+            if approved.role != to.role
+                || approved.tool != to.tool
                 || approved.requires.contains(&from.position)
             {
                 return Err("Running destination is not an independent specialist".into());
