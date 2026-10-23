@@ -133,7 +133,7 @@ pub fn verify_native_agent_run(
     app: tauri::AppHandle,
 ) -> Result<AgentVerification, String> {
     let db = open_db(&app)?;
-    AgentHandoffs::new(&db).verify(&id)
+    NativeAgents::new(&db).verify_evidence(&id)
 }
 
 #[tauri::command]

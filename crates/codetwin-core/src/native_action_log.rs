@@ -196,6 +196,52 @@ impl<'a> NativeActionLog<'a> {
         tx.commit().map_err(err)
     }
 
+    /// Check the SQLite evidence bundle before a review may become completed.
+    /// The digest is a consistency fingerprint, not a keyed signature:
+    /// operators with direct database write access could rewrite both fields.
+    /// Require exactly one completed receipt for every registered specialist,
+    /// matching the approved position, tool and persisted result bytes.
+    pub fn verify_completed(&self, run_id: &str) -> Result<(), String> {
+        let run = crate::native_agents::NativeAgents::new(self.db).get(run_id)?;
+        if run.status != "completed" {
+            return Err("Only a completed review can verify its action evidence".into());
+        }
+        let receipts = self.list(run_id)?;
+        if receipts.len() != run.steps.len() {
+            return Err("Completed review action receipt count does not match its specialists".into());
+        }
+        let by_position = receipts
+            .iter()
+            .map(|receipt| (receipt.position, receipt))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if by_position.len() != run.steps.len() {
+            return Err("Completed review has duplicate specialist action receipts".into());
+        }
+        for step in &run.steps {
+            let receipt = by_position
+                .get(&step.position)
+                .ok_or("Completed specialist action receipt is missing")?;
+            let evidence = step
+                .result
+                .as_deref()
+                .filter(|evidence| !evidence.is_empty())
+                .ok_or("Completed specialist result is missing")?;
+            let digest = format!("{:x}", Sha256::digest(evidence.as_bytes()));
+            if step.status != "completed"
+                || receipt.status != "completed"
+                || receipt.role != step.tool
+                || receipt.finished_at.as_deref().is_none_or(str::is_empty)
+                || receipt.result_sha256.as_deref() != Some(digest.as_str())
+            {
+                return Err(format!(
+                    "Specialist action receipt integrity mismatch at position {}",
+                    step.position
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn list(&self, run_id: &str) -> Result<Vec<ActionReceipt>, String> {
         let mut statement = self
             .db

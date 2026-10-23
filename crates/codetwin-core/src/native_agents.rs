@@ -394,9 +394,12 @@ impl<'a> NativeAgents<'a> {
             let verdict = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
             let delegation =
                 crate::native_agent_delegation::NativeDelegation::new(self.db).verify(id);
-            if !verdict.verified || delegation.is_err() {
-                let reason = delegation
+            let receipts = crate::native_action_log::NativeActionLog::new(self.db)
+                .verify_completed(id);
+            if !verdict.verified || delegation.is_err() || receipts.is_err() {
+                let reason = receipts
                     .err()
+                    .or_else(|| delegation.err())
                     .unwrap_or_else(|| verdict.issues.join("; "));
                 let downgraded = tx
                     .execute(
@@ -793,6 +796,31 @@ impl<'a> NativeAgents<'a> {
         Ok(prepared)
     }
 
+    /// A read-only verification of stored evidence, including after a
+    /// formerly valid review has been altered in SQLite. The UI and exported
+    /// report must use the same complete integrity verdict.
+    pub fn verify_evidence(
+        &self,
+        id: &str,
+    ) -> Result<crate::native_agent_handoffs::AgentVerification, String> {
+        let mut result = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
+        if self.get(id)?.status == "completed" {
+            if let Err(error) =
+                crate::native_action_log::NativeActionLog::new(self.db).verify_completed(id)
+            {
+                result.verified = false;
+                result.issues.push(error);
+            }
+            if let Err(error) =
+                crate::native_agent_delegation::NativeDelegation::new(self.db).verify(id)
+            {
+                result.verified = false;
+                result.issues.push(error);
+            }
+        }
+        Ok(result)
+    }
+
     pub fn report(&self, id: &str) -> Result<String, String> {
         let run = self.get(id)?;
         let mut text = format!(
@@ -815,7 +843,7 @@ impl<'a> NativeAgents<'a> {
         if let Some(message) = run.message {
             text.push_str(&format!("\n## Unresolved\n\n{message}\n"));
         }
-        let verification = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
+        let verification = self.verify_evidence(id)?;
         text.push_str(&format!(
             "\n## Specialist Evidence Chain\n\nVerified: {}\n\nChecked specialists: {}\n\nVerified handoffs: {}\n",
             verification.verified, verification.checked_roles, verification.checked_handoffs
@@ -1224,6 +1252,162 @@ mod tests {
         assert!(graph.tasks.iter().all(|task| task.status == "cancelled"));
         assert!(agents.execute_with_dispatch(&run.id, &deny).is_err());
         assert_eq!(called.get(), 1);
+    }
+
+    #[test]
+    fn completed_review_requires_all_receipts_to_match_exact_specialist_evidence() {
+        for mutation in ["none", "digest", "result", "missing", "status", "timestamp", "after"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let path = fixture.path().join("receipt-integrity.sqlite3");
+            let project_root = fixture.path().join("project");
+            std::fs::create_dir_all(&project_root).unwrap();
+            std::fs::write(project_root.join("safe.ts"), "export const safe = true;").unwrap();
+            let review_id = {
+                let db = Database::open(&path).unwrap();
+                let project = crate::ProjectIndexService::new(&db)
+                    .index_project(&project_root)
+                    .unwrap()
+                    .project_id;
+                let reviews = NativeAgents::new(&db);
+                let run = reviews
+                    .create_with_roles(
+                        &project,
+                        "Verify durable specialist receipts",
+                        10,
+                        120,
+                        &["scout".into(), "source".into()],
+                    )
+                    .unwrap();
+                reviews.approve(&run.id).unwrap();
+                db.connection()
+                    .execute(
+                        "UPDATE native_agent_runs SET status='running' WHERE id=?1",
+                        [&run.id],
+                    )
+                    .unwrap();
+                let receipts = crate::native_action_log::NativeActionLog::new(&db);
+                for step in &run.steps {
+                    receipts
+                        .begin_supervised(&run.id, step.position, &step.role, &step.tool)
+                        .unwrap();
+                    receipts
+                        .finish_supervised(
+                            &run.id,
+                            step.position,
+                            &step.tool,
+                            true,
+                            &format!("trusted-evidence-{}", step.position),
+                        )
+                        .unwrap();
+                    if step.position == 0 {
+                        crate::native_agent_handoffs::AgentHandoffs::new(&db)
+                            .record(&run.id, step.position)
+                            .unwrap();
+                    }
+                }
+                match mutation {
+                    "digest" => {
+                        db.connection()
+                            .execute(
+                                "UPDATE native_action_log SET result_sha256='incorrect'
+                                 WHERE run_id=?1 AND position=1",
+                                [&run.id],
+                            )
+                            .unwrap();
+                    }
+                    "result" => {
+                        db.connection()
+                            .execute(
+                                "UPDATE native_agent_steps SET result_json='altered evidence'
+                                 WHERE run_id=?1 AND position=1",
+                                [&run.id],
+                            )
+                            .unwrap();
+                    }
+                    "missing" => {
+                        db.connection()
+                            .execute(
+                                "DELETE FROM native_action_log
+                                 WHERE run_id=?1 AND position=1",
+                                [&run.id],
+                            )
+                            .unwrap();
+                    }
+                    "status" => {
+                        db.connection()
+                            .execute(
+                                "UPDATE native_action_log SET status='failed'
+                                 WHERE run_id=?1 AND position=1",
+                                [&run.id],
+                            )
+                            .unwrap();
+                    }
+                    "timestamp" => {
+                        db.connection()
+                            .execute(
+                                "UPDATE native_action_log SET finished_at=''
+                                 WHERE run_id=?1 AND position=1",
+                                [&run.id],
+                            )
+                            .unwrap();
+                    }
+                    "none" | "after" => {}
+                    _ => unreachable!(),
+                }
+                reviews.finalize_review(&run.id, None).unwrap();
+                let saved = reviews.get(&run.id).unwrap();
+                if matches!(mutation, "none" | "after") {
+                    assert_eq!(saved.status, "completed");
+                    receipts.verify_completed(&run.id).unwrap();
+                    if mutation == "after" {
+                        // The desktop verifier must also detect a digest
+                        // altered after a previously valid finalization.
+                        db.connection()
+                            .execute(
+                                "UPDATE native_action_log SET result_sha256='changed-later'
+                                 WHERE run_id=?1 AND position=1",
+                                [&run.id],
+                            )
+                            .unwrap();
+                        assert!(receipts.verify_completed(&run.id).is_err());
+                        let verdict = reviews.verify_evidence(&run.id).unwrap();
+                        assert!(!verdict.verified);
+                        assert!(verdict
+                            .issues
+                            .iter()
+                            .any(|issue| issue.contains("receipt integrity mismatch")));
+                        assert!(reviews
+                            .report(&run.id)
+                            .unwrap()
+                            .contains("Verified: false"));
+                    }
+                } else {
+                    assert_eq!(saved.status, "failed", "mutation={mutation}");
+                    assert!(saved
+                        .message
+                        .as_ref()
+                        .is_some_and(|reason| !reason.is_empty()));
+                    assert!(receipts.verify_completed(&run.id).is_err());
+                }
+                assert!(reviews.execute(&run.id).is_err());
+                run.id
+            };
+            let db = Database::open(&path).unwrap();
+            let persisted = NativeAgents::new(&db).get(&review_id).unwrap();
+            assert_eq!(
+                persisted.status,
+                if matches!(mutation, "none" | "after") {
+                    "completed"
+                } else {
+                    "failed"
+                }
+            );
+            if mutation == "after" {
+                assert!(crate::native_action_log::NativeActionLog::new(&db)
+                    .verify_completed(&review_id)
+                    .is_err());
+            }
+        }
     }
 
     #[test]
