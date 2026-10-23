@@ -63,6 +63,109 @@ import type {
 export type ImportStage = "selecting" | "discovering" | "indexing" | "security" | "testing";
 
 export const workspaceApi = {
+  suggestNativeTaskPlan(projectId: string, objective: string, consent: boolean) {
+    return invoke<import("./pages/NativeAgentsPage").NativeTaskProposal>("suggest_native_task_plan", {
+      projectId, objective, consent,
+    });
+  },
+  createNativeTaskReview(projectId: string, objective: string, maxFiles: number, budgetSeconds: number,
+    proposal: import("./pages/NativeAgentsPage").NativeTaskProposal) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("create_native_task_review", {
+      projectId, objective, maxFiles, budgetSeconds, proposal,
+    });
+  },
+  nativeTaskSchedule(id: string) {
+    return invoke<{ batches: string[][]; max_parallel: number }>("native_task_schedule", { id });
+  },
+  createNativeAgentReview(projectId: string, objective: string, maxFiles: number, budgetSeconds: number, roles: string[]) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("create_native_agent_review", { projectId, objective, maxFiles, budgetSeconds, roles });
+  },
+  listNativeAgentReviews(projectId: string) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun[]>("list_native_agent_reviews", { projectId });
+  },
+  getNativeAgentReview(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("native_agent_review", { id });
+  },
+  approveNativeAgentReview(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("approve_native_agent_review", { id });
+  },
+  runNativeAgentReview(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("run_native_agent_review", { id });
+  },
+  cancelNativeAgentReview(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("cancel_native_agent_review", { id });
+  },
+  nativeDelegationGraph(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").DelegationGraph>("native_delegation_graph", { id });
+  },
+  searchNativeKnowledge(projectId: string, query: string, limit = 12) {
+    return invoke<import("./pages/NativeAgentsPage").KnowledgeNode[]>("search_native_knowledge", {
+      projectId, query, limit,
+    });
+  },
+  nativeKnowledgeGraph(projectId: string, id: string) {
+    return invoke<import("./pages/NativeAgentsPage").KnowledgeGraph>("native_knowledge_graph", { projectId, id });
+  },
+  clearNativeKnowledge(projectId: string) {
+    return invoke<number>("clear_native_knowledge", { projectId });
+  },
+  nativeIsolatedScanReadiness() {
+    return invoke<{ configured: boolean; detail: string }>("native_isolated_scan_readiness");
+  },
+  runNativeIsolatedScan(id: string, authorized: boolean) {
+    return invoke<import("./pages/NativeAgentsPage").IsolatedScanReceipt>("run_native_isolated_scan", { id, authorized });
+  },
+  nativeWorkerAudit(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").WorkerAuditRecord[]>("native_worker_audit", { id });
+  },
+  nativeNeuralReadiness() {
+    return invoke<{ configured: boolean; detail: string }>("native_neural_readiness");
+  },
+  probeNativeNeuralProvider() {
+    return invoke<{ model: string; dimensions: number; latency_ms: number; normalized: boolean }>("probe_native_neural_provider");
+  },
+  indexNativeNeuralMemory(id: string, consent: boolean) {
+    return invoke<number>("index_native_neural_memory", { id, consent });
+  },
+  searchNativeNeuralMemory(projectId: string, query: string, limit: number, consent: boolean) {
+    return invoke<import("./pages/NativeAgentsPage").NeuralMatch[]>("search_native_neural_memory", {
+      projectId, query, limit, consent,
+    });
+  },
+  reasonNativeKnowledgeGraph(projectId: string, id: string, position: number) {
+    return invoke<import("./pages/NativeAgentsPage").GraphInference>("reason_native_knowledge_graph", {
+      projectId, id, position,
+    });
+  },
+  nativeAgentHandoffs(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").AgentHandoff[]>("list_native_agent_handoffs", { id });
+  },
+  verifyNativeAgentRun(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").AgentVerification>("verify_native_agent_run", { id });
+  },
+  nativeAgentReport(id: string) {
+    return invoke<string>("native_agent_report", { id });
+  },
+  listNativeAgentMemory(projectId: string, query = "", limit = 50) {
+    return invoke<import("./pages/NativeAgentsPage").NativeAgentMemory[]>("list_native_agent_memory", { projectId, query, limit });
+  },
+  clearNativeAgentMemory(projectId: string) {
+    return invoke<number>("clear_native_agent_memory", { projectId });
+  },
+  nativeModelReadiness() {
+    return invoke<{ configured: boolean; detail: string }>("native_model_readiness");
+  },
+  nativeAgentInsight(id: string) {
+    return invoke<{ run_id: string; content: string; created_at: string } | null>("native_agent_insight", { id });
+  },
+  suggestNativeAgentRoles(projectId: string, objective: string, consent: boolean) {
+    return invoke<{ roles: string[]; rationale: string }>("suggest_native_agent_roles", {
+      projectId, objective, consent,
+    });
+  },
+  interpretNativeAgentReview(id: string, consent: boolean) {
+    return invoke<{ run_id: string; content: string; created_at: string }>("interpret_native_agent_review", { id, consent });
+  },
   assessmentJobs(projectId: string) {
     return invoke<import("./types").AssessmentJob[]>("list_assessment_jobs", { projectId });
   },

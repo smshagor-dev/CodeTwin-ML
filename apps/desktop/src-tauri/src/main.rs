@@ -2,6 +2,9 @@ mod benchmark_commands;
 mod database_commands;
 mod guided_security_commands;
 mod ml_commands;
+mod native_agent_commands;
+mod native_agent_reasoning_commands;
+mod native_orchestration_commands;
 mod qa_commands;
 mod repair_commands;
 mod runtime_commands;
@@ -55,6 +58,23 @@ use ml_commands::{
     link_ml_finding, list_ml_finding_links, ml_inference_history, ml_inference_plan, ml_models,
     ml_sidecar_capabilities, ml_sidecar_health, ml_sidecar_identity, run_ml_file_generation,
     run_ml_file_inference,
+};
+use native_agent_commands::{
+    approve_native_agent_review, cancel_native_agent_review, clear_native_agent_memory,
+    create_native_agent_review, create_native_task_review, list_native_agent_handoffs,
+    list_native_agent_memory, list_native_agent_reviews, native_agent_report, native_agent_review,
+    run_native_agent_review, verify_native_agent_run,
+};
+use native_agent_reasoning_commands::{
+    interpret_native_agent_review, native_agent_insight, native_model_readiness,
+    suggest_native_agent_roles, suggest_native_task_plan,
+};
+use native_orchestration_commands::{
+    clear_native_knowledge, index_native_neural_memory, native_delegation_graph,
+    native_isolated_scan_readiness, native_knowledge_graph, native_neural_readiness,
+    native_task_schedule, native_worker_audit, probe_native_neural_provider,
+    reason_native_knowledge_graph, run_native_isolated_scan, search_native_knowledge,
+    search_native_neural_memory,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
@@ -1001,6 +1021,12 @@ fn main() {
             codetwin_core::assessment_jobs::AssessmentJobs::new(&database)
                 .recover_interrupted()
                 .map_err(std::io::Error::other)?;
+            codetwin_core::native_agents::NativeAgents::new(&database)
+                .recover_interrupted()
+                .map_err(std::io::Error::other)?;
+            codetwin_core::native_worker_audit::WorkerAudit::new(&database)
+                .recover_interrupted()
+                .map_err(std::io::Error::other)?;
             let repair_backup_root = app_data_dir.join("repair-backups");
             RepairApplicationService::new(&database)
                 .recover_interrupted_applications(&repair_backup_root)
@@ -1031,6 +1057,36 @@ fn main() {
             list_assessment_jobs,
             cancel_assessment_job,
             run_assessment_job,
+            create_native_agent_review,
+            create_native_task_review,
+            native_task_schedule,
+            native_worker_audit,
+            native_neural_readiness,
+            probe_native_neural_provider,
+            index_native_neural_memory,
+            search_native_neural_memory,
+            reason_native_knowledge_graph,
+            list_native_agent_reviews,
+            native_agent_review,
+            approve_native_agent_review,
+            run_native_agent_review,
+            cancel_native_agent_review,
+            native_delegation_graph,
+            search_native_knowledge,
+            native_knowledge_graph,
+            clear_native_knowledge,
+            native_isolated_scan_readiness,
+            run_native_isolated_scan,
+            native_agent_report,
+            list_native_agent_memory,
+            clear_native_agent_memory,
+            list_native_agent_handoffs,
+            verify_native_agent_run,
+            native_model_readiness,
+            native_agent_insight,
+            interpret_native_agent_review,
+            suggest_native_agent_roles,
+            suggest_native_task_plan,
             list_security_tools,
             recent_security_tool_runs,
             git_review_status,

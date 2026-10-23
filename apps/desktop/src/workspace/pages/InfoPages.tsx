@@ -2,19 +2,10 @@ import { Icon } from "../Icon";
 import { navigate } from "../routes";
 import { Disclosure, EmptyState, PageHeader, Panel, StatusBadge } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
+import { NativeAgentsPage } from "./NativeAgentsPage";
 
 export function AgentsPage() {
-  return (
-    <div>
-      <PageHeader eyebrow="AUTOMATION" title="Agents" description="Review automation capabilities."/>
-      <EmptyState
-        icon="agents"
-        title="Autonomous agents are unavailable"
-        description="Local ML and verified repair workflows are available. Background agents are not supported yet."
-        action={<button className="ws-button ws-button-secondary" onClick={() => navigate("ml")}><Icon name="code"/>Open ML Workspace</button>}
-      />
-    </div>
-  );
+  return <NativeAgentsPage/>;
 }
 
 export function DeploymentsPage() {

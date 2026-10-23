@@ -1,0 +1,55 @@
+name: Offline Scanner Integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Approved Trivy image pinned as repository@sha256:digest (DB downloaded in setup only)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  offline-sandbox-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Validate approved pinned image
+        env:
+          IMAGE: ${{ inputs.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE" =~ ^[A-Za-z0-9._:/-]+@sha256:[A-Fa-f0-9]{64}$ ]]; then
+            echo "A digest-pinned scanner image is required" >&2
+            exit 1
+          fi
+          echo "CODETWIN_TRIVY_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+      - name: Pull authorized scanner outside the test sandbox
+        shell: bash
+        run: |
+          docker pull "$CODETWIN_TRIVY_IMAGE"
+          docker image inspect "$CODETWIN_TRIVY_IMAGE" > /dev/null
+      - name: Preload vulnerability database outside the isolated scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          CACHE_DIR="$(mktemp -d "$RUNNER_TEMP/codetwin-db-XXXXXXXX")"
+          docker run --rm --pull=never \
+            --mount "type=bind,src=$CACHE_DIR,dst=/cache" \
+            "$CODETWIN_TRIVY_IMAGE" image --download-db-only --cache-dir /cache
+          test -s "$CACHE_DIR/db/trivy.db"
+          test -s "$CACHE_DIR/db/metadata.json"
+          chmod -R a+rX "$CACHE_DIR"
+          echo "CODETWIN_TRIVY_DB_DIR=$CACHE_DIR/db" >> "$GITHUB_ENV"
+      - name: Run actual network-disabled container and verify persisted audit
+        shell: bash
+        env:
+          CODETWIN_TEST_REAL_SANDBOX: "1"
+        run: |
+          export CODETWIN_DOCKER_PATH="$(command -v docker)"
+          cargo test -p codetwin-core --test native_real_sandbox -- --nocapture
