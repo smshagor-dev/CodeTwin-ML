@@ -232,6 +232,22 @@ data, credentials, arbitrary arguments or source paths. An interrupted
 application marks unfinished audit entries accordingly after restart.
 An audit receipt is independent of the review's analyzer findings.
 
+Worker audit start and successful finish now use single SQLite statements that
+require the parent review to remain approved and uncancelled. A successful
+receipt is accepted only for the **same review ID** as its audit entry. When
+approval is revoked before result persistence, the audit is finalized as
+failed without the scanner's image digest or finding counts. The desktop
+receives an error instead of a false successful result.
+
+Failed attempts retain fixed privacy-reduced error codes: `worker_failed`,
+`worker_cancelled`, `worker_cleanup_unconfirmed` and
+`worker_cancelled_cleanup_unconfirmed`. The last two are emitted only for
+explicit, recognized Docker cleanup failures, not arbitrary raw error text.
+They mean that container removal was **not independently confirmed** and
+require manual inspection of the Docker host. Audit records are not digitally
+signed attestations of a machine or daemon state.
+
+
 ## Real sandbox test harness
 
 `crates/codetwin-core/tests/native_real_sandbox.rs` invokes a real
