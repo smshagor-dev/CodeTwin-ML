@@ -5,9 +5,10 @@ use crate::{
     native_action_log::{ActionReceipt, NativeActionLog},
     native_agent_delegation::NativeDelegation,
     native_agents::NativeAgents,
+    native_task_plans::{validate_proposal, TaskProposal},
     Database,
 };
-use rusqlite::OptionalExtension;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +38,14 @@ pub struct AutomatedFlow {
     pub completed_subtasks: usize,
     pub total_subtasks: usize,
     pub tasks: Vec<FlowTask>,
+}
+
+/// Immutable proposed follow-up. This is not an approved review.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowFollowup {
+    pub review_id: String,
+    pub proposal: TaskProposal,
+    pub created_at: String,
 }
 
 pub struct NativeFlow<'a> {
@@ -108,6 +117,75 @@ impl<'a> NativeFlow<'a> {
         }
         tx.commit().map_err(to_error)?;
         self.get(review_id)?.ok_or("Approved flow not found".into())
+    }
+
+    /// Persist one restricted follow-up after a failed/interrupted automated
+    /// review. A proposal can only reuse roles present in the previous review.
+    /// It never inherits approval, execution rights, or a new target.
+    pub fn suggest_followup(
+        &self,
+        review_id: &str,
+        proposal: &TaskProposal,
+    ) -> Result<FlowFollowup, String> {
+        validate_proposal(proposal)?;
+        let run = NativeAgents::new(self.db).get(review_id)?;
+        if run.status != "failed" && run.status != "interrupted" {
+            return Err("Follow-up requires a failed or interrupted flow".into());
+        }
+        if proposal
+            .tasks
+            .iter()
+            .any(|task| !run.steps.iter().any(|step| step.tool == task.role))
+        {
+            return Err("Follow-up cannot add specialists beyond the prior reviewed scope".into());
+        }
+        let json = serde_json::to_string(proposal).map_err(to_error)?;
+        if json.len() > 6000 {
+            return Err("Follow-up task proposal is too large".into());
+        }
+        let inserted = self
+            .db
+            .connection()
+            .execute(
+                "INSERT INTO native_flow_followups(review_id,proposal_json)
+                 SELECT ?1,?2 WHERE EXISTS(
+                     SELECT 1 FROM native_security_flows f
+                     JOIN native_agent_runs r ON r.id=f.review_id
+                     WHERE f.review_id=?1 AND f.approved_at IS NOT NULL
+                       AND r.status IN ('failed','interrupted')
+                 )",
+                params![review_id, json],
+            )
+            .map_err(to_error)?;
+        if inserted != 1 {
+            return Err("Only a completed flow can store a new follow-up suggestion".into());
+        }
+        self.get_followup(review_id)?
+            .ok_or("Follow-up suggestion could not be loaded".into())
+    }
+
+    pub fn get_followup(&self, review_id: &str) -> Result<Option<FlowFollowup>, String> {
+        let saved = self
+            .db
+            .connection()
+            .query_row(
+                "SELECT proposal_json,created_at FROM native_flow_followups
+                 WHERE review_id=?1",
+                [review_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(to_error)?;
+        let Some((json, created_at)) = saved else {
+            return Ok(None);
+        };
+        let proposal: TaskProposal = serde_json::from_str(&json).map_err(to_error)?;
+        validate_proposal(&proposal)?;
+        Ok(Some(FlowFollowup {
+            review_id: review_id.to_string(),
+            proposal,
+            created_at,
+        }))
     }
 
     /// Render an accurate, persisted hierarchy from the existing review DAG
@@ -296,6 +374,62 @@ mod tests {
             .flat_map(|task| &task.subtasks)
             .all(|subtask| subtask.actions.len() == 1));
         assert!(NativeAgents::new(&db).execute(&review_id).is_err());
+    }
+
+    #[test]
+    fn adaptive_followup_is_unapproved_and_cannot_expand_roles() {
+        let db = Database::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("code.rs"), "pub fn safe() {}").unwrap();
+        let project = ProjectIndexService::new(&db)
+            .index_project(dir.path())
+            .unwrap()
+            .project_id;
+        let reviews = NativeAgents::new(&db);
+        let review = reviews
+            .create_with_roles(
+                &project,
+                "Local passive source review",
+                10,
+                120,
+                &["scout".into(), "source".into(), "qa".into()],
+            )
+            .unwrap();
+        let flow = NativeFlow::new(&db);
+        flow.prepare(&review.id).unwrap();
+        flow.approve(&review.id).unwrap();
+        let proposal = TaskProposal {
+            rationale: "Review incomplete approved QA evidence".into(),
+            tasks: vec![
+                crate::native_task_plans::PlannedSpecialist {
+                    role: "scout".into(), objective: "Inventory".into(), depends_on: vec![],
+                },
+                crate::native_task_plans::PlannedSpecialist {
+                    role: "source".into(), objective: "Review".into(), depends_on: vec!["scout".into()],
+                },
+                crate::native_task_plans::PlannedSpecialist {
+                    role: "qa".into(), objective: "QA".into(), depends_on: vec!["source".into()],
+                },
+            ],
+        };
+        assert!(flow.suggest_followup(&review.id, &proposal).is_err());
+        let deny = |_db: &Database, _run: &crate::native_agents::AgentRun,
+                    _step: &crate::native_agents::AgentStep| {
+            Err("Denied role by policy".to_string())
+        };
+        assert_eq!(
+            reviews.execute_with_dispatch(&review.id, &deny).unwrap().status,
+            "failed"
+        );
+        let suggestion = flow.suggest_followup(&review.id, &proposal).unwrap();
+        assert_eq!(suggestion.proposal.tasks.len(), 3);
+        assert!(flow.suggest_followup(&review.id, &proposal).is_err());
+        let mut expanded = proposal.clone();
+        expanded.tasks.push(crate::native_task_plans::PlannedSpecialist {
+            role: "runtime".into(), objective: "Runtime".into(), depends_on: vec!["source".into()],
+        });
+        assert!(flow.suggest_followup(&review.id, &expanded).is_err());
+        assert_eq!(flow.get_followup(&review.id).unwrap().unwrap().review_id, review.id);
     }
 
     #[test]

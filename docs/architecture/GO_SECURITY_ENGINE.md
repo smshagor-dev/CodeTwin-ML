@@ -58,6 +58,26 @@ chain without automatic retry after a crash. This is **single-approved passive
 review automation**, not permission to target arbitrary networks or run exploits.
 Full PentAGI multi-flow dynamic autonomous orchestration is not yet ported.
 
+## Adaptive follow-up after failure or interruption
+
+After a fully approved automated review fails, the Go sidecar automatically
+proposes a **new, unapproved** follow-up only for unfinished passive specialists
+from the original reviewed scope. If source validation failed, the suggestion
+contains only the mandatory recon and source prerequisite roles. If source
+completed, the suggestion retains the registered optional roles that did not
+finish. Completed optional specialists are excluded.
+
+Go receives only specialist identifiers and terminal status codes. It receives
+no raw source, credentials, scanner output, target addresses or report content.
+Rust checks that the proposed roles are a **subset of the earlier reviewed
+roles**, verifies the complete dependency DAG and persists a single immutable
+follow-up draft in SQLite migration 0045. No draft is executed automatically;
+the user must inspect the suggestion, create a new review and approve it again.
+If a process stops before suggesting, **Suggest scoped follow-up** can generate
+the same draft after restarting. Completed flows do not produce unnecessary
+follow-up work. This is deterministic evidence/status-based adaptation—not an
+LLM-generated action planner or unrestricted PentAGI autonomy.
+
 ## Protocol and security boundaries
 
 - Rust sends one versioned JSON request on stdin, containing only the

@@ -68,6 +68,12 @@ export type AutomatedSecurityFlow = {
   }[];
 };
 
+export type AdaptiveFlowFollowup = {
+  review_id: string;
+  proposal: NativeTaskProposal;
+  created_at: string;
+};
+
 export type NativeAgentMemory = {
   project_id: string;
   run_id: string;
@@ -148,6 +154,7 @@ export function NativeAgentsPage() {
   const [graphInference, setGraphInference] = useState<GraphInference | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [automatedFlow, setAutomatedFlow] = useState<AutomatedSecurityFlow | null>(null);
+  const [adaptiveFollowup, setAdaptiveFollowup] = useState<AdaptiveFlowFollowup | null>(null);
   const [handoffs, setHandoffs] = useState<AgentHandoff[]>([]);
   const [verification, setVerification] = useState<AgentVerification | null>(null);
   const [objective, setObjective] = useState("Review the selected project's security, code quality and reliability. Report confirmed evidence and unresolved issues.");
@@ -277,6 +284,16 @@ export function NativeAgentsPage() {
     let active = true;
     void workspaceApi.getAutomatedSecurityFlow(id)
       .then(result => { if (active) setAutomatedFlow(result); })
+      .catch(reason => { if (active) setError(String(reason)); });
+    return () => { active = false; };
+  }, [selectedId, runs]);
+
+  useEffect(() => {
+    const id = selectedId || runs[0]?.id;
+    if (!id) { setAdaptiveFollowup(null); return; }
+    let active = true;
+    void workspaceApi.getAutomatedFlowFollowup(id)
+      .then(result => { if (active) setAdaptiveFollowup(result); })
       .catch(reason => { if (active) setError(String(reason)); });
     return () => { active = false; };
   }, [selectedId, runs]);
@@ -507,6 +524,29 @@ export function NativeAgentsPage() {
     }
   }
 
+  async function requestAdaptiveFollowup(id: string) {
+    setBusy("flow-followup"); setError("");
+    try {
+      const proposed = await workspaceApi.suggestAutomatedFlowFollowup(id);
+      setAdaptiveFollowup(proposed);
+      if (!proposed) setError("No incomplete specialist requires a follow-up.");
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+
+  function reviewAdaptiveFollowup(followup: AdaptiveFlowFollowup, run: NativeAgentRun) {
+    setActiveProjectId(run.project_id);
+    setObjective(run.objective);
+    setSelectedRoles(followup.proposal.tasks.map(task => task.role));
+    setTaskProposal({
+      proposal: followup.proposal,
+      projectId: run.project_id,
+      objective: run.objective,
+    });
+    // The proposed DAG remains unapproved until explicitly reviewed and used.
+    setAcceptedTaskPlan(false);
+  }
+
   async function prepareAutomatedFlow(id: string) {
     if (!goStatus?.configured) return;
     setBusy("auto-prepare"); setError("");
@@ -520,6 +560,7 @@ export function NativeAgentsPage() {
     setBusy("auto-flow"); setError("");
     try {
       setAutomatedFlow(await workspaceApi.runAutomatedSecurityFlow(id));
+      setAdaptiveFollowup(await workspaceApi.getAutomatedFlowFollowup(id));
       await refresh();
     } catch (reason) { setError(String(reason)); await refresh(); }
     finally { setBusy(""); }
@@ -533,6 +574,7 @@ export function NativeAgentsPage() {
     try {
       setAutomatedFlow(await workspaceApi.approveAutomatedSecurityFlow(id));
       setAutomatedFlow(await workspaceApi.runAutomatedSecurityFlow(id));
+      setAdaptiveFollowup(await workspaceApi.getAutomatedFlowFollowup(id));
       await refresh();
     } catch (reason) { setError(String(reason)); await refresh(); }
     finally { setBusy(""); }
@@ -799,6 +841,29 @@ export function NativeAgentsPage() {
     {selected && <Panel title="Review execution">
       <p><StatusBadge status={selected.status}/> <strong>{selected.objective}</strong></p>
       <p className="ws-form-help">Bounded to {selected.max_files} indexed files and {selected.budget_seconds} seconds at analyzer boundaries. Agents never bypass CodeTwin's existing security approval rules.</p>
+      {automatedFlow?.review_id === selected.id &&
+        ["failed", "interrupted"].includes(automatedFlow.status) && <section>
+          <h3>Adaptive follow-up proposal</h3>
+          <p className="ws-form-help">
+            A failed or interrupted flow can propose a new, narrower passive review.
+            It never repeats work or grants a new approval automatically.
+          </p>
+          {adaptiveFollowup?.review_id === selected.id
+            ? <>
+                <p>{adaptiveFollowup.proposal.rationale}</p>
+                <p className="ws-form-help">
+                  Suggested specialists: {adaptiveFollowup.proposal.tasks.map(task => task.role).join(" → ")}
+                </p>
+                <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
+                  onClick={() => reviewAdaptiveFollowup(adaptiveFollowup, selected)}>
+                  Review follow-up task plan
+                </button>
+              </>
+            : <button className="ws-button ws-button-secondary" disabled={Boolean(busy) || !goStatus?.configured}
+                onClick={() => void requestAdaptiveFollowup(selected.id)}>
+                {busy === "flow-followup" ? "Preparing scoped follow-up…" : "Suggest scoped follow-up"}
+              </button>}
+        </section>}
       {automatedFlow?.review_id === selected.id && <section>
         <h3>Automated security flow</h3>
         <p className="ws-form-help" role="status">

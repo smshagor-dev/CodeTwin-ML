@@ -10,7 +10,7 @@ use codetwin_core::{
     native_agent_delegation::NativeDelegation,
     native_agent_memory::AgentMemory,
     native_agents::{AgentRun, AgentStep, NativeAgents},
-    native_flow::{AutomatedFlow, NativeFlow},
+    native_flow::{AutomatedFlow, FlowFollowup, NativeFlow},
     native_task_plans::{parse_proposal, validate_proposal, TaskProposal},
     Database, WorkspaceService,
 };
@@ -104,6 +104,7 @@ fn probe_binary(binary: &Path) -> Result<(), String> {
                     || !health.functions.iter().any(|feature| feature == "plan")
                     || !health.functions.iter().any(|feature| feature == "dispatch")
                     || !health.functions.iter().any(|feature| feature == "refine")
+                    || !health.functions.iter().any(|feature| feature == "followup")
                 {
                     return Err("Incompatible Go security engine protocol".into());
                 }
@@ -697,10 +698,154 @@ pub async fn run_automated_security_flow(
         };
         // The Rust supervisor automatically traverses the approved DAG,
         // verifies each Go recommendation, and persists every SQLite receipt.
-        NativeAgents::new(&db).execute_with_dispatch(&id, &check)?;
+        let review = NativeAgents::new(&db).execute_with_dispatch(&id, &check)?;
+        if review.status == "failed" || review.status == "interrupted" {
+            // A follow-up is a draft only. Do not mask the completed review
+            // if the optional Go suggestion is unavailable.
+            let _ = derive_and_save_adaptive_followup(&db, &binary, &id);
+        }
         NativeFlow::new(&db)
             .get(&id)?
             .ok_or("Completed flow could not be reloaded".into())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GoFollowupAdvice {
+    suggested: bool,
+    proposal: Option<TaskProposal>,
+    reason: String,
+}
+
+/// Only abstract role/status metadata crosses the Go process boundary.
+/// No source, credential, report content or private file path is sent.
+fn local_adaptive_followup(binary: &Path, run: &AgentRun) -> Result<Option<TaskProposal>, String> {
+    if !matches!(run.status.as_str(), "failed" | "interrupted") {
+        return Err("Only failed/interrupted reviews qualify for adaptive follow-up".into());
+    }
+    probe_binary(binary)?;
+    let tasks = run
+        .steps
+        .iter()
+        .map(|step| serde_json::json!({"role":step.tool,"status":step.status}))
+        .collect::<Vec<_>>();
+    let body = serde_json::to_vec(&serde_json::json!({
+        "protocol_version": 1,
+        "run_status": run.status,
+        "tasks": tasks
+    }))
+    .map_err(|_| "Could not encode adaptive follow-up metadata")?;
+    if body.len() > 4096 {
+        return Err("Adaptive follow-up metadata exceeded the size limit".into());
+    }
+    let mut child = Command::new(binary)
+        .arg("--followup")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Could not start Go adaptive follow-up")?;
+    let write_result = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Go adaptive follow-up input unavailable".to_string())
+        .and_then(|mut input| {
+            input
+                .write_all(&body)
+                .map_err(|_| "Go adaptive follow-up input failed".to_string())
+        });
+    if let Err(error) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|_| "Could not read Go follow-up response")?;
+                if !status.success() || output.stdout.len() > MAX_RESPONSE_BYTES {
+                    return Err("Go rejected the adaptive follow-up request".into());
+                }
+                let advice: GoFollowupAdvice = serde_json::from_slice(&output.stdout)
+                    .map_err(|_| "Invalid Go adaptive follow-up JSON")?;
+                if advice.reason.is_empty() || advice.reason.len() > 300 {
+                    return Err("Invalid adaptive follow-up explanation".into());
+                }
+                if !advice.suggested {
+                    if advice.proposal.is_some() {
+                        return Err("Unrequested follow-up proposal in no-op advice".into());
+                    }
+                    return Ok(None);
+                }
+                let proposal = advice.proposal.ok_or("Missing adaptive follow-up proposal")?;
+                validate_proposal(&proposal)?;
+                // Go may *narrow* the prior reviewed specialists, never expand them.
+                if proposal
+                    .tasks
+                    .iter()
+                    .any(|task| !run.steps.iter().any(|step| step.tool == task.role))
+                {
+                    return Err("Go attempted to expand an existing approved scope".into());
+                }
+                return Ok(Some(proposal));
+            }
+            Ok(None) if start.elapsed() < PLANNER_TIMEOUT => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Go adaptive follow-up timed out".into());
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Go adaptive follow-up process failed".into());
+            }
+        }
+    }
+}
+
+fn derive_and_save_adaptive_followup(
+    db: &Database,
+    binary: &Path,
+    id: &str,
+) -> Result<Option<FlowFollowup>, String> {
+    if let Some(saved) = NativeFlow::new(db).get_followup(id)? {
+        return Ok(Some(saved));
+    }
+    let review = NativeAgents::new(db).get(id)?;
+    let Some(plan) = local_adaptive_followup(binary, &review)? else {
+        return Ok(None);
+    };
+    NativeFlow::new(db).suggest_followup(id, &plan).map(Some)
+}
+
+#[tauri::command]
+pub fn get_automated_flow_followup(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Option<FlowFollowup>, String> {
+    let db = flow_db(&app)?;
+    NativeFlow::new(&db).get_followup(&id)
+}
+
+#[tauri::command]
+pub async fn suggest_automated_flow_followup(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Option<FlowFollowup>, String> {
+    let binary = binary_path()?;
+    let dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Database::open(dir.join("codetwin.sqlite3")).map_err(|error| error.to_string())?;
+        derive_and_save_adaptive_followup(&db, &binary, &id)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -841,6 +986,50 @@ mod tests {
             .expect("read Go-gated specialist action receipts");
         assert_eq!(receipts.len(), 2);
         assert!(receipts.iter().all(|receipt| receipt.status == "completed"));
+    }
+
+    #[test]
+    fn bundled_go_followup_cannot_expand_prior_review_scope() {
+        if std::env::var("CODETWIN_TEST_GO_SIDECAR").ok().as_deref() != Some("1") {
+            return;
+        }
+        let triple = env!("TAURI_ENV_TARGET_TRIPLE");
+        let suffix = if cfg!(windows) { ".exe" } else { "" };
+        let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("codetwin-security-{triple}{suffix}"));
+        let run = super::AgentRun {
+            id: "previous".into(),
+            project_id: "project".into(),
+            objective: "Passive test".into(),
+            status: "failed".into(),
+            message: Some("Previous specialist did not finish".into()),
+            max_files: 10,
+            budget_seconds: 120,
+            created_at: "".into(),
+            started_at: None,
+            finished_at: None,
+            steps: vec![
+                super::AgentStep {
+                    position: 0, role: "Project Recon".into(), tool: "scout".into(),
+                    status: "completed".into(), result: None,
+                },
+                super::AgentStep {
+                    position: 1, role: "Source Auditor".into(), tool: "source".into(),
+                    status: "completed".into(), result: None,
+                },
+                super::AgentStep {
+                    position: 3, role: "Test Researcher".into(), tool: "qa".into(),
+                    status: "failed".into(), result: None,
+                },
+            ],
+        };
+        let next = super::local_adaptive_followup(&binary, &run)
+            .expect("Go proposes only a scoped follow-up")
+            .expect("A failed approved specialist requires a follow-up");
+        assert_eq!(next.tasks.len(), 3);
+        assert_eq!(next.tasks[2].role, "qa");
+        assert!(next.tasks.iter().all(|task| run.steps.iter().any(|step| step.tool == task.role)));
     }
 
     #[test]
