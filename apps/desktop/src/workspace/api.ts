@@ -142,6 +142,43 @@ export const workspaceApi = {
   nativeWorkerAudit(id: string) {
     return invoke<import("./pages/NativeAgentsPage").WorkerAuditRecord[]>("native_worker_audit", { id });
   },
+  inspectAuthorizedDns(scope: {
+    authorized: boolean;
+    hostname: string;
+    allowed_hostnames: string[];
+    allowed_addresses: string[];
+  }) {
+    return invoke<{ hostname: string; addresses: string[]; note: string }>("inspect_authorized_dns", { scope });
+  },
+  networkInspectionHistory() {
+    return invoke<{
+      id: number;
+      target_ip: string;
+      scope_sha256: string;
+      status: string;
+      ports_requested: number;
+      ports_tested: number;
+      result_sha256: string | null;
+      failure_code: string | null;
+      started_at: string;
+      finished_at: string | null;
+      inspection: { target: string; observations: { port: number; state: string; elapsed_ms: number }[]; tested_ports: number; note: string } | null;
+    }[]>("list_authorized_network_inspections");
+  },
+  inspectAuthorizedNetworkServices(scope: {
+    authorized: boolean;
+    target: string;
+    allowed_addresses: string[];
+    ports: number[];
+    timeout_ms: number;
+  }) {
+    return invoke<{
+      target: string;
+      observations: { port: number; state: string; elapsed_ms: number }[];
+      tested_ports: number;
+      note: string;
+    }>("inspect_authorized_network_services", { scope });
+  },
   nativeNeuralReadiness() {
     return invoke<{ configured: boolean; detail: string }>("native_neural_readiness");
   },

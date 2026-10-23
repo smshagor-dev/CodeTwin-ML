@@ -7,11 +7,22 @@ use codetwin_core::{
     native_graph_reasoning::{GraphInference, GraphReasoner},
     native_neural_embeddings::{NeuralMatch, NeuralMemory, NeuralProbe, NeuralReadiness},
     native_worker_audit::{WorkerAudit, WorkerAuditRecord},
+    network_dns::{inspect_dns, DnsObservation, DnsScope},
+    network_inspection::{inspect_tcp, NetworkInspection, NetworkScope},
+    network_inspection_store::{NetworkInspectionRecord, NetworkInspectionStore},
     Database,
 };
 use tauri::Manager;
 
 static WORKER_BUSY: AtomicBool = AtomicBool::new(false);
+static NETWORK_BUSY: AtomicBool = AtomicBool::new(false);
+
+struct NetworkLease;
+impl Drop for NetworkLease {
+    fn drop(&mut self) {
+        NETWORK_BUSY.store(false, Ordering::SeqCst);
+    }
+}
 
 struct WorkerLease;
 impl Drop for WorkerLease {
@@ -201,4 +212,46 @@ pub fn reason_native_knowledge_graph(
 ) -> Result<GraphInference, String> {
     let database = db(&app)?;
     GraphReasoner::new(&database).analyze(&project_id, &id, position)
+}
+
+#[tauri::command]
+pub async fn inspect_authorized_network_services(
+    scope: NetworkScope,
+    app: tauri::AppHandle,
+) -> Result<NetworkInspection, String> {
+    scope.validate()?;
+    if NETWORK_BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("A network inspection is already running".into());
+    }
+    let lease = NetworkLease;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lease = lease;
+        let database = db(&app)?;
+        let store = NetworkInspectionStore::new(&database);
+        store.recover_interrupted()?;
+        let record_id = store.begin(&scope)?;
+        let result = inspect_tcp(&scope);
+        store.finish(record_id, &scope, &result)?;
+        result
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn list_authorized_network_inspections(
+    app: tauri::AppHandle,
+) -> Result<Vec<NetworkInspectionRecord>, String> {
+    NetworkInspectionStore::new(&db(&app)?).list(25)
+}
+
+#[tauri::command]
+pub async fn inspect_authorized_dns(scope: DnsScope) -> Result<DnsObservation, String> {
+    scope.validate()?;
+    tauri::async_runtime::spawn_blocking(move || inspect_dns(&scope))
+        .await
+        .map_err(|error| error.to_string())?
 }
