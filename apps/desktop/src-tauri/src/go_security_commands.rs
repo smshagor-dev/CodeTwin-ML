@@ -7,6 +7,7 @@ use std::{
 };
 
 use codetwin_core::{
+    native_agent_memory::AgentMemory,
     native_task_plans::{parse_proposal, TaskProposal},
     Database, WorkspaceService,
 };
@@ -122,16 +123,24 @@ pub fn go_security_engine_readiness() -> GoSecurityReadiness {
 }
 
 #[derive(Serialize)]
+struct MemoryHint {
+    role: String,
+    status: String,
+}
+
+#[derive(Serialize)]
 struct PlannerRequest<'a> {
     protocol_version: u8,
     objective: &'a str,
+    history: &'a [MemoryHint],
 }
 
-fn local_plan(binary: &Path, objective: &str) -> Result<TaskProposal, String> {
+fn local_plan(binary: &Path, objective: &str, history: &[MemoryHint]) -> Result<TaskProposal, String> {
     probe_binary(binary)?;
     let request = serde_json::to_vec(&PlannerRequest {
         protocol_version: 1,
         objective,
+        history,
     })
     .map_err(|_| "Cannot encode Go security plan request")?;
     let mut child = Command::new(binary)
@@ -213,8 +222,44 @@ pub async fn suggest_go_security_task_plan(
         if project.last_indexed_at.is_none() || project.file_count == 0 {
             return Err("Index a nonempty project before requesting a Go task plan".into());
         }
-        local_plan(&binary, &objective)
+        let history = AgentMemory::new(&db)
+            .search(&project_id, "", 12)?
+            .into_iter()
+            .map(|entry| MemoryHint {
+                role: entry.tool,
+                status: entry.status,
+            })
+            .collect::<Vec<_>>();
+        local_plan(&binary, &objective, &history)
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{local_plan, MemoryHint};
+    use std::path::PathBuf;
+
+    #[test]
+    fn bundled_go_process_roundtrips_review_memory() {
+        if std::env::var("CODETWIN_TEST_GO_SIDECAR").ok().as_deref() != Some("1") {
+            return;
+        }
+        let target = option_env!("TAURI_ENV_TARGET_TRIPLE")
+            .expect("Tauri build script must supply the platform target triple");
+        let suffix = if cfg!(windows) { ".exe" } else { "" };
+        let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("codetwin-security-{target}{suffix}"));
+        assert!(binary.is_file(), "build the target-specific Go companion before testing");
+        let context = [MemoryHint {
+            role: "secrets".to_owned(),
+            status: "failed".to_owned(),
+        }];
+        let proposed = local_plan(&binary, "Review test coverage", &context)
+            .expect("real Go process must complete the bounded protocol");
+        let roles = proposed.tasks.iter().map(|task| task.role.as_str()).collect::<Vec<_>>();
+        assert_eq!(roles, ["scout", "source", "secrets", "qa"]);
+    }
 }
