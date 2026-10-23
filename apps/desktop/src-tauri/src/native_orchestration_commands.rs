@@ -5,7 +5,7 @@ use codetwin_core::{
     native_agent_knowledge::{AgentKnowledge, KnowledgeGraph, KnowledgeNode},
     native_agent_workers::{IsolatedScanReadiness, IsolatedScanReceipt, IsolatedWorker},
     native_graph_reasoning::{GraphInference, GraphReasoner},
-    native_neural_embeddings::{NeuralMatch, NeuralMemory, NeuralReadiness},
+    native_neural_embeddings::{NeuralMatch, NeuralMemory, NeuralProbe, NeuralReadiness},
     native_worker_audit::{WorkerAudit, WorkerAuditRecord},
     Database,
 };
@@ -147,6 +147,13 @@ pub fn native_worker_audit(
 #[tauri::command]
 pub fn native_neural_readiness() -> NeuralReadiness {
     NeuralMemory::readiness()
+}
+
+#[tauri::command]
+pub async fn probe_native_neural_provider() -> Result<NeuralProbe, String> {
+    tauri::async_runtime::spawn_blocking(NeuralMemory::probe)
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
