@@ -53,6 +53,66 @@ impl<'a> NativeActionLog<'a> {
         tx.commit().map_err(err)
     }
 
+    /// Atomically claim the immutable delegated role, specialist step and
+    /// audit receipt. Dependencies, exact role identity and parent approval
+    /// are checked under the same SQLite write transaction. A failed claim
+    /// cannot leave a delegated role running without its action receipt.
+    pub(crate) fn begin_supervised(
+        &self,
+        run_id: &str,
+        position: usize,
+        display_role: &str,
+        tool: &str,
+    ) -> Result<(), String> {
+        let tx = self.db.connection().unchecked_transaction().map_err(err)?;
+        let claimed = tx
+            .execute(
+                "UPDATE native_delegation_tasks SET status='running'
+                 WHERE run_id=?1 AND position=?2 AND role=?3 AND tool=?4
+                   AND status='pending'
+                   AND EXISTS (
+                     SELECT 1 FROM native_agent_runs
+                     WHERE id=?1 AND status='running' AND cancel_requested=0
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM native_delegation_dependencies d
+                     LEFT JOIN native_delegation_tasks required
+                       ON required.run_id=d.run_id
+                      AND required.position=d.requires_position
+                     WHERE d.run_id=?1 AND d.position=?2
+                       AND (required.status IS NULL OR required.status!='completed')
+                   )",
+                params![run_id, position, display_role, tool],
+            )
+            .map_err(err)?;
+        if claimed != 1 {
+            return Err("Delegation is not an approved dependency-ready role".into());
+        }
+        let changed = tx
+            .execute(
+                "UPDATE native_agent_steps SET status='running',
+                   started_at=CURRENT_TIMESTAMP
+                 WHERE run_id=?1 AND position=?2 AND role=?3 AND tool=?4
+                   AND status='pending'
+                   AND EXISTS (
+                     SELECT 1 FROM native_agent_runs
+                     WHERE id=?1 AND status='running' AND cancel_requested=0
+                   )",
+                params![run_id, position, display_role, tool],
+            )
+            .map_err(err)?;
+        if changed != 1 {
+            return Err("Native specialist was not pending at claim".into());
+        }
+        tx.execute(
+            "INSERT INTO native_action_log(run_id,position,role,status)
+             VALUES (?1,?2,?3,'running')",
+            params![run_id, position, tool],
+        )
+        .map_err(err)?;
+        tx.commit().map_err(err)
+    }
+
     /// Complete both persisted step and action receipt in one transaction.
     /// The parent must still be running and uncancelled at commit time.
     /// A cancellation observed after a parallel worker begins rejects its
