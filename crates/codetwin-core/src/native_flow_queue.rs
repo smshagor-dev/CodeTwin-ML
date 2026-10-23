@@ -257,8 +257,14 @@ mod tests {
             .index_project(root.path())
             .unwrap()
             .project_id;
+        let second_root = tempfile::tempdir().unwrap();
+        std::fs::write(second_root.path().join("other.rs"), "pub fn other() {}").unwrap();
+        let second_project = ProjectIndexService::new(&db)
+            .index_project(second_root.path())
+            .unwrap()
+            .project_id;
         let first = approved(&db, &project);
-        let second = approved(&db, &project);
+        let second = approved(&db, &second_project);
         let queue = NativeFlowQueue::new(&db);
         queue.enqueue(&first).unwrap();
         queue.enqueue(&second).unwrap();
