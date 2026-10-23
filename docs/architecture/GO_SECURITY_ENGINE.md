@@ -104,6 +104,12 @@ the persisted dependency graph; the native supervisor, not Go, owns the
 actual passive scanner execution and SQLite writes. Both results are joined
 before moving to the next batch. A denied role prevents that batch's tools
 from starting; a cancelled or failed batch cannot be replayed automatically.
+For a joined batch where just one passive specialist fails, the supervisor
+persists **both** terminal specialist receipts and their result digests in
+approved position order. The successful sibling's evidence is retained, while
+the failure stops all further dependent batches and prohibits downstream
+handoffs originating after the first failed result. Both failure orders are
+covered by file-backed SQLite regression tests.
 Once both action receipts have been claimed, Rust checks cancellation again
 before launching workers. The SQLite action receipt also requires an uncancelled
 running parent **when committing results**: a worker returning after cancellation
