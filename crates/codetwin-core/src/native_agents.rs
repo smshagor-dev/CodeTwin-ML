@@ -62,7 +62,7 @@ pub struct HistoricalEvidenceAudit {
     pub invalid: Vec<HistoricalEvidenceIssue>,
     /// Exclusive, stable SQLite rowid cursor for the next older page.
     /// None means the end of the completed-review history.
-    pub next_before_rowid: Option<i64>,
+    pub next_before_rowid: Option<String>,
 }
 
 pub struct NativeAgents<'a> {
@@ -243,12 +243,18 @@ impl<'a> NativeAgents<'a> {
         &self,
         project_id: &str,
         limit: usize,
-        before_rowid: Option<i64>,
+        before_rowid: Option<&str>,
     ) -> Result<HistoricalEvidenceAudit, String> {
         if !(1..=200).contains(&limit) {
             return Err("History audit limit must be between 1 and 200".into());
         }
-        if before_rowid.is_some_and(|cursor| cursor <= 0) {
+        let cursor = before_rowid
+            .map(|raw| {
+                raw.parse::<i64>()
+                    .map_err(|_| "Invalid history audit cursor".to_string())
+            })
+            .transpose()?;
+        if cursor.is_some_and(|value| value <= 0) {
             return Err("History audit cursor must be positive".into());
         }
         WorkspaceService::new(self.db)
@@ -280,7 +286,7 @@ impl<'a> NativeAgents<'a> {
                 )
                 .map_err(to_error)?;
             let rows = statement
-                .query_map(params![project_id, limit + 1, before_rowid], |row| {
+                .query_map(params![project_id, limit + 1, cursor], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
                 })
                 .map_err(to_error)?;
@@ -289,7 +295,7 @@ impl<'a> NativeAgents<'a> {
         let has_more = records.len() > limit;
         records.truncate(limit);
         let next_before_rowid = if has_more {
-            records.last().map(|(rowid, _)| *rowid)
+            records.last().map(|(rowid, _)| rowid.to_string())
         } else {
             None
         };
@@ -1420,17 +1426,17 @@ mod tests {
             let cursor = one.next_before_rowid.expect("An older review exists");
             assert!(cursor > 0);
             let older = reviews
-                .audit_completed_history_page(&project, 1, Some(cursor))
+                .audit_completed_history_page(&project, 1, Some(&cursor))
                 .unwrap();
             assert_eq!(older.total_completed, 2);
             assert_eq!(older.checked, 1);
             assert_eq!(older.verified, 1);
             assert_eq!(older.next_before_rowid, None);
             assert!(reviews
-                .audit_completed_history_page(&project, 1, Some(0))
+                .audit_completed_history_page(&project, 1, Some("0"))
                 .is_err());
             assert!(reviews
-                .audit_completed_history_page(&project, 1, Some(-1))
+                .audit_completed_history_page(&project, 1, Some("-1"))
                 .is_err());
             assert!(reviews
                 .audit_completed_history(&other, 200)
