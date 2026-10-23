@@ -10,7 +10,7 @@ use codetwin_core::{
     native_agent_delegation::NativeDelegation,
     native_agent_memory::AgentMemory,
     native_agents::{AgentRun, AgentStep, NativeAgents},
-    native_task_plans::{parse_proposal, TaskProposal},
+    native_task_plans::{parse_proposal, validate_proposal, TaskProposal},
     Database, WorkspaceService,
 };
 use rusqlite::params;
@@ -102,6 +102,7 @@ fn probe_binary(binary: &Path) -> Result<(), String> {
                     || health.storage != "rust-sqlite"
                     || !health.functions.iter().any(|feature| feature == "plan")
                     || !health.functions.iter().any(|feature| feature == "dispatch")
+                    || !health.functions.iter().any(|feature| feature == "refine")
                 {
                     return Err("Incompatible Go security engine protocol".into());
                 }
@@ -216,6 +217,134 @@ fn local_plan(
             }
         }
     }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoRefineOperation {
+    pub op: String,
+    pub role: String,
+    pub objective: Option<String>,
+    pub after_role: Option<String>,
+}
+
+/// Adapted Go task-delta algorithm runs as a no-network, no-SQLite process.
+/// Rust checks the *input and output* against the approved passive role DAG.
+fn local_refine(
+    binary: &Path,
+    current: &TaskProposal,
+    operations: &[GoRefineOperation],
+) -> Result<TaskProposal, String> {
+    validate_proposal(current)?;
+    if operations.is_empty() || operations.len() > 8 {
+        return Err("Provide 1-8 bounded task refinements".into());
+    }
+    for operation in operations {
+        if !matches!(operation.op.as_str(), "add" | "modify" | "remove")
+            || !matches!(
+                operation.role.as_str(),
+                "secrets" | "qa" | "database" | "runtime"
+            )
+            || operation.after_role.is_some()
+            || (operation.op != "remove"
+                && operation
+                    .objective
+                    .as_ref()
+                    .is_none_or(|value| value.trim().is_empty() || value.len() > 300))
+        {
+            return Err("Unsupported or unsafe specialist refinement".into());
+        }
+    }
+    probe_binary(binary)?;
+    let body = serde_json::to_vec(&serde_json::json!({
+        "protocol_version": 1,
+        "current": current,
+        "operations": operations
+    }))
+    .map_err(|_| "Cannot encode Go refinement request")?;
+    if body.len() > 8192 {
+        return Err("Go refinement request exceeds the size budget".into());
+    }
+    let mut child = Command::new(binary)
+        .arg("--refine")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Cannot start Go subtask refinement")?;
+    let write_result = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Go subtask refinement stdin unavailable".to_string())
+        .and_then(|mut stdin| {
+            stdin
+                .write_all(&body)
+                .map_err(|_| "Go subtask refinement input failed".to_string())
+        });
+    if let Err(error) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|_| "Cannot read Go refinement output")?;
+                if !status.success() || output.stdout.len() > MAX_RESPONSE_BYTES {
+                    return Err("Go rejected the refinement request".into());
+                }
+                let response = String::from_utf8(output.stdout)
+                    .map_err(|_| "Go refinement response was not UTF-8")?;
+                let (proposal, _) = parse_proposal(response.trim())?;
+                return Ok(proposal);
+            }
+            Ok(None) if start.elapsed() < PLANNER_TIMEOUT => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Go subtask refinement timed out".into());
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Go subtask refinement process failed".into());
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn refine_go_security_task_plan(
+    project_id: String,
+    current: TaskProposal,
+    operations: Vec<GoRefineOperation>,
+    app: tauri::AppHandle,
+) -> Result<TaskProposal, String> {
+    validate_proposal(&current)?;
+    let binary = binary_path()?;
+    let folder = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let db =
+            Database::open(folder.join("codetwin.sqlite3")).map_err(|error| error.to_string())?;
+        let project = WorkspaceService::new(&db)
+            .get_project(&project_id)
+            .map_err(|error| error.to_string())?
+            .ok_or("Select an indexed project")?;
+        if project.last_indexed_at.is_none() || project.file_count == 0 {
+            return Err("Index a nonempty project before refining its task plan".into());
+        }
+        local_refine(&binary, &current, &operations)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -620,6 +749,65 @@ mod tests {
             )
             .expect("count persisted scheduling decisions");
         assert_eq!(allowed, 2);
+    }
+
+    #[test]
+    fn bundled_go_refinement_preserves_rust_role_validation() {
+        if std::env::var("CODETWIN_TEST_GO_SIDECAR").ok().as_deref() != Some("1") {
+            return;
+        }
+        let target = env!("TAURI_ENV_TARGET_TRIPLE");
+        let suffix = if cfg!(windows) { ".exe" } else { "" };
+        let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("codetwin-security-{target}{suffix}"));
+        let plan = codetwin_core::native_task_plans::TaskProposal {
+            tasks: vec![
+                codetwin_core::native_task_plans::PlannedSpecialist {
+                    role: "scout".into(),
+                    objective: "Inventory indexed source".into(),
+                    depends_on: vec![],
+                },
+                codetwin_core::native_task_plans::PlannedSpecialist {
+                    role: "source".into(),
+                    objective: "Review source evidence".into(),
+                    depends_on: vec!["scout".into()],
+                },
+                codetwin_core::native_task_plans::PlannedSpecialist {
+                    role: "qa".into(),
+                    objective: "Audit test coverage".into(),
+                    depends_on: vec!["source".into()],
+                },
+            ],
+            rationale: "Unapproved passive task review".into(),
+        };
+        let edited = super::local_refine(
+            &binary,
+            &plan,
+            &[super::GoRefineOperation {
+                op: "modify".into(),
+                role: "qa".into(),
+                objective: Some("Review regression tests and missing coverage".into()),
+                after_role: None,
+            }],
+        )
+        .expect("real upstream-derived Go patch must return a valid Rust DAG");
+        assert_eq!(
+            edited.tasks[2].objective,
+            "Review regression tests and missing coverage"
+        );
+        assert_eq!(edited.tasks[2].depends_on, ["source"]);
+        assert!(super::local_refine(
+            &binary,
+            &plan,
+            &[super::GoRefineOperation {
+                op: "remove".into(),
+                role: "scout".into(),
+                objective: None,
+                after_role: None,
+            }]
+        )
+        .is_err());
     }
 
     #[test]

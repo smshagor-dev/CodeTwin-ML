@@ -101,6 +101,11 @@ export const workspaceApi = {
   goSecurityReadiness() {
     return invoke<{ configured: boolean; detail: string }>("go_security_engine_readiness");
   },
+  refineGoSecurityTaskPlan(projectId: string, current: import("./pages/NativeAgentsPage").NativeTaskProposal,
+    operations: { op: "add" | "remove" | "modify"; role: string; objective?: string }[]) {
+    return invoke<import("./pages/NativeAgentsPage").NativeTaskProposal>(
+      "refine_go_security_task_plan", { projectId, current, operations });
+  },
   suggestGoSecurityTaskPlan(projectId: string, objective: string) {
     return invoke<import("./pages/NativeAgentsPage").NativeTaskProposal>(
       "suggest_go_security_task_plan", { projectId, objective });
