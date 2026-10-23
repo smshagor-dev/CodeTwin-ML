@@ -254,18 +254,7 @@ impl<'a> IsolatedWorker<'a> {
             });
         }
         let path = tmp.path().join("report.json");
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|_| "Scanner returned no report".to_string())?;
-        if !metadata.file_type().is_file() {
-            return Err("Scanner report must be a regular file, not a symlink".into());
-        }
-        if metadata.len() > MAX_REPORT_BYTES {
-            return Err("Scanner report exceeded the 2 MB safety limit".into());
-        }
-        let bytes = fs::read(&path).map_err(err)?;
-        if bytes.len() as u64 > MAX_REPORT_BYTES {
-            return Err("Scanner output exceeded safe limit".into());
-        }
+        let bytes = read_scanner_report(&path)?;
         let (vulnerabilities, misconfigurations) = parse_offline_report(&bytes)?;
         Ok(IsolatedScanReceipt {
             run_id: run.id,
@@ -280,6 +269,24 @@ impl<'a> IsolatedWorker<'a> {
             ],
         })
     }
+}
+
+/// Read only an ordinary file created by the finished worker in its private output
+/// directory. Reject symlinks, directories and oversized reports.
+fn read_scanner_report(path: &Path) -> Result<Vec<u8>, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| "Scanner returned no report".to_string())?;
+    if !metadata.file_type().is_file() {
+        return Err("Scanner report must be a regular file, not a symlink".into());
+    }
+    if metadata.len() > MAX_REPORT_BYTES {
+        return Err("Scanner report exceeded the 2 MB safety limit".into());
+    }
+    let bytes = fs::read(path).map_err(err)?;
+    if bytes.len() as u64 > MAX_REPORT_BYTES {
+        return Err("Scanner output exceeded safe limit".into());
+    }
+    Ok(bytes)
 }
 
 /// The report is an untrusted container output. Never truncate results silently;
@@ -401,6 +408,29 @@ mod tests {
         assert!(parse_offline_report(br#"{"Results":[null]}"#).is_err());
         assert!(parse_offline_report(br#"{"Results":{}}"#).is_err());
         assert!(parse_offline_report(b"not-json").is_err());
+    }
+
+    #[test]
+    fn scanner_report_requires_a_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let report = temp.path().join("report.json");
+        std::fs::write(&report, br#"{"Results":[]}"#).unwrap();
+        assert_eq!(parse_offline_report(&read_scanner_report(&report).unwrap()).unwrap(), (0, 0));
+        assert!(read_scanner_report(temp.path()).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let linked = temp.path().join("link.json");
+            symlink(&report, &linked).unwrap();
+            assert!(read_scanner_report(&linked).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn docker_cleanup_result_must_be_confirmed() {
+        assert!(force_remove_container(Path::new("/bin/true"), "test").is_ok());
+        assert!(force_remove_container(Path::new("/bin/false"), "test").is_err());
     }
 
     #[test]
