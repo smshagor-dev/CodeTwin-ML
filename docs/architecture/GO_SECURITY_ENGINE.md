@@ -110,6 +110,20 @@ single final commit. No other connection can observe a completed review that
 has not passed evidence verification. File-backed tests verify cross-connection
 cancellation, invalid handoff downgrade and durable terminal status.
 
+### Historical evidence audit
+
+The Agents Dashboard can run an **on-demand, read-only** integrity check
+of up to 100 most recent completed reviews for its selected indexed project.
+Rust limits API callers to 1–200 and scopes every query to the selected
+project. The returned totals distinguish checked reviews from the full
+historical count so older unaudited results are not implied to be valid.
+Each saved review reuses the complete receipt-digest, signed handoff and
+delegation-graph verification. Missing legacy receipts and modified evidence
+are reported as unverified, not silently migrated or re-executed. The audit
+never changes the historical parent review's persisted status or runs a tool.
+SHA-256 remains a consistency fingerprint and cannot defeat a database writer
+who is able to rewrite both the evidence and fingerprints.
+
 ### Completed specialist receipt consistency
 
 A security review may be published as `completed` only after the supervisor

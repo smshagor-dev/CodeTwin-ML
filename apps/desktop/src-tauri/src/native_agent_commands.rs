@@ -2,7 +2,7 @@ use codetwin_core::{
     native_action_log::{ActionReceipt, NativeActionLog},
     native_agent_handoffs::{AgentHandoff, AgentHandoffs, AgentVerification},
     native_agent_memory::{AgentMemory, MemoryEntry},
-    native_agents::{AgentRun, NativeAgents},
+    native_agents::{AgentRun, HistoricalEvidenceAudit, NativeAgents},
     Database,
 };
 use tauri::Manager;
@@ -134,6 +134,16 @@ pub fn verify_native_agent_run(
 ) -> Result<AgentVerification, String> {
     let db = open_db(&app)?;
     NativeAgents::new(&db).verify_evidence(&id)
+}
+
+#[tauri::command]
+pub fn audit_native_evidence_history(
+    project_id: String,
+    limit: usize,
+    app: tauri::AppHandle,
+) -> Result<HistoricalEvidenceAudit, String> {
+    let db = open_db(&app)?;
+    NativeAgents::new(&db).audit_completed_history(&project_id, limit)
 }
 
 #[tauri::command]

@@ -47,6 +47,21 @@ pub struct AgentRun {
     pub steps: Vec<AgentStep>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoricalEvidenceIssue {
+    pub review_id: String,
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoricalEvidenceAudit {
+    pub project_id: String,
+    pub total_completed: usize,
+    pub checked: usize,
+    pub verified: usize,
+    pub invalid: Vec<HistoricalEvidenceIssue>,
+}
+
 pub struct NativeAgents<'a> {
     db: &'a Database,
 }
@@ -205,6 +220,76 @@ impl<'a> NativeAgents<'a> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(to_error)?;
         ids.iter().map(|id| self.get(id)).collect()
+    }
+
+    /// Read-only, bounded historical integrity audit for a single project.
+    /// Include only completed reviews; a failed or cancelled review is not
+    /// misrepresented as verified evidence. Older runs without a complete
+    /// action ledger are reported as unverified rather than silently accepted.
+    pub fn audit_completed_history(
+        &self,
+        project_id: &str,
+        limit: usize,
+    ) -> Result<HistoricalEvidenceAudit, String> {
+        if !(1..=200).contains(&limit) {
+            return Err("History audit limit must be between 1 and 200".into());
+        }
+        WorkspaceService::new(self.db)
+            .get_project(project_id)
+            .map_err(to_error)?
+            .ok_or("Choose an indexed project")?;
+        let total_completed: usize = self
+            .db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM native_agent_runs
+                 WHERE project_id=?1 AND status='completed'",
+                [project_id],
+                |row| row.get(0),
+            )
+            .map_err(to_error)?;
+        let ids = {
+            let mut query = self
+                .db
+                .connection()
+                .prepare(
+                    "SELECT id FROM native_agent_runs
+                     WHERE project_id=?1 AND status='completed'
+                     ORDER BY rowid DESC LIMIT ?2",
+                )
+                .map_err(to_error)?;
+            let rows = query
+                .query_map(params![project_id, limit], |row| row.get::<_, String>(0))
+                .map_err(to_error)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(to_error)?
+        };
+        let mut verified = 0usize;
+        let mut invalid = Vec::new();
+        for id in &ids {
+            match self.verify_evidence(id) {
+                Ok(check) if check.verified => verified += 1,
+                Ok(check) => invalid.push(HistoricalEvidenceIssue {
+                    review_id: id.clone(),
+                    issues: check
+                        .issues
+                        .into_iter()
+                        .take(3)
+                        .map(|item| item.chars().take(200).collect())
+                        .collect(),
+                }),
+                Err(reason) => invalid.push(HistoricalEvidenceIssue {
+                    review_id: id.clone(),
+                    issues: vec![reason.chars().take(200).collect()],
+                }),
+            }
+        }
+        Ok(HistoricalEvidenceAudit {
+            project_id: project_id.to_string(),
+            total_completed,
+            checked: ids.len(),
+            verified,
+            invalid,
+        })
     }
 
     pub fn approve(&self, id: &str) -> Result<AgentRun, String> {
@@ -1255,6 +1340,91 @@ mod tests {
     }
 
     #[test]
+    fn historical_evidence_audit_is_scoped_bounded_and_detects_late_changes() {
+        let fixture = tempfile::tempdir().unwrap();
+        let db_path = fixture.path().join("history-audit.sqlite3");
+        let root = fixture.path().join("project");
+        let other_root = fixture.path().join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&other_root).unwrap();
+        std::fs::write(root.join("safe.ts"), "export const safe = true;").unwrap();
+        std::fs::write(other_root.join("safe.ts"), "export const other = true;").unwrap();
+        let (project, other, corrupted_id) = {
+            let db = Database::open(&db_path).unwrap();
+            let project = crate::ProjectIndexService::new(&db)
+                .index_project(&root)
+                .unwrap()
+                .project_id;
+            let other = crate::ProjectIndexService::new(&db)
+                .index_project(&other_root)
+                .unwrap()
+                .project_id;
+            let reviews = NativeAgents::new(&db);
+            assert!(reviews.audit_completed_history(&project, 0).is_err());
+            assert!(reviews.audit_completed_history(&project, 201).is_err());
+            let mut ids = Vec::new();
+            for _ in 0..2 {
+                let run = reviews
+                    .create_with_roles(
+                        &project,
+                        "Historical evidence",
+                        10,
+                        180,
+                        &["scout".into(), "source".into()],
+                    )
+                    .unwrap();
+                reviews.approve(&run.id).unwrap();
+                let finished = reviews.execute(&run.id).unwrap();
+                assert_eq!(finished.status, "completed", "{:?}", finished.message);
+                ids.push(run.id);
+            }
+            let good = reviews.audit_completed_history(&project, 200).unwrap();
+            assert_eq!(good.total_completed, 2);
+            assert_eq!(good.checked, 2);
+            assert_eq!(good.verified, 2);
+            assert!(good.invalid.is_empty());
+            let one = reviews.audit_completed_history(&project, 1).unwrap();
+            assert_eq!(one.checked, 1);
+            assert_eq!(one.total_completed, 2);
+            assert!(reviews
+                .audit_completed_history(&other, 200)
+                .unwrap()
+                .invalid
+                .is_empty());
+            assert_eq!(
+                reviews
+                    .audit_completed_history(&other, 200)
+                    .unwrap()
+                    .checked,
+                0
+            );
+            // Valid SQLite digest shape, incorrect bytes: audit must detect
+            // this without modifying the historical "completed" parent.
+            db.connection()
+                .execute(
+                    "UPDATE native_action_log SET result_sha256=?2
+                     WHERE run_id=?1 AND position=1",
+                    rusqlite::params![&ids[0], "0".repeat(64)],
+                )
+                .unwrap();
+            (project, other, ids[0].clone())
+        };
+        let db = Database::open(&db_path).unwrap();
+        let reviews = NativeAgents::new(&db);
+        let report = reviews.audit_completed_history(&project, 200).unwrap();
+        assert_eq!(report.total_completed, 2);
+        assert_eq!(report.checked, 2);
+        assert_eq!(report.verified, 1);
+        assert_eq!(report.invalid.len(), 1);
+        assert_eq!(report.invalid[0].review_id, corrupted_id);
+        assert!(!report.invalid[0].issues.is_empty());
+        assert_eq!(reviews.get(&corrupted_id).unwrap().status, "completed");
+        let other_report = reviews.audit_completed_history(&other, 200).unwrap();
+        assert_eq!(other_report.total_completed, 0);
+        assert_eq!(other_report.checked, 0);
+    }
+
+    #[test]
     fn completed_review_requires_all_receipts_to_match_exact_specialist_evidence() {
         for mutation in [
             "none",
@@ -1317,9 +1487,9 @@ mod tests {
                     "digest" => {
                         db.connection()
                             .execute(
-                                "UPDATE native_action_log SET result_sha256='incorrect'
+                                "UPDATE native_action_log SET result_sha256=?2
                                  WHERE run_id=?1 AND position=1",
-                                [&run.id],
+                                rusqlite::params![&run.id, "0".repeat(64)],
                             )
                             .unwrap();
                     }
@@ -1372,9 +1542,9 @@ mod tests {
                         // altered after a previously valid finalization.
                         db.connection()
                             .execute(
-                                "UPDATE native_action_log SET result_sha256='changed-later'
+                                "UPDATE native_action_log SET result_sha256=?2
                                  WHERE run_id=?1 AND position=1",
-                                [&run.id],
+                                rusqlite::params![&run.id, "f".repeat(64)],
                             )
                             .unwrap();
                         assert!(receipts.verify_completed(&run.id).is_err());
