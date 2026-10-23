@@ -60,6 +60,9 @@ pub struct HistoricalEvidenceAudit {
     pub checked: usize,
     pub verified: usize,
     pub invalid: Vec<HistoricalEvidenceIssue>,
+    /// Exclusive, stable SQLite rowid cursor for the next older page.
+    /// None means the end of the completed-review history.
+    pub next_before_rowid: Option<String>,
 }
 
 pub struct NativeAgents<'a> {
@@ -222,17 +225,37 @@ impl<'a> NativeAgents<'a> {
         ids.iter().map(|id| self.get(id)).collect()
     }
 
-    /// Read-only, bounded historical integrity audit for a single project.
-    /// Include only completed reviews; a failed or cancelled review is not
-    /// misrepresented as verified evidence. Older runs without a complete
-    /// action ledger are reported as unverified rather than silently accepted.
+    /// Read-only bounded integrity audit for completed reviews of one project.
+    /// Keep the original entrypoint for existing consumers and tests.
     pub fn audit_completed_history(
         &self,
         project_id: &str,
         limit: usize,
     ) -> Result<HistoricalEvidenceAudit, String> {
+        self.audit_completed_history_page(project_id, limit, None)
+    }
+
+    /// Cursor-based, oldest-remaining-page traversal over immutable SQLite
+    /// rowids. Newer reviews created between calls do not shift older pages;
+    /// a caller must start with None for a fresh latest-first audit.
+    /// A rowid cursor is a navigation hint, never an authorization boundary.
+    pub fn audit_completed_history_page(
+        &self,
+        project_id: &str,
+        limit: usize,
+        before_rowid: Option<&str>,
+    ) -> Result<HistoricalEvidenceAudit, String> {
         if !(1..=200).contains(&limit) {
             return Err("History audit limit must be between 1 and 200".into());
+        }
+        let cursor = before_rowid
+            .map(|raw| {
+                raw.parse::<i64>()
+                    .map_err(|_| "Invalid history audit cursor".to_string())
+            })
+            .transpose()?;
+        if cursor.is_some_and(|value| value <= 0) {
+            return Err("History audit cursor must be positive".into());
         }
         WorkspaceService::new(self.db)
             .get_project(project_id)
@@ -248,24 +271,37 @@ impl<'a> NativeAgents<'a> {
                 |row| row.get(0),
             )
             .map_err(to_error)?;
-        let ids = {
-            let mut query = self
+        // Fetch one extra row to determine if an older page exists. Unlike
+        // OFFSET, insertion of newer reviews will not duplicate or skip the
+        // previously visible older rows.
+        let mut records = {
+            let mut statement = self
                 .db
                 .connection()
                 .prepare(
-                    "SELECT id FROM native_agent_runs
+                    "SELECT rowid, id FROM native_agent_runs
                      WHERE project_id=?1 AND status='completed'
+                       AND (?3 IS NULL OR rowid < ?3)
                      ORDER BY rowid DESC LIMIT ?2",
                 )
                 .map_err(to_error)?;
-            let rows = query
-                .query_map(params![project_id, limit], |row| row.get::<_, String>(0))
+            let rows = statement
+                .query_map(params![project_id, limit + 1, cursor], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
                 .map_err(to_error)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(to_error)?
         };
+        let has_more = records.len() > limit;
+        records.truncate(limit);
+        let next_before_rowid = if has_more {
+            records.last().map(|(rowid, _)| rowid.to_string())
+        } else {
+            None
+        };
         let mut verified = 0usize;
         let mut invalid = Vec::new();
-        for id in &ids {
+        for (_, id) in &records {
             match self.verify_evidence(id) {
                 Ok(check) if check.verified => verified += 1,
                 Ok(check) => invalid.push(HistoricalEvidenceIssue {
@@ -286,9 +322,10 @@ impl<'a> NativeAgents<'a> {
         Ok(HistoricalEvidenceAudit {
             project_id: project_id.to_string(),
             total_completed,
-            checked: ids.len(),
+            checked: records.len(),
             verified,
             invalid,
+            next_before_rowid,
         })
     }
 
@@ -1386,6 +1423,21 @@ mod tests {
             let one = reviews.audit_completed_history(&project, 1).unwrap();
             assert_eq!(one.checked, 1);
             assert_eq!(one.total_completed, 2);
+            let cursor = one.next_before_rowid.expect("An older review exists");
+            assert!(cursor > 0);
+            let older = reviews
+                .audit_completed_history_page(&project, 1, Some(cursor.as_str()))
+                .unwrap();
+            assert_eq!(older.total_completed, 2);
+            assert_eq!(older.checked, 1);
+            assert_eq!(older.verified, 1);
+            assert_eq!(older.next_before_rowid, None);
+            assert!(reviews
+                .audit_completed_history_page(&project, 1, Some("0"))
+                .is_err());
+            assert!(reviews
+                .audit_completed_history_page(&project, 1, Some("-1"))
+                .is_err());
             assert!(reviews
                 .audit_completed_history(&other, 200)
                 .unwrap()
@@ -1422,6 +1474,76 @@ mod tests {
         let other_report = reviews.audit_completed_history(&other, 200).unwrap();
         assert_eq!(other_report.total_completed, 0);
         assert_eq!(other_report.checked, 0);
+    }
+
+    #[test]
+    fn history_cursor_keeps_older_pages_stable_when_new_reviews_arrive() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("review-root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("safe.rs"), "pub fn safe() {}").unwrap();
+        let db = Database::open(fixture.path().join("cursor-stability.sqlite3")).unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(&root)
+            .unwrap()
+            .project_id;
+        let reviews = NativeAgents::new(&db);
+        let create_completed = || {
+            let run = reviews
+                .create_with_roles(
+                    &project,
+                    "Historical evidence navigation",
+                    10,
+                    180,
+                    &["scout".into(), "source".into()],
+                )
+                .unwrap();
+            reviews.approve(&run.id).unwrap();
+            assert_eq!(reviews.execute(&run.id).unwrap().status, "completed");
+            run.id
+        };
+        let oldest = create_completed();
+        let _middle = create_completed();
+        let page_one = reviews
+            .audit_completed_history_page(&project, 1, None)
+            .unwrap();
+        assert_eq!(page_one.total_completed, 2);
+        assert_eq!(page_one.verified, 1);
+        let cursor = page_one.next_before_rowid.unwrap();
+
+        // A new completion does not push older rows to later OFFSET positions.
+        let newest = create_completed();
+        db.connection()
+            .execute(
+                "UPDATE native_action_log SET result_sha256=?2
+                 WHERE run_id=?1 AND position=1",
+                rusqlite::params![&oldest, "0".repeat(64)],
+            )
+            .unwrap();
+        let page_two = reviews
+            .audit_completed_history_page(&project, 1, Some(cursor.as_str()))
+            .unwrap();
+        assert_eq!(page_two.total_completed, 3);
+        assert_eq!(page_two.checked, 1);
+        assert_eq!(page_two.verified, 0);
+        assert_eq!(page_two.invalid.len(), 1);
+        assert_eq!(page_two.invalid[0].review_id, oldest);
+        assert_eq!(page_two.next_before_rowid, None);
+
+        let current_first = reviews
+            .audit_completed_history_page(&project, 1, None)
+            .unwrap();
+        assert_eq!(current_first.total_completed, 3);
+        assert_eq!(current_first.checked, 1);
+        assert_eq!(current_first.verified, 1);
+        assert!(current_first.next_before_rowid.is_some());
+        assert_eq!(reviews.get(&newest).unwrap().status, "completed");
+        assert!(reviews
+            .audit_completed_history_page(&project, 1, Some("not-an-integer"))
+            .is_err());
+        assert!(reviews
+            .audit_completed_history_page(&project, 1, Some("999999999999999999999"))
+            .is_err());
     }
 
     #[test]

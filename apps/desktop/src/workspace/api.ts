@@ -278,9 +278,9 @@ export const workspaceApi = {
   verifyNativeAgentRun(id: string) {
     return invoke<import("./pages/NativeAgentsPage").AgentVerification>("verify_native_agent_run", { id });
   },
-  auditNativeEvidenceHistory(projectId: string, limit = 100) {
+  auditNativeEvidenceHistory(projectId: string, limit = 100, beforeRowid: string | null = null) {
     return invoke<import("./pages/NativeAgentsPage").HistoricalEvidenceAudit>(
-      "audit_native_evidence_history", { projectId, limit },
+      "audit_native_evidence_history", { projectId, limit, beforeRowid },
     );
   },
   nativeAgentReport(id: string) {
