@@ -650,6 +650,39 @@ mod tests {
     }
 
     #[test]
+    fn file_backed_review_runs_independent_specialists_and_verifies_evidence() {
+        let fixture = tempfile::tempdir().unwrap();
+        let database = Database::open(fixture.path().join("reviews.sqlite3")).unwrap();
+        let project_root = fixture.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::write(
+            project_root.join("sample.ts"),
+            "export const safe = true;",
+        ).unwrap();
+        let project_id = crate::ProjectIndexService::new(&database)
+            .index_project(&project_root)
+            .unwrap()
+            .project_id;
+        let agents = NativeAgents::new(&database);
+        let roles = ["scout", "source", "secrets", "qa"]
+            .iter().map(|role| (*role).to_string()).collect::<Vec<_>>();
+        let review = agents.create_with_roles(
+            &project_id, "Assess passive security and tests", 10, 300, &roles,
+        ).unwrap();
+        agents.approve(&review.id).unwrap();
+        let result = agents.execute(&review.id).unwrap();
+        assert_eq!(result.status, "completed", "{:?}", result.message);
+        assert_eq!(result.steps.len(), 4);
+        assert!(result.steps.iter().all(|step| step.status == "completed"));
+        let verification = crate::native_agent_handoffs::AgentHandoffs::new(&database)
+            .verify(&review.id).unwrap();
+        assert!(verification.verified, "{:?}", verification.issues);
+        assert_eq!(verification.checked_handoffs, 3);
+        assert!(crate::native_agent_delegation::NativeDelegation::new(&database)
+            .verify(&review.id).is_ok());
+    }
+
+    #[test]
     fn role_selection_rejects_unknown_duplicate_or_missing_required_roles() {
         let db = Database::open_in_memory().unwrap();
         let root = tempfile::tempdir().unwrap();
