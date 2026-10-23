@@ -43,6 +43,7 @@ const MIGRATION_0038: &str = include_str!("../migrations/0038_network_assessment
 const MIGRATION_0039: &str = include_str!("../migrations/0039_network_inspection.sql");
 const MIGRATION_0040: &str = include_str!("../migrations/0040_network_https_posture.sql");
 const MIGRATION_0041: &str = include_str!("../migrations/0041_network_https_diagnostics.sql");
+const MIGRATION_0042: &str = include_str!("../migrations/0042_go_dispatch_audit.sql");
 const MIGRATION_0027: &str = include_str!("../migrations/0027_security_finding_reviews.sql");
 const MIGRATION_0026: &str = include_str!("../migrations/0026_secret_history_scanning.sql");
 
@@ -130,6 +131,7 @@ impl Database {
         self.apply_migration(39, MIGRATION_0039)?;
         self.apply_migration(40, MIGRATION_0040)?;
         self.apply_migration(41, MIGRATION_0041)?;
+        self.apply_migration(42, MIGRATION_0042)?;
         Ok(())
     }
 
@@ -188,10 +190,10 @@ mod tests {
                 row.get(0)
             })
             .expect("query migrations");
-        assert_eq!(count, 41);
+        assert_eq!(count, 42);
         for version in [
             10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-            31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+            31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42,
         ] {
             let applied: i64 = db
                 .connection()

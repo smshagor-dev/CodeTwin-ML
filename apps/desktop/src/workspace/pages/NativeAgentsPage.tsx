@@ -131,6 +131,11 @@ export function NativeAgentsPage() {
   const [acceptedTaskPlan, setAcceptedTaskPlan] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [goDispatchAudit, setGoDispatchAudit] = useState<{
+    reviewId: string;
+    records: { id: number; position: number; role: string; verdict: string;
+      ready: string[]; reason: string; created_at: string }[];
+  } | null>(null);
   const [goDispatch, setGoDispatch] = useState<{
     id: string;
     advice: { ready: string[]; waiting: string[]; running: string[]; terminal: boolean; reason: string };
@@ -331,6 +336,15 @@ export function NativeAgentsPage() {
     } finally {
       setBusy("");
     }
+  }
+
+  async function readGoDispatchAudit(id: string) {
+    setBusy("go-audit"); setError("");
+    try {
+      const records = await workspaceApi.listGoDispatchAudit(id);
+      setGoDispatchAudit({ reviewId: id, records });
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
   }
 
   async function inspectGoScheduling(id: string) {
@@ -668,6 +682,19 @@ export function NativeAgentsPage() {
           {" · "}running: {goDispatch.advice.running.join(", ") || "none"}
           {" · "}waiting: {goDispatch.advice.waiting.join(", ") || "none"}
         </p>}
+        <h3>Persisted Go dispatch decisions</h3>
+        <p className="ws-form-help">Rust records every Go-verified role decision in SQLite. Failed verification blocks execution and records a denied decision.</p>
+        <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
+          onClick={() => void readGoDispatchAudit(selected.id)}>
+          {busy === "go-audit" ? "Reading audit…" : "View Go dispatch audit"}
+        </button>
+        {goDispatchAudit?.reviewId === selected.id && (
+          goDispatchAudit.records.length === 0
+            ? <p className="ws-form-help">No Go scheduling decisions recorded for this review.</p>
+            : goDispatchAudit.records.map(item => <p className="ws-form-help" key={item.id}>
+                {item.role} · {item.verdict} · ready: {item.ready.join(", ") || "none"} · {item.created_at}
+              </p>)
+        )}
         <h3>Stored knowledge graph</h3>
         {knowledgeGraph?.nodes.map(node => <button key={node.run_id + ":" + node.position}
           className="ws-button ws-button-secondary"
