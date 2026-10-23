@@ -112,6 +112,14 @@ export type AgentHandoff = {
   created_at: string;
 };
 
+export type HistoricalEvidenceAudit = {
+  project_id: string;
+  total_completed: number;
+  checked: number;
+  verified: number;
+  invalid: { review_id: string; issues: string[] }[];
+};
+
 export type AgentVerification = {
   run_id: string;
   verified: boolean;
@@ -177,6 +185,7 @@ export function NativeAgentsPage() {
   const [adaptiveFollowup, setAdaptiveFollowup] = useState<AdaptiveFlowFollowup | null>(null);
   const [handoffs, setHandoffs] = useState<AgentHandoff[]>([]);
   const [verification, setVerification] = useState<AgentVerification | null>(null);
+  const [historyAudit, setHistoryAudit] = useState<HistoricalEvidenceAudit | null>(null);
   const [objective, setObjective] = useState("Review the selected project's security, code quality and reliability. Report confirmed evidence and unresolved issues.");
   const [maxFiles, setMaxFiles] = useState(500);
   const [budget, setBudget] = useState(600);
@@ -724,6 +733,21 @@ export function NativeAgentsPage() {
     }
   }
 
+  async function auditEvidenceHistory() {
+    if (!activeProjectId || busy) return;
+    setBusy("evidence-history");
+    setError("");
+    setHistoryAudit(null);
+    try {
+      const audit = await workspaceApi.auditNativeEvidenceHistory(activeProjectId, 100);
+      setHistoryAudit(audit);
+    } catch (reason) {
+      setError("Historical evidence audit failed: " + String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
   const selected = runs.find(run => run.id === selectedId) ?? runs[0];
   return <div>
     <PageHeader
@@ -1111,6 +1135,24 @@ export function NativeAgentsPage() {
         </p>}
         {verification?.issues.map((issue, index) =>
           <p className="ws-warning-box" key={index}>{issue}</p>)}
+        <div className="ws-form-stack">
+          <button className="ws-button ws-button-secondary" disabled={!activeProjectId || Boolean(busy)}
+            onClick={() => void auditEvidenceHistory()}>
+            {busy === "evidence-history" ? "Checking saved reviews…" : "Audit completed review history"}
+          </button>
+          {historyAudit && historyAudit.project_id === activeProjectId && <div role="status">
+            <p className="ws-form-help">
+              Verified {historyAudit.verified} of {historyAudit.checked} checked completed reviews
+              {" · "}{historyAudit.total_completed} total completed.
+              {historyAudit.checked < historyAudit.total_completed
+                ? " Only the 100 most recent reviews were checked." : ""}
+            </p>
+            {historyAudit.invalid.map(item => <div className="ws-warning-box" key={item.review_id}>
+              <strong>Unverified review <code>{item.review_id}</code></strong>
+              {item.issues.map((issue, index) => <p key={index}>{issue}</p>)}
+            </div>)}
+          </div>}
+        </div>
         <div className="ws-history-list">{handoffs.map(edge =>
           <details key={edge.from_position + ":" + edge.to_position}>
             <summary>{edge.from_role} → {edge.to_role}</summary>
