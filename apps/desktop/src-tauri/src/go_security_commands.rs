@@ -216,13 +216,9 @@ pub struct GoDispatchAdvice {
 }
 
 /// Sidecar-proposed schedule is advisory; Rust independently checks the ready set.
-fn local_dispatch(
-    binary: &Path,
-    request: &serde_json::Value,
-) -> Result<GoDispatchAdvice, String> {
+fn local_dispatch(binary: &Path, request: &serde_json::Value) -> Result<GoDispatchAdvice, String> {
     probe_binary(binary)?;
-    let body = serde_json::to_vec(request)
-        .map_err(|_| "Cannot encode approved task graph")?;
+    let body = serde_json::to_vec(request).map_err(|_| "Cannot encode approved task graph")?;
     if body.len() > 8192 {
         return Err("Approved task graph exceeds protocol limit".into());
     }
@@ -238,7 +234,8 @@ fn local_dispatch(
         .take()
         .ok_or_else(|| "Go scheduler stdin is unavailable".to_string())
         .and_then(|mut stdin| {
-            stdin.write_all(&body)
+            stdin
+                .write_all(&body)
                 .map_err(|_| "Go scheduler input failed".to_string())
         });
     if let Err(error) = write_result {
@@ -282,28 +279,44 @@ pub async fn go_security_dispatch_preview(
     app: tauri::AppHandle,
 ) -> Result<GoDispatchAdvice, String> {
     let binary = binary_path()?;
-    let folder = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let folder = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        let db = Database::open(folder.join("codetwin.sqlite3"))
-            .map_err(|error| error.to_string())?;
+        let db =
+            Database::open(folder.join("codetwin.sqlite3")).map_err(|error| error.to_string())?;
         let run = NativeAgents::new(&db).get(&id)?;
         let graph = NativeDelegation::new(&db).graph(&id)?;
         if graph.run_id != run.id || graph.tasks.len() != run.steps.len() {
             return Err("Persisted review graph mismatch".into());
         }
-        let positions = graph.tasks.iter()
+        let positions = graph
+            .tasks
+            .iter()
             .map(|task| (task.position, task.tool.as_str()))
             .collect::<std::collections::BTreeMap<_, _>>();
-        let tasks = graph.tasks.iter().map(|task| {
-            let depends_on = task.requires.iter()
-                .map(|position| positions.get(position).copied().ok_or("Missing predecessor"))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(serde_json::json!({
-                "role": task.tool,
-                "status": task.status,
-                "depends_on": depends_on
-            }))
-        }).collect::<Result<Vec<_>, String>>()?;
+        let tasks = graph
+            .tasks
+            .iter()
+            .map(|task| {
+                let depends_on = task
+                    .requires
+                    .iter()
+                    .map(|position| {
+                        positions
+                            .get(position)
+                            .copied()
+                            .ok_or("Missing predecessor")
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(serde_json::json!({
+                    "role": task.tool,
+                    "status": task.status,
+                    "depends_on": depends_on
+                }))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let request = serde_json::json!({
             "protocol_version": 1,
             "run_status": run.status,
@@ -311,20 +324,29 @@ pub async fn go_security_dispatch_preview(
             "tasks": tasks
         });
         let advice = local_dispatch(&binary, &request)?;
-        let running = graph.tasks.iter().filter(|task| task.status == "running").count();
-        let has_failure = graph.tasks.iter().any(|task| {
-            task.status == "failed" || task.status == "cancelled"
-        });
-        let can_dispatch = matches!(run.status.as_str(), "approved" | "running")
-            && !has_failure && running <= 2;
+        let running = graph
+            .tasks
+            .iter()
+            .filter(|task| task.status == "running")
+            .count();
+        let has_failure = graph
+            .tasks
+            .iter()
+            .any(|task| task.status == "failed" || task.status == "cancelled");
+        let can_dispatch =
+            matches!(run.status.as_str(), "approved" | "running") && !has_failure && running <= 2;
         let expected = if can_dispatch {
-            graph.tasks.iter().filter(|task| task.status == "pending")
-                .filter(|task| task.requires.iter().all(|required| {
-                    graph.tasks.iter().any(|predecessor| {
-                        predecessor.position == *required
-                            && predecessor.status == "completed"
+            graph
+                .tasks
+                .iter()
+                .filter(|task| task.status == "pending")
+                .filter(|task| {
+                    task.requires.iter().all(|required| {
+                        graph.tasks.iter().any(|predecessor| {
+                            predecessor.position == *required && predecessor.status == "completed"
+                        })
                     })
-                }))
+                })
                 .take(2usize.saturating_sub(running))
                 .map(|task| task.tool.clone())
                 .collect::<Vec<_>>()
@@ -332,7 +354,9 @@ pub async fn go_security_dispatch_preview(
             Vec::new()
         };
         if advice.ready != expected {
-            return Err("Go scheduling recommendation did not match Rust authorization graph".into());
+            return Err(
+                "Go scheduling recommendation did not match Rust authorization graph".into(),
+            );
         }
         Ok(advice)
     })
