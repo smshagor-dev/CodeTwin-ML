@@ -14,6 +14,8 @@ use std::{
 
 const MAX_RUN_SECONDS: u64 = 90;
 const MAX_REPORT_BYTES: u64 = 2_000_000;
+const MAX_REPORT_RESULTS: usize = 2_000;
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IsolatedScanReceipt {
@@ -232,23 +234,31 @@ impl<'a> IsolatedWorker<'a> {
             if begin.elapsed() > Duration::from_secs(MAX_RUN_SECONDS) {
                 let _ = child.kill();
                 let _ = child.wait();
-                // Killing the Docker client may not terminate the daemon's container.
-                // Force-remove the uniquely named container before returning.
-                let _ = Command::new(&settings.docker)
-                    .args(["rm", "-f", &name])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                return Err("Isolated scan exceeded 90-second execution deadline".into());
+                // Docker CLI termination is not proof of daemon-side container removal.
+                // Bound cleanup separately: Docker itself might be unresponsive.
+                return match force_remove_container(&settings.docker, &name) {
+                    Ok(()) => Err("Isolated scan exceeded 90-second execution deadline; container removal confirmed".into()),
+                    Err(_) => Err("Isolated scan timed out; Docker container removal could not be confirmed".into()),
+                };
             }
             thread::sleep(Duration::from_millis(150));
         };
         if !status.success() {
-            return Err(format!("Offline scanner failed (exit status {status}); check Docker image and preloaded vulnerability database"));
+            // An unsuccessful client process is not enough to prove daemon cleanup.
+            // Never report a successful scan if cleanup cannot be confirmed.
+            let cleanup = force_remove_container(&settings.docker, &name);
+            return Err(if cleanup.is_ok() {
+                "Offline scanner exited unsuccessfully; container removal confirmed".into()
+            } else {
+                "Offline scanner exited unsuccessfully; container removal unconfirmed".into()
+            });
         }
         let path = tmp.path().join("report.json");
-        let metadata = fs::metadata(&path).map_err(|_| "Scanner returned no report".to_string())?;
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|_| "Scanner returned no report".to_string())?;
+        if !metadata.file_type().is_file() {
+            return Err("Scanner report must be a regular file, not a symlink".into());
+        }
         if metadata.len() > MAX_REPORT_BYTES {
             return Err("Scanner report exceeded the 2 MB safety limit".into());
         }
@@ -256,26 +266,7 @@ impl<'a> IsolatedWorker<'a> {
         if bytes.len() as u64 > MAX_REPORT_BYTES {
             return Err("Scanner output exceeded safe limit".into());
         }
-        let json: Value = serde_json::from_slice(&bytes)
-            .map_err(|_| "Scanner returned invalid JSON".to_string())?;
-        let reports = json
-            .get("Results")
-            .and_then(Value::as_array)
-            .ok_or("Scanner report has no expected Results array")?;
-        let mut vulnerabilities = 0usize;
-        let mut misconfigurations = 0usize;
-        for item in reports.iter().take(2000) {
-            vulnerabilities = vulnerabilities.saturating_add(
-                item.get("Vulnerabilities")
-                    .and_then(Value::as_array)
-                    .map_or(0, Vec::len),
-            );
-            misconfigurations = misconfigurations.saturating_add(
-                item.get("Misconfigurations")
-                    .and_then(Value::as_array)
-                    .map_or(0, Vec::len),
-            );
-        }
+        let (vulnerabilities, misconfigurations) = parse_offline_report(&bytes)?;
         Ok(IsolatedScanReceipt {
             run_id: run.id,
             image_digest: settings.image,
@@ -288,6 +279,74 @@ impl<'a> IsolatedWorker<'a> {
                     .into(),
             ],
         })
+    }
+}
+
+/// The report is an untrusted container output. Never truncate results silently;
+/// an incomplete count is worse than a clearly failed scan.
+fn parse_offline_report(bytes: &[u8]) -> Result<(usize, usize), String> {
+    if bytes.len() as u64 > MAX_REPORT_BYTES {
+        return Err("Scanner output exceeded safe limit".into());
+    }
+    let json: Value = serde_json::from_slice(bytes)
+        .map_err(|_| "Scanner returned invalid JSON".to_string())?;
+    let reports = json.get("Results").and_then(Value::as_array)
+        .ok_or("Scanner report has no expected Results array")?;
+    if reports.len() > MAX_REPORT_RESULTS {
+        return Err("Scanner report exceeds the maximum supported result count".into());
+    }
+    let mut vulnerabilities = 0usize;
+    let mut misconfigurations = 0usize;
+    for item in reports {
+        let object = item.as_object().ok_or("Scanner result must be a JSON object")?;
+        for (key, count) in [
+            ("Vulnerabilities", &mut vulnerabilities),
+            ("Misconfigurations", &mut misconfigurations),
+        ] {
+            match object.get(key) {
+                Some(Value::Array(records)) => *count = count
+                    .checked_add(records.len())
+                    .ok_or("Scanner finding count overflow")?,
+                None | Some(Value::Null) => {}
+                _ => return Err("Scanner finding collection has an invalid JSON shape".into()),
+            }
+        }
+    }
+    Ok((vulnerabilities, misconfigurations))
+}
+
+/// Limit Docker cleanup duration even if the Docker daemon is unresponsive.
+/// This does not prove cleanup if the CLI fails, so callers must surface that state.
+fn force_remove_container(docker: &Path, name: &str) -> Result<(), String> {
+    let mut child = Command::new(docker)
+        .args(["rm", "-f", name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Could not launch bounded Docker cleanup")?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err("Docker removal command did not confirm success".into())
+                };
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Docker removal command failed to report status".into());
+            }
+            Ok(None) if start.elapsed() >= CLEANUP_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Docker removal command exceeded its deadline".into());
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+        }
     }
 }
 
@@ -327,6 +386,28 @@ mod tests {
         assert!(argv.iter().any(|a| a == "--user=1000:1000"));
         assert!(!safe_mount_path(Path::new("/tmp/path,with-comma")));
     }
+    #[test]
+    fn offline_report_counts_all_findings_without_silent_truncation() {
+        let report = br#"{"Results":[{"Vulnerabilities":[{},{}],"Misconfigurations":[{}]},{"Vulnerabilities":[{}]}]}"#;
+        assert_eq!(parse_offline_report(report).unwrap(), (3, 1));
+        assert_eq!(parse_offline_report(br#"{"Results":[]}"#).unwrap(), (0, 0));
+        let overflow = serde_json::json!({"Results": vec![serde_json::json!({}); MAX_REPORT_RESULTS + 1]});
+        assert!(parse_offline_report(overflow.to_string().as_bytes()).is_err());
+    }
+
+    #[test]
+    fn offline_report_rejects_malformed_findings() {
+        assert!(parse_offline_report(br#"{"Results":[{"Vulnerabilities":"untrusted"}]}"#).is_err());
+        assert!(parse_offline_report(br#"{"Results":[null]}"#).is_err());
+        assert!(parse_offline_report(br#"{"Results":{}}"#).is_err());
+        assert!(parse_offline_report(b"not-json").is_err());
+    }
+
+    #[test]
+    fn cleanup_deadline_is_bounded() {
+        assert!(CLEANUP_TIMEOUT < Duration::from_secs(MAX_RUN_SECONDS));
+    }
+
     #[test]
     fn cannot_scan_unapproved_run_or_run_without_authorization() {
         let db = Database::open_in_memory().unwrap();
