@@ -332,6 +332,7 @@ mod tests {
         let audit = WorkerAudit::new(&db);
         let first = audit.begin(&run.id).unwrap();
         assert!(audit.begin(&run.id).is_err());
+        assert!(agents.execute(&run.id).is_err());
         assert_eq!(audit.list(&run.id).unwrap().len(), 1);
         audit.finish(first, &Err("fixture failure".into())).unwrap();
         let second = audit.begin(&run.id).unwrap();
@@ -347,11 +348,18 @@ mod tests {
         crate::native_flow::NativeFlow::new(&db)
             .approve(&planned.id)
             .unwrap();
+        let overlapping = audit.begin(&planned.id).unwrap();
+        assert!(crate::native_flow_queue::NativeFlowQueue::new(&db)
+            .enqueue(&planned.id)
+            .is_err());
+        audit
+            .finish(overlapping, &Err("fixture ended".into()))
+            .unwrap();
         crate::native_flow_queue::NativeFlowQueue::new(&db)
             .enqueue(&planned.id)
             .unwrap();
         assert!(audit.begin(&planned.id).is_err());
-        assert_eq!(audit.list(&planned.id).unwrap().len(), 0);
+        assert_eq!(audit.list(&planned.id).unwrap().len(), 1);
     }
 
     #[test]
