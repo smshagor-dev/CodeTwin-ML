@@ -133,6 +133,100 @@ mod tests {
     use crate::{native_agents::NativeAgents, ProjectIndexService};
 
     #[test]
+    fn concurrent_claimed_receipts_reject_late_results_after_cancel_and_restart() {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("cancelled-parallel.sqlite3");
+        let source = scratch.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("safe.ts"), "export const safe = true;").unwrap();
+
+        let run_id = {
+            let db = Database::open(&path).unwrap();
+            let project = ProjectIndexService::new(&db)
+                .index_project(&source)
+                .unwrap()
+                .project_id;
+            let agents = NativeAgents::new(&db);
+            let run = agents
+                .create_with_roles(
+                    &project,
+                    "Bounded parallel cancellation",
+                    10,
+                    120,
+                    &[
+                        "scout".into(),
+                        "source".into(),
+                        "secrets".into(),
+                        "qa".into(),
+                    ],
+                )
+                .unwrap();
+            agents.approve(&run.id).unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_runs SET status='running' WHERE id=?1",
+                    [&run.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_steps SET status='completed',
+                     result_json='verified evidence'
+                     WHERE run_id=?1 AND position IN (0,1)",
+                    [&run.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_delegation_tasks SET status='completed'
+                     WHERE run_id=?1 AND position IN (0,1)",
+                    [&run.id],
+                )
+                .unwrap();
+            let log = NativeActionLog::new(&db);
+            log.begin(&run.id, 2, "secrets").unwrap();
+            log.begin(&run.id, 3, "qa").unwrap();
+
+            // A separate desktop connection requests cancellation while both
+            // native analyzers could be running. Neither late result is valid.
+            let second = Database::open(&path).unwrap();
+            NativeAgents::new(&second).cancel(&run.id).unwrap();
+            assert!(log
+                .finish(&run.id, 2, "secrets", true, "late secret evidence")
+                .is_err());
+            assert!(log
+                .finish(&run.id, 3, "qa", true, "late QA evidence")
+                .is_err());
+            let receipts = log.list(&run.id).unwrap();
+            assert_eq!(receipts.len(), 2);
+            assert!(receipts.iter().all(|receipt| receipt.status == "running"));
+            assert!(receipts.iter().all(|receipt| receipt.result_sha256.is_none()));
+            run.id
+        };
+
+        // Simulated process death: recovery retires both in-flight receipts
+        // and preserves already committed evidence without resuming tools.
+        let db = Database::open(&path).unwrap();
+        let agents = NativeAgents::new(&db);
+        agents.recover_interrupted().unwrap();
+        let run = agents.get(&run_id).unwrap();
+        assert_eq!(run.status, "interrupted");
+        assert!(run.steps[..2]
+            .iter()
+            .all(|step| step.status == "completed"));
+        assert!(run.steps[2..]
+            .iter()
+            .all(|step| step.status == "interrupted"));
+        assert!(run.steps[2..].iter().all(|step| step.result.is_none()));
+        let receipts = NativeActionLog::new(&db).list(&run_id).unwrap();
+        assert!(receipts.iter().all(|item| item.status == "interrupted"));
+        assert!(receipts.iter().all(|item| item.result_sha256.is_none()));
+        assert!(agents.execute(&run_id).is_err());
+        agents.recover_interrupted().unwrap();
+        assert_eq!(agents.get(&run_id).unwrap().status, "interrupted");
+    }
+
+    #[test]
     fn receipts_require_approval_and_commit_step_atomically() {
         let db = Database::open_in_memory().unwrap();
         let source = tempfile::tempdir().unwrap();
