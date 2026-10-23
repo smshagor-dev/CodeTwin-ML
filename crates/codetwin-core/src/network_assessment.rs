@@ -359,7 +359,9 @@ fn validate_target(raw: &str) -> Result<String, String> {
         return Ok(target);
     }
     if target != "localhost" && !target.contains('.') {
-        return Err("Use a fully qualified hostname to avoid DNS search-suffix scope expansion".into());
+        return Err(
+            "Use a fully qualified hostname to avoid DNS search-suffix scope expansion".into(),
+        );
     }
     if target.contains(':')
         || target.split('.').any(|label| {
