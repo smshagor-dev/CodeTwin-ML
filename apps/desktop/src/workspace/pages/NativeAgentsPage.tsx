@@ -112,6 +112,7 @@ export function NativeAgentsPage() {
   const [workerReceipt, setWorkerReceipt] = useState<IsolatedScanReceipt | null>(null);
   const [workerHistory, setWorkerHistory] = useState<WorkerAuditRecord[]>([]);
   const [neuralReady, setNeuralReady] = useState<{ configured: boolean; detail: string } | null>(null);
+  const [neuralProbe, setNeuralProbe] = useState<{ model: string; dimensions: number; latency_ms: number; normalized: boolean } | null>(null);
   const [neuralConsent, setNeuralConsent] = useState(false);
   const [neuralHits, setNeuralHits] = useState<NeuralMatch[]>([]);
   const [neuralQuery, setNeuralQuery] = useState("");
@@ -236,6 +237,14 @@ export function NativeAgentsPage() {
       await workspaceApi.clearNativeKnowledge(activeProjectId);
       setKnowledgeMatches([]);
       setKnowledgeGraph(null);
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+
+  async function testNeuralProvider() {
+    setBusy("probe"); setError(""); setNeuralProbe(null);
+    try {
+      setNeuralProbe(await workspaceApi.probeNativeNeuralProvider());
     } catch (reason) { setError(String(reason)); }
     finally { setBusy(""); }
   }
@@ -535,6 +544,17 @@ export function NativeAgentsPage() {
         Genuine model embeddings require an explicitly configured provider and user consent.
         Only role, tool and status are embedded, never local files or scanner results.
       </p>
+      <div className="ws-top-actions">
+        <button className="ws-button ws-button-secondary"
+          disabled={!neuralReady?.configured || Boolean(busy)}
+          onClick={() => void testNeuralProvider()}>
+          {busy === "probe" ? "Testing provider…" : "Test embedding connection"}
+        </button>
+        {neuralProbe && <p role="status">
+          Provider verified · {neuralProbe.model} · {neuralProbe.dimensions} dimensions
+          · {neuralProbe.latency_ms} ms · normalized: {neuralProbe.normalized ? "yes" : "no"}
+        </p>}
+      </div>
       <label className="ws-field"><span>Neural similarity query</span>
         <input value={neuralQuery} maxLength={150} placeholder="Find past source review activity"
           onChange={event => setNeuralQuery(event.target.value)}/>

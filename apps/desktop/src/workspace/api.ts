@@ -121,6 +121,9 @@ export const workspaceApi = {
   nativeNeuralReadiness() {
     return invoke<{ configured: boolean; detail: string }>("native_neural_readiness");
   },
+  probeNativeNeuralProvider() {
+    return invoke<{ model: string; dimensions: number; latency_ms: number; normalized: boolean }>("probe_native_neural_provider");
+  },
   indexNativeNeuralMemory(id: string, consent: boolean) {
     return invoke<number>("index_native_neural_memory", { id, consent });
   },
