@@ -370,37 +370,38 @@ impl<'a> NativeAgents<'a> {
                 prefetched
             } else {
                 match step.tool.as_str() {
-                "scout" => {
-                    let project = WorkspaceService::new(self.db)
-                        .get_project(&run.project_id)
-                        .map_err(to_error)?
-                        .ok_or("Project was removed")?;
-                    Ok(serde_json::json!({
-                        "project_id":project.id,
-                        "indexed_files":project.file_count,
-                        "indexed_symbols":project.symbol_count,
-                        "language_count":project.language_count,
-                    })
-                    .to_string())
-                }
-                "source" => AssessmentJobs::new(self.db)
-                    .execute(&assessment_id)
-                    .and_then(|result| {
-                        if result.status != "completed" {
-                            Err(format!(
-                                "Source review is {}; {}",
-                                result.status,
-                                result
-                                    .message
-                                    .unwrap_or_else(|| "check persisted evidence".into())
-                            ))
-                        } else {
-                            serde_json::to_string(&result.steps).map_err(to_error)
-                        }
-                    }),
-                "secrets" | "qa" | "database" | "runtime" =>
-                    run_passive_specialist(self.db, &run.project_id, &step.tool),
-                _ => Err("Unregistered autonomous tool".into()),
+                    "scout" => {
+                        let project = WorkspaceService::new(self.db)
+                            .get_project(&run.project_id)
+                            .map_err(to_error)?
+                            .ok_or("Project was removed")?;
+                        Ok(serde_json::json!({
+                            "project_id":project.id,
+                            "indexed_files":project.file_count,
+                            "indexed_symbols":project.symbol_count,
+                            "language_count":project.language_count,
+                        })
+                        .to_string())
+                    }
+                    "source" => AssessmentJobs::new(self.db)
+                        .execute(&assessment_id)
+                        .and_then(|result| {
+                            if result.status != "completed" {
+                                Err(format!(
+                                    "Source review is {}; {}",
+                                    result.status,
+                                    result
+                                        .message
+                                        .unwrap_or_else(|| "check persisted evidence".into())
+                                ))
+                            } else {
+                                serde_json::to_string(&result.steps).map_err(to_error)
+                            }
+                        }),
+                    "secrets" | "qa" | "database" | "runtime" => {
+                        run_passive_specialist(self.db, &run.project_id, &step.tool)
+                    }
+                    _ => Err("Unregistered autonomous tool".into()),
                 }
             };
             match result {
@@ -440,7 +441,6 @@ impl<'a> NativeAgents<'a> {
         Ok(())
     }
 
-
     /// Execute up to two independent approved passive specialists at once.
     /// Database writes and evidence/handoffs are committed by the supervisor in
     /// the original deterministic role order. Memory databases and dependent
@@ -450,13 +450,26 @@ impl<'a> NativeAgents<'a> {
         run: &AgentRun,
         start: Instant,
     ) -> Result<BTreeMap<usize, Result<String, String>>, String> {
-        let Some(filename) = self.db.connection().path().filter(|path| *path != ":memory:") else {
+        let Some(filename) = self
+            .db
+            .connection()
+            .path()
+            .filter(|path| *path != ":memory:")
+        else {
             return Ok(BTreeMap::new());
         };
-        let graph = crate::native_agent_delegation::NativeDelegation::new(self.db).graph(&run.id)?;
-        let optional = graph.tasks.iter().filter(|task|
-            matches!(task.tool.as_str(), "secrets" | "qa" | "database" | "runtime")
-        ).collect::<Vec<_>>();
+        let graph =
+            crate::native_agent_delegation::NativeDelegation::new(self.db).graph(&run.id)?;
+        let optional = graph
+            .tasks
+            .iter()
+            .filter(|task| {
+                matches!(
+                    task.tool.as_str(),
+                    "secrets" | "qa" | "database" | "runtime"
+                )
+            })
+            .collect::<Vec<_>>();
         if optional.len() < 2 {
             return Ok(BTreeMap::new());
         }
@@ -465,7 +478,10 @@ impl<'a> NativeAgents<'a> {
         };
         // A reviewed model may add optional dependencies. Such graphs must never
         // be speculatively executed in parallel.
-        if optional.iter().any(|task| task.requires != [source.position]) {
+        if optional
+            .iter()
+            .any(|task| task.requires != [source.position])
+        {
             return Ok(BTreeMap::new());
         }
         let path = std::path::PathBuf::from(filename);
@@ -473,21 +489,29 @@ impl<'a> NativeAgents<'a> {
         for batch in optional.chunks(2) {
             self.boundary(&run.id, start, run.budget_seconds)?;
             let outputs = std::thread::scope(|scope| {
-                let handles = batch.iter().map(|task| {
-                    let path = path.clone();
-                    let project_id = run.project_id.clone();
-                    let tool = task.tool.clone();
-                    let position = task.position;
-                    scope.spawn(move || {
-                        let result = Database::open(&path)
-                            .map_err(to_error)
-                            .and_then(|db| run_passive_specialist(&db, &project_id, &tool));
-                        (position, result)
+                let handles = batch
+                    .iter()
+                    .map(|task| {
+                        let path = path.clone();
+                        let project_id = run.project_id.clone();
+                        let tool = task.tool.clone();
+                        let position = task.position;
+                        scope.spawn(move || {
+                            let result = Database::open(&path)
+                                .map_err(to_error)
+                                .and_then(|db| run_passive_specialist(&db, &project_id, &tool));
+                            (position, result)
+                        })
                     })
-                }).collect::<Vec<_>>();
-                handles.into_iter().map(|handle| {
-                    handle.join().map_err(|_| "A concurrent specialist panicked".to_string())
-                }).collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                handles
+                    .into_iter()
+                    .map(|handle| {
+                        handle
+                            .join()
+                            .map_err(|_| "A concurrent specialist panicked".to_string())
+                    })
+                    .collect::<Vec<_>>()
             });
             for output in outputs {
                 let (position, result) = output?;
@@ -655,31 +679,40 @@ mod tests {
         let database = Database::open(fixture.path().join("reviews.sqlite3")).unwrap();
         let project_root = fixture.path().join("project");
         std::fs::create_dir_all(&project_root).unwrap();
-        std::fs::write(
-            project_root.join("sample.ts"),
-            "export const safe = true;",
-        ).unwrap();
+        std::fs::write(project_root.join("sample.ts"), "export const safe = true;").unwrap();
         let project_id = crate::ProjectIndexService::new(&database)
             .index_project(&project_root)
             .unwrap()
             .project_id;
         let agents = NativeAgents::new(&database);
         let roles = ["scout", "source", "secrets", "qa"]
-            .iter().map(|role| (*role).to_string()).collect::<Vec<_>>();
-        let review = agents.create_with_roles(
-            &project_id, "Assess passive security and tests", 10, 300, &roles,
-        ).unwrap();
+            .iter()
+            .map(|role| (*role).to_string())
+            .collect::<Vec<_>>();
+        let review = agents
+            .create_with_roles(
+                &project_id,
+                "Assess passive security and tests",
+                10,
+                300,
+                &roles,
+            )
+            .unwrap();
         agents.approve(&review.id).unwrap();
         let result = agents.execute(&review.id).unwrap();
         assert_eq!(result.status, "completed", "{:?}", result.message);
         assert_eq!(result.steps.len(), 4);
         assert!(result.steps.iter().all(|step| step.status == "completed"));
         let verification = crate::native_agent_handoffs::AgentHandoffs::new(&database)
-            .verify(&review.id).unwrap();
+            .verify(&review.id)
+            .unwrap();
         assert!(verification.verified, "{:?}", verification.issues);
         assert_eq!(verification.checked_handoffs, 3);
-        assert!(crate::native_agent_delegation::NativeDelegation::new(&database)
-            .verify(&review.id).is_ok());
+        assert!(
+            crate::native_agent_delegation::NativeDelegation::new(&database)
+                .verify(&review.id)
+                .is_ok()
+        );
     }
 
     #[test]

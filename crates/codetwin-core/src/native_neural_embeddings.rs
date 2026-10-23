@@ -358,7 +358,9 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
-            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut request = Vec::new();
             let header_end = loop {
                 let mut buffer = [0; 2048];
@@ -371,9 +373,13 @@ mod tests {
             };
             let headers = String::from_utf8_lossy(&request[..header_end]);
             assert!(headers.starts_with("POST /v1/embeddings HTTP/1.1"));
-            let length: usize = headers.lines()
-                .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length: ")
-                    .and_then(|value| value.trim().parse::<usize>().ok()))
+            let length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                })
                 .expect("content length");
             while request.len() - header_end < length {
                 let mut buffer = [0; 2048];
@@ -381,19 +387,23 @@ mod tests {
                 assert!(count > 0);
                 request.extend_from_slice(&buffer[..count]);
             }
-            let body: Value = serde_json::from_slice(&request[header_end..header_end + length]).unwrap();
+            let body: Value =
+                serde_json::from_slice(&request[header_end..header_end + length]).unwrap();
             assert_eq!(body["model"], "test-neural-model");
             assert_eq!(body["input"][0], "CodeTwin sample reviewer completed");
             let response = json!({"data":[{"index":0,"embedding":(0..32)
                 .map(|i| if i == 0 { 2.0 } else { 0.0 }).collect::<Vec<f32>>()}]})
-                .to_string();
+            .to_string();
             write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",response.len(),response).unwrap();
         });
         let config = EmbedConfig {
             endpoint: Url::parse(&format!("http://{addr}/v1/embeddings")).unwrap(),
-            model: "test-neural-model".into(),token: None,
+            model: "test-neural-model".into(),
+            token: None,
         };
-        let result = config.embed(&["CodeTwin sample reviewer completed".to_string()]).unwrap();
+        let result = config
+            .embed(&["CodeTwin sample reviewer completed".to_string()])
+            .unwrap();
         server.join().unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].len(), 32);

@@ -205,18 +205,25 @@ impl<'a> NativeDelegation<'a> {
     /// this batch concurrently; this method never starts tools.
     pub fn ready_batch(&self, run_id: &str) -> Result<Vec<DelegatedTask>, String> {
         let graph = self.graph(run_id)?;
-        let completed = graph.tasks.iter()
+        let completed = graph
+            .tasks
+            .iter()
             .filter(|task| task.status == "completed")
             .map(|task| task.position)
             .collect::<std::collections::BTreeSet<_>>();
-        let failed = graph.tasks.iter().any(|task|
-            task.status == "failed" || task.status == "cancelled");
+        let failed = graph
+            .tasks
+            .iter()
+            .any(|task| task.status == "failed" || task.status == "cancelled");
         if failed {
             return Ok(Vec::new());
         }
-        Ok(graph.tasks.into_iter()
-            .filter(|task| task.status == "pending"
-                && task.requires.iter().all(|dep| completed.contains(dep)))
+        Ok(graph
+            .tasks
+            .into_iter()
+            .filter(|task| {
+                task.status == "pending" && task.requires.iter().all(|dep| completed.contains(dep))
+            })
             .take(2)
             .collect())
     }
@@ -380,11 +387,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("demo.ts"), "export const ok = 1;").unwrap();
         let project = crate::ProjectIndexService::new(&db)
-            .index_project(dir.path()).unwrap().project_id;
+            .index_project(dir.path())
+            .unwrap()
+            .project_id;
         let roles = ["scout", "source", "secrets", "qa", "database", "runtime"]
-            .iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect::<Vec<_>>();
         let run = NativeAgents::new(&db)
-            .create_with_roles(&project, "Audit code", 10, 300, &roles).unwrap();
+            .create_with_roles(&project, "Audit code", 10, 300, &roles)
+            .unwrap();
         let scheduler = NativeDelegation::new(&db);
         assert_eq!(scheduler.ready_batch(&run.id).unwrap().len(), 1);
         db.connection().execute(

@@ -4,8 +4,14 @@ use codetwin_core::native_neural_embeddings::NeuralMemory;
 
 #[test]
 fn configured_embedding_provider_returns_real_normalized_vector() {
-    if std::env::var("CODETWIN_TEST_REAL_EMBEDDINGS").ok().as_deref() != Some("1") {
-        eprintln!("SKIPPED: set CODETWIN_TEST_REAL_EMBEDDINGS=1 and configure the embeddings provider");
+    if std::env::var("CODETWIN_TEST_REAL_EMBEDDINGS")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        eprintln!(
+            "SKIPPED: set CODETWIN_TEST_REAL_EMBEDDINGS=1 and configure the embeddings provider"
+        );
         return;
     }
     let probe = NeuralMemory::probe()
