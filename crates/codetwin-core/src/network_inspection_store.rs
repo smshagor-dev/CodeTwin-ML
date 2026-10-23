@@ -64,7 +64,10 @@ impl<'a> NetworkInspectionStore<'a> {
         scope: &NetworkScope,
         outcome: &Result<NetworkInspection, String>,
     ) -> Result<(), String> {
-        let scope_sha = format!("{:x}", Sha256::digest(serde_json::to_vec(scope).map_err(err)?));
+        let scope_sha = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(scope).map_err(err)?)
+        );
         let (stored_scope, stored_target): (String, String) = self.db.connection()
             .query_row(
                 "SELECT scope_sha256,target_ip FROM network_inspection_runs WHERE id=?1 AND status='running'",
@@ -175,7 +178,6 @@ impl<'a> NetworkInspectionStore<'a> {
             .map_err(err)?;
         records.collect::<Result<Vec<_>, _>>().map_err(err)
     }
-
 }
 
 fn err(error: impl std::fmt::Display) -> String {
