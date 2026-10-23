@@ -446,8 +446,11 @@ impl<'a> NativeAgents<'a> {
                 step.position,
                 &step.role,
             )?;
-            crate::native_action_log::NativeActionLog::new(self.db)
-                .begin(&run.id, step.position, &step.tool)?;
+            crate::native_action_log::NativeActionLog::new(self.db).begin(
+                &run.id,
+                step.position,
+                &step.tool,
+            )?;
             let result = if let Some(prefetched) = prepared.remove(&step.position) {
                 prefetched
             } else {
@@ -493,8 +496,13 @@ impl<'a> NativeAgents<'a> {
                         step.position,
                         true,
                     )?;
-                    crate::native_action_log::NativeActionLog::new(self.db)
-                        .finish(&run.id, step.position, &step.tool, true, &summary)?;
+                    crate::native_action_log::NativeActionLog::new(self.db).finish(
+                        &run.id,
+                        step.position,
+                        &step.tool,
+                        true,
+                        &summary,
+                    )?;
                 }
                 Err(error) => {
                     crate::native_agent_delegation::NativeDelegation::new(self.db).finish(
@@ -502,8 +510,13 @@ impl<'a> NativeAgents<'a> {
                         step.position,
                         false,
                     )?;
-                    crate::native_action_log::NativeActionLog::new(self.db)
-                        .finish(&run.id, step.position, &step.tool, false, &error)?;
+                    crate::native_action_log::NativeActionLog::new(self.db).finish(
+                        &run.id,
+                        step.position,
+                        &step.tool,
+                        false,
+                        &error,
+                    )?;
                     return Err(error);
                 }
             }
