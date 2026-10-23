@@ -1426,7 +1426,7 @@ mod tests {
             let cursor = one.next_before_rowid.expect("An older review exists");
             assert!(cursor > 0);
             let older = reviews
-                .audit_completed_history_page(&project, 1, Some(&cursor))
+                .audit_completed_history_page(&project, 1, Some(cursor.as_str()))
                 .unwrap();
             assert_eq!(older.total_completed, 2);
             assert_eq!(older.checked, 1);
@@ -1521,7 +1521,7 @@ mod tests {
             )
             .unwrap();
         let page_two = reviews
-            .audit_completed_history_page(&project, 1, Some(&cursor))
+            .audit_completed_history_page(&project, 1, Some(cursor.as_str()))
             .unwrap();
         assert_eq!(page_two.total_completed, 3);
         assert_eq!(page_two.checked, 1);
