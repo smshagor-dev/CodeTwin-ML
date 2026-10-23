@@ -565,11 +565,17 @@ impl<'a> NativeAgents<'a> {
         let mut remaining = run.steps.len().saturating_sub(2);
         while remaining != 0 {
             self.boundary(&run.id, start, run.budget_seconds)?;
-            let ready = delegation.ready_batch(&run.id)?;
+            let mut ready = delegation.ready_batch(&run.id)?;
+            // Handoff evidence is chained in registered role order. Only
+            // consecutive independent positions can execute in one batch.
+            // Other ready tasks run after the missing predecessor commits.
+            if ready.len() == 2 && ready[1].position != ready[0].position + 1 {
+                ready.truncate(1);
+            }
             if ready.is_empty() || ready.len() > 2 || ready.len() > remaining {
                 return Err("No bounded dependency-ready specialist batch".into());
             }
-            let mut steps = Vec::with_capacity(ready.len());
+            let mut steps: Vec<&AgentStep> = Vec::with_capacity(ready.len());
             for task in &ready {
                 let step = run
                     .steps
@@ -586,7 +592,20 @@ impl<'a> NativeAgents<'a> {
                 // Policy writes only its bounded decision audit, never tools.
                 policy(self.db, run, step)?;
                 self.boundary(&run.id, start, run.budget_seconds)?;
-                handoffs.check_incoming(&run.id, step.position)?;
+                if steps.is_empty() {
+                    handoffs.check_incoming(&run.id, step.position)?;
+                } else {
+                    // The second task was independently ready in the same
+                    // persisted DAG and has no dependency on the first task.
+                    // Its handoff is signed after the predecessor completes,
+                    // before the second result is accepted.
+                    let predecessor = steps[0];
+                    if step.position != predecessor.position + 1
+                        || task.requires.contains(&predecessor.position)
+                    {
+                        return Err("Parallel specialists have dependent handoffs".into());
+                    }
+                }
                 steps.push(step);
             }
             for step in &steps {
