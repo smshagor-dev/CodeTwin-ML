@@ -219,9 +219,10 @@ pub async fn inspect_authorized_network_services(
     app: tauri::AppHandle,
 ) -> Result<NetworkInspection, String> {
     scope.validate()?;
-    if NETWORK_BUSY.compare_exchange(
-        false, true, Ordering::SeqCst, Ordering::SeqCst,
-    ).is_err() {
+    if NETWORK_BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return Err("A network inspection is already running".into());
     }
     let lease = NetworkLease;

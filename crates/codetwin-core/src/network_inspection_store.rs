@@ -1,5 +1,8 @@
 //! Audited, durable evidence for strictly scoped private-network inspections.
-use crate::{network_inspection::{NetworkInspection, NetworkScope}, Database};
+use crate::{
+    network_inspection::{NetworkInspection, NetworkScope},
+    Database,
+};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -29,23 +32,29 @@ impl<'a> NetworkInspectionStore<'a> {
     }
 
     pub fn recover_interrupted(&self) -> Result<usize, String> {
-        self.db.connection().execute(
-            "UPDATE network_inspection_runs SET status='interrupted', \
+        self.db
+            .connection()
+            .execute(
+                "UPDATE network_inspection_runs SET status='interrupted', \
              failure_code='application_restarted', finished_at=CURRENT_TIMESTAMP \
              WHERE status='running'",
-            [],
-        ).map_err(err)
+                [],
+            )
+            .map_err(err)
     }
 
     pub fn begin(&self, scope: &NetworkScope) -> Result<i64, String> {
         let ports = scope.validate()?;
         let serialized = serde_json::to_vec(scope).map_err(err)?;
         let scope_sha = format!("{:x}", Sha256::digest(&serialized));
-        self.db.connection().execute(
-            "INSERT INTO network_inspection_runs(target_ip,scope_sha256,ports_requested) \
+        self.db
+            .connection()
+            .execute(
+                "INSERT INTO network_inspection_runs(target_ip,scope_sha256,ports_requested) \
              VALUES (?1,?2,?3)",
-            params![scope.target.to_string(), scope_sha, ports.len()],
-        ).map_err(err)?;
+                params![scope.target.to_string(), scope_sha, ports.len()],
+            )
+            .map_err(err)?;
         Ok(self.db.connection().last_insert_rowid())
     }
 
@@ -72,27 +81,40 @@ impl<'a> NetworkInspectionStore<'a> {
                 if inspection.target != scope.target
                     || inspection.tested_ports != ports.len()
                     || inspection.observations.len() != ports.len()
-                    || inspection.observations.iter().map(|item| item.port).collect::<Vec<_>>() != ports
-                    || inspection.observations.iter().any(|item|
-                        !matches!(item.state.as_str(), "open" | "closed" | "unreachable"))
+                    || inspection
+                        .observations
+                        .iter()
+                        .map(|item| item.port)
+                        .collect::<Vec<_>>()
+                        != ports
+                    || inspection.observations.iter().any(|item| {
+                        !matches!(item.state.as_str(), "open" | "closed" | "unreachable")
+                    })
                 {
                     return Err("Inspection results did not match the authorized scope".into());
                 }
                 let serialized = serde_json::to_string(inspection).map_err(err)?;
                 let sha = format!("{:x}", Sha256::digest(serialized.as_bytes()));
-                self.db.connection().execute(
-                    "UPDATE network_inspection_runs SET status='completed', \
+                self.db
+                    .connection()
+                    .execute(
+                        "UPDATE network_inspection_runs SET status='completed', \
                      result_json=?2,result_sha256=?3,ports_tested=?4, \
                      finished_at=CURRENT_TIMESTAMP WHERE id=?1 AND status='running'",
-                    params![id, serialized, sha, inspection.tested_ports],
-                ).map_err(err)?
-            },
-            Err(_) => self.db.connection().execute(
-                "UPDATE network_inspection_runs SET status='failed', \
+                        params![id, serialized, sha, inspection.tested_ports],
+                    )
+                    .map_err(err)?
+            }
+            Err(_) => self
+                .db
+                .connection()
+                .execute(
+                    "UPDATE network_inspection_runs SET status='failed', \
                  failure_code='inspection_failed',finished_at=CURRENT_TIMESTAMP \
                  WHERE id=?1 AND status='running'",
-                [id],
-            ).map_err(err)?,
+                    [id],
+                )
+                .map_err(err)?,
         };
         if changed != 1 {
             return Err("Inspection record missing or already finalized".into());
@@ -101,50 +123,56 @@ impl<'a> NetworkInspectionStore<'a> {
     }
 
     pub fn list(&self, max_results: usize) -> Result<Vec<NetworkInspectionRecord>, String> {
-        let mut stmt = self.db.connection().prepare(
-            "SELECT id,target_ip,scope_sha256,status,ports_requested,ports_tested, \
+        let mut stmt = self
+            .db
+            .connection()
+            .prepare(
+                "SELECT id,target_ip,scope_sha256,status,ports_requested,ports_tested, \
              result_json,result_sha256,failure_code,started_at,finished_at \
              FROM network_inspection_runs ORDER BY id DESC LIMIT ?1",
-        ).map_err(err)?;
-        let records = stmt.query_map([max_results.clamp(1, 50)], |row| {
-            let raw: Option<String> = row.get(6)?;
-            let expected_hash: Option<String> = row.get(7)?;
-            let decoded = match (&raw, &expected_hash) {
-                (Some(body), Some(hash)) => {
-                    let actual = format!("{:x}", Sha256::digest(body.as_bytes()));
-                    if actual != *hash {
+            )
+            .map_err(err)?;
+        let records = stmt
+            .query_map([max_results.clamp(1, 50)], |row| {
+                let raw: Option<String> = row.get(6)?;
+                let expected_hash: Option<String> = row.get(7)?;
+                let decoded = match (&raw, &expected_hash) {
+                    (Some(body), Some(hash)) => {
+                        let actual = format!("{:x}", Sha256::digest(body.as_bytes()));
+                        if actual != *hash {
+                            return Err(rusqlite::Error::InvalidQuery);
+                        }
+                        let result = serde_json::from_str::<NetworkInspection>(body)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                        Some(result)
+                    }
+                    (None, None) => None,
+                    _ => return Err(rusqlite::Error::InvalidQuery),
+                };
+                let record = NetworkInspectionRecord {
+                    id: row.get(0)?,
+                    target_ip: row.get(1)?,
+                    scope_sha256: row.get(2)?,
+                    status: row.get(3)?,
+                    ports_requested: row.get(4)?,
+                    ports_tested: row.get(5)?,
+                    result_sha256: expected_hash,
+                    failure_code: row.get(8)?,
+                    started_at: row.get(9)?,
+                    finished_at: row.get(10)?,
+                    inspection: decoded,
+                };
+                if let Some(result) = &record.inspection {
+                    if result.target.to_string() != record.target_ip
+                        || result.tested_ports != record.ports_tested
+                        || record.status != "completed"
+                    {
                         return Err(rusqlite::Error::InvalidQuery);
                     }
-                    let result = serde_json::from_str::<NetworkInspection>(body)
-                        .map_err(|_| rusqlite::Error::InvalidQuery)?;
-                    Some(result)
                 }
-                (None, None) => None,
-                _ => return Err(rusqlite::Error::InvalidQuery),
-            };
-            let record = NetworkInspectionRecord {
-                id: row.get(0)?,
-                target_ip: row.get(1)?,
-                scope_sha256: row.get(2)?,
-                status: row.get(3)?,
-                ports_requested: row.get(4)?,
-                ports_tested: row.get(5)?,
-                result_sha256: expected_hash,
-                failure_code: row.get(8)?,
-                started_at: row.get(9)?,
-                finished_at: row.get(10)?,
-                inspection: decoded,
-            };
-            if let Some(result) = &record.inspection {
-                if result.target.to_string() != record.target_ip
-                    || result.tested_ports != record.ports_tested
-                    || record.status != "completed"
-                {
-                    return Err(rusqlite::Error::InvalidQuery);
-                }
-            }
-            Ok(record)
-        }).map_err(err)?;
+                Ok(record)
+            })
+            .map_err(err)?;
         records.collect::<Result<Vec<_>, _>>().map_err(err)
     }
 
@@ -179,12 +207,17 @@ mod tests {
         store.finish(id, &scope, &inspect_tcp(&scope)).unwrap();
         let result = store.list(10).unwrap();
         assert_eq!(result[0].status, "completed");
-        assert_eq!(result[0].inspection.as_ref().unwrap().observations[0].state, "open");
+        assert_eq!(
+            result[0].inspection.as_ref().unwrap().observations[0].state,
+            "open"
+        );
         assert!(store.finish(id, &scope, &inspect_tcp(&scope)).is_err());
-        db.connection().execute(
-            "UPDATE network_inspection_runs SET result_json='{}' WHERE id=?1",
-            [id],
-        ).unwrap();
+        db.connection()
+            .execute(
+                "UPDATE network_inspection_runs SET result_json='{}' WHERE id=?1",
+                [id],
+            )
+            .unwrap();
         assert!(store.list(10).is_err());
     }
 
@@ -193,14 +226,20 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let scope = NetworkScope {
-            authorized: true, target: ip, allowed_addresses: vec![ip],
-            ports: vec![8043], timeout_ms: 500,
+            authorized: true,
+            target: ip,
+            allowed_addresses: vec![ip],
+            ports: vec![8043],
+            timeout_ms: 500,
         };
         let store = NetworkInspectionStore::new(&db);
         let id = store.begin(&scope).unwrap();
         let failed: Result<NetworkInspection, String> = Err("unavailable".into());
         store.finish(id, &scope, &failed).unwrap();
-        assert_eq!(store.list(10).unwrap()[0].failure_code.as_deref(), Some("inspection_failed"));
+        assert_eq!(
+            store.list(10).unwrap()[0].failure_code.as_deref(),
+            Some("inspection_failed")
+        );
         store.begin(&scope).unwrap();
         assert_eq!(store.recover_interrupted().unwrap(), 1);
         let rows = store.list(10).unwrap();
