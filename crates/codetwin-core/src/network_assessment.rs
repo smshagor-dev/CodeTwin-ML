@@ -681,8 +681,14 @@ mod tests {
             )
             .unwrap();
         let restored = service.get(&run.id).unwrap();
-        assert_eq!(restored.probes[0].https_failure_kind.as_deref(), Some("timeout"));
-        assert_eq!(restored.probes[0].tls_status.as_deref(), Some("not_verified"));
+        assert_eq!(
+            restored.probes[0].https_failure_kind.as_deref(),
+            Some("timeout")
+        );
+        assert_eq!(
+            restored.probes[0].tls_status.as_deref(),
+            Some("not_verified")
+        );
         assert!(restored.probes[0].https_posture.is_none());
         let socket: SocketAddr = "127.0.0.1:8443".parse().unwrap();
         let (posture, reason) = https_header_probe("127.0.0.1", socket, Duration::ZERO);
