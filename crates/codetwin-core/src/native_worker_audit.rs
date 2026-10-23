@@ -309,7 +309,7 @@ mod tests {
         agents.approve(&run.id).unwrap();
         let audit = WorkerAudit::new(&db);
         let ticket = audit.begin(&run.id).unwrap();
-        let mut receipt = IsolatedScanReceipt {
+        let receipt = IsolatedScanReceipt {
             run_id: "different-review".into(),
             image_digest: format!("scanner@sha256:{}", "a".repeat(64)),
             report_sha256: "b".repeat(64),
@@ -318,10 +318,11 @@ mod tests {
             runtime_seconds: 1,
             warnings: Vec::new(),
         };
-        assert!(audit.finish(ticket, &Ok(receipt)).is_err());
+        let mut outcome = Ok(receipt);
+        assert!(audit.finish(ticket, &outcome).is_err());
         assert_eq!(audit.latest(&run.id).unwrap().unwrap().status, "running");
-        receipt.run_id = run.id.clone();
-        audit.finish(ticket, &Ok(receipt)).unwrap();
+        outcome.as_mut().unwrap().run_id = run.id.clone();
+        audit.finish(ticket, &outcome).unwrap();
         assert_eq!(audit.latest(&run.id).unwrap().unwrap().status, "success");
     }
 
