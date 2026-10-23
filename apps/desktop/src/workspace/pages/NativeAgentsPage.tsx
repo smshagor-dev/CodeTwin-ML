@@ -406,6 +406,17 @@ export function NativeAgentsPage() {
     }
   }
 
+  function executeWithGo(id: string) {
+    if (!goStatus?.configured || !window.confirm(
+      "Run the already-approved passive review with local Go verifying each specialist dependency? Rust keeps control of execution and SQLite evidence."
+    )) return;
+    setBusy("go-run"); setError("");
+    void workspaceApi.runNativeGoReview(id)
+      .then(() => refresh())
+      .catch(reason => setError(String(reason)))
+      .finally(() => setBusy(""));
+  }
+
   function execute(id: string) {
     setBusy("run"); setError("");
     void workspaceApi.runNativeAgentReview(id)
@@ -741,6 +752,11 @@ export function NativeAgentsPage() {
       <div className="ws-top-actions">
         {selected.status === "planned" && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => void approve(selected.id)}>Approve plan</button>}
         {selected.status === "approved" && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => execute(selected.id)}>Run approved review</button>}
+        {selected.status === "approved" && <button className="ws-button ws-button-secondary"
+          disabled={!goStatus?.configured || Boolean(busy)}
+          onClick={() => executeWithGo(selected.id)}>
+          {busy === "go-run" ? "Running Go-verified review…" : "Run with Go scheduling checks"}
+        </button>}
         {["planned", "approved", "running"].includes(selected.status) && <button className="ws-button ws-button-secondary" onClick={() => void cancel(selected.id)}>Cancel</button>}
         <button className="ws-button ws-button-secondary" onClick={() => void copyReport(selected.id)}>Copy evidence report</button>
       </div>

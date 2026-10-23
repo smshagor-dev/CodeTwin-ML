@@ -49,7 +49,8 @@ use database_commands::{
     list_database_rules, run_database_analysis,
 };
 use go_security_commands::{
-    go_security_dispatch_preview, go_security_engine_readiness, suggest_go_security_task_plan,
+    go_security_dispatch_preview, go_security_engine_readiness, run_native_go_review,
+    suggest_go_security_task_plan,
 };
 use guided_security_commands::{
     approve_guided_security_plan, compare_guided_security_scans, correlate_guided_security_sources,
@@ -1080,6 +1081,7 @@ fn main() {
             create_native_task_review,
             go_security_engine_readiness,
             go_security_dispatch_preview,
+            run_native_go_review,
             suggest_go_security_task_plan,
             native_task_schedule,
             native_worker_audit,
