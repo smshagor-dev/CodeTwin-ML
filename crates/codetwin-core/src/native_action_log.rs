@@ -259,11 +259,37 @@ mod tests {
             )
             .unwrap();
         let delegation = crate::native_agent_delegation::NativeDelegation::new(&db);
-        delegation
-            .start(&run.id, 0, &run.steps[0].role)
-            .unwrap();
         let log = NativeActionLog::new(&db);
-        log.begin(&run.id, 0, "scout").unwrap();
+        // An unmet source dependency may not claim a receipt or delegation.
+        assert!(log
+            .begin_supervised(&run.id, 1, &run.steps[1].role, "source")
+            .is_err());
+        assert!(log.list(&run.id).unwrap().is_empty());
+        assert_eq!(agents.get(&run.id).unwrap().steps[1].status, "pending");
+        db.connection()
+            .execute(
+                "UPDATE native_agent_steps SET status='skipped'
+                 WHERE run_id=?1 AND position=0",
+                [&run.id],
+            )
+            .unwrap();
+        // If one claim target changed, the preceding delegate update must
+        // roll back rather than leave an orphaned running task.
+        assert!(log
+            .begin_supervised(&run.id, 0, &run.steps[0].role, "scout")
+            .is_err());
+        assert_eq!(delegation.graph(&run.id).unwrap().tasks[0].status, "pending");
+        assert!(log.list(&run.id).unwrap().is_empty());
+        db.connection()
+            .execute(
+                "UPDATE native_agent_steps SET status='pending'
+                 WHERE run_id=?1 AND position=0",
+                [&run.id],
+            )
+            .unwrap();
+        log.begin_supervised(&run.id, 0, &run.steps[0].role, "scout")
+            .unwrap();
+        assert_eq!(delegation.graph(&run.id).unwrap().tasks[0].status, "running");
         // A corrupted or concurrently retired delegation must cause the
         // entire evidence transaction to roll back, not commit a partial step.
         db.connection()
