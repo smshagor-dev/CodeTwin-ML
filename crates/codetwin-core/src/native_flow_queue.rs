@@ -229,6 +229,12 @@ impl<'a> NativeFlowQueue<'a> {
         if changed != 1 {
             return Err("Flow queue item was not executing".into());
         }
+        // If an execution-layer error happens after a queue claim but before
+        // the supervisor starts, the parent may still be approved. Retire it
+        // atomically with the queue receipt so it cannot execute on a retry.
+        if status == "interrupted" {
+            retire_aborted_review(&tx, review_id)?;
+        }
         tx.commit().map_err(err)
     }
 
@@ -250,20 +256,77 @@ impl<'a> NativeFlowQueue<'a> {
     }
 
     /// Called on desktop startup, *after* native review recovery. A killed
-    /// queue runner must never auto-replay an action after restart.
+    /// queue runner must never auto-replay an action after restart. Recover
+    /// legacy interrupted receipts whose parent remained approved as well.
     pub fn recover_interrupted(&self) -> Result<(), String> {
-        self.db
-            .connection()
-            .execute(
-                "UPDATE native_flow_queue SET status='interrupted',
-                 finished_at=CURRENT_TIMESTAMP,
-                 detail='Desktop process stopped during queued execution'
-                 WHERE status='running'",
-                [],
-            )
-            .map_err(err)?;
-        Ok(())
+        let tx = self.db.connection().unchecked_transaction().map_err(err)?;
+        let stranded = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT q.review_id FROM native_flow_queue q
+                     JOIN native_agent_runs r ON r.id=q.review_id
+                     WHERE q.status='running'
+                        OR (q.status='interrupted'
+                            AND r.status IN ('approved','running'))",
+                )
+                .map_err(err)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(err)?
+        };
+        for review_id in &stranded {
+            retire_aborted_review(&tx, review_id)?;
+        }
+        tx.execute(
+            "UPDATE native_flow_queue SET status='interrupted',
+             finished_at=CURRENT_TIMESTAMP,
+             detail='Desktop process stopped during queued execution'
+             WHERE status='running'",
+            [],
+        )
+        .map_err(err)?;
+        tx.commit().map_err(err)
     }
+}
+
+/// An interrupted queue must never leave a runnable parent behind. This
+/// executes inside the caller's transaction with its terminal queue receipt.
+fn retire_aborted_review(tx: &rusqlite::Transaction<'_>, review_id: &str) -> Result<(), String> {
+    let changed = tx
+        .execute(
+            "UPDATE native_agent_runs SET status='interrupted',cancel_requested=1,
+             finished_at=CURRENT_TIMESTAMP,
+             message='Approved queue execution interrupted; create a fresh review'
+             WHERE id=?1 AND status IN ('approved','running')",
+            [review_id],
+        )
+        .map_err(err)?;
+    if changed != 0 {
+        tx.execute(
+            "UPDATE native_agent_steps
+             SET status=CASE WHEN status='running' THEN 'interrupted'
+                             ELSE 'cancelled' END,
+                 finished_at=CURRENT_TIMESTAMP
+             WHERE run_id=?1 AND status IN ('running','pending')",
+            [review_id],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "UPDATE native_action_log SET status='interrupted',
+             finished_at=CURRENT_TIMESTAMP
+             WHERE run_id=?1 AND status='running'",
+            [review_id],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "UPDATE native_delegation_tasks SET status='cancelled'
+             WHERE run_id=?1 AND status IN ('pending','running')",
+            [review_id],
+        )
+        .map_err(err)?;
+    }
+    Ok(())
 }
 
 fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedFlow> {
