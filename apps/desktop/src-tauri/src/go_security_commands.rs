@@ -7,6 +7,7 @@ use std::{
 };
 
 use codetwin_core::{
+    native_agent_memory::AgentMemory,
     native_task_plans::{parse_proposal, TaskProposal},
     Database, WorkspaceService,
 };
@@ -122,16 +123,24 @@ pub fn go_security_engine_readiness() -> GoSecurityReadiness {
 }
 
 #[derive(Serialize)]
+struct MemoryHint {
+    role: String,
+    status: String,
+}
+
+#[derive(Serialize)]
 struct PlannerRequest<'a> {
     protocol_version: u8,
     objective: &'a str,
+    history: &'a [MemoryHint],
 }
 
-fn local_plan(binary: &Path, objective: &str) -> Result<TaskProposal, String> {
+fn local_plan(binary: &Path, objective: &str, history: &[MemoryHint]) -> Result<TaskProposal, String> {
     probe_binary(binary)?;
     let request = serde_json::to_vec(&PlannerRequest {
         protocol_version: 1,
         objective,
+        history,
     })
     .map_err(|_| "Cannot encode Go security plan request")?;
     let mut child = Command::new(binary)
@@ -213,7 +222,15 @@ pub async fn suggest_go_security_task_plan(
         if project.last_indexed_at.is_none() || project.file_count == 0 {
             return Err("Index a nonempty project before requesting a Go task plan".into());
         }
-        local_plan(&binary, &objective)
+        let history = AgentMemory::new(&db)
+            .search(&project_id, "", 12)?
+            .into_iter()
+            .map(|entry| MemoryHint {
+                role: entry.tool,
+                status: entry.status,
+            })
+            .collect::<Vec<_>>();
+        local_plan(&binary, &objective, &history)
     })
     .await
     .map_err(|error| error.to_string())?

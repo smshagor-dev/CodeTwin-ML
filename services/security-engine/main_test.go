@@ -65,3 +65,32 @@ func TestProtocolRoundtrip(t *testing.T) {
 		t.Fatalf("unexpected tasks: %#v", p.Tasks)
 	}
 }
+
+func TestPriorFailedSpecialistSuggestsFollowupWithoutRunningIt(t *testing.T) {
+	p, err := plan(request{ProtocolVersion: 1, Objective: "Review test coverage", History: []memoryHint{
+		{Role: "secrets", Status: "failed"},
+		{Role: "runtime", Status: "completed"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := []string{}
+	for _, item := range p.Tasks {
+		roles = append(roles, item.Role)
+	}
+	if strings.Join(roles, ",") != "scout,source,secrets,qa" {
+		t.Fatalf("unexpected memory-informed plan: %v", roles)
+	}
+}
+
+func TestHistoryIsStrictlyBoundedAndUsesRegisteredRoles(t *testing.T) {
+	for _, invalid := range []request{
+		{ProtocolVersion: 1, Objective: "Review", History: []memoryHint{{Role: "shell", Status: "failed"}}},
+		{ProtocolVersion: 1, Objective: "Review", History: []memoryHint{{Role: "secrets", Status: "running"}}},
+		{ProtocolVersion: 1, Objective: "Review", History: make([]memoryHint, 13)},
+	} {
+		if _, err := plan(invalid); err == nil {
+			t.Fatal("unsafe memory input was accepted")
+		}
+	}
+}
