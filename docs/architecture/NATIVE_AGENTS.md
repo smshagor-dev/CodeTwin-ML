@@ -235,3 +235,46 @@ mean a real sandbox test passed.
 ## Dependency-ready scheduling
 
 The Rust delegation service exposes `ready_batch`, which returns up to two pending specialists whose approved predecessor tasks completed. This is a **dispatch candidate scheduler** and never invokes tools. Execution still happens sequentially in `NativeAgents::run_steps`; concurrent execution needs separate SQLite connections, re-entrant analyzer safety, cancellation propagation, and deterministic join/verification before it can be enabled. The new unit test covers mandatory prerequisites and bounded independent candidates.
+
+## Actual concurrent passive specialists
+
+After the mandatory Project Recon and hash-bound Source Auditor complete, independent
+optional passive specialists may run concurrently in bounded batches of **two** Rust
+threads. Each worker opens its own SQLite WAL connection; the supervisor joins all
+threads and writes role outcomes and SHA-256 evidence handoffs in the original
+approved order. Workers are never detached. Cancellation and the overall time
+budget are checked before/after each batch and before committing the serial role
+results; individual analyzer APIs still enforce their own service constraints.
+The in-memory database used by unit tests cannot be shared across connections
+and retains the sequential fallback. If an approved model-generated task plan
+introduces optional-to-optional dependencies, it also falls back to sequential
+execution; prerequisites are never speculatively bypassed.
+
+A file-backed integration fixture covers a review containing two optional
+specialists, the final handoff chain and persisted delegation status. This is
+bounded concurrency among **existing passive project analyzers**, not an
+unrestricted external penetration-testing agent.
+
+## Neural embedding provider connectivity
+
+Set `CODETWIN_EMBEDDING_ENDPOINT` to the complete OpenAI-compatible
+`/embeddings` URL, `CODETWIN_EMBEDDING_MODEL` to the provider's embedding
+model ID and (for remote HTTPS) `CODETWIN_EMBEDDING_TOKEN`.
+The CodeTwin Agents page now has **Test embedding connection**. It sends one fixed
+non-sensitive sample phrase and checks real returned vector shape/normalization,
+reporting model, dimensionality and latency. It does not access source files,
+findings or existing chat content.
+
+The core test suite includes a local HTTP protocol fixture that verifies the
+request JSON and returned numeric vectors without external credentials.
+To explicitly validate a live model with your configured provider:
+
+```bash
+CODETWIN_TEST_REAL_EMBEDDINGS=1 cargo test -p codetwin-core --test native_embedding_provider -- --nocapture
+```
+
+This live test is opt-in; without that environment variable it skips.
+`NeuralMemory::index_run` and `NeuralMemory::search` remain
+separate consent-gated actions, and the ready-state check only verifies
+configuration, not live model availability. No live provider response is
+claimed until the probe or opt-in test actually succeeds.
