@@ -14,6 +14,13 @@ describe("tool catalog actions", () => {
     expect(toolAction({ ...tool, availability: "requires_setup" })).toBeNull();
     expect(toolAction(tool)).toEqual({ route: "security", mode: "source", label: "Open workflow" });
   });
+  it("exposes the approved network tab only for registered network workflows", () => {
+    const network = { ...tool, id: "network.services", category: "Network" };
+    expect(toolAction(network)).toEqual({ route: "security", mode: "network", label: "Open workflow" });
+    expect(toolAction({ ...network, id: "network.tls" })).toEqual({ route: "security", mode: "network", label: "Open workflow" });
+    expect(toolAction({ ...network, id: "network.dns" })).toEqual({ route: "security", mode: "network", label: "Open workflow" });
+    expect(toolAction({ ...network, availability: "planned" })).toBeNull();
+  });
   it("combines search, category, availability and operation without changing inventory", () => {
     const inventory = [tool, { ...tool, id: "network.tls", category: "Network", availability: "planned" as const }];
     expect(filterTools(inventory, "DETERMINISTIC", "Code", "available", "passive")).toEqual([tool]);

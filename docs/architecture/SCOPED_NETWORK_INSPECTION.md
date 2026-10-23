@@ -28,7 +28,7 @@ written to the TCP history ledger.
 
 ## Evidence and restart behavior
 
-Migration `0038_network_inspection.sql` introduces an immutable-by-service
+Migration `0039_network_inspection.sql` introduces an immutable-by-service
 history of attempted TCP inspections and the result-integrity hashes.
 One network scan can be active per desktop instance. Interrupted history
 entries from a prior session become `interrupted` when the next run starts.
@@ -36,3 +36,5 @@ Completed history entries are retrievable in the Tool Library. SHA-256 checks
 detect accidental or deliberate changes to stored result bytes relative to
 the recorded hash; neither a cryptographic signature nor independent proof
 of target ownership is implied.
+
+The main **Security > Network Assessment** uses its own migration 0038 and reviewed single-target workflow; the Tool Library's private-lab checks here are separate and intentionally do not replace that assessment.

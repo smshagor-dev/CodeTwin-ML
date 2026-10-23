@@ -63,6 +63,30 @@ import type {
 export type ImportStage = "selecting" | "discovering" | "indexing" | "security" | "testing";
 
 export const workspaceApi = {
+  prepareNetworkAssessment(request: import("./security/NetworkAssessmentPanel").NetworkAssessmentRequest) {
+    return invoke<import("./security/NetworkAssessmentPanel").NetworkAssessmentRun>(
+      "prepare_network_assessment", { request });
+  },
+  approveNetworkAssessment(id: string) {
+    return invoke<import("./security/NetworkAssessmentPanel").NetworkAssessmentRun>(
+      "approve_network_assessment", { id });
+  },
+  runNetworkAssessment(id: string) {
+    return invoke<import("./security/NetworkAssessmentPanel").NetworkAssessmentRun>(
+      "run_network_assessment", { id });
+  },
+  cancelNetworkAssessment(id: string) {
+    return invoke<import("./security/NetworkAssessmentPanel").NetworkAssessmentRun>(
+      "cancel_network_assessment", { id });
+  },
+  listNetworkAssessments(limit = 30) {
+    return invoke<import("./security/NetworkAssessmentPanel").NetworkAssessmentRun[]>(
+      "list_network_assessments", { limit });
+  },
+  getNetworkAssessment(id: string) {
+    return invoke<import("./security/NetworkAssessmentPanel").NetworkAssessmentRun>(
+      "get_network_assessment", { id });
+  },
   suggestNativeTaskPlan(projectId: string, objective: string, consent: boolean) {
     return invoke<import("./pages/NativeAgentsPage").NativeTaskProposal>("suggest_native_task_plan", {
       projectId, objective, consent,
