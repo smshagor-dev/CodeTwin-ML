@@ -97,6 +97,19 @@ role and status (never scanner output or secrets). Tests compare the current
 role to the persisted display label, not the lower-case tool identifier.
 All reads are local to SQLite, without sending source data or findings to Go.
 
+### Atomic review finalization
+
+After the native tools finish, Rust now takes the SQLite write lock
+**before** deciding whether the parent run was cancelled, failed or completed.
+A cancellation committed by another desktop connection takes precedence over
+the apparent tool outcome. The supervisor checks the signed handoff chain and
+delegation graph while the tentative completed status is **uncommitted**; any
+failed verification changes it to failed within the same transaction.
+Pending/running child steps, receipts and delegations are retired before this
+single final commit. No other connection can observe a completed review that
+has not passed evidence verification. File-backed tests verify cross-connection
+cancellation, invalid handoff downgrade and durable terminal status.
+
 ### Concurrent specialist evidence integrity
 
 The Go-verified path now uses the same bounded two-slot scheduling limit as
