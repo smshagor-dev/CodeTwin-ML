@@ -7,13 +7,17 @@ from pathlib import Path
 import shutil
 import socket
 import ssl
+import sys
 import subprocess
 import tempfile
 import threading
 import unittest
 from unittest.mock import patch
 
-from codetwin_security.tls_certificates import (
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from codetwin_security.tls_certificates import (  # noqa: E402
     TlsCheckError,
     address_allowed,
     check_certificate,
