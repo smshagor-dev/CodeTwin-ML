@@ -287,8 +287,8 @@ fn local_dispatch(binary: &Path, request: &serde_json::Value) -> Result<GoDispat
 
 /// The Go suggestion is untrusted until it matches the Rust/SQLite dependency graph.
 fn verified_dispatch(db: &Database, id: &str, binary: &Path) -> Result<GoDispatchAdvice, String> {
-    let run = NativeAgents::new(&db).get(id)?;
-    let graph = NativeDelegation::new(&db).graph(id)?;
+    let run = NativeAgents::new(db).get(id)?;
+    let graph = NativeDelegation::new(db).graph(id)?;
     if graph.run_id != run.id || graph.tasks.len() != run.steps.len() {
         return Err("Persisted review graph mismatch".into());
     }
