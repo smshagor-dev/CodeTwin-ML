@@ -83,6 +83,13 @@ approve/run the existing Rust review.
   `interrupted` with its cancellation flag set. Neither Go nor Rust will
   automatically resume any of those tasks: a new review and approval are
   required. Recovery can safely run more than once.
+- Normal review failure or cancellation also finalizes the native steps and
+  unfinished delegation records **within one SQLite transaction**. Cancelling
+  a planned/approved review retires its queued specialists immediately;
+  cancelling a running review sets its cancellation flag and the supervisor
+  finalizes those statuses. The Go-gated path checks cancellation again
+  **after** Go verification and **before** starting a native specialist, so
+  approval checks cannot inadvertently cross a cancellation boundary.
 
 ## Upstream and scope
 
