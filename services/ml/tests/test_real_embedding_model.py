@@ -8,9 +8,13 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
+import sys
 import unittest
 
-from codetwin_ml.embedding_api import LocalEmbeddingService, load_model
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from codetwin_ml.embedding_api import LocalEmbeddingService, load_model  # noqa: E402
 
 
 class RealEmbeddingModelTests(unittest.TestCase):
