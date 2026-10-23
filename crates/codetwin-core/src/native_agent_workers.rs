@@ -6,6 +6,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
+    io::{Read, Seek},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -376,6 +377,77 @@ fn parse_offline_report(bytes: &[u8]) -> Result<(usize, usize), String> {
     Ok((vulnerabilities, misconfigurations))
 }
 
+/// Verify that the currently configured Docker daemon has no leftover
+/// CodeTwin scanner containers. This is a read-only, bounded local CLI probe
+/// and does not remove containers or trust an operator checkbox as evidence.
+pub fn verify_no_leftover_containers() -> Result<(), String> {
+    let executable = PathBuf::from(
+        env::var("CODETWIN_DOCKER_PATH")
+            .map_err(|_| "Configure the trusted Docker CLI before verifying cleanup")?,
+    );
+    if !executable.is_absolute() || !executable.is_file() {
+        return Err("Cleanup check requires an existing absolute Docker executable".into());
+    }
+    verify_no_leftovers_with_cli(&executable)
+}
+
+fn verify_no_leftovers_with_cli(executable: &Path) -> Result<(), String> {
+    // A temporary file avoids a pipe-buffer deadlock if Docker returns many
+    // containers. Never persist or expose container names.
+    let mut output = tempfile::tempfile().map_err(err)?;
+    let stdout = output.try_clone().map_err(err)?;
+    let mut child = Command::new(executable)
+        .args([
+            "ps",
+            "--all",
+            "--filter",
+            "name=^/codetwin-scan-",
+            "--format",
+            "{{.Names}}",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Could not launch local Docker cleanup verification")?;
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if start.elapsed() >= CLEANUP_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Docker cleanup verification timed out".into());
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Docker cleanup verification failed".into());
+            }
+        }
+    };
+    if !status.success() {
+        return Err("Docker did not confirm the local scanner container list".into());
+    }
+    output.rewind().map_err(err)?;
+    let mut names = Vec::new();
+    output
+        .take(16_385)
+        .read_to_end(&mut names)
+        .map_err(err)?;
+    if names.len() > 16_384 {
+        return Err("Docker scanner container list exceeded the verification limit".into());
+    }
+    if !names.is_empty() {
+        return Err(
+            "Scanner containers remain in the configured Docker daemon; remove them and verify again"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Limit Docker cleanup duration even if the Docker daemon is unresponsive.
 /// This does not prove cleanup if the CLI fails, so callers must surface that state.
 fn force_remove_container(docker: &Path, name: &str) -> Result<(), String> {
@@ -489,6 +561,25 @@ mod tests {
     fn docker_cleanup_result_must_be_confirmed() {
         assert!(force_remove_container(Path::new("/bin/true"), "test").is_ok());
         assert!(force_remove_container(Path::new("/bin/false"), "test").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_docker_cleanup_verification_fails_closed() {
+        let fixtures = tempfile::tempdir().unwrap();
+        let script = fixtures.path().join("docker-fixture.sh");
+        write_fixture_script(
+            &script,
+            "#!/bin/sh\n[ \"$1\" = ps ] && [ \"$2\" = --all ] || exit 8\nexit 0\n",
+        );
+        assert!(verify_no_leftovers_with_cli(&script).is_ok());
+        write_fixture_script(
+            &script,
+            "#!/bin/sh\nprintf 'codetwin-scan-leftover\\n'\n",
+        );
+        assert!(verify_no_leftovers_with_cli(&script).is_err());
+        write_fixture_script(&script, "#!/bin/sh\nexit 9\n");
+        assert!(verify_no_leftovers_with_cli(&script).is_err());
     }
 
     #[test]
