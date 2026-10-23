@@ -248,6 +248,56 @@ mod tests {
     }
 
     #[test]
+    fn approved_automatic_flow_survives_real_sqlite_restart_without_replay() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let database_path = sandbox.path().join("automated-flow.sqlite3");
+        let project_path = sandbox.path().join("reviewed-project");
+        std::fs::create_dir_all(&project_path).unwrap();
+        std::fs::write(project_path.join("safe.rs"), "pub fn safe() {}").unwrap();
+        let review_id = {
+            let db = Database::open(&database_path).unwrap();
+            let project_id = ProjectIndexService::new(&db)
+                .index_project(&project_path)
+                .unwrap()
+                .project_id;
+            let review = NativeAgents::new(&db)
+                .create_with_roles(
+                    &project_id,
+                    "Automated offline source review",
+                    10,
+                    300,
+                    &["scout".into(), "source".into()],
+                )
+                .unwrap();
+            let flow = NativeFlow::new(&db);
+            flow.prepare(&review.id).unwrap();
+            flow.approve(&review.id).unwrap();
+            review.id
+        };
+
+        {
+            let db = Database::open(&database_path).unwrap();
+            let flow = NativeFlow::new(&db).get(&review_id).unwrap().unwrap();
+            assert_eq!(flow.status, "approved");
+            assert_eq!(flow.total_subtasks, 2);
+            let result = NativeAgents::new(&db).execute(&review_id).unwrap();
+            assert_eq!(result.status, "completed", "{:?}", result.message);
+        }
+
+        let db = Database::open(&database_path).unwrap();
+        NativeAgents::new(&db).recover_interrupted().unwrap();
+        let flow = NativeFlow::new(&db).get(&review_id).unwrap().unwrap();
+        assert_eq!(flow.status, "completed");
+        assert_eq!(flow.completed_subtasks, 2);
+        assert!(flow
+            .tasks
+            .iter()
+            .flat_map(|task| &task.subtasks)
+            .all(|subtask| subtask.actions.len() == 1));
+        assert!(NativeAgents::new(&db).execute(&review_id).is_err());
+    }
+
+    #[test]
     fn cancelled_flow_cannot_be_approved_or_executed() {
         let db = Database::open_in_memory().unwrap();
         let fixture = tempfile::tempdir().unwrap();
