@@ -3,6 +3,7 @@
 use crate::Database;
 use reqwest::{blocking::Client, header::HeaderMap, redirect::Policy, Url};
 use rusqlite::{params, OptionalExtension};
+use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 use std::{
     io,
@@ -12,6 +13,7 @@ use std::{
 
 const MAX_PORTS: usize = 16;
 const PER_PORT_TIMEOUT: Duration = Duration::from_millis(750);
+const MAX_LEAF_CERT_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkAssessmentRequest {
@@ -30,6 +32,10 @@ pub struct HttpsHeaderPosture {
     pub csp_observed: bool,
     pub nosniff_observed: bool,
     pub referrer_policy_observed: bool,
+    /// Digest of the platform-trusted leaf certificate, never the DER bytes.
+    /// Absent when the active TLS backend cannot expose a leaf certificate.
+    #[serde(default)]
+    pub certificate_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -416,6 +422,7 @@ fn https_header_probe(
         .timeout(timeout)
         .redirect(Policy::none())
         .no_proxy()
+        .tls_info(true)
         .resolve(target, address)
         .build()
     {
@@ -423,14 +430,19 @@ fn https_header_probe(
         Err(_) => return (None, Some("setup_failed")),
     };
     match client.head(url).send() {
-        Ok(response) => (
-            Some(classify_https_headers(
-                target,
-                response.status().as_u16(),
-                response.headers(),
-            )),
-            None,
-        ),
+        Ok(response) => {
+            let mut posture =
+                classify_https_headers(target, response.status().as_u16(), response.headers());
+            // reqwest only supplies this metadata after a successful, verified
+            // HTTPS handshake. No second connection and no bypassed trust.
+            posture.certificate_sha256 = peer_certificate_sha256(
+                response
+                    .extensions()
+                    .get::<reqwest::tls::TlsInfo>()
+                    .and_then(|tls| tls.peer_certificate()),
+            );
+            (Some(posture), None)
+        },
         Err(error) if error.is_timeout() => (None, Some("timeout")),
         // Connection failures also include TLS and trust errors. Do not claim
         // a certificate is invalid without certificate-chain evidence.
@@ -457,7 +469,15 @@ fn classify_https_headers(
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.trim().eq_ignore_ascii_case("nosniff")),
         referrer_policy_observed: headers.contains_key("referrer-policy"),
+        certificate_sha256: None,
     }
+}
+
+/// Only persist a stable hash of a bounded, already-verified TLS leaf.
+/// A missing or oversized certificate is unobserved, never called invalid.
+fn peer_certificate_sha256(der: Option<&[u8]>) -> Option<String> {
+    let der = der.filter(|bytes| !bytes.is_empty() && bytes.len() <= MAX_LEAF_CERT_BYTES)?;
+    Some(format!("{:x}", Sha256::digest(der)))
 }
 
 fn classify_hsts(target: &str, headers: &HeaderMap) -> (String, Option<u64>) {
@@ -667,6 +687,29 @@ mod tests {
             classify_https_headers("example.test", 302, &headers).hsts_state,
             "not_observed"
         );
+    }
+
+    #[test]
+    fn certificate_fingerprint_is_bounded_and_legacy_posture_is_compatible() {
+        let digest = peer_certificate_sha256(Some(b"fixed public test certificate")).unwrap();
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(
+            peer_certificate_sha256(Some(b"fixed public test certificate")),
+            Some(digest.clone())
+        );
+        assert_ne!(
+            peer_certificate_sha256(Some(b"another test certificate")),
+            Some(digest)
+        );
+        assert!(peer_certificate_sha256(None).is_none());
+        assert!(peer_certificate_sha256(Some(&[])).is_none());
+        assert!(peer_certificate_sha256(Some(&vec![7; MAX_LEAF_CERT_BYTES + 1])).is_none());
+        let old = r#"{"http_status":200,"hsts_state":"not_observed",
+            "hsts_max_age_seconds":null,"csp_observed":false,
+            "nosniff_observed":false,"referrer_policy_observed":false}"#;
+        let restored: HttpsHeaderPosture = serde_json::from_str(old).unwrap();
+        assert!(restored.certificate_sha256.is_none());
     }
 
     #[test]
