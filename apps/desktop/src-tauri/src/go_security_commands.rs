@@ -68,7 +68,7 @@ fn local_plan(binary: &Path, objective: &str) -> Result<TaskProposal, String> {
     let write_result = child
         .stdin
         .take()
-        .ok_or("Go security engine stdin was unavailable")
+        .ok_or_else(|| "Go security engine stdin was unavailable".to_string())
         .and_then(|mut stdin| {
             stdin
                 .write_all(&request)
