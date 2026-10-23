@@ -1424,7 +1424,7 @@ mod tests {
             assert_eq!(one.checked, 1);
             assert_eq!(one.total_completed, 2);
             let cursor = one.next_before_rowid.expect("An older review exists");
-            assert!(cursor > 0);
+            assert!(cursor.parse::<i64>().unwrap() > 0);
             let older = reviews
                 .audit_completed_history_page(&project, 1, Some(cursor.as_str()))
                 .unwrap();
