@@ -190,12 +190,16 @@ impl<'a> IsolatedWorker<'a> {
     }
 
     fn review_is_still_authorized(&self, run_id: &str) -> Result<bool, String> {
-        let allowed: i64 = self.db.connection().query_row(
-            "SELECT CASE WHEN status='approved' AND cancel_requested=0 THEN 1 ELSE 0 END
+        let allowed: i64 = self
+            .db
+            .connection()
+            .query_row(
+                "SELECT CASE WHEN status='approved' AND cancel_requested=0 THEN 1 ELSE 0 END
              FROM native_agent_runs WHERE id=?1",
-            [run_id],
-            |row| row.get(0),
-        ).map_err(err)?;
+                [run_id],
+                |row| row.get(0),
+            )
+            .map_err(err)?;
         Ok(allowed == 1)
     }
 
@@ -488,7 +492,9 @@ mod tests {
             .unwrap()
             .project_id;
         let agents = NativeAgents::new(&db);
-        let run = agents.create(&project, "Authorized scanner review", 10, 120).unwrap();
+        let run = agents
+            .create(&project, "Authorized scanner review", 10, 120)
+            .unwrap();
         let worker = IsolatedWorker::new(&db);
         assert!(!worker.review_is_still_authorized(&run.id).unwrap());
         agents.approve(&run.id).unwrap();
