@@ -1392,7 +1392,10 @@ mod tests {
                 .invalid
                 .is_empty());
             assert_eq!(
-                reviews.audit_completed_history(&other, 200).unwrap().checked,
+                reviews
+                    .audit_completed_history(&other, 200)
+                    .unwrap()
+                    .checked,
                 0
             );
             // Valid SQLite digest shape, incorrect bytes: audit must detect
