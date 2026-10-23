@@ -394,8 +394,8 @@ impl<'a> NativeAgents<'a> {
             let verdict = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
             let delegation =
                 crate::native_agent_delegation::NativeDelegation::new(self.db).verify(id);
-            let receipts = crate::native_action_log::NativeActionLog::new(self.db)
-                .verify_completed(id);
+            let receipts =
+                crate::native_action_log::NativeActionLog::new(self.db).verify_completed(id);
             if !verdict.verified || delegation.is_err() || receipts.is_err() {
                 let reason = receipts
                     .err()
@@ -1256,7 +1256,15 @@ mod tests {
 
     #[test]
     fn completed_review_requires_all_receipts_to_match_exact_specialist_evidence() {
-        for mutation in ["none", "digest", "result", "missing", "status", "timestamp", "after"] {
+        for mutation in [
+            "none",
+            "digest",
+            "result",
+            "missing",
+            "status",
+            "timestamp",
+            "after",
+        ] {
             let fixture = tempfile::tempdir().unwrap();
             let path = fixture.path().join("receipt-integrity.sqlite3");
             let project_root = fixture.path().join("project");
@@ -1376,10 +1384,7 @@ mod tests {
                             .issues
                             .iter()
                             .any(|issue| issue.contains("receipt integrity mismatch")));
-                        assert!(reviews
-                            .report(&run.id)
-                            .unwrap()
-                            .contains("Verified: false"));
+                        assert!(reviews.report(&run.id).unwrap().contains("Verified: false"));
                     }
                 } else {
                     assert_eq!(saved.status, "failed", "mutation={mutation}");
