@@ -695,11 +695,7 @@ pub async fn run_automated_security_flow(
 }
 
 /// Keep the same Go-gated Rust supervisor for individual and queued flows.
-fn run_preapproved_flow(
-    db: &Database,
-    binary: &Path,
-    id: &str,
-) -> Result<AutomatedFlow, String> {
+fn run_preapproved_flow(db: &Database, binary: &Path, id: &str) -> Result<AutomatedFlow, String> {
     let existing = NativeFlow::new(db)
         .get(id)?
         .ok_or("Prepare an automated flow before running it")?;
@@ -762,16 +758,20 @@ pub async fn run_approved_security_flow_queue(
         let db = Database::open(path).map_err(|error| error.to_string())?;
         let queue = NativeFlowQueue::new(&db);
         for _ in 0..8 {
-            let Some(item) = queue.claim_next()? else { break };
+            let Some(item) = queue.claim_next()? else {
+                break;
+            };
             let outcome = run_preapproved_flow(&db, &binary, &item.review_id);
             match outcome {
                 Ok(flow) if flow.status == "completed" => {
                     queue.finish(&item.review_id, "completed", "Approved evidence committed")?;
                 }
                 Ok(flow) => {
-                    queue.finish(&item.review_id, "failed", &format!(
-                        "Flow stopped with status {}", flow.status
-                    ))?;
+                    queue.finish(
+                        &item.review_id,
+                        "failed",
+                        &format!("Flow stopped with status {}", flow.status),
+                    )?;
                     break;
                 }
                 Err(_error) => {
