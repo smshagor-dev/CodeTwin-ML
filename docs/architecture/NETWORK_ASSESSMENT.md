@@ -73,3 +73,26 @@ response is examined for each port. The response body and raw header values
 are **not stored**. A failed TLS handshake yields `not_verified` without an
 HTTPS header result. HSTS is marked not applicable to literal IPs. Neither an
 HTTP 2xx response nor an observed header establishes a secure deployment.
+
+## HTTPS diagnostic observations
+
+Migration 0041 adds nullable `https_failure_kind` to the per-port probe ledger.
+When an approved 443/8443 connection is open but the bounded HTTPS HEAD does
+not succeed, CodeTwin records exactly one fixed diagnostic category:
+`budget_exhausted`, `setup_failed`, `timeout`,
+`connection_or_tls_failure`, or `request_failed`. No raw exception,
+URL, HTTP response body, certificate bytes or unredacted transport error
+is persisted. Historic probes have a null diagnostic, as do verified HTTPS
+requests and ports without an HTTPS attempt.
+
+These are **request outcomes, not certificate vulnerability findings**:
+`connection_or_tls_failure` can mean an interrupted connection, protocol
+mismatch, trust-chain failure, peer identity failure or other handshake error.
+CodeTwin never bypasses certificate verification to diagnose a failure.
+Successful HTTPS observations still mean one platform-trusted HEAD request,
+not a complete certificate expiry, TLS version or cipher-suite assessment.
+
+Changing the target, ports, budget or private-network option in the desktop
+review clears the authorization checkbox. The separate Tool Library
+private-network and DNS checks likewise require fresh confirmation when
+their allowed scopes change.
