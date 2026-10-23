@@ -208,7 +208,9 @@ impl<'a> NativeActionLog<'a> {
         }
         let receipts = self.list(run_id)?;
         if receipts.len() != run.steps.len() {
-            return Err("Completed review action receipt count does not match its specialists".into());
+            return Err(
+                "Completed review action receipt count does not match its specialists".into(),
+            );
         }
         let by_position = receipts
             .iter()
