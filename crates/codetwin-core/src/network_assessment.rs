@@ -195,7 +195,7 @@ impl<'a> NetworkAssessment<'a> {
                 Ok(stream)=>{
                     drop(stream);
                     let tls=if matches!(port,443|8443) {
-                        Some(if tls_trust_check(&run.target,socket) {"verified"} else {"not_verified"}.to_string())
+                        Some(if tls_trust_check(&run.target,socket,remaining.min(Duration::from_secs(2))) {"verified"} else {"not_verified"}.to_string())
                     } else {None};
                     ("open",tls)
                 }
@@ -214,13 +214,14 @@ impl<'a> NetworkAssessment<'a> {
     /// Success means the system trust store accepted the TLS peer; no cipher audit is claimed.
 }
 
-fn tls_trust_check(target:&str, address:SocketAddr)->bool {
+fn tls_trust_check(target:&str, address:SocketAddr,timeout:Duration)->bool {
     let port=address.port();
-    let url=match Url::parse(&format!("https://{target}:{port}/")) {
+    let authority=if target.contains(':') {format!("[{target}]")} else {target.to_owned()};
+    let url=match Url::parse(&format!("https://{authority}:{port}/")) {
         Ok(url)=>url,Err(_)=>return false,
     };
     let client=match Client::builder()
-        .timeout(Duration::from_secs(2))
+        .timeout(timeout)
         .redirect(Policy::none())
         .no_proxy()
         .resolve(target,address)
