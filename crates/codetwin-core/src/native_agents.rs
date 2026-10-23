@@ -1317,9 +1317,9 @@ mod tests {
                     "digest" => {
                         db.connection()
                             .execute(
-                                "UPDATE native_action_log SET result_sha256='incorrect'
+                                "UPDATE native_action_log SET result_sha256=?2
                                  WHERE run_id=?1 AND position=1",
-                                [&run.id],
+                                rusqlite::params![&run.id, "0".repeat(64)],
                             )
                             .unwrap();
                     }
@@ -1372,9 +1372,9 @@ mod tests {
                         // altered after a previously valid finalization.
                         db.connection()
                             .execute(
-                                "UPDATE native_action_log SET result_sha256='changed-later'
+                                "UPDATE native_action_log SET result_sha256=?2
                                  WHERE run_id=?1 AND position=1",
-                                [&run.id],
+                                rusqlite::params![&run.id, "f".repeat(64)],
                             )
                             .unwrap();
                         assert!(receipts.verify_completed(&run.id).is_err());
