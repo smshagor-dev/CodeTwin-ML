@@ -35,6 +35,7 @@ pub struct IsolatedScanReadiness {
 struct WorkerSettings {
     docker: PathBuf,
     image: String,
+    db_dir: PathBuf,
 }
 
 impl WorkerSettings {
@@ -69,9 +70,22 @@ impl WorkerSettings {
         {
             return Err("Invalid pinned image repository".into());
         }
+        let db = env::var("CODETWIN_TRIVY_DB_DIR")
+            .map_err(|_| "Set CODETWIN_TRIVY_DB_DIR to the preloaded offline DB directory".to_string())?;
+        let db_dir = fs::canonicalize(db).map_err(err)?;
+        if !db_dir.is_dir()
+            || !db_dir.join("trivy.db").is_file()
+            || !db_dir.join("metadata.json").is_file()
+        {
+            return Err("Offline vulnerability DB must contain trivy.db and metadata.json".into());
+        }
+        if !safe_mount_path(&db_dir) {
+            return Err("Unsafe offline database mount path".into());
+        }
         Ok(Self {
             docker: path,
             image,
+            db_dir,
         })
     }
 }
@@ -131,10 +145,18 @@ fn build_args(
         ),
         "--mount".into(),
         format!("type=bind,src={},dst=/out", output.display()),
+        "--mount".into(),
+        format!("type=bind,src={},dst=/tmp/trivy/db,readonly", settings.db_dir.display()),
         settings.image.clone(),
         "fs".into(),
+        "--cache-dir".into(),
+        "/tmp/trivy".into(),
         "--offline-scan".into(),
         "--skip-db-update".into(),
+        "--skip-java-db-update".into(),
+        "--skip-check-update".into(),
+        "--scanners".into(),
+        "vuln".into(),
         "--format".into(),
         "json".into(),
         "--output".into(),
@@ -155,7 +177,7 @@ impl<'a> IsolatedWorker<'a> {
         match WorkerSettings::load() {
             Ok(_) => IsolatedScanReadiness {
                 configured:true,
-                detail:"Pinned offline worker configured. A local Docker daemon and preloaded scanner database are still required.".into(),
+                detail:"Pinned scanner, readable vulnerability DB, and Docker CLI configured. Docker daemon availability is checked when scanning.".into(),
             },
             Err(e)=>IsolatedScanReadiness {configured:false,detail:e},
         }
@@ -277,6 +299,7 @@ mod tests {
         let fake = WorkerSettings {
             docker: PathBuf::from("/opt/bin/docker"),
             image: format!("local/trivy@sha256:{}", "a".repeat(64)),
+            db_dir: PathBuf::from("/tmp/trivy-db"),
         };
         let argv = build_args(
             &fake,
@@ -291,6 +314,9 @@ mod tests {
             .any(|p| p == ["--cap-drop=ALL", "--security-opt=no-new-privileges"]));
         assert!(argv.iter().any(|a| a.contains("dst=/workspace,readonly")));
         assert!(argv.iter().any(|a| a == "--pull=never"));
+        assert!(argv.iter().any(|a| a.contains("dst=/tmp/trivy/db,readonly")));
+        assert!(argv.windows(2).any(|p| p == ["--cache-dir", "/tmp/trivy"]));
+        assert!(argv.windows(2).any(|p| p == ["--scanners", "vuln"]));
         assert!(!argv.iter().any(|a| a == "--privileged"));
         assert!(argv.iter().any(|a| a == "--user=1000:1000"));
         assert!(!safe_mount_path(Path::new("/tmp/path,with-comma")));
