@@ -39,6 +39,25 @@ SQLite-backed state. This preview does not dispatch tools. Inspect the
 proposed DAG, choose **Use this reviewed task plan**, then create and separately
 approve/run the existing Rust review.
 
+## Automated Flow → Task → Subtask → Action
+
+From **Agents**, first prepare a normal indexed project review (optionally
+using the Go planner or refined task proposal). Select that planned review and
+choose **Prepare automated flow**. Inspect the source/specialist tasks and their
+dependencies, then choose **Approve and run complete flow**. That single explicit
+approval atomically approves the reviewed Rust plan. The flow then executes all
+registered, dependency-ready subtasks automatically, calling the Go scheduler
+and the Rust dependency validator before each specialist.
+
+The hierarchy is persisted without duplicating mutable state: migration 0044
+binds a flow to one original SQLite review. Each Task groups the existing
+delegated Subtasks, whose individual Actions are durable receipts from migration
+0043. A read-only flow query displays exact current progress, evidence statuses
+and action receipts. Cancellation, failure and interruption stop the supervised
+chain without automatic retry after a crash. This is **single-approved passive
+review automation**, not permission to target arbitrary networks or run exploits.
+Full PentAGI multi-flow dynamic autonomous orchestration is not yet ported.
+
 ## Protocol and security boundaries
 
 - Rust sends one versioned JSON request on stdin, containing only the

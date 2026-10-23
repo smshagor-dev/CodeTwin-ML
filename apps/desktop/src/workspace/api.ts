@@ -91,6 +91,22 @@ export const workspaceApi = {
     return invoke<{ id: number; position: number; role: string; verdict: string;
       ready: string[]; reason: string; created_at: string }[]>("list_go_dispatch_audit", { id });
   },
+  prepareAutomatedSecurityFlow(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").AutomatedSecurityFlow>(
+      "prepare_automated_security_flow", { id });
+  },
+  getAutomatedSecurityFlow(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").AutomatedSecurityFlow | null>(
+      "get_automated_security_flow", { id });
+  },
+  approveAutomatedSecurityFlow(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").AutomatedSecurityFlow>(
+      "approve_automated_security_flow", { id });
+  },
+  runAutomatedSecurityFlow(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").AutomatedSecurityFlow>(
+      "run_automated_security_flow", { id });
+  },
   runNativeGoReview(id: string) {
     return invoke<import("./pages/NativeAgentsPage").NativeAgentRun>("run_native_go_review", { id });
   },
