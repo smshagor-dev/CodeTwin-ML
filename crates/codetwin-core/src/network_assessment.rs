@@ -498,6 +498,32 @@ mod tests {
             .is_err());
     }
     #[test]
+    fn active_and_interrupted_runs_never_continue_without_fresh_approval() {
+        let db = Database::open_in_memory().unwrap();
+        let service = NetworkAssessment::new(&db);
+        let request = NetworkAssessmentRequest {
+            target: "127.0.0.1".into(),
+            ports: vec![12345],
+            authorization_confirmed: true,
+            allow_private_networks: true,
+            budget_seconds: 5,
+        };
+        let first = service.prepare(request.clone()).unwrap();
+        service.approve(&first.id).unwrap();
+        db.connection().execute(
+            "UPDATE network_assessment_runs SET status='running' WHERE id=?1",
+            [&first.id],
+        ).unwrap();
+        let second = service.prepare(request).unwrap();
+        service.approve(&second.id).unwrap();
+        assert!(service.execute(&second.id).is_err());
+        assert_eq!(service.recover_interrupted().unwrap(), 1);
+        assert_eq!(service.get(&first.id).unwrap().status, "interrupted");
+        assert!(service.execute(&first.id).is_err());
+        assert_eq!(service.get(&second.id).unwrap().status, "approved");
+    }
+
+    #[test]
     fn cancelled_plan_cannot_dispatch() {
         let db = Database::open_in_memory().unwrap();
         let service = NetworkAssessment::new(&db);
