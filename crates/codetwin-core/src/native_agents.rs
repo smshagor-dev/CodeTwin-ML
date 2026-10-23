@@ -344,39 +344,73 @@ impl<'a> NativeAgents<'a> {
         let start = Instant::now();
         let result = catch_unwind(AssertUnwindSafe(|| self.run_steps(&run, start, dispatch)))
             .unwrap_or_else(|_| Err("Review encountered a worker panic".into()));
-        let message = result.err();
-        let cancelled: bool = self
-            .db
-            .connection()
-            .query_row(
-                "SELECT cancel_requested FROM native_agent_runs WHERE id=?1",
-                [id],
-                |r| r.get(0),
-            )
-            .map_err(to_error)?;
-        let status = if cancelled {
-            "cancelled"
-        } else if message.is_some() {
-            "failed"
-        } else {
-            "completed"
-        };
-        // Parent, unfinished native steps and unstarted delegated tasks
-        // must commit together, including on a denied Go scheduling decision.
+        self.finalize_review(id, result.err())?;
+        // Remember only non-sensitive role status and source-run provenance.
+        crate::native_agent_memory::AgentMemory::new(self.db).record_run(id)?;
+        crate::native_agent_knowledge::AgentKnowledge::new(self.db).ingest(id)?;
+        self.get(id)
+    }
+
+    /// The initial terminal decision, cancellation check, evidence-chain
+    /// verification and cleanup must have one SQLite commit boundary. A
+    /// competing cancel() can either acquire the write lock first (and force
+    /// cancelled) or will see an already terminal run after this commit.
+    fn finalize_review(&self, id: &str, execution_error: Option<String>) -> Result<(), String> {
         let tx = self
             .db
             .connection()
             .unchecked_transaction()
             .map_err(to_error)?;
-        let finished = tx
+        // This UPDATE obtains the SQLite write lock before classifying the
+        // cancellation flag. Never read it on an earlier unlocked snapshot.
+        let changed = tx
             .execute(
-                "UPDATE native_agent_runs SET status=?2,message=?3,finished_at=CURRENT_TIMESTAMP
-             WHERE id=?1 AND status='running'",
-                params![id, status, message],
+                "UPDATE native_agent_runs
+                 SET status=CASE
+                   WHEN cancel_requested=1 THEN 'cancelled'
+                   WHEN ?2 IS NOT NULL THEN 'failed'
+                   ELSE 'completed' END,
+                   message=CASE
+                     WHEN cancel_requested=1 THEN COALESCE(?2, 'Review cancelled')
+                     ELSE ?2 END,
+                   finished_at=CURRENT_TIMESTAMP
+                 WHERE id=?1 AND status='running'",
+                params![id, execution_error],
             )
             .map_err(to_error)?;
-        if finished != 1 {
+        if changed != 1 {
             return Err("Review state changed during finalization".into());
+        }
+        let mut status: String = tx
+            .query_row(
+                "SELECT status FROM native_agent_runs WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(to_error)?;
+        if status == "completed" {
+            // These readers share the same connection and see the tentative
+            // status, but other SQLite connections cannot see it until commit.
+            let verdict = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
+            let delegation =
+                crate::native_agent_delegation::NativeDelegation::new(self.db).verify(id);
+            if !verdict.verified || delegation.is_err() {
+                let reason = delegation
+                    .err()
+                    .unwrap_or_else(|| verdict.issues.join("; "));
+                let downgraded = tx
+                    .execute(
+                        "UPDATE native_agent_runs
+                         SET status='failed',message=?2
+                         WHERE id=?1 AND status='completed'",
+                        params![id, reason],
+                    )
+                    .map_err(to_error)?;
+                if downgraded != 1 {
+                    return Err("Evidence verification changed before finalization".into());
+                }
+                status = "failed".into();
+            }
         }
         tx.execute(
             "UPDATE native_agent_steps
@@ -387,9 +421,6 @@ impl<'a> NativeAgents<'a> {
         )
         .map_err(to_error)?;
         if status != "completed" {
-            // A panic or cancellation may leave an action in-flight after the
-            // specialist step was already claimed. Preserve the receipt, but
-            // close it as interrupted instead of pretending it never ran.
             tx.execute(
                 "UPDATE native_action_log SET status='interrupted',
                  finished_at=CURRENT_TIMESTAMP
@@ -404,26 +435,7 @@ impl<'a> NativeAgents<'a> {
             )
             .map_err(to_error)?;
         }
-        tx.commit().map_err(to_error)?;
-        // A completed run is only accepted after checking the whole handoff chain.
-        if status == "completed" {
-            let verdict = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
-            let delegation =
-                crate::native_agent_delegation::NativeDelegation::new(self.db).verify(id);
-            if !verdict.verified || delegation.is_err() {
-                let reason = delegation
-                    .err()
-                    .unwrap_or_else(|| verdict.issues.join("; "));
-                self.db.connection().execute(
-                    "UPDATE native_agent_runs SET status='failed',message=?2 WHERE id=?1 AND status='completed'",
-                    params![id, reason],
-                ).map_err(to_error)?;
-            }
-        }
-        // Remember only non-sensitive role status and source-run provenance.
-        crate::native_agent_memory::AgentMemory::new(self.db).record_run(id)?;
-        crate::native_agent_knowledge::AgentKnowledge::new(self.db).ingest(id)?;
-        self.get(id)
+        tx.commit().map_err(to_error)
     }
 
     fn run_steps(
