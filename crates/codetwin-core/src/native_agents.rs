@@ -317,12 +317,19 @@ impl<'a> NativeAgents<'a> {
         if run.status != "approved" {
             return Err("Approve this review before running it".into());
         }
+        // Atomic SQLite authorization gate: a waiting queued review must
+        // first be claimed by the FIFO runner. This also protects the normal
+        // single-review command from dispatching a queued flow out of order.
         let claimed = self
             .db
             .connection()
             .execute(
                 "UPDATE native_agent_runs SET status='running',started_at=CURRENT_TIMESTAMP
-             WHERE id=?1 AND status='approved' AND cancel_requested=0",
+             WHERE id=?1 AND status='approved' AND cancel_requested=0
+               AND NOT EXISTS (
+                 SELECT 1 FROM native_flow_queue
+                 WHERE review_id=?1 AND status='queued'
+               )",
                 [id],
             )
             .map_err(to_error)?;
