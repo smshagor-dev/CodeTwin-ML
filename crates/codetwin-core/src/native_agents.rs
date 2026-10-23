@@ -317,9 +317,10 @@ impl<'a> NativeAgents<'a> {
         if run.status != "approved" {
             return Err("Approve this review before running it".into());
         }
-        // Atomic SQLite authorization gate: a waiting queued review must
-        // first be claimed by the FIFO runner. This also protects the normal
-        // single-review command from dispatching a queued flow out of order.
+        // Atomic SQLite authorization gate: waiting queued reviews must
+        // first be claimed by the FIFO runner. An interrupted queue receipt
+        // cannot re-use a formerly approved review, including older databases
+        // whose interrupted parent was not yet retired.
         let claimed = self
             .db
             .connection()
@@ -328,7 +329,7 @@ impl<'a> NativeAgents<'a> {
              WHERE id=?1 AND status='approved' AND cancel_requested=0
                AND NOT EXISTS (
                  SELECT 1 FROM native_flow_queue
-                 WHERE review_id=?1 AND status='queued'
+                 WHERE review_id=?1 AND status IN ('queued','interrupted')
                )",
                 [id],
             )

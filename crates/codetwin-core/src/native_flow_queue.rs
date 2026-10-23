@@ -229,6 +229,12 @@ impl<'a> NativeFlowQueue<'a> {
         if changed != 1 {
             return Err("Flow queue item was not executing".into());
         }
+        // If an execution-layer error happens after a queue claim but before
+        // the supervisor starts, the parent may still be approved. Retire it
+        // atomically with the queue receipt so it cannot execute on a retry.
+        if status == "interrupted" {
+            retire_aborted_review(&tx, review_id)?;
+        }
         tx.commit().map_err(err)
     }
 
@@ -250,20 +256,77 @@ impl<'a> NativeFlowQueue<'a> {
     }
 
     /// Called on desktop startup, *after* native review recovery. A killed
-    /// queue runner must never auto-replay an action after restart.
+    /// queue runner must never auto-replay an action after restart. Recover
+    /// legacy interrupted receipts whose parent remained approved as well.
     pub fn recover_interrupted(&self) -> Result<(), String> {
-        self.db
-            .connection()
-            .execute(
-                "UPDATE native_flow_queue SET status='interrupted',
-                 finished_at=CURRENT_TIMESTAMP,
-                 detail='Desktop process stopped during queued execution'
-                 WHERE status='running'",
-                [],
-            )
-            .map_err(err)?;
-        Ok(())
+        let tx = self.db.connection().unchecked_transaction().map_err(err)?;
+        let stranded = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT q.review_id FROM native_flow_queue q
+                     JOIN native_agent_runs r ON r.id=q.review_id
+                     WHERE q.status='running'
+                        OR (q.status='interrupted'
+                            AND r.status IN ('approved','running'))",
+                )
+                .map_err(err)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(err)?
+        };
+        for review_id in &stranded {
+            retire_aborted_review(&tx, review_id)?;
+        }
+        tx.execute(
+            "UPDATE native_flow_queue SET status='interrupted',
+             finished_at=CURRENT_TIMESTAMP,
+             detail='Desktop process stopped during queued execution'
+             WHERE status='running'",
+            [],
+        )
+        .map_err(err)?;
+        tx.commit().map_err(err)
     }
+}
+
+/// An interrupted queue must never leave a runnable parent behind. This
+/// executes inside the caller's transaction with its terminal queue receipt.
+fn retire_aborted_review(tx: &rusqlite::Transaction<'_>, review_id: &str) -> Result<(), String> {
+    let changed = tx
+        .execute(
+            "UPDATE native_agent_runs SET status='interrupted',cancel_requested=1,
+             finished_at=CURRENT_TIMESTAMP,
+             message='Approved queue execution interrupted; create a fresh review'
+             WHERE id=?1 AND status IN ('approved','running')",
+            [review_id],
+        )
+        .map_err(err)?;
+    if changed != 0 {
+        tx.execute(
+            "UPDATE native_agent_steps
+             SET status=CASE WHEN status='running' THEN 'interrupted'
+                             ELSE 'cancelled' END,
+                 finished_at=CURRENT_TIMESTAMP
+             WHERE run_id=?1 AND status IN ('running','pending')",
+            [review_id],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "UPDATE native_action_log SET status='interrupted',
+             finished_at=CURRENT_TIMESTAMP
+             WHERE run_id=?1 AND status='running'",
+            [review_id],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "UPDATE native_delegation_tasks SET status='cancelled'
+             WHERE run_id=?1 AND status IN ('pending','running')",
+            [review_id],
+        )
+        .map_err(err)?;
+    }
+    Ok(())
 }
 
 fn decode(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedFlow> {
@@ -293,6 +356,16 @@ fn err(error: impl std::fmt::Display) -> String {
 mod tests {
     use super::*;
     use crate::{native_agents::NativeAgents, native_flow::NativeFlow, ProjectIndexService};
+
+    fn cancellation_requested(db: &Database, review_id: &str) -> bool {
+        db.connection()
+            .query_row(
+                "SELECT cancel_requested FROM native_agent_runs WHERE id=?1",
+                [review_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+    }
 
     fn approved(db: &Database, project: &str) -> String {
         let review = NativeAgents::new(db)
@@ -528,6 +601,77 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_claim_retires_approval_without_dispatching_tools() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.rs"), "pub fn safe() {}").unwrap();
+        let project = ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let id = approved(&db, &project);
+        let queue = NativeFlowQueue::new(&db);
+        queue.enqueue(&id).unwrap();
+        queue.claim_next().unwrap().unwrap();
+
+        // The external Go preflight fails after the claim, before any step.
+        queue.finish(&id, "interrupted", "Go policy verification unavailable").unwrap();
+        let receipt = queue.get(&id).unwrap().unwrap();
+        assert_eq!(receipt.status, "interrupted");
+        assert_eq!(receipt.review_status, "interrupted");
+        assert_eq!(receipt.completed_steps, 0);
+        assert!(receipt.finished_at.is_some());
+        let run = NativeAgents::new(&db).get(&id).unwrap();
+        assert!(cancellation_requested(&db, &id));
+        assert!(run.steps.iter().all(|step| step.status == "cancelled"));
+        assert!(NativeAgents::new(&db).execute(&id).is_err());
+        assert!(queue.finish(&id, "completed", "cannot finish twice").is_err());
+        assert!(queue.claim_next().unwrap().is_none());
+
+        // The interrupted approval does not lock a fresh reviewed plan.
+        let replacement = approved(&db, &project);
+        assert_ne!(replacement, id);
+        assert_eq!(
+            NativeAgents::new(&db).get(&replacement).unwrap().status,
+            "approved"
+        );
+    }
+
+    #[test]
+    fn legacy_interrupted_receipt_cannot_be_replayed_and_is_reconciled() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.ts"), "export const ok = true;").unwrap();
+        let project = ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let id = approved(&db, &project);
+        let queue = NativeFlowQueue::new(&db);
+        queue.enqueue(&id).unwrap();
+        queue.claim_next().unwrap().unwrap();
+
+        // Old desktop versions could record an interrupted queue but leave the
+        // parent approved. The direct-run guard protects the legacy DB even
+        // before the recovery routine reconciles it.
+        db.connection()
+            .execute(
+                "UPDATE native_flow_queue SET status='interrupted'
+                 WHERE review_id=?1 AND status='running'",
+                [&id],
+            )
+            .unwrap();
+        assert_eq!(NativeAgents::new(&db).get(&id).unwrap().status, "approved");
+        assert!(NativeAgents::new(&db).execute(&id).is_err());
+
+        queue.recover_interrupted().unwrap();
+        assert_eq!(NativeAgents::new(&db).get(&id).unwrap().status, "interrupted");
+        assert_eq!(queue.get(&id).unwrap().unwrap().status, "interrupted");
+        queue.recover_interrupted().unwrap();
+        assert_eq!(NativeAgents::new(&db).get(&id).unwrap().status, "interrupted");
+    }
+
+    #[test]
     fn restart_interrupts_active_queue_without_replaying() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("flows.sqlite3");
@@ -552,9 +696,24 @@ mod tests {
         let queue = NativeFlowQueue::new(&db);
         let receipt = queue.get(&id).unwrap().unwrap();
         assert_eq!(receipt.status, "interrupted");
+        assert_eq!(receipt.review_status, "interrupted");
+        assert_eq!(receipt.completed_steps, 0);
+        let original = NativeAgents::new(&db).get(&id).unwrap();
+        assert!(cancellation_requested(&db, &id));
+        assert!(original.steps.iter().all(|step| step.status == "cancelled"));
+        assert!(NativeAgents::new(&db).execute(&id).is_err());
         assert!(queue.claim_next().unwrap().is_none());
         assert!(queue.enqueue(&id).is_err());
         queue.recover_interrupted().unwrap();
         assert_eq!(queue.get(&id).unwrap().unwrap().status, "interrupted");
+
+        // Unfinished approvals can no longer block a fresh explicit approval
+        // for the same indexed project after the desktop is restarted.
+        let project = ProjectIndexService::new(&db)
+            .index_project(&source)
+            .unwrap()
+            .project_id;
+        let fresh = approved(&db, &project);
+        assert_ne!(fresh, id);
     }
 }
