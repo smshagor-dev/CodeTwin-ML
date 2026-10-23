@@ -230,7 +230,7 @@ impl<'a> NativeActionLog<'a> {
             if step.status != "completed"
                 || receipt.status != "completed"
                 || receipt.role != step.tool
-                || receipt.finished_at.is_none()
+                || receipt.finished_at.as_deref().is_none_or(str::is_empty)
                 || receipt.result_sha256.as_deref() != Some(digest.as_str())
             {
                 return Err(format!(
