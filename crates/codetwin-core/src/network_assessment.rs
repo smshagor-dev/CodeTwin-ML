@@ -3,8 +3,8 @@
 use crate::Database;
 use reqwest::{blocking::Client, header::HeaderMap, redirect::Policy, Url};
 use rusqlite::{params, OptionalExtension};
-use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     io,
     net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
@@ -442,7 +442,7 @@ fn https_header_probe(
                     .and_then(|tls| tls.peer_certificate()),
             );
             (Some(posture), None)
-        },
+        }
         Err(error) if error.is_timeout() => (None, Some("timeout")),
         // Connection failures also include TLS and trust errors. Do not claim
         // a certificate is invalid without certificate-chain evidence.
