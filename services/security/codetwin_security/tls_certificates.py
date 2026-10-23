@@ -79,7 +79,7 @@ def address_allowed(raw: str, allow_private: bool) -> bool:
 def resolve_target(host: str, port: int, allow_private: bool) -> tuple[str, ...]:
     try:
         addresses = {
-            item[4][0]
+            str(item[4][0])
             for item in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         }
     except OSError as error:
