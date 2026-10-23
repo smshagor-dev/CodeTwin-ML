@@ -481,9 +481,7 @@ mod tests {
             )
             .expect("prepare source review");
         reviews.approve(&run.id).expect("explicitly approve review");
-        let check = |db: &super::Database,
-                     run: &super::AgentRun,
-                     step: &super::AgentStep| {
+        let check = |db: &super::Database, run: &super::AgentRun, step: &super::AgentStep| {
             let advice = super::verified_dispatch(db, &run.id, &binary)?;
             if advice.ready.iter().any(|role| role == &step.tool) {
                 Ok(())
