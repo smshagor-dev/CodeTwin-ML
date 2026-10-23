@@ -1,0 +1,54 @@
+name: Go Security Engine
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/security-engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v6.0.0
+        with:
+          go-version-file: services/security-engine/go.mod
+      - name: Verify Go formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Test Go security planning
+        run: go test -race ./...
+      - name: Vet Go code
+        run: go vet ./...
+      - name: Build offline planner
+        run: go build -trimpath -o codetwin-security .
+
+  packaged-companion:
+    name: Tauri companion on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v6.0.0
+        with:
+          go-version-file: services/security-engine/go.mod
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Verify sidecar builder
+        run: node --check scripts/build-go-sidecar.mjs
+      - name: Build packaged Go companion
+        run: node scripts/build-go-sidecar.mjs
+      - name: Check embedded protocol identity
+        run: node -e "const fs=require('fs'),cp=require('child_process'),p=require('path');const d='apps/desktop/src-tauri/binaries';const f=fs.readdirSync(d).find(x=>x.startsWith('codetwin-security-'));if(!f)process.exit(2);const h=JSON.parse(cp.execFileSync(p.resolve(d,f),['--health'],{encoding:'utf8'}));if(h.engine!=='codetwin-security'||h.storage!=='rust-sqlite'||h.protocol_version!==1)process.exit(3)"

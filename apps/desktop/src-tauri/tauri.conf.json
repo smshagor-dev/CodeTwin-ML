@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "dev.smshagor.codetwinml",
   "build": {
-    "beforeDevCommand": "npm run dev --workspace @codetwin/desktop",
-    "beforeBuildCommand": "npm run build --workspace @codetwin/desktop",
+    "beforeDevCommand": "npm run build:go-sidecar && npm run dev --workspace @codetwin/desktop",
+    "beforeBuildCommand": "npm run build:go-sidecar && npm run build --workspace @codetwin/desktop",
     "devUrl": "http://127.0.0.1:5173",
     "frontendDist": "../dist"
   },
@@ -26,6 +26,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": ["binaries/codetwin-security"],
     "resources": {
       "windows/install-openmindai-datasets.ps1": "resources/install-openmindai-datasets.ps1",
       "../../../scripts/install_openmindai_datasets.py": "resources/install_openmindai_datasets.py"
