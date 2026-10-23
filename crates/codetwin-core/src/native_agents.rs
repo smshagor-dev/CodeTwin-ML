@@ -616,6 +616,10 @@ impl<'a> NativeAgents<'a> {
                 log.begin(&run.id, step.position, &step.tool)?;
             }
 
+            // Claiming the second role can race with cancellation from
+            // another SQLite connection; do not start workers if it arrived.
+            self.boundary(&run.id, start, run.budget_seconds)?;
+
             let filename = self
                 .db
                 .connection()
