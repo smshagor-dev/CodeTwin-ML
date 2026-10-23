@@ -51,9 +51,18 @@ fn real_docker_offline_scan_records_a_durable_receipt() {
     );
     let saved = audit.latest(&run.id).unwrap().unwrap();
     assert_eq!(saved.status, "success");
-    assert_eq!(saved.image_digest.as_deref(), Some(receipt.image_digest.as_str()));
-    assert_eq!(saved.report_sha256.as_deref(), Some(receipt.report_sha256.as_str()));
+    assert_eq!(
+        saved.image_digest.as_deref(),
+        Some(receipt.image_digest.as_str())
+    );
+    assert_eq!(
+        saved.report_sha256.as_deref(),
+        Some(receipt.report_sha256.as_str())
+    );
     assert_eq!(saved.vulnerability_count, Some(receipt.vulnerability_count));
-    assert_eq!(saved.misconfiguration_count, Some(receipt.misconfiguration_count));
+    assert_eq!(
+        saved.misconfiguration_count,
+        Some(receipt.misconfiguration_count)
+    );
     assert_eq!(audit.recover_interrupted().unwrap(), 0);
 }
