@@ -1029,6 +1029,9 @@ fn main() {
             codetwin_core::native_agents::NativeAgents::new(&database)
                 .recover_interrupted()
                 .map_err(std::io::Error::other)?;
+            codetwin_core::network_assessment::NetworkAssessment::new(&database)
+                .recover_interrupted()
+                .map_err(std::io::Error::other)?;
             codetwin_core::native_worker_audit::WorkerAudit::new(&database)
                 .recover_interrupted()
                 .map_err(std::io::Error::other)?;

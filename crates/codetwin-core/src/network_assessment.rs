@@ -184,7 +184,11 @@ impl<'a> NetworkAssessment<'a> {
             .connection()
             .execute(
                 "UPDATE network_assessment_runs SET status='running',started_at=CURRENT_TIMESTAMP
-             WHERE id=?1 AND status='approved'",
+             WHERE id=?1 AND status='approved'
+               AND NOT EXISTS (
+                 SELECT 1 FROM network_assessment_runs
+                 WHERE status='running'
+               )",
                 [id],
             )
             .map_err(err)?;
@@ -205,6 +209,20 @@ impl<'a> NetworkAssessment<'a> {
              WHERE id=?1 AND status='running'", [id],
         ).map_err(err)?;
         self.get(id)
+    }
+
+    /// Any interrupted scan must be explicit after an application restart.
+    pub fn recover_interrupted(&self) -> Result<usize, String> {
+        self.db
+            .connection()
+            .execute(
+                "UPDATE network_assessment_runs
+                 SET status='interrupted',finished_at=CURRENT_TIMESTAMP,
+                     message='App closed during review; prepare and approve a new assessment'
+                 WHERE status='running'",
+                [],
+            )
+            .map_err(err)
     }
 
     fn execute_inner(&self, id: &str) -> Result<(), String> {
