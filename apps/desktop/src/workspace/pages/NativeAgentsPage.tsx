@@ -962,8 +962,8 @@ export function NativeAgentsPage() {
         </p>}
       </section>
       <div className="ws-top-actions">
-        {selected.status === "planned" && !automatedFlow && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => void approve(selected.id)}>Approve plan</button>}
-        {selected.status === "planned" && !automatedFlow && <button className="ws-button ws-button-secondary"
+        {selected.status === "planned" && automatedFlow?.review_id !== selected.id && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => void approve(selected.id)}>Approve plan</button>}
+        {selected.status === "planned" && automatedFlow?.review_id !== selected.id && <button className="ws-button ws-button-secondary"
           disabled={!goStatus?.configured || Boolean(busy)}
           onClick={() => void prepareAutomatedFlow(selected.id)}>Prepare automated flow</button>}
         {selected.status === "planned" && automatedFlow?.review_id === selected.id && <button className="ws-button ws-button-primary"
@@ -974,8 +974,8 @@ export function NativeAgentsPage() {
         {selected.status === "approved" && automatedFlow?.review_id === selected.id && automatedFlow.approved_at && <button className="ws-button ws-button-primary"
           disabled={!goStatus?.configured || Boolean(busy)}
           onClick={() => void runApprovedAutomatedFlow(selected.id)}>Run approved automated flow</button>}
-        {selected.status === "approved" && !automatedFlow && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => execute(selected.id)}>Run approved review</button>}
-        {selected.status === "approved" && !automatedFlow && <button className="ws-button ws-button-secondary"
+        {selected.status === "approved" && automatedFlow?.review_id !== selected.id && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => execute(selected.id)}>Run approved review</button>}
+        {selected.status === "approved" && automatedFlow?.review_id !== selected.id && <button className="ws-button ws-button-secondary"
           disabled={!goStatus?.configured || Boolean(busy)}
           onClick={() => executeWithGo(selected.id)}>
           {busy === "go-run" ? "Running Go-verified review…" : "Run with Go scheduling checks"}
