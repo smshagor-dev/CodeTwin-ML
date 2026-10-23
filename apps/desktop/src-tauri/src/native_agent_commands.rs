@@ -140,11 +140,11 @@ pub fn verify_native_agent_run(
 pub fn audit_native_evidence_history(
     project_id: String,
     limit: usize,
-    before_rowid: Option<i64>,
+    before_rowid: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<HistoricalEvidenceAudit, String> {
     let db = open_db(&app)?;
-    NativeAgents::new(&db).audit_completed_history_page(&project_id, limit, before_rowid)
+    NativeAgents::new(&db).audit_completed_history_page(&project_id, limit, before_rowid.as_deref())
 }
 
 #[tauri::command]
