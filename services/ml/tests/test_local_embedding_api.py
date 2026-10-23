@@ -84,6 +84,21 @@ class LocalEmbeddingServiceTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(json.loads(response.read())["status"], "ready")
             connection.close()
+
+            for forbidden_headers, expected in [
+                ({"Content-Type": "application/json", "Origin": "https://example.org"}, 403),
+                ({"Content-Type": "text/plain"}, 415),
+            ]:
+                connection = http.client.HTTPConnection(
+                    "127.0.0.1", server.server_port, timeout=4
+                )
+                connection.request(
+                    "POST", "/v1/embeddings", body=payload, headers=forbidden_headers
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, expected)
+                response.read()
+                connection.close()
         finally:
             server.shutdown()
             thread.join(timeout=4)
