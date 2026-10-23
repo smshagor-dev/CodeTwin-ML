@@ -394,9 +394,12 @@ impl<'a> NativeAgents<'a> {
             let verdict = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
             let delegation =
                 crate::native_agent_delegation::NativeDelegation::new(self.db).verify(id);
-            if !verdict.verified || delegation.is_err() {
-                let reason = delegation
+            let receipts = crate::native_action_log::NativeActionLog::new(self.db)
+                .verify_completed(id);
+            if !verdict.verified || delegation.is_err() || receipts.is_err() {
+                let reason = receipts
                     .err()
+                    .or_else(|| delegation.err())
                     .unwrap_or_else(|| verdict.issues.join("; "));
                 let downgraded = tx
                     .execute(
