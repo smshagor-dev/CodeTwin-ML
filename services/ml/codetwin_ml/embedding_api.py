@@ -90,6 +90,15 @@ def make_handler(service: LocalEmbeddingService) -> type[BaseHTTPRequestHandler]
             if self.path != "/v1/embeddings":
                 self.send_error(404)
                 return
+            # Deny browser-origin requests to this loopback-only inference service.
+            # CodeTwin's Rust HTTP client sends JSON without an Origin header.
+            if self.headers.get("Origin") is not None:
+                self.send_error(403)
+                return
+            if self.headers.get_content_type() != "application/json":
+                self.send_error(415)
+                return
+            self.connection.settimeout(10)
             try:
                 content_length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < content_length <= MAX_BODY_BYTES:
