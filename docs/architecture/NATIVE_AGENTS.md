@@ -177,9 +177,10 @@ This is an initial **offline scanner integration**, not a generic container tool
 marketplace or a guarantee against a compromised Docker daemon or malicious scanner
 image. Local Docker availability, a pinned scanner image, a preloaded offline
 vulnerability database, supported Docker host platform and actual end-to-end
-execution must still be tested. A timeout kills the Docker client and requests
-forced removal of the named container, but recovery after a daemon crash is not
-yet independently verified.
+execution must still be tested. A timeout kills the Docker client and attempts forced removal of the named
+container with a separate five-second cleanup deadline. The resulting status
+explicitly says when removal cannot be confirmed. Recovery after a daemon crash
+is not independently verified.
 
 Do not enable network-enabled pentest workers or arbitrary tool execution without
 separate target authorization, network egress enforcement, security review and
@@ -336,3 +337,20 @@ optional and must be supplied by the operator. The server accepts only
 bounded batches of role/tool/status-style short text; avoid exposing the
 loopback port publicly. External HTTPS embedding providers continue to work
 through the same client API.
+
+## Offline report handling and cleanup safeguards
+
+The worker rejects reports larger than 2 MB, reports that are symlinks or other
+nonregular files, invalid JSON, malformed finding arrays and more than 2,000
+individual result groups. No group is silently truncated before computing the
+aggregate counts and SHA-256 report digest. The scanner image remains pinned,
+network-disabled and bound to an explicit approved local review.
+
+If Docker reports an unsuccessful run, CodeTwin attempts bounded cleanup of the
+uniquely named container. An unresponsive daemon cannot be certified clean: in
+that case the failure tells the operator that container removal is unconfirmed.
+The unit suite covers report integrity, invalid structures, counts, symlinks
+(on Unix) and cleanup command exit status. A real Docker and offline Trivy DB
+integration check remains separately opt-in, because the default CI does not
+supply a privileged daemon or pinned scanner DB. Never describe these unit
+checks as a successful physical sandbox integration run.
