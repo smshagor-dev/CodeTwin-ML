@@ -104,6 +104,10 @@ the persisted dependency graph; the native supervisor, not Go, owns the
 actual passive scanner execution and SQLite writes. Both results are joined
 before moving to the next batch. A denied role prevents that batch's tools
 from starting; a cancelled or failed batch cannot be replayed automatically.
+Each short-lived file-backed worker opens only the already migrated SQLite
+database; it does not create a new database, re-run schema initialization or
+change journal mode. This removes avoidable schema setup contention while
+two registered passive analyzers start.
 For a joined batch where just one passive specialist fails, the supervisor
 persists **both** terminal specialist receipts and their result digests in
 approved position order. The successful sibling's evidence is retained, while
