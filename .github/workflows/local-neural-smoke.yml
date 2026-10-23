@@ -1,0 +1,74 @@
+name: Real Local Neural Embedding Integration
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  neural-model-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Install opt-in pretrained neural model runtime
+        run: |
+          python -m pip install --disable-pip-version-check -r services/ml/requirements-embeddings.txt
+      - name: Download one approved public safetensors model before offline inference
+        env:
+          MODEL_PATH: ${{ runner.temp }}/codetwin-embedding-model
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi, snapshot_download
+          repo = "sentence-transformers/paraphrase-MiniLM-L3-v2"
+          revision = HfApi().model_info(repo).sha
+          assert revision is not None
+          print("Model revision:", revision)
+          snapshot_download(
+              repo_id=repo,
+              revision=revision,
+              local_dir=os.environ["MODEL_PATH"],
+              allow_patterns=["*.json", "*.txt", "*.safetensors", "1_Pooling/**"],
+          )
+          assert os.path.isfile(os.path.join(os.environ["MODEL_PATH"], "model.safetensors"))
+          PY
+      - name: Start real offline neural inference server
+        env:
+          MODEL_PATH: ${{ runner.temp }}/codetwin-embedding-model
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="services/ml"
+          python -m codetwin_ml.embedding_api --model-dir "$MODEL_PATH" --port 8765 \
+            > "$RUNNER_TEMP/embedding-server.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/embedding-server.pid"
+          for i in $(seq 1 90); do
+            if curl --fail --silent http://127.0.0.1:8765/health; then
+              echo
+              exit 0
+            fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/embedding-server.pid")" 2>/dev/null; then
+              cat "$RUNNER_TEMP/embedding-server.log"
+              exit 1
+            fi
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/embedding-server.log"
+          exit 1
+      - name: Verify pretrained embedding through Rust client
+        env:
+          CODETWIN_TEST_REAL_EMBEDDINGS: "1"
+          CODETWIN_EMBEDDING_ENDPOINT: http://127.0.0.1:8765/v1/embeddings
+          CODETWIN_EMBEDDING_MODEL: codetwin-local-embedding
+        run: cargo test -p codetwin-core --test native_embedding_provider -- --nocapture
+      - name: Stop local neural service
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/embedding-server.pid"; then
+            kill "$(cat "$RUNNER_TEMP/embedding-server.pid")" || true
+          fi
