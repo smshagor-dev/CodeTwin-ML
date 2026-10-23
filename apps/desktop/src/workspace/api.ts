@@ -111,6 +111,22 @@ export const workspaceApi = {
     return invoke<import("./pages/NativeAgentsPage").AdaptiveFlowFollowup | null>(
       "suggest_automated_flow_followup", { id });
   },
+  listApprovedFlowQueue() {
+    return invoke<import("./pages/NativeAgentsPage").ApprovedFlowQueueItem[]>(
+      "list_approved_flow_queue");
+  },
+  enqueueApprovedSecurityFlow(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").ApprovedFlowQueueItem>(
+      "enqueue_approved_security_flow", { id });
+  },
+  removeQueuedSecurityFlow(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").ApprovedFlowQueueItem[]>(
+      "remove_queued_security_flow", { id });
+  },
+  runApprovedSecurityFlowQueue() {
+    return invoke<import("./pages/NativeAgentsPage").ApprovedFlowQueueItem[]>(
+      "run_approved_security_flow_queue");
+  },
   runAutomatedSecurityFlow(id: string) {
     return invoke<import("./pages/NativeAgentsPage").AutomatedSecurityFlow>(
       "run_automated_security_flow", { id });

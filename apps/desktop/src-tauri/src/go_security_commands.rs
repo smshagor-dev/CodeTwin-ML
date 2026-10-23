@@ -11,6 +11,7 @@ use codetwin_core::{
     native_agent_memory::AgentMemory,
     native_agents::{AgentRun, AgentStep, NativeAgents},
     native_flow::{AutomatedFlow, FlowFollowup, NativeFlow},
+    native_flow_queue::{NativeFlowQueue, QueuedFlow},
     native_task_plans::{parse_proposal, validate_proposal, TaskProposal},
     Database, WorkspaceService,
 };
@@ -687,26 +688,103 @@ pub async fn run_automated_security_flow(
     tauri::async_runtime::spawn_blocking(move || {
         let _reservation = reservation;
         let db = Database::open(path).map_err(|error| error.to_string())?;
-        let existing = NativeFlow::new(&db)
-            .get(&id)?
-            .ok_or("Prepare an automated flow before running it")?;
-        if existing.status != "approved" || existing.approved_at.is_none() {
-            return Err("Explicit flow approval is required before automated execution".into());
+        run_preapproved_flow(&db, &binary, &id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Keep the same Go-gated Rust supervisor for individual and queued flows.
+fn run_preapproved_flow(
+    db: &Database,
+    binary: &Path,
+    id: &str,
+) -> Result<AutomatedFlow, String> {
+    let existing = NativeFlow::new(db)
+        .get(id)?
+        .ok_or("Prepare an automated flow before running it")?;
+    if existing.status != "approved" || existing.approved_at.is_none() {
+        return Err("Explicit flow approval is required before automated execution".into());
+    }
+    let check = |db: &Database, review: &AgentRun, task: &AgentStep| {
+        verify_and_record_go_step(db, review, task, binary)
+    };
+    let review = NativeAgents::new(db).execute_with_dispatch(id, &check)?;
+    if review.status == "failed" || review.status == "interrupted" {
+        let _ = derive_and_save_adaptive_followup(db, binary, id);
+    }
+    NativeFlow::new(db)
+        .get(id)?
+        .ok_or("Completed flow could not be reloaded".into())
+}
+
+#[tauri::command]
+pub fn list_approved_flow_queue(app: tauri::AppHandle) -> Result<Vec<QueuedFlow>, String> {
+    let db = flow_db(&app)?;
+    NativeFlowQueue::new(&db).list()
+}
+
+#[tauri::command]
+pub fn enqueue_approved_security_flow(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<QueuedFlow, String> {
+    let binary = binary_path()?;
+    probe_binary(&binary)?;
+    let db = flow_db(&app)?;
+    NativeFlowQueue::new(&db).enqueue(&id)
+}
+
+#[tauri::command]
+pub fn remove_queued_security_flow(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<QueuedFlow>, String> {
+    let db = flow_db(&app)?;
+    let queue = NativeFlowQueue::new(&db);
+    queue.cancel_queued(&id)?;
+    queue.list()
+}
+
+/// One explicit queue-start action processes up to eight separately approved
+/// reviews, in FIFO order. Any failed/interrupted flow stops the batch.
+/// The existing AppState reservation prohibits a competing native assessment.
+#[tauri::command]
+pub async fn run_approved_security_flow_queue(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<QueuedFlow>, String> {
+    let binary = binary_path()?;
+    probe_binary(&binary)?;
+    let reservation = reserve_assessment(&state)?;
+    let path = state.database_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _reservation = reservation;
+        let db = Database::open(path).map_err(|error| error.to_string())?;
+        let queue = NativeFlowQueue::new(&db);
+        for _ in 0..8 {
+            let Some(item) = queue.claim_next()? else { break };
+            let outcome = run_preapproved_flow(&db, &binary, &item.review_id);
+            match outcome {
+                Ok(flow) if flow.status == "completed" => {
+                    queue.finish(&item.review_id, "completed", "Approved evidence committed")?;
+                }
+                Ok(flow) => {
+                    queue.finish(&item.review_id, "failed", &format!(
+                        "Flow stopped with status {}", flow.status
+                    ))?;
+                    break;
+                }
+                Err(_error) => {
+                    queue.finish(
+                        &item.review_id,
+                        "interrupted",
+                        "Rust supervisor aborted; inspect original review before retry",
+                    )?;
+                    break;
+                }
+            }
         }
-        let check = |db: &Database, review: &AgentRun, task: &AgentStep| {
-            verify_and_record_go_step(db, review, task, &binary)
-        };
-        // The Rust supervisor automatically traverses the approved DAG,
-        // verifies each Go recommendation, and persists every SQLite receipt.
-        let review = NativeAgents::new(&db).execute_with_dispatch(&id, &check)?;
-        if review.status == "failed" || review.status == "interrupted" {
-            // A follow-up is a draft only. Do not mask the completed review
-            // if the optional Go suggestion is unavailable.
-            let _ = derive_and_save_adaptive_followup(&db, &binary, &id);
-        }
-        NativeFlow::new(&db)
-            .get(&id)?
-            .ok_or("Completed flow could not be reloaded".into())
+        queue.list()
     })
     .await
     .map_err(|error| error.to_string())?

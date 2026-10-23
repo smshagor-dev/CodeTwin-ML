@@ -58,6 +58,24 @@ chain without automatic retry after a crash. This is **single-approved passive
 review automation**, not permission to target arbitrary networks or run exploits.
 Full PentAGI multi-flow dynamic autonomous orchestration is not yet ported.
 
+## Bounded multi-flow queue (SQLite only)
+
+Every flow must be prepared and explicitly approved **individually**. From
+Agents choose **Queue approved flow**, then **Run approved flow queue** to
+process up to eight previously approved passive security flows in FIFO order.
+This is a foreground batch run, not a daemon or hidden background process.
+The Rust supervisor verifies every Go scheduling decision and retains its
+existing global assessment reservation, cancellation controls, evidence
+handoffs and SQLite action receipts. A failed/interrupted review stops the
+batch, leaving later queued flows unexecuted.
+
+SQLite migration 0046 records the queue's ordering, terminal status and
+timestamps without duplicating evidence. The desktop startup recovery marks
+a queue item interrupted if its runner was stopped; it does not automatically
+re-execute that item. Cancelled parent reviews are removed from the pending
+queue before a claim. Queue entries cannot add roles, targets or tools, and
+no model-generated proposal grants review approval.
+
 ## Adaptive follow-up after failure or interruption
 
 After a fully approved automated review fails, the Go sidecar automatically
