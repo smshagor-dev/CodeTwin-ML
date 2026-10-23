@@ -1,6 +1,6 @@
 //! Audited, durable evidence for strictly scoped private-network inspections.
 use crate::{network_inspection::{NetworkInspection, NetworkScope}, Database};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -55,6 +55,17 @@ impl<'a> NetworkInspectionStore<'a> {
         scope: &NetworkScope,
         outcome: &Result<NetworkInspection, String>,
     ) -> Result<(), String> {
+        let scope_sha = format!("{:x}", Sha256::digest(serde_json::to_vec(scope).map_err(err)?));
+        let (stored_scope, stored_target): (String, String) = self.db.connection()
+            .query_row(
+                "SELECT scope_sha256,target_ip FROM network_inspection_runs WHERE id=?1 AND status='running'",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(err)?;
+        if stored_scope != scope_sha || stored_target != scope.target.to_string() {
+            return Err("Approved network scope changed before recording evidence".into());
+        }
         let changed = match outcome {
             Ok(inspection) => {
                 let ports = scope.validate()?;
@@ -137,10 +148,6 @@ impl<'a> NetworkInspectionStore<'a> {
         records.collect::<Result<Vec<_>, _>>().map_err(err)
     }
 
-    pub fn get(&self, id: i64) -> Result<Option<NetworkInspectionRecord>, String> {
-        // Direct lookup, always check recorded output integrity via the shared reader.
-        self.list(50).map(|all| all.into_iter().find(|entry| entry.id == id))
-    }
 }
 
 fn err(error: impl std::fmt::Display) -> String {
