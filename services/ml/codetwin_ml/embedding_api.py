@@ -9,10 +9,11 @@ from __future__ import annotations
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import math
 import os
 from pathlib import Path
 import threading
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Protocol, Sequence, cast
 
 MAX_BODY_BYTES = 16_384
 MAX_INPUTS = 8
@@ -63,7 +64,6 @@ class LocalEmbeddingService:
         for index, vector in enumerate(vectors):
             elements = vector.tolist() if hasattr(vector, "tolist") else list(vector)
             values = [float(n) for n in elements]
-            import math
             if not (16 <= len(values) <= 3072) or any(
                 not math.isfinite(value) for value in values
             ):
@@ -137,14 +137,16 @@ def load_model(model_dir: Path, device: str) -> EmbeddingModel:
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     # Imported only on user invocation. The app's normal Python tests remain dependency-light.
-    from sentence_transformers import SentenceTransformer
+    from importlib import import_module
 
-    return SentenceTransformer(
+    # Optional heavyweight provider: only imported after explicit local launch.
+    model = import_module("sentence_transformers").SentenceTransformer(
         str(directory),
         device=device,
         trust_remote_code=False,
         local_files_only=True,
     )
+    return cast(EmbeddingModel, model)
 
 
 def main() -> None:

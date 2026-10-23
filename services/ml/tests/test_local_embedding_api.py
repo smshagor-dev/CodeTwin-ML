@@ -4,12 +4,17 @@ A real pretrained model can be tested separately by starting the opt-in server.
 """
 import http.client
 import json
+import pathlib
+import sys
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
 from typing import Any, Sequence
 
-from codetwin_ml.embedding_api import LocalEmbeddingService, make_handler
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from codetwin_ml.embedding_api import LocalEmbeddingService, make_handler  # noqa: E402
 
 
 class FakeEmbeddingModel:
