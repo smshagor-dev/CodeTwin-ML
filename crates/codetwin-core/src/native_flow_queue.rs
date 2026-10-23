@@ -357,6 +357,16 @@ mod tests {
     use super::*;
     use crate::{native_agents::NativeAgents, native_flow::NativeFlow, ProjectIndexService};
 
+    fn cancellation_requested(db: &Database, review_id: &str) -> bool {
+        db.connection()
+            .query_row(
+                "SELECT cancel_requested FROM native_agent_runs WHERE id=?1",
+                [review_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+    }
+
     fn approved(db: &Database, project: &str) -> String {
         let review = NativeAgents::new(db)
             .create_with_roles(
@@ -612,7 +622,7 @@ mod tests {
         assert_eq!(receipt.completed_steps, 0);
         assert!(receipt.finished_at.is_some());
         let run = NativeAgents::new(&db).get(&id).unwrap();
-        assert!(run.cancel_requested);
+        assert!(cancellation_requested(&db, &id));
         assert!(run.steps.iter().all(|step| step.status == "cancelled"));
         assert!(NativeAgents::new(&db).execute(&id).is_err());
         assert!(queue.finish(&id, "completed", "cannot finish twice").is_err());
@@ -689,7 +699,7 @@ mod tests {
         assert_eq!(receipt.review_status, "interrupted");
         assert_eq!(receipt.completed_steps, 0);
         let original = NativeAgents::new(&db).get(&id).unwrap();
-        assert!(original.cancel_requested);
+        assert!(cancellation_requested(&db, &id));
         assert!(original.steps.iter().all(|step| step.status == "cancelled"));
         assert!(NativeAgents::new(&db).execute(&id).is_err());
         assert!(queue.claim_next().unwrap().is_none());
