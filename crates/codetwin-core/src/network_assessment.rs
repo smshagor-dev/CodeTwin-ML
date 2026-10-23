@@ -561,7 +561,10 @@ fn allowed_address(ip: IpAddr, allow_private: bool) -> bool {
             if let Some(v4) = v6.to_ipv4() {
                 return allowed_address(IpAddr::V4(v4), allow_private);
             }
-            if v6.is_unspecified() || v6.is_multicast() {
+            if v6.is_unspecified()
+                || v6.is_multicast()
+                || (v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0db8)
+            {
                 return false;
             }
             let local = v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local();
@@ -709,6 +712,7 @@ mod tests {
         assert!(!allowed_address("::1".parse().unwrap(), false));
         assert!(!allowed_address("224.0.0.1".parse().unwrap(), true));
         assert!(!allowed_address("192.0.2.10".parse().unwrap(), true));
+        assert!(!allowed_address("2001:db8::1".parse().unwrap(), true));
         assert!(validate_ports(&[22, 443, 22]).is_err());
         assert!(validate_ports(&[0]).is_err());
         assert!(validate_ports(&(1..=17).collect::<Vec<_>>()).is_err());
