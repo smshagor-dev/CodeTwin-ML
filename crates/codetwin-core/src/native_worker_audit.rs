@@ -336,7 +336,9 @@ mod tests {
         assert_eq!(audit.list(&run.id).unwrap().len(), 1);
         audit.finish(first, &Err("fixture failure".into())).unwrap();
         let second = audit.begin(&run.id).unwrap();
-        audit.finish(second, &Err("fixture failure".into())).unwrap();
+        audit
+            .finish(second, &Err("fixture failure".into()))
+            .unwrap();
         agents.cancel(&run.id).unwrap();
 
         // A review already added to the approved FIFO flow queue must not
