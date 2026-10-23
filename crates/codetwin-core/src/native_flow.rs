@@ -72,7 +72,8 @@ impl<'a> NativeFlow<'a> {
                 [review_id],
             )
             .map_err(|error| format!("Could not prepare a unique local flow: {error}"))?;
-        self.get(review_id)?.ok_or("Prepared flow was not stored".into())
+        self.get(review_id)?
+            .ok_or("Prepared flow was not stored".into())
     }
 
     /// A single explicit human approval authorizes only the preplanned

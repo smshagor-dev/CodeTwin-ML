@@ -9,8 +9,8 @@ use std::{
 use codetwin_core::{
     native_agent_delegation::NativeDelegation,
     native_agent_memory::AgentMemory,
-    native_flow::{AutomatedFlow, NativeFlow},
     native_agents::{AgentRun, AgentStep, NativeAgents},
+    native_flow::{AutomatedFlow, NativeFlow},
     native_task_plans::{parse_proposal, validate_proposal, TaskProposal},
     Database, WorkspaceService,
 };
@@ -635,7 +635,10 @@ pub fn list_go_dispatch_audit(
 /// A flow is an indexed, reviewed DAG. One explicit approval covers the
 /// full allowlisted chain; Go verifies every subsequent specialist decision.
 fn flow_db(app: &tauri::AppHandle) -> Result<Database, String> {
-    let dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     Database::open(dir.join("codetwin.sqlite3")).map_err(|error| error.to_string())
 }
