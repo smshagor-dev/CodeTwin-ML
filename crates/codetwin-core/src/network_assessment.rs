@@ -225,10 +225,7 @@ impl<'a> NetworkAssessment<'a> {
             ).map_err(err)?;
         }
         result?;
-        self.db.connection().execute(
-            "UPDATE network_assessment_runs SET status='completed',finished_at=CURRENT_TIMESTAMP
-             WHERE id=?1 AND status='running'", [id],
-        ).map_err(err)?;
+        self.complete_if_running(id)?;
         self.get(id)
     }
 
@@ -244,6 +241,63 @@ impl<'a> NetworkAssessment<'a> {
                 [],
             )
             .map_err(err)
+    }
+
+    // Finalization must observe cancellation atomically. A late cancel
+    // cannot be returned to callers as a successfully completed assessment.
+    fn complete_if_running(&self, id: &str) -> Result<(), String> {
+        let changed = self
+            .db
+            .connection()
+            .execute(
+                "UPDATE network_assessment_runs
+                 SET status='completed',finished_at=CURRENT_TIMESTAMP
+                 WHERE id=?1 AND status='running'",
+                [id],
+            )
+            .map_err(err)?;
+        if changed != 1 {
+            return Err("Assessment was cancelled before completion".into());
+        }
+        Ok(())
+    }
+
+    // Bind the observation and the live authorization check to a *single*
+    // SQLite statement. A scan cancelled during TCP/TLS I/O cannot persist
+    // a stale result after revocation.
+    fn record_probe_if_running(&self, id: &str, probe: &NetworkProbe) -> Result<(), String> {
+        let posture_json = probe
+            .https_posture
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(err)?;
+        let changed = self
+            .db
+            .connection()
+            .execute(
+                "INSERT INTO network_assessment_probes
+                 (run_id,port,address,status,elapsed_ms,tls_status,https_posture_json,https_failure_kind)
+                 SELECT ?1,?2,?3,?4,?5,?6,?7,?8
+                 WHERE EXISTS (
+                   SELECT 1 FROM network_assessment_runs WHERE id=?1 AND status='running'
+                 )",
+                params![
+                    id,
+                    probe.port,
+                    probe.address,
+                    probe.status,
+                    probe.elapsed_ms,
+                    probe.tls_status,
+                    posture_json,
+                    probe.https_failure_kind
+                ],
+            )
+            .map_err(err)?;
+        if changed != 1 {
+            return Err("Assessment was cancelled before probe evidence could be recorded".into());
+        }
+        Ok(())
     }
 
     fn execute_inner(&self, id: &str) -> Result<(), String> {
@@ -321,29 +375,18 @@ impl<'a> NetworkAssessment<'a> {
                 }
                 Err(error) => (classify_error(&error), None, None, None),
             };
-            let posture_json = posture
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(err)?;
-            self.db
-                .connection()
-                .execute(
-                    "INSERT INTO network_assessment_probes
-                 (run_id,port,address,status,elapsed_ms,tls_status,https_posture_json,https_failure_kind)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-                    params![
-                        id,
-                        port,
-                        address.to_string(),
-                        state,
-                        started.elapsed().as_millis() as i64,
-                        tls_status,
-                        posture_json,
-                        https_failure_kind,
-                    ],
-                )
-                .map_err(err)?;
+            self.record_probe_if_running(
+                id,
+                &NetworkProbe {
+                    port,
+                    address: address.to_string(),
+                    status: state.to_owned(),
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    tls_status,
+                    https_posture: posture,
+                    https_failure_kind,
+                },
+            )?;
         }
         Ok(())
     }
@@ -716,6 +759,57 @@ mod tests {
         assert!(validate_ports(&[22, 443, 22]).is_err());
         assert!(validate_ports(&[0]).is_err());
         assert!(validate_ports(&(1..=17).collect::<Vec<_>>()).is_err());
+    }
+
+    #[test]
+    fn cancellation_revokes_probe_storage_and_successful_finalization() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("network-cancellation.sqlite3");
+        let db = Database::open(&path).unwrap();
+        let second_connection = Database::open(&path).unwrap();
+        let assessment = NetworkAssessment::new(&db);
+        let run = assessment
+            .prepare(NetworkAssessmentRequest {
+                target: "127.0.0.1".into(),
+                ports: vec![40001, 40002],
+                authorization_confirmed: true,
+                allow_private_networks: true,
+                budget_seconds: 10,
+            })
+            .unwrap();
+        assessment.approve(&run.id).unwrap();
+        db.connection()
+            .execute(
+                "UPDATE network_assessment_runs SET status='running' WHERE id=?1",
+                [&run.id],
+            )
+            .unwrap();
+        let mut observation = NetworkProbe {
+            port: 40001,
+            address: "127.0.0.1".into(),
+            status: "open".into(),
+            elapsed_ms: 1,
+            tls_status: None,
+            https_posture: None,
+            https_failure_kind: None,
+        };
+        assessment
+            .record_probe_if_running(&run.id, &observation)
+            .unwrap();
+        // Cancel from another WAL connection, as the real desktop command does
+        // while a scan executes on its own blocking worker thread.
+        NetworkAssessment::new(&second_connection)
+            .cancel(&run.id)
+            .unwrap();
+        observation.port = 40002;
+        assert!(assessment
+            .record_probe_if_running(&run.id, &observation)
+            .is_err());
+        assert!(assessment.complete_if_running(&run.id).is_err());
+        let saved = assessment.get(&run.id).unwrap();
+        assert_eq!(saved.status, "cancelled");
+        assert_eq!(saved.probes.len(), 1);
+        assert_eq!(saved.probes[0].port, 40001);
     }
 
     #[test]
