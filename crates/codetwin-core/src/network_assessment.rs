@@ -210,10 +210,9 @@ impl<'a> NetworkAssessment<'a> {
         Ok(())
     }
 
-    /// Only HTTPS ports requested explicitly. Redirects and proxies are disabled.
-    /// Success means the system trust store accepted the TLS peer; no cipher audit is claimed.
 }
 
+/// HTTPS peer trust only; this deliberately does not audit cipher strength.
 fn tls_trust_check(target:&str, address:SocketAddr,timeout:Duration)->bool {
     let port=address.port();
     let authority=if target.contains(':') {format!("[{target}]")} else {target.to_owned()};
