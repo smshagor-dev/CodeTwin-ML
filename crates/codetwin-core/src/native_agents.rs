@@ -796,6 +796,31 @@ impl<'a> NativeAgents<'a> {
         Ok(prepared)
     }
 
+    /// A read-only verification of stored evidence, including after a
+    /// formerly valid review has been altered in SQLite. The UI and exported
+    /// report must use the same complete integrity verdict.
+    pub fn verify_evidence(
+        &self,
+        id: &str,
+    ) -> Result<crate::native_agent_handoffs::AgentVerification, String> {
+        let mut result = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
+        if self.get(id)?.status == "completed" {
+            if let Err(error) =
+                crate::native_action_log::NativeActionLog::new(self.db).verify_completed(id)
+            {
+                result.verified = false;
+                result.issues.push(error);
+            }
+            if let Err(error) =
+                crate::native_agent_delegation::NativeDelegation::new(self.db).verify(id)
+            {
+                result.verified = false;
+                result.issues.push(error);
+            }
+        }
+        Ok(result)
+    }
+
     pub fn report(&self, id: &str) -> Result<String, String> {
         let run = self.get(id)?;
         let mut text = format!(
@@ -818,7 +843,7 @@ impl<'a> NativeAgents<'a> {
         if let Some(message) = run.message {
             text.push_str(&format!("\n## Unresolved\n\n{message}\n"));
         }
-        let verification = crate::native_agent_handoffs::AgentHandoffs::new(self.db).verify(id)?;
+        let verification = self.verify_evidence(id)?;
         text.push_str(&format!(
             "\n## Specialist Evidence Chain\n\nVerified: {}\n\nChecked specialists: {}\n\nVerified handoffs: {}\n",
             verification.verified, verification.checked_roles, verification.checked_handoffs
