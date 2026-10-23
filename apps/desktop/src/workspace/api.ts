@@ -87,6 +87,13 @@ export const workspaceApi = {
     return invoke<import("./security/NetworkAssessmentPanel").NetworkAssessmentRun>(
       "get_network_assessment", { id });
   },
+  goSecurityReadiness() {
+    return invoke<{ configured: boolean; detail: string }>("go_security_engine_readiness");
+  },
+  suggestGoSecurityTaskPlan(projectId: string, objective: string) {
+    return invoke<import("./pages/NativeAgentsPage").NativeTaskProposal>(
+      "suggest_go_security_task_plan", { projectId, objective });
+  },
   suggestNativeTaskPlan(projectId: string, objective: string, consent: boolean) {
     return invoke<import("./pages/NativeAgentsPage").NativeTaskProposal>("suggest_native_task_plan", {
       projectId, objective, consent,
