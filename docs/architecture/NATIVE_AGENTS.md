@@ -231,3 +231,7 @@ accepts a maintainer-approved digest-pinned image with its vulnerability DB
 already included, preloads it outside the sandbox, then runs the real
 network-disabled integration test. Merely compiling this harness does not
 mean a real sandbox test passed.
+
+## Dependency-ready scheduling
+
+The Rust delegation service exposes `ready_batch`, which returns up to two pending specialists whose approved predecessor tasks completed. This is a **dispatch candidate scheduler** and never invokes tools. Execution still happens sequentially in `NativeAgents::run_steps`; concurrent execution needs separate SQLite connections, re-entrant analyzer safety, cancellation propagation, and deterministic join/verification before it can be enabled. The new unit test covers mandatory prerequisites and bounded independent candidates.
