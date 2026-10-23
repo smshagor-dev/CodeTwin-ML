@@ -20,6 +20,39 @@ export function ToolsPage() {
   const [category, setCategory] = useState("");
   const [availability, setAvailability] = useState("");
   const [operation, setOperation] = useState("");
+  const [networkTarget, setNetworkTarget] = useState("127.0.0.1");
+  const [networkPorts, setNetworkPorts] = useState("80,443,3000");
+  const [networkAuthorized, setNetworkAuthorized] = useState(false);
+  const [networkBusy, setNetworkBusy] = useState(false);
+  const [networkError, setNetworkError] = useState("");
+  const [networkResult, setNetworkResult] = useState<{
+    target: string;
+    observations: { port: number; state: string; elapsed_ms: number }[];
+    tested_ports: number;
+    note: string;
+  } | null>(null);
+
+  async function inspectNetwork() {
+    setNetworkError(""); setNetworkResult(null);
+    if (!networkAuthorized) { setNetworkError("Confirm authorization first."); return; }
+    const ports = networkPorts.split(",").map(part => Number(part.trim()));
+    if (!ports.length || ports.length > 32 || ports.some(port => !Number.isInteger(port) || port < 1 || port > 65535)) {
+      setNetworkError("Provide 1-32 comma-separated TCP ports."); return;
+    }
+    setNetworkBusy(true);
+    try {
+      const result = await workspaceApi.inspectAuthorizedNetworkServices({
+        authorized: true,
+        target: networkTarget.trim(),
+        allowed_addresses: [networkTarget.trim()],
+        ports,
+        timeout_ms: 750,
+      });
+      setNetworkResult(result);
+    } catch (reason) { setNetworkError(String(reason)); }
+    finally { setNetworkBusy(false); }
+  }
+
 
   useEffect(() => {
     let cancelled = false;
@@ -63,6 +96,17 @@ export function ToolsPage() {
         </article>;
       })}</div>
     </>}
+    <Panel title="Authorized private-network TCP inspection">
+      <p className="ws-form-help">TCP connection reachability only. Supports explicitly approved private/loopback IP addresses, up to 32 ports and four concurrent connections. No public networks, DNS discovery, exploitation or command execution. Results are local to this screen.</p>
+      <label className="ws-field"><span>Authorized private or loopback IP address</span>
+        <input value={networkTarget} onChange={event => { setNetworkTarget(event.target.value); setNetworkResult(null); setNetworkAuthorized(false); }} placeholder="127.0.0.1"/></label>
+      <label className="ws-field"><span>TCP ports (comma-separated)</span>
+        <input value={networkPorts} onChange={event => setNetworkPorts(event.target.value)} placeholder="80,443,3000"/></label>
+      <label className="ws-field"><span><input type="checkbox" checked={networkAuthorized} onChange={event => setNetworkAuthorized(event.target.checked)}/> I own or am explicitly authorized to inspect this target.</span></label>
+      <button className="ws-button ws-button-secondary" disabled={!networkAuthorized || networkBusy} onClick={() => void inspectNetwork()}>{networkBusy ? "Inspecting…" : "Inspect TCP services"}</button>
+      {networkError && <p role="alert">{networkError}</p>}
+      {networkResult && <div role="status"><p>{networkResult.tested_ports} ports checked on {networkResult.target}</p><ul>{networkResult.observations.map(item => <li key={item.port}>{item.port}/tcp · {item.state} · {item.elapsed_ms} ms</li>)}</ul><p className="ws-form-help">{networkResult.note}</p></div>}
+    </Panel>
     <Panel title="Recent persisted runs" className="ws-tool-run-panel">
       <p className="ws-form-help">Latest 20 analysis, web and QA execution records in this project scope. Completed scans do not imply passing tests or complete security coverage.</p>
       {runError && <p role="alert">Run history unavailable: {runError}. Refresh availability to retry.</p>}
