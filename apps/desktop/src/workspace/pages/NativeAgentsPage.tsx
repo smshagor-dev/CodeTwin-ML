@@ -81,6 +81,8 @@ export type ApprovedFlowQueueItem = {
   total_steps: number;
   active_role: string | null;
   review_status: string;
+  issue_role: string | null;
+  issue_status: string | null;
 };
 
 export type AdaptiveFlowFollowup = {
@@ -735,6 +737,8 @@ export function NativeAgentsPage() {
                 Review {item.review_id.slice(0, 12)} · {item.status}
                 {" · "}{item.completed_steps}/{item.total_steps} specialists completed
                 {item.active_role ? " · Running: " + item.active_role : ""}
+                {item.issue_role && item.issue_status
+                  ? " · " + item.issue_role + ": " + item.issue_status : ""}
                 {item.detail ? " · " + item.detail : ""}
               </span>
               {item.status === "queued" && <button className="ws-button ws-button-secondary"
