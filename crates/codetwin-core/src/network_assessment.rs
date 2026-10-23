@@ -358,6 +358,9 @@ fn validate_target(raw: &str) -> Result<String, String> {
     if target.parse::<IpAddr>().is_ok() {
         return Ok(target);
     }
+    if target != "localhost" && !target.contains('.') {
+        return Err("Use a fully qualified hostname to avoid DNS search-suffix scope expansion".into());
+    }
     if target.contains(':')
         || target.split('.').any(|label| {
             label.is_empty()
@@ -449,6 +452,7 @@ mod tests {
     fn rejects_out_of_scope_and_unsafe_targets() {
         assert!(validate_target("127.0.0.1/24").is_err());
         assert!(validate_target("https://example.org").is_err());
+        assert!(validate_target("unqualified-host").is_err());
         assert!(validate_target("my-host.example.org").is_ok());
         assert!(validate_target("evil.example.org?x").is_err());
         assert!(!allowed_address("127.0.0.1".parse().unwrap(), false));
