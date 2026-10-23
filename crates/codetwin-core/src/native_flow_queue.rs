@@ -148,7 +148,9 @@ impl<'a> NativeFlowQueue<'a> {
     }
 
     pub fn finish(&self, review_id: &str, status: &str, detail: &str) -> Result<(), String> {
-        if !matches!(status, "completed" | "failed" | "interrupted") || detail.len() > 240 {
+        if !matches!(status, "completed" | "failed" | "cancelled" | "interrupted")
+            || detail.len() > 240
+        {
             return Err("Invalid terminal flow receipt".into());
         }
         let tx = self.db.connection().unchecked_transaction().map_err(err)?;
@@ -159,10 +161,14 @@ impl<'a> NativeFlowQueue<'a> {
                 |row| row.get(0),
             )
             .map_err(err)?;
-        // The queue cannot report success if the reviewed flow failed. An
-        // unexpected Rust execution error is recorded as interrupted.
-        if status == "completed" && actual != "completed" {
-            return Err("Cannot complete a flow without completed reviewed evidence".into());
+        // Completed, failed and cancelled receipts must agree with the
+        // authoritative parent review. An execution-layer error may instead
+        // leave an interrupted queue receipt for manual inspection.
+        if status != "interrupted" && actual != status {
+            return Err("Queue receipt does not match the reviewed flow status".into());
+        }
+        if status == "interrupted" && actual == "completed" {
+            return Err("Cannot interrupt a flow with completed reviewed evidence".into());
         }
         let changed = tx
             .execute(
@@ -316,6 +322,54 @@ mod tests {
         assert!(queue.claim_next().unwrap().is_none());
         assert_eq!(queue.get(&allowed).unwrap().unwrap().status, "cancelled");
         assert!(queue.enqueue(&allowed).is_err());
+    }
+
+    #[test]
+    fn claimed_flow_cancellation_has_a_matching_terminal_receipt() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.rs"), "pub fn safe() {}").unwrap();
+        let project = ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let id = approved(&db, &project);
+        let queue = NativeFlowQueue::new(&db);
+        queue.enqueue(&id).unwrap();
+        queue.claim_next().unwrap().unwrap();
+
+        NativeAgents::new(&db).cancel(&id).unwrap();
+        assert!(queue.finish(&id, "failed", "incorrect status").is_err());
+        assert!(queue.finish(&id, "completed", "incorrect status").is_err());
+        queue
+            .finish(&id, "cancelled", "Parent review was cancelled")
+            .unwrap();
+        let receipt = queue.get(&id).unwrap().unwrap();
+        assert_eq!(receipt.status, "cancelled");
+        assert!(receipt.finished_at.is_some());
+        assert!(queue.claim_next().unwrap().is_none());
+    }
+
+    #[test]
+    fn an_unclaimed_queue_item_cannot_run_through_the_native_review_path() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.rs"), "pub fn safe() {}").unwrap();
+        let project = ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let id = approved(&db, &project);
+        let queue = NativeFlowQueue::new(&db);
+        queue.enqueue(&id).unwrap();
+
+        assert!(NativeAgents::new(&db).execute(&id).is_err());
+        assert_eq!(NativeAgents::new(&db).get(&id).unwrap().status, "approved");
+        assert_eq!(queue.get(&id).unwrap().unwrap().status, "queued");
+
+        queue.claim_next().unwrap().unwrap();
+        assert_eq!(NativeAgents::new(&db).execute(&id).unwrap().status, "completed");
+        queue.finish(&id, "completed", "Reviewed evidence committed").unwrap();
     }
 
     #[test]
