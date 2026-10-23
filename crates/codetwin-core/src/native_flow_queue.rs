@@ -591,6 +591,77 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_claim_retires_approval_without_dispatching_tools() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.rs"), "pub fn safe() {}").unwrap();
+        let project = ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let id = approved(&db, &project);
+        let queue = NativeFlowQueue::new(&db);
+        queue.enqueue(&id).unwrap();
+        queue.claim_next().unwrap().unwrap();
+
+        // The external Go preflight fails after the claim, before any step.
+        queue.finish(&id, "interrupted", "Go policy verification unavailable").unwrap();
+        let receipt = queue.get(&id).unwrap().unwrap();
+        assert_eq!(receipt.status, "interrupted");
+        assert_eq!(receipt.review_status, "interrupted");
+        assert_eq!(receipt.completed_steps, 0);
+        assert!(receipt.finished_at.is_some());
+        let run = NativeAgents::new(&db).get(&id).unwrap();
+        assert!(run.cancel_requested);
+        assert!(run.steps.iter().all(|step| step.status == "cancelled"));
+        assert!(NativeAgents::new(&db).execute(&id).is_err());
+        assert!(queue.finish(&id, "completed", "cannot finish twice").is_err());
+        assert!(queue.claim_next().unwrap().is_none());
+
+        // The interrupted approval does not lock a fresh reviewed plan.
+        let replacement = approved(&db, &project);
+        assert_ne!(replacement, id);
+        assert_eq!(
+            NativeAgents::new(&db).get(&replacement).unwrap().status,
+            "approved"
+        );
+    }
+
+    #[test]
+    fn legacy_interrupted_receipt_cannot_be_replayed_and_is_reconciled() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.ts"), "export const ok = true;").unwrap();
+        let project = ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let id = approved(&db, &project);
+        let queue = NativeFlowQueue::new(&db);
+        queue.enqueue(&id).unwrap();
+        queue.claim_next().unwrap().unwrap();
+
+        // Old desktop versions could record an interrupted queue but leave the
+        // parent approved. The direct-run guard protects the legacy DB even
+        // before the recovery routine reconciles it.
+        db.connection()
+            .execute(
+                "UPDATE native_flow_queue SET status='interrupted'
+                 WHERE review_id=?1 AND status='running'",
+                [&id],
+            )
+            .unwrap();
+        assert_eq!(NativeAgents::new(&db).get(&id).unwrap().status, "approved");
+        assert!(NativeAgents::new(&db).execute(&id).is_err());
+
+        queue.recover_interrupted().unwrap();
+        assert_eq!(NativeAgents::new(&db).get(&id).unwrap().status, "interrupted");
+        assert_eq!(queue.get(&id).unwrap().unwrap().status, "interrupted");
+        queue.recover_interrupted().unwrap();
+        assert_eq!(NativeAgents::new(&db).get(&id).unwrap().status, "interrupted");
+    }
+
+    #[test]
     fn restart_interrupts_active_queue_without_replaying() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("flows.sqlite3");
@@ -615,9 +686,24 @@ mod tests {
         let queue = NativeFlowQueue::new(&db);
         let receipt = queue.get(&id).unwrap().unwrap();
         assert_eq!(receipt.status, "interrupted");
+        assert_eq!(receipt.review_status, "interrupted");
+        assert_eq!(receipt.completed_steps, 0);
+        let original = NativeAgents::new(&db).get(&id).unwrap();
+        assert!(original.cancel_requested);
+        assert!(original.steps.iter().all(|step| step.status == "cancelled"));
+        assert!(NativeAgents::new(&db).execute(&id).is_err());
         assert!(queue.claim_next().unwrap().is_none());
         assert!(queue.enqueue(&id).is_err());
         queue.recover_interrupted().unwrap();
         assert_eq!(queue.get(&id).unwrap().unwrap().status, "interrupted");
+
+        // Unfinished approvals can no longer block a fresh explicit approval
+        // for the same indexed project after the desktop is restarted.
+        let project = ProjectIndexService::new(&db)
+            .index_project(&source)
+            .unwrap()
+            .project_id;
+        let fresh = approved(&db, &project);
+        assert_ne!(fresh, id);
     }
 }
