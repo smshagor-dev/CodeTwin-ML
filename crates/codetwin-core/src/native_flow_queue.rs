@@ -454,7 +454,9 @@ mod tests {
                 .unwrap();
             let completed = NativeAgents::new(&db).execute(&id).unwrap();
             assert_eq!(completed.status, "completed");
-            queue.finish(&id, "completed", "Reviewed evidence committed").unwrap();
+            queue
+                .finish(&id, "completed", "Reviewed evidence committed")
+                .unwrap();
             id
         };
         // Progress is read from persisted SQLite state after closing the first DB.
