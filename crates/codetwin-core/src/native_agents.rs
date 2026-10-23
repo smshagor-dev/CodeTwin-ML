@@ -1317,6 +1317,122 @@ mod tests {
     }
 
     #[test]
+    fn joined_specialists_preserve_successful_sibling_evidence_on_failure() {
+        for failure_position in [2, 3] {
+            let fixture = tempfile::tempdir().unwrap();
+            let db = Database::open(fixture.path().join("joined-failure.sqlite3")).unwrap();
+            let source = fixture.path().join("source");
+            std::fs::create_dir_all(&source).unwrap();
+            std::fs::write(source.join("file.ts"), "export const safe = true;").unwrap();
+            let project = crate::ProjectIndexService::new(&db)
+                .index_project(&source)
+                .unwrap()
+                .project_id;
+            let agents = NativeAgents::new(&db);
+            let review = agents
+                .create_with_roles(
+                    &project,
+                    "Independent joined specialist outcomes",
+                    10,
+                    120,
+                    &[
+                        "scout".into(),
+                        "source".into(),
+                        "secrets".into(),
+                        "qa".into(),
+                    ],
+                )
+                .unwrap();
+            agents.approve(&review.id).unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_runs SET status='running' WHERE id=?1",
+                    [&review.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_steps SET status='completed',
+                     result_json='previous reviewed evidence'
+                     WHERE run_id=?1 AND position IN (0,1)",
+                    [&review.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_delegation_tasks SET status='completed'
+                     WHERE run_id=?1 AND position IN (0,1)",
+                    [&review.id],
+                )
+                .unwrap();
+
+            let delegation = crate::native_agent_delegation::NativeDelegation::new(&db);
+            let log = crate::native_action_log::NativeActionLog::new(&db);
+            for step in &review.steps[2..] {
+                delegation
+                    .start(&review.id, step.position, &step.role)
+                    .unwrap();
+                log.begin(&review.id, step.position, &step.tool).unwrap();
+            }
+            let outcomes = review.steps[2..]
+                .iter()
+                .map(|step| {
+                    if step.position == failure_position {
+                        Err("Injected isolated specialist failure".to_string())
+                    } else {
+                        Ok("Verified independent specialist evidence".to_string())
+                    }
+                })
+                .collect();
+            let error = agents
+                .finish_verified_batch(
+                    &review,
+                    &[&review.steps[2], &review.steps[3]],
+                    outcomes,
+                )
+                .unwrap_err();
+            assert_eq!(error, "Injected isolated specialist failure");
+            let current = agents.get(&review.id).unwrap();
+            assert_eq!(current.steps[failure_position].status, "failed");
+            assert_eq!(current.steps[5 - failure_position].status, "completed");
+            let receipts = log.list(&review.id).unwrap();
+            assert_eq!(receipts.len(), 2);
+            assert_eq!(
+                receipts
+                    .iter()
+                    .filter(|receipt| receipt.status == "failed")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                receipts
+                    .iter()
+                    .filter(|receipt| receipt.status == "completed")
+                    .count(),
+                1
+            );
+            assert!(receipts.iter().all(|receipt| {
+                receipt
+                    .result_sha256
+                    .as_ref()
+                    .is_some_and(|digest| digest.len() == 64)
+            }));
+            assert!(delegation.ready_batch(&review.id).unwrap().is_empty());
+            let handoffs = crate::native_agent_handoffs::AgentHandoffs::new(&db)
+                .list(&review.id)
+                .unwrap();
+            assert_eq!(handoffs.len(), if failure_position == 2 { 0 } else { 1 });
+            agents.cancel(&review.id).unwrap();
+            agents.recover_interrupted().unwrap();
+            let retired = agents.get(&review.id).unwrap();
+            assert_eq!(retired.status, "interrupted");
+            assert_eq!(retired.steps[failure_position].status, "failed");
+            assert_eq!(retired.steps[5 - failure_position].status, "completed");
+            assert!(agents.execute(&review.id).is_err());
+        }
+    }
+
+    #[test]
     fn go_denial_of_second_ready_specialist_starts_neither_optional_tool() {
         let temp = tempfile::tempdir().unwrap();
         let db = Database::open(temp.path().join("denied-pair.sqlite3")).unwrap();
