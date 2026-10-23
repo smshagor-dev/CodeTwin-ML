@@ -354,3 +354,19 @@ The unit suite covers report integrity, invalid structures, counts, symlinks
 integration check remains separately opt-in, because the default CI does not
 supply a privileged daemon or pinned scanner DB. Never describe these unit
 checks as a successful physical sandbox integration run.
+
+## Revoking worker authorization
+
+The existing native review cancellation action now also revokes permission for
+a separately approved Docker scanner using the same review. A worker checks
+that its parent review is still approved and has no cancellation request
+immediately before launch, on each supervisor polling interval while the
+container runs, and after exit before reading its report. Revocation kills
+its Docker CLI process, requests bounded forced removal of its named container
+and returns failure rather than saving a successful scan receipt. If Docker
+cannot confirm removal, the operator receives an explicit unconfirmed-cleanup
+status. Scanner audit entries use the constant `worker_cancelled` code after
+review revocation; neither a raw command-line error nor a path is stored.
+
+This is application-controlled cancellation while the desktop process runs;
+it is not independent proof of cleanup after app termination or daemon crash.
