@@ -113,10 +113,16 @@ cancellation, invalid handoff downgrade and durable terminal status.
 ### Historical evidence audit
 
 The Agents Dashboard can run an **on-demand, read-only** integrity check
-of up to 100 most recent completed reviews for its selected indexed project.
-Rust limits API callers to 1–200 and scopes every query to the selected
-project. The returned totals distinguish checked reviews from the full
-historical count so older unaudited results are not implied to be valid.
+of completed reviews for its selected indexed project, starting with the 100
+most recent and offering an explicit **Audit next 100 older reviews** action
+until the cursor is exhausted. Rust limits each API page to 1–200 entries and
+scopes every query to the selected project. The opaque-looking cursor is the
+exclusive SQLite rowid of the last checked review, serialized as a decimal
+string so browser number precision cannot corrupt navigation. The backend
+uses keyset pagination rather than OFFSET; new reviews inserted between
+page requests do not shift the unvisited older records. The returned totals
+distinguish cumulative checked reviews from the current full historical
+count so older unaudited results are not implied to be valid.
 Each saved review reuses the complete receipt-digest, signed handoff and
 delegation-graph verification. Missing legacy receipts and modified evidence
 are reported as unverified, not silently migrated or re-executed. The audit
