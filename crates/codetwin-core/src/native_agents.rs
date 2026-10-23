@@ -909,7 +909,10 @@ mod tests {
             .unwrap();
         let cancelled = reviews.cancel(&run.id).unwrap();
         assert_eq!(cancelled.status, "cancelled");
-        assert!(cancelled.steps.iter().all(|step| step.status == "cancelled"));
+        assert!(cancelled
+            .steps
+            .iter()
+            .all(|step| step.status == "cancelled"));
         let graph = crate::native_agent_delegation::NativeDelegation::new(&db)
             .graph(&run.id)
             .unwrap();
