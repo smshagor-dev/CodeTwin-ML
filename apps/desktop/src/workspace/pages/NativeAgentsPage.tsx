@@ -80,6 +80,7 @@ export type ApprovedFlowQueueItem = {
   completed_steps: number;
   total_steps: number;
   active_role: string | null;
+  active_roles: string[];
   review_status: string;
   issue_role: string | null;
   issue_status: string | null;
@@ -755,7 +756,9 @@ export function NativeAgentsPage() {
               <span className="ws-form-help">
                 Review {item.review_id.slice(0, 12)} · {item.status}
                 {" · "}{item.completed_steps}/{item.total_steps} specialists completed
-                {item.active_role ? " · Running: " + item.active_role : ""}
+                {item.active_roles.length > 0
+                  ? " · Running (" + item.active_roles.length + "): " + item.active_roles.join(", ")
+                  : ""}
                 {item.issue_role && item.issue_status
                   ? " · " + item.issue_role + ": " + item.issue_status : ""}
                 {item.detail ? " · " + item.detail : ""}
