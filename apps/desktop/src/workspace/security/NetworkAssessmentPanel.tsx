@@ -9,6 +9,7 @@ export type HttpsHeaderPosture = {
   csp_observed: boolean;
   nosniff_observed: boolean;
   referrer_policy_observed: boolean;
+  certificate_sha256?: string | null;
 };
 
 type HttpsFailureKind =
@@ -226,11 +227,13 @@ export function NetworkAssessmentPanel() {
               {result.https_posture.hsts_max_age_seconds !== null && ` (max-age ${result.https_posture.hsts_max_age_seconds}s)`}
               {" · "}CSP {result.https_posture.csp_observed ? "observed" : "not observed"}
               {" · "}nosniff {result.https_posture.nosniff_observed ? "observed" : "not observed"}
-              {" · "}Referrer-Policy {result.https_posture.referrer_policy_observed ? "observed" : "not observed"}</span>
+              {" · "}Referrer-Policy {result.https_posture.referrer_policy_observed ? "observed" : "not observed"}
+              {result.https_posture.certificate_sha256 &&
+                <span> · Trusted leaf SHA-256: <code>{result.https_posture.certificate_sha256}</code></span>}</span>
           : "Not observed"}</td>
       </tr>)}</tbody></table>}
       <p className="ws-form-help">Evidence is scoped to this run. TLS verification checks
-        system trust for a single HTTPS HEAD request. Header presence is observational (a HEAD response may differ from other routes); it does not audit cipher suites, protocol versions or certificate expiry. A failed HTTPS request is only classified into a short diagnostic category, not attributed to a specific certificate defect.</p>
+        system trust for a single HTTPS HEAD request. The optional leaf SHA-256 digest identifies the verified certificate, not its issuer, expiry or overall security. Header presence is observational (a HEAD response may differ from other routes); it does not audit cipher suites, protocol versions or certificate expiry. A failed HTTPS request is only classified into a short diagnostic category, not attributed to a specific certificate defect.</p>
     </Panel>}
   </div>;
 }
