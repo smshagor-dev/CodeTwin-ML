@@ -163,6 +163,7 @@ export function NativeAgentsPage() {
   const [workerConsent, setWorkerConsent] = useState(false);
   const [workerReceipt, setWorkerReceipt] = useState<IsolatedScanReceipt | null>(null);
   const [workerHistory, setWorkerHistory] = useState<WorkerAuditRecord[]>([]);
+  const [cleanupHolds, setCleanupHolds] = useState<number | null>(null);
   const [neuralReady, setNeuralReady] = useState<{ configured: boolean; detail: string } | null>(null);
   const [neuralProbe, setNeuralProbe] = useState<{ model: string; dimensions: number; latency_ms: number; normalized: boolean } | null>(null);
   const [neuralConsent, setNeuralConsent] = useState(false);
@@ -220,6 +221,8 @@ export function NativeAgentsPage() {
     void workspaceApi.nativeModelReadiness().then(setModelStatus)
       .catch(reason => setError(String(reason)));
     void workspaceApi.nativeIsolatedScanReadiness().then(setWorkerStatus)
+      .catch(reason => setError(String(reason)));
+    void workspaceApi.workerCleanupHoldCount().then(setCleanupHolds)
       .catch(reason => setError(String(reason)));
     void workspaceApi.nativeNeuralReadiness().then(setNeuralReady)
       .catch(reason => setError(String(reason)));
@@ -403,6 +406,22 @@ export function NativeAgentsPage() {
       const receipt = await workspaceApi.runNativeIsolatedScan(id, true);
       setWorkerReceipt(receipt);
       setWorkerHistory(await workspaceApi.nativeWorkerAudit(id));
+      setWorkerConsent(false);
+    } catch (reason) { setError(String(reason)); }
+    finally {
+      void workspaceApi.workerCleanupHoldCount().then(setCleanupHolds).catch(() => undefined);
+      setBusy("");
+    }
+  }
+
+  async function verifyCleanup() {
+    if (!window.confirm(
+      "Check the current Docker daemon for remaining CodeTwin scanner containers? This read-only check will release blocked scans only if none remain."
+    )) return;
+    setBusy("worker-cleanup"); setError("");
+    try {
+      await workspaceApi.verifyWorkerCleanup(true);
+      setCleanupHolds(await workspaceApi.workerCleanupHoldCount());
       setWorkerConsent(false);
     } catch (reason) { setError(String(reason)); }
     finally { setBusy(""); }
@@ -1121,12 +1140,23 @@ export function NativeAgentsPage() {
         <h3>Optional isolated security worker</h3>
         <p className="ws-form-help">{workerStatus?.detail ?? "Checking Docker worker configuration…"}</p>
         <p className="ws-form-help">Pinned Trivy image only · local Docker · no network · read-only source mount · fixed arguments · resource/time ceilings. Never launches arbitrary commands.</p>
+        {cleanupHolds === null && <p className="ws-form-help">Checking saved worker cleanup state…</p>}
+        {cleanupHolds !== null && cleanupHolds > 0 && <div role="alert" className="ws-form-stack">
+          <p className="ws-form-help">
+            {cleanupHolds} previous worker cleanup {cleanupHolds === 1 ? "attempt needs" : "attempts need"}
+            {" "}verification. New isolated scans are blocked until the configured Docker daemon confirms no CodeTwin scanner containers remain.
+          </p>
+          <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
+            onClick={() => void verifyCleanup()}>
+            {busy === "worker-cleanup" ? "Checking local Docker…": "Verify scanner cleanup in Docker"}
+          </button>
+        </div>}
         <label className="ws-field"><span>
           <input type="checkbox" checked={workerConsent} onChange={event => setWorkerConsent(event.target.checked)}/>
           I explicitly authorize an offline security scan of the selected project in Docker.
         </span></label>
         <button className="ws-button ws-button-secondary"
-          disabled={!workerConsent || !workerStatus?.configured || selected.status !== "approved" || Boolean(busy)}
+          disabled={!workerConsent || !workerStatus?.configured || cleanupHolds !== 0 || selected.status !== "approved" || Boolean(busy)}
           onClick={() => void runWorker(selected.id)}>
           {busy === "worker" ? "Running isolated scan…" : "Run approved offline scanner"}
         </button>
@@ -1135,6 +1165,7 @@ export function NativeAgentsPage() {
         {workerHistory.map(event => <p className="ws-form-help" key={event.id}>
           Attempt {event.id} · {event.status} · {event.started_at}
           {event.report_sha256 ? " · evidence " + event.report_sha256.slice(0, 12) : ""}
+          {event.error_code ? " · " + event.error_code : ""}
         </p>)}
         {workerReceipt && <p role="status">
           Offline scan finished · {workerReceipt.vulnerability_count} vulnerability records,
