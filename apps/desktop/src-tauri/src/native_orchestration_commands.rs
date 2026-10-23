@@ -249,9 +249,7 @@ pub fn list_authorized_network_inspections(
 }
 
 #[tauri::command]
-pub async fn inspect_authorized_dns(
-    scope: DnsScope,
-) -> Result<DnsObservation, String> {
+pub async fn inspect_authorized_dns(scope: DnsScope) -> Result<DnsObservation, String> {
     scope.validate()?;
     tauri::async_runtime::spawn_blocking(move || inspect_dns(&scope))
         .await

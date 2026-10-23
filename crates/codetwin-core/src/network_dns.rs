@@ -30,7 +30,9 @@ fn valid_hostname(host: &str) -> bool {
                 && label.len() <= 63
                 && !label.starts_with('-')
                 && !label.ends_with('-')
-                && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         })
 }
 
@@ -42,15 +44,25 @@ impl DnsScope {
         if !valid_hostname(&self.hostname) || self.hostname.parse::<IpAddr>().is_ok() {
             return Err("A valid DNS hostname, not a literal IP address, is required".into());
         }
-        if self.allowed_hostnames.is_empty() || self.allowed_hostnames.len() > 16
-            || !self.allowed_hostnames.iter().any(|name| name.eq_ignore_ascii_case(&self.hostname))
-            || self.allowed_hostnames.iter().any(|name| !valid_hostname(name))
+        if self.allowed_hostnames.is_empty()
+            || self.allowed_hostnames.len() > 16
+            || !self
+                .allowed_hostnames
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&self.hostname))
+            || self
+                .allowed_hostnames
+                .iter()
+                .any(|name| !valid_hostname(name))
         {
             return Err("DNS hostname is outside the approved exact-name allowlist".into());
         }
         if self.allowed_addresses.is_empty()
             || self.allowed_addresses.len() > 16
-            || self.allowed_addresses.iter().any(|ip| !safe_private_address(*ip))
+            || self
+                .allowed_addresses
+                .iter()
+                .any(|ip| !safe_private_address(*ip))
         {
             return Err("Approved DNS addresses must be private or loopback IPs only".into());
         }
@@ -68,13 +80,18 @@ pub fn inspect_dns(scope: &DnsScope) -> Result<DnsObservation, String> {
     if addresses.is_empty() || addresses.len() > 16 {
         return Err("DNS returned no usable addresses or exceeded the approved limit".into());
     }
-    if addresses.iter().any(|ip| !scope.allowed_addresses.contains(ip)) {
+    if addresses
+        .iter()
+        .any(|ip| !scope.allowed_addresses.contains(ip))
+    {
         return Err("DNS response included an address outside the explicit allowlist".into());
     }
     Ok(DnsObservation {
         hostname: scope.hostname.to_ascii_lowercase(),
         addresses: addresses.into_iter().collect(),
-        note: "Address-resolution check only; does not validate TLS, service availability, or DNSSEC".into(),
+        note:
+            "Address-resolution check only; does not validate TLS, service availability, or DNSSEC"
+                .into(),
     })
 }
 
@@ -117,7 +134,9 @@ mod tests {
         assert!(result.addresses.iter().all(|ip| ip.is_loopback()));
         let mut limited = lab();
         limited.allowed_addresses.clear();
-        limited.allowed_addresses.push(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        limited
+            .allowed_addresses
+            .push(IpAddr::V4(Ipv4Addr::LOCALHOST));
         match inspect_dns(&limited) {
             Ok(value) => assert!(value.addresses.iter().all(|ip| ip.is_ipv4())),
             Err(error) => assert!(error.contains("allowlist")),

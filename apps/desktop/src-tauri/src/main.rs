@@ -71,9 +71,8 @@ use native_agent_reasoning_commands::{
 };
 use native_orchestration_commands::{
     clear_native_knowledge, index_native_neural_memory, inspect_authorized_dns,
-    inspect_authorized_network_services,
-    native_delegation_graph, native_isolated_scan_readiness, native_knowledge_graph,
-    native_neural_readiness, native_task_schedule, native_worker_audit,
+    inspect_authorized_network_services, native_delegation_graph, native_isolated_scan_readiness,
+    native_knowledge_graph, native_neural_readiness, native_task_schedule, native_worker_audit,
     probe_native_neural_provider, reason_native_knowledge_graph, run_native_isolated_scan,
     search_native_knowledge, search_native_neural_memory,
 };
