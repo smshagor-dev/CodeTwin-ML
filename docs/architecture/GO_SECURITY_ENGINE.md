@@ -37,15 +37,22 @@ approve/run the existing Rust review.
 ## Protocol and security boundaries
 
 - Rust sends one versioned JSON request on stdin, containing only the
-  user-authored objective. Go sends one JSON `TaskProposal` on stdout.
+  user-authored objective and at most twelve project-scoped role/status pairs
+  from terminal review memory. Go sends one JSON `TaskProposal` on stdout.
+  Neither raw source nor findings, run IDs, file paths or credentials are shared.
 - There is no shell interpolation or HTTP port, no command execution, and no
   autonomous vulnerability exploitation in this Go module.
 - A two-second sidecar handshake, ten-second planning deadline, 6000-byte response cap, strict JSON input,
   six-role allowlist and Rust DAG validation reject unexpected output.
+- Go uses failed prior specialist outcomes to suggest bounded follow-up roles
+  when appropriate. Every memory item must have a registered role and a
+  terminal completed/failed status; unknown fields and oversized history fail
+  closed. A memory suggestion never authorizes execution.
 - Go chooses registered passive specialists; Rust checks the indexed project,
   hashes, user approval, budgets, dependencies, cancellation and audit state.
 - An unconfigured or unavailable binary is reported explicitly, not silently
-  simulated. Go receives no credentials, project paths, source code, or findings.
+  simulated. Go receives no credentials, project paths, source code, raw
+  findings or stored report content.
 - The same existing SQLite `native_agent_*` tables store approved reviews;
   no alternate database is created.
 

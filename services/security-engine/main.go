@@ -14,8 +14,13 @@ import (
 const protocolVersion = 1
 
 type request struct {
-	ProtocolVersion int    `json:"protocol_version"`
-	Objective       string `json:"objective"`
+	ProtocolVersion int          `json:"protocol_version"`
+	Objective       string       `json:"objective"`
+	History         []memoryHint `json:"history,omitempty"`
+}
+type memoryHint struct {
+	Role   string `json:"role"`
+	Status string `json:"status"`
 }
 type task struct {
 	Role      string   `json:"role"`
@@ -44,6 +49,18 @@ func plan(r request) (proposal, error) {
 	if r.ProtocolVersion != protocolVersion || len(objective) == 0 || len(objective) > 2000 {
 		return proposal{}, errors.New("invalid protocol version or review objective")
 	}
+	if len(r.History) > 12 {
+		return proposal{}, errors.New("memory summary must contain at most 12 entries")
+	}
+	for _, hint := range r.History {
+		allowed := hint.Role == "scout" || hint.Role == "source"
+		for _, specialist := range specialists {
+			allowed = allowed || hint.Role == specialist.role
+		}
+		if !allowed || (hint.Status != "completed" && hint.Status != "failed") {
+			return proposal{}, errors.New("invalid memory role/status summary")
+		}
+	}
 	tasks := []task{
 		{Role: "scout", Objective: "Inventory the approved indexed project", DependsOn: []string{}},
 		{Role: "source", Objective: "Review indexed source and verified hashes", DependsOn: []string{"scout"}},
@@ -60,15 +77,32 @@ func plan(r request) (proposal, error) {
 			}
 		}
 	}
+	// Historical failures must never narrow a broad review objective.
+	explicitMatch := found
+	// Historical failures can suggest a targeted follow-up, but cannot authorize it.
+	memorySuggested := false
+	for i, specialist := range specialists {
+		for _, hint := range r.History {
+			if hint.Role == specialist.role && hint.Status == "failed" && !matches[i] {
+				matches[i] = true
+				found = true
+				memorySuggested = true
+			}
+		}
+	}
 	// Broad objectives receive the audited full passive review, never active probes.
 	for i, specialist := range specialists {
-		if matches[i] || !found {
+		if matches[i] || !explicitMatch {
 			tasks = append(tasks, task{
 				Role: specialist.role, Objective: specialist.objective, DependsOn: []string{"source"},
 			})
 		}
 	}
-	return proposal{Tasks: tasks, Rationale: "Offline Go specialist planning; Rust must validate and approve this passive review before execution."}, nil
+	rationale := "Offline Go specialist planning; Rust must validate and approve this passive review before execution."
+	if memorySuggested {
+		rationale += " Includes prior failed passive specialist roles from project-scoped SQLite memory."
+	}
+	return proposal{Tasks: tasks, Rationale: rationale}, nil
 }
 
 func run(input io.Reader, output io.Writer) error {
