@@ -274,8 +274,8 @@ impl<'a> IsolatedWorker<'a> {
 /// Read only an ordinary file created by the finished worker in its private output
 /// directory. Reject symlinks, directories and oversized reports.
 fn read_scanner_report(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|_| "Scanner returned no report".to_string())?;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| "Scanner returned no report".to_string())?;
     if !metadata.file_type().is_file() {
         return Err("Scanner report must be a regular file, not a symlink".into());
     }
@@ -295,9 +295,11 @@ fn parse_offline_report(bytes: &[u8]) -> Result<(usize, usize), String> {
     if bytes.len() as u64 > MAX_REPORT_BYTES {
         return Err("Scanner output exceeded safe limit".into());
     }
-    let json: Value = serde_json::from_slice(bytes)
-        .map_err(|_| "Scanner returned invalid JSON".to_string())?;
-    let reports = json.get("Results").and_then(Value::as_array)
+    let json: Value =
+        serde_json::from_slice(bytes).map_err(|_| "Scanner returned invalid JSON".to_string())?;
+    let reports = json
+        .get("Results")
+        .and_then(Value::as_array)
         .ok_or("Scanner report has no expected Results array")?;
     if reports.len() > MAX_REPORT_RESULTS {
         return Err("Scanner report exceeds the maximum supported result count".into());
@@ -305,15 +307,19 @@ fn parse_offline_report(bytes: &[u8]) -> Result<(usize, usize), String> {
     let mut vulnerabilities = 0usize;
     let mut misconfigurations = 0usize;
     for item in reports {
-        let object = item.as_object().ok_or("Scanner result must be a JSON object")?;
+        let object = item
+            .as_object()
+            .ok_or("Scanner result must be a JSON object")?;
         for (key, count) in [
             ("Vulnerabilities", &mut vulnerabilities),
             ("Misconfigurations", &mut misconfigurations),
         ] {
             match object.get(key) {
-                Some(Value::Array(records)) => *count = count
-                    .checked_add(records.len())
-                    .ok_or("Scanner finding count overflow")?,
+                Some(Value::Array(records)) => {
+                    *count = count
+                        .checked_add(records.len())
+                        .ok_or("Scanner finding count overflow")?
+                }
                 None | Some(Value::Null) => {}
                 _ => return Err("Scanner finding collection has an invalid JSON shape".into()),
             }
@@ -398,7 +404,8 @@ mod tests {
         let report = br#"{"Results":[{"Vulnerabilities":[{},{}],"Misconfigurations":[{}]},{"Vulnerabilities":[{}]}]}"#;
         assert_eq!(parse_offline_report(report).unwrap(), (3, 1));
         assert_eq!(parse_offline_report(br#"{"Results":[]}"#).unwrap(), (0, 0));
-        let overflow = serde_json::json!({"Results": vec![serde_json::json!({}); MAX_REPORT_RESULTS + 1]});
+        let overflow =
+            serde_json::json!({"Results": vec![serde_json::json!({}); MAX_REPORT_RESULTS + 1]});
         assert!(parse_offline_report(overflow.to_string().as_bytes()).is_err());
     }
 
@@ -415,7 +422,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let report = temp.path().join("report.json");
         std::fs::write(&report, br#"{"Results":[]}"#).unwrap();
-        assert_eq!(parse_offline_report(&read_scanner_report(&report).unwrap()).unwrap(), (0, 0));
+        assert_eq!(
+            parse_offline_report(&read_scanner_report(&report).unwrap()).unwrap(),
+            (0, 0)
+        );
         assert!(read_scanner_report(temp.path()).is_err());
         #[cfg(unix)]
         {
