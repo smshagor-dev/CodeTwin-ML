@@ -1338,7 +1338,10 @@ mod tests {
             reviews.finalize_review(&run.id, None).unwrap();
             let saved = reviews.get(&run.id).unwrap();
             assert_eq!(saved.status, "failed");
-            assert!(saved.message.as_ref().is_some_and(|message| !message.is_empty()));
+            assert!(saved
+                .message
+                .as_ref()
+                .is_some_and(|message| !message.is_empty()));
             assert!(saved.steps.iter().all(|step| step.status == "completed"));
             assert!(reviews.execute(&run.id).is_err());
             run.id
