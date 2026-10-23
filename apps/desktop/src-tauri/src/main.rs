@@ -5,6 +5,7 @@ mod ml_commands;
 mod native_agent_commands;
 mod native_agent_reasoning_commands;
 mod native_orchestration_commands;
+mod network_assessment_commands;
 mod qa_commands;
 mod repair_commands;
 mod runtime_commands;
@@ -75,6 +76,10 @@ use native_orchestration_commands::{
     native_task_schedule, native_worker_audit, probe_native_neural_provider,
     reason_native_knowledge_graph, run_native_isolated_scan, search_native_knowledge,
     search_native_neural_memory,
+};
+use network_assessment_commands::{
+    approve_network_assessment, cancel_network_assessment, get_network_assessment,
+    list_network_assessments, prepare_network_assessment, run_network_assessment,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
@@ -1053,6 +1058,12 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            prepare_network_assessment,
+            approve_network_assessment,
+            run_network_assessment,
+            cancel_network_assessment,
+            list_network_assessments,
+            get_network_assessment,
             create_assessment_plan,
             list_assessment_jobs,
             cancel_assessment_job,

@@ -5,13 +5,14 @@ import { AuthorizedWebSecurityPanel } from "../security/AuthorizedWebSecurityPan
 import { DatasetBenchmarkPanel } from "../security/DatasetBenchmarkPanel";
 import { GuidedSecurityOperator } from "../security/GuidedSecurityOperator";
 import { StaticSecurityPanel } from "../security/StaticSecurityPanel";
+import { NetworkAssessmentPanel } from "../security/NetworkAssessmentPanel";
 import { SupplyChainPanel } from "../security/SupplyChainPanel";
 
 export function SecurityPage() {
-  type Mode = "developer" | "web" | "source" | "supply" | "benchmark";
+  type Mode = "developer" | "web" | "source" | "supply" | "benchmark" | "network";
   const [mode, setMode] = useState<Mode>(() => {
     const requested = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("mode");
-    return ["developer", "web", "source", "supply", "benchmark"].includes(requested ?? "") ? requested as Mode : "developer";
+    return ["developer", "web", "source", "supply", "benchmark", "network"].includes(requested ?? "") ? requested as Mode : "developer";
   });
 
   return (
@@ -28,6 +29,9 @@ export function SecurityPage() {
         <button role="tab" aria-selected={mode === "web"} className={mode === "web" ? "active" : ""} onClick={() => setMode("web")}>
           Expert Web Testing
         </button>
+        <button role="tab" aria-selected={mode === "network"} className={mode === "network" ? "active" : ""} onClick={() => setMode("network")}>
+          Network Assessment
+        </button>
         <button role="tab" aria-selected={mode === "source"} className={mode === "source" ? "active" : ""} onClick={() => setMode("source")}>
           Static Source Analysis
         </button>
@@ -42,6 +46,8 @@ export function SecurityPage() {
         <GuidedSecurityOperator/>
       ) : mode === "web" ? (
         <AuthorizedWebSecurityPanel/>
+      ) : mode === "network" ? (
+        <NetworkAssessmentPanel/>
       ) : mode === "supply" ? (
         <SupplyChainPanel/>
       ) : mode === "benchmark" ? (
