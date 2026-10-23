@@ -7,6 +7,7 @@ use codetwin_core::{
     native_graph_reasoning::{GraphInference, GraphReasoner},
     native_neural_embeddings::{NeuralMatch, NeuralMemory, NeuralProbe, NeuralReadiness},
     native_worker_audit::{WorkerAudit, WorkerAuditRecord},
+    network_inspection::{inspect_tcp, NetworkInspection, NetworkScope},
     Database,
 };
 use tauri::Manager;
@@ -201,4 +202,15 @@ pub fn reason_native_knowledge_graph(
 ) -> Result<GraphInference, String> {
     let database = db(&app)?;
     GraphReasoner::new(&database).analyze(&project_id, &id, position)
+}
+
+#[tauri::command]
+pub async fn inspect_authorized_network_services(
+    scope: NetworkScope,
+) -> Result<NetworkInspection, String> {
+    // Validation before starting a blocking task avoids unauthorized worker creation.
+    scope.validate()?;
+    tauri::async_runtime::spawn_blocking(move || inspect_tcp(&scope))
+        .await
+        .map_err(|error| error.to_string())?
 }

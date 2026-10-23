@@ -73,6 +73,7 @@ use native_orchestration_commands::{
     clear_native_knowledge, index_native_neural_memory, native_delegation_graph,
     native_isolated_scan_readiness, native_knowledge_graph, native_neural_readiness,
     native_task_schedule, native_worker_audit, probe_native_neural_provider,
+    inspect_authorized_network_services,
     reason_native_knowledge_graph, run_native_isolated_scan, search_native_knowledge,
     search_native_neural_memory,
 };
@@ -1062,6 +1063,7 @@ fn main() {
             native_task_schedule,
             native_worker_audit,
             native_neural_readiness,
+            inspect_authorized_network_services,
             probe_native_neural_provider,
             index_native_neural_memory,
             search_native_neural_memory,

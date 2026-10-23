@@ -118,6 +118,20 @@ export const workspaceApi = {
   nativeWorkerAudit(id: string) {
     return invoke<import("./pages/NativeAgentsPage").WorkerAuditRecord[]>("native_worker_audit", { id });
   },
+  inspectAuthorizedNetworkServices(scope: {
+    authorized: boolean;
+    target: string;
+    allowed_addresses: string[];
+    ports: number[];
+    timeout_ms: number;
+  }) {
+    return invoke<{
+      target: string;
+      observations: { port: number; state: string; elapsed_ms: number }[];
+      tested_ports: number;
+      note: string;
+    }>("inspect_authorized_network_services", { scope });
+  },
   nativeNeuralReadiness() {
     return invoke<{ configured: boolean; detail: string }>("native_neural_readiness");
   },
