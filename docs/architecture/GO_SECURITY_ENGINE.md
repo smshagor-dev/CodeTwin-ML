@@ -108,6 +108,27 @@ evidence is preserved; waiting flows are never started automatically. Users
 must create and approve a fresh review for any interrupted work.
 
 
+## Isolated worker restart and claim safety
+
+An isolated offline worker is a separately consented user action. The SQLite
+worker audit ledger now allows only **one running receipt per approved review**.
+An active worker prevents direct native review execution and FIFO queue
+enrollment for that same review; a waiting/claimed queue also blocks starting a
+worker. These authorization checks are performed in the same SQLite write
+statement as the relevant claim, not as an earlier UI-only check.
+
+On desktop startup, a still-running worker audit is retired as
+`interrupted`, and its outstanding parent approval and unfinished specialist
+tasks are closed in one SQLite transaction. Completed evidence is retained;
+the stale review cannot be run or reused for a new worker. An operator must
+approve a fresh review.
+
+**Important:** a killed Docker CLI is not proof that its daemon-side container
+was removed. The audit records the fixed
+`application_restarted_cleanup_unconfirmed` code; an operator must verify
+container cleanup before launching another isolated scanner. Restart recovery
+does **not** auto-run a scanner, auto-retry or claim confirmed cleanup.
+
 ## Adaptive follow-up after failure or interruption
 
 After a fully approved automated review fails, the Go sidecar automatically
