@@ -777,6 +777,13 @@ mod tests {
                     [&run.id],
                 )
                 .unwrap();
+            db.connection()
+                .execute(
+                    "INSERT INTO native_action_log(run_id,position,role,status)
+                     VALUES (?1,1,'source','running')",
+                    [&run.id],
+                )
+                .unwrap();
             run.id
         };
 
@@ -794,6 +801,13 @@ mod tests {
             assert_eq!(run.steps[0].status, "completed");
             assert_eq!(run.steps[1].status, "interrupted");
             assert_eq!(run.steps[2].status, "cancelled");
+            let receipts = crate::native_action_log::NativeActionLog::new(&db)
+                .list(&run_id)
+                .unwrap();
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipts[0].role, "source");
+            assert_eq!(receipts[0].status, "interrupted");
+            assert!(receipts[0].finished_at.is_some());
             let tasks = crate::native_agent_delegation::NativeDelegation::new(&db)
                 .graph(&run_id)
                 .unwrap();

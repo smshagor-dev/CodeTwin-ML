@@ -67,8 +67,9 @@ use ml_commands::{
 };
 use native_agent_commands::{
     approve_native_agent_review, cancel_native_agent_review, clear_native_agent_memory,
-    create_native_agent_review, create_native_task_review, list_native_agent_handoffs,
-    list_native_agent_memory, list_native_agent_reviews, native_agent_report, native_agent_review,
+    create_native_agent_review, create_native_task_review, list_native_action_receipts,
+    list_native_agent_handoffs, list_native_agent_memory, list_native_agent_reviews,
+    native_agent_report, native_agent_review,
     run_native_agent_review, verify_native_agent_run,
 };
 use native_agent_reasoning_commands::{
@@ -1109,6 +1110,7 @@ fn main() {
             native_agent_report,
             list_native_agent_memory,
             clear_native_agent_memory,
+            list_native_action_receipts,
             list_native_agent_handoffs,
             verify_native_agent_run,
             native_model_readiness,

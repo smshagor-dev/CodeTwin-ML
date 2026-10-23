@@ -133,6 +133,11 @@ export function NativeAgentsPage() {
   const [refineObjective, setRefineObjective] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [actionReceipts, setActionReceipts] = useState<{
+    reviewId: string;
+    records: { position: number; role: string; status: string;
+      result_sha256: string | null; started_at: string; finished_at: string | null }[];
+  } | null>(null);
   const [goDispatchAudit, setGoDispatchAudit] = useState<{
     reviewId: string;
     records: { id: number; position: number; role: string; verdict: string;
@@ -338,6 +343,15 @@ export function NativeAgentsPage() {
     } finally {
       setBusy("");
     }
+  }
+
+  async function readActionReceipts(id: string) {
+    setBusy("action-ledger"); setError("");
+    try {
+      const records = await workspaceApi.listNativeActionReceipts(id);
+      setActionReceipts({ reviewId: id, records });
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
   }
 
   async function readGoDispatchAudit(id: string) {
@@ -738,6 +752,23 @@ export function NativeAgentsPage() {
           {" · "}running: {goDispatch.advice.running.join(", ") || "none"}
           {" · "}waiting: {goDispatch.advice.waiting.join(", ") || "none"}
         </p>}
+        <h3>SQLite specialist action receipts</h3>
+        <p className="ws-form-help">
+          Every started passive specialist has a durable receipt. The receipt records
+          its final status and a SHA-256 evidence digest without copying source or secrets.
+        </p>
+        <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
+          onClick={() => void readActionReceipts(selected.id)}>
+          {busy === "action-ledger" ? "Reading receipts…" : "View action receipts"}
+        </button>
+        {actionReceipts?.reviewId === selected.id && (
+          actionReceipts.records.length === 0
+            ? <p className="ws-form-help">No specialist actions have started for this review.</p>
+            : actionReceipts.records.map(item => <p className="ws-form-help" key={item.position}>
+                {item.role} · {item.status} · started {item.started_at}
+                {item.result_sha256 ? " · SHA-256: " + item.result_sha256 : ""}
+              </p>)
+        )}
         <h3>Persisted Go dispatch decisions</h3>
         <p className="ws-form-help">Rust records every Go-verified role decision in SQLite. Failed verification blocks execution and records a denied decision.</p>
         <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
