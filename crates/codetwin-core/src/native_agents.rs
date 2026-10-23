@@ -446,14 +446,8 @@ impl<'a> NativeAgents<'a> {
                 step.position,
                 &step.role,
             )?;
-            self.db
-                .connection()
-                .execute(
-                    "UPDATE native_agent_steps SET status='running',started_at=CURRENT_TIMESTAMP
-                 WHERE run_id=?1 AND position=?2 AND status='pending'",
-                    params![run.id, step.position],
-                )
-                .map_err(to_error)?;
+            crate::native_action_log::NativeActionLog::new(self.db)
+                .begin(&run.id, step.position, &step.tool)?;
             let result = if let Some(prefetched) = prepared.remove(&step.position) {
                 prefetched
             } else {
@@ -499,11 +493,8 @@ impl<'a> NativeAgents<'a> {
                         step.position,
                         true,
                     )?;
-                    self.db.connection().execute(
-                        "UPDATE native_agent_steps SET status='completed',result_json=?3,finished_at=CURRENT_TIMESTAMP
-                         WHERE run_id=?1 AND position=?2",
-                        params![run.id,step.position,summary],
-                    ).map_err(to_error)?;
+                    crate::native_action_log::NativeActionLog::new(self.db)
+                        .finish(&run.id, step.position, &step.tool, true, &summary)?;
                 }
                 Err(error) => {
                     crate::native_agent_delegation::NativeDelegation::new(self.db).finish(
@@ -511,11 +502,8 @@ impl<'a> NativeAgents<'a> {
                         step.position,
                         false,
                     )?;
-                    self.db.connection().execute(
-                        "UPDATE native_agent_steps SET status='failed',result_json=?3,finished_at=CURRENT_TIMESTAMP
-                         WHERE run_id=?1 AND position=?2",
-                        params![run.id,step.position,error],
-                    ).map_err(to_error)?;
+                    crate::native_action_log::NativeActionLog::new(self.db)
+                        .finish(&run.id, step.position, &step.tool, false, &error)?;
                     return Err(error);
                 }
             }
@@ -652,6 +640,14 @@ impl<'a> NativeAgents<'a> {
             .connection()
             .unchecked_transaction()
             .map_err(to_error)?;
+        // Retire in-flight receipts before the parent review is made terminal.
+        tx.execute(
+            "UPDATE native_action_log SET status='interrupted',
+             finished_at=CURRENT_TIMESTAMP WHERE status='running'
+             AND run_id IN (SELECT id FROM native_agent_runs WHERE status='running')",
+            [],
+        )
+        .map_err(to_error)?;
         // Finish the whole delegation graph before retiring its parent run.
         // A killed process cannot safely resume tasks that might have produced
         // partial results outside this transaction. Never replay on startup.
@@ -1167,6 +1163,17 @@ mod tests {
         assert_eq!(result.status, "completed", "{:?}", result.message);
         assert_eq!(result.steps.len(), 4);
         assert!(result.steps.iter().all(|step| step.status == "completed"));
+        let receipts = crate::native_action_log::NativeActionLog::new(&database)
+            .list(&review.id)
+            .unwrap();
+        assert_eq!(receipts.len(), 4);
+        assert!(receipts.iter().all(|receipt| receipt.status == "completed"));
+        assert!(receipts.iter().all(|receipt| {
+            receipt
+                .result_sha256
+                .as_ref()
+                .is_some_and(|hash| hash.len() == 64)
+        }));
         let verification = crate::native_agent_handoffs::AgentHandoffs::new(&database)
             .verify(&review.id)
             .unwrap();
