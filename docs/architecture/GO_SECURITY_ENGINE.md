@@ -17,11 +17,22 @@ go build -trimpath -o codetwin-security .
 ```
 
 On Windows use `go build -trimpath -o codetwin-security.exe .`.
-Set `CODETWIN_GO_SECURITY_BIN` to the **absolute path** of that executable
-before launching the desktop application. Use **Agents → Propose with local Go**
-after indexing a project. Inspect the proposed DAG, choose **Use this reviewed
-task plan**, then create and separately approve/run the existing Rust review.
-The Go binary is not automatically bundled in desktop installers yet.
+Tauri's `beforeBuildCommand` and `beforeDevCommand` now run
+`npm run build:go-sidecar`. This compiles the Go binary for the Rust target
+triple into `apps/desktop/src-tauri/binaries/`, and `bundle.externalBin`
+includes it in desktop packages. Developers building from source need Go 1.23+,
+Rust and Node. For cross-compilation, set `TAURI_ENV_TARGET_TRIPLE` or
+`CARGO_BUILD_TARGET` explicitly. Universal macOS packaging is not supported
+by this single-target builder.
+
+At runtime, Rust locates the bundled executable next to the desktop binary.
+`CODETWIN_GO_SECURITY_BIN` is an optional development override requiring an
+absolute file path. A two-second `--health` handshake checks protocol identity
+before accepting a plan; no PostgreSQL daemon is started.
+
+Use **Agents → Propose with local Go** after indexing a project. Inspect the
+proposed DAG, choose **Use this reviewed task plan**, then create and separately
+approve/run the existing Rust review.
 
 ## Protocol and security boundaries
 
@@ -29,7 +40,7 @@ The Go binary is not automatically bundled in desktop installers yet.
   user-authored objective. Go sends one JSON `TaskProposal` on stdout.
 - There is no shell interpolation or HTTP port, no command execution, and no
   autonomous vulnerability exploitation in this Go module.
-- A ten-second process deadline, 6000-byte response cap, strict JSON input,
+- A two-second sidecar handshake, ten-second planning deadline, 6000-byte response cap, strict JSON input,
   six-role allowlist and Rust DAG validation reject unexpected output.
 - Go chooses registered passive specialists; Rust checks the indexed project,
   hashes, user approval, budgets, dependencies, cancellation and audit state.

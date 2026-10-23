@@ -13,7 +13,8 @@
     "test": "npm --workspace @codetwin/desktop run test && node --test scripts/desktop-dev-config.test.mjs",
     "tauri": "npm --workspace @codetwin/desktop run tauri --",
     "tauri:dev": "npm --workspace @codetwin/desktop run tauri:dev",
-    "tauri:build": "npm --workspace @codetwin/desktop run tauri:build"
+    "tauri:build": "npm --workspace @codetwin/desktop run tauri:build",
+    "build:go-sidecar": "node scripts/build-go-sidecar.mjs"
   },
   "engines": {
     "node": ">=22"
