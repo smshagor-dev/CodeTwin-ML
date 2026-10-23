@@ -1361,6 +1361,16 @@ mod tests {
                             )
                             .unwrap();
                         assert!(receipts.verify_completed(&run.id).is_err());
+                        let verdict = reviews.verify_evidence(&run.id).unwrap();
+                        assert!(!verdict.verified);
+                        assert!(verdict
+                            .issues
+                            .iter()
+                            .any(|issue| issue.contains("receipt integrity mismatch")));
+                        assert!(reviews
+                            .report(&run.id)
+                            .unwrap()
+                            .contains("Verified: false"));
                     }
                 } else {
                     assert_eq!(saved.status, "failed", "mutation={mutation}");
