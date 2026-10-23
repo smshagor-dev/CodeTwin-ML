@@ -110,6 +110,20 @@ single final commit. No other connection can observe a completed review that
 has not passed evidence verification. File-backed tests verify cross-connection
 cancellation, invalid handoff downgrade and durable terminal status.
 
+### Completed specialist receipt consistency
+
+A security review may be published as `completed` only after the supervisor
+matches **one completed action receipt per approved specialist** against its
+persisted position, registered tool, completed step state, finished timestamp
+and SHA-256 digest of the exact saved result bytes. Missing, extra, malformed,
+failed or digest-mismatched receipts downgrade the parent to `failed` inside
+the same finalization transaction; an unverified completed status is never
+visible to another SQLite connection. File-backed regression tests cover
+unchanged evidence, modified result bytes, modified digests, removed receipts
+and mismatched statuses. These digests provide SQLite evidence consistency,
+**not** a cryptographic signature against an attacker who can rewrite the
+database and its fingerprints together.
+
 ### Concurrent specialist evidence integrity
 
 The Go-verified path now uses the same bounded two-slot scheduling limit as
