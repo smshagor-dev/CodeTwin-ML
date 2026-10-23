@@ -9,6 +9,7 @@ use crate::{
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeMap,
     panic::{catch_unwind, AssertUnwindSafe},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -346,6 +347,7 @@ impl<'a> NativeAgents<'a> {
                 |r| r.get(0),
             )
             .map_err(to_error)?;
+        let mut prepared: BTreeMap<usize, Result<String, String>> = BTreeMap::new();
         for step in &run.steps {
             self.boundary(&run.id, start, run.budget_seconds)?;
             // Read and verify the exact predecessor evidence before dispatch.
@@ -364,7 +366,10 @@ impl<'a> NativeAgents<'a> {
                     params![run.id, step.position],
                 )
                 .map_err(to_error)?;
-            let result = match step.tool.as_str() {
+            let result = if let Some(prefetched) = prepared.remove(&step.position) {
+                prefetched
+            } else {
+                match step.tool.as_str() {
                 "scout" => {
                     let project = WorkspaceService::new(self.db)
                         .get_project(&run.project_id)
@@ -393,23 +398,10 @@ impl<'a> NativeAgents<'a> {
                             serde_json::to_string(&result.steps).map_err(to_error)
                         }
                     }),
-                "secrets" => SecretScanningService::new(self.db)
-                    .scan_project(&run.project_id)
-                    .map(|value| format!("{value:?}"))
-                    .map_err(to_error),
-                "qa" => QaDiscoveryService::new(self.db)
-                    .discover_project(&run.project_id)
-                    .map(|value| format!("{value:?}"))
-                    .map_err(to_error),
-                "database" => DatabaseAnalysisService::new(self.db)
-                    .analyze_project(&run.project_id)
-                    .map(|value| format!("{value:?}"))
-                    .map_err(to_error),
-                "runtime" => RuntimeReliabilityService::new(self.db)
-                    .analyze_project(&run.project_id)
-                    .map(|value| format!("{value:?}"))
-                    .map_err(to_error),
+                "secrets" | "qa" | "database" | "runtime" =>
+                    run_passive_specialist(self.db, &run.project_id, &step.tool),
                 _ => Err("Unregistered autonomous tool".into()),
+                }
             };
             match result {
                 Ok(summary) => {
@@ -440,9 +432,72 @@ impl<'a> NativeAgents<'a> {
             }
             crate::native_agent_handoffs::AgentHandoffs::new(self.db)
                 .record(&run.id, step.position)?;
+            if step.tool == "source" {
+                prepared = self.parallel_optional_specialists(run, start)?;
+            }
             self.boundary(&run.id, start, run.budget_seconds)?;
         }
         Ok(())
+    }
+
+
+    /// Execute up to two independent approved passive specialists at once.
+    /// Database writes and evidence/handoffs are committed by the supervisor in
+    /// the original deterministic role order. Memory databases and dependent
+    /// optional tasks use the existing sequential path.
+    fn parallel_optional_specialists(
+        &self,
+        run: &AgentRun,
+        start: Instant,
+    ) -> Result<BTreeMap<usize, Result<String, String>>, String> {
+        let Some(filename) = self.db.connection().path().filter(|path| *path != ":memory:") else {
+            return Ok(BTreeMap::new());
+        };
+        let graph = crate::native_agent_delegation::NativeDelegation::new(self.db).graph(&run.id)?;
+        let optional = graph.tasks.iter().filter(|task|
+            matches!(task.tool.as_str(), "secrets" | "qa" | "database" | "runtime")
+        ).collect::<Vec<_>>();
+        if optional.len() < 2 {
+            return Ok(BTreeMap::new());
+        }
+        let Some(source) = graph.tasks.iter().find(|task| task.tool == "source") else {
+            return Err("Source review dependency was not found".into());
+        };
+        // A reviewed model may add optional dependencies. Such graphs must never
+        // be speculatively executed in parallel.
+        if optional.iter().any(|task| task.requires != [source.position]) {
+            return Ok(BTreeMap::new());
+        }
+        let path = std::path::PathBuf::from(filename);
+        let mut prepared = BTreeMap::new();
+        for batch in optional.chunks(2) {
+            self.boundary(&run.id, start, run.budget_seconds)?;
+            let outputs = std::thread::scope(|scope| {
+                let handles = batch.iter().map(|task| {
+                    let path = path.clone();
+                    let project_id = run.project_id.clone();
+                    let tool = task.tool.clone();
+                    let position = task.position;
+                    scope.spawn(move || {
+                        let result = Database::open(&path)
+                            .map_err(to_error)
+                            .and_then(|db| run_passive_specialist(&db, &project_id, &tool));
+                        (position, result)
+                    })
+                }).collect::<Vec<_>>();
+                handles.into_iter().map(|handle| {
+                    handle.join().map_err(|_| "A concurrent specialist panicked".to_string())
+                }).collect::<Vec<_>>()
+            });
+            for output in outputs {
+                let (position, result) = output?;
+                prepared.insert(position, result);
+            }
+            // Cancellation and deadlines are checked before committing any
+            // batched evidence; active analyzers are joined, not detached.
+            self.boundary(&run.id, start, run.budget_seconds)?;
+        }
+        Ok(prepared)
     }
 
     pub fn report(&self, id: &str) -> Result<String, String> {
@@ -500,6 +555,30 @@ impl<'a> NativeAgents<'a> {
         )
         .map_err(to_error)?;
         tx.commit().map_err(to_error)
+    }
+}
+
+/// Registered, passive project analyzers only. This function is also called
+/// from worker threads with independently opened SQLite connections.
+fn run_passive_specialist(db: &Database, project_id: &str, tool: &str) -> Result<String, String> {
+    match tool {
+        "secrets" => SecretScanningService::new(db)
+            .scan_project(project_id)
+            .map(|value| format!("{value:?}"))
+            .map_err(to_error),
+        "qa" => QaDiscoveryService::new(db)
+            .discover_project(project_id)
+            .map(|value| format!("{value:?}"))
+            .map_err(to_error),
+        "database" => DatabaseAnalysisService::new(db)
+            .analyze_project(project_id)
+            .map(|value| format!("{value:?}"))
+            .map_err(to_error),
+        "runtime" => RuntimeReliabilityService::new(db)
+            .analyze_project(project_id)
+            .map(|value| format!("{value:?}"))
+            .map_err(to_error),
+        _ => Err("Parallel dispatch rejected an unregistered tool".into()),
     }
 }
 
