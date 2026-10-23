@@ -54,7 +54,11 @@ impl<'a> NativeFlowQueue<'a> {
                  SELECT f.review_id FROM native_security_flows f
                  JOIN native_agent_runs r ON r.id=f.review_id
                  WHERE f.review_id=?1 AND f.approved_at IS NOT NULL
-                   AND r.status='approved' AND r.cancel_requested=0",
+                   AND r.status='approved' AND r.cancel_requested=0
+                   AND NOT EXISTS (
+                     SELECT 1 FROM native_worker_audit
+                     WHERE run_id=?1 AND status='running'
+                   )",
                 [review_id],
             )
             .map_err(err)?;

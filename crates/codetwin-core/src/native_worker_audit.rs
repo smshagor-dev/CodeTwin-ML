@@ -38,12 +38,22 @@ impl<'a> WorkerAudit<'a> {
             .execute(
                 "INSERT INTO native_worker_audit(run_id)
                  SELECT id FROM native_agent_runs
-                 WHERE id=?1 AND status='approved' AND cancel_requested=0",
+                 WHERE id=?1 AND status='approved' AND cancel_requested=0
+                   AND NOT EXISTS (
+                     SELECT 1 FROM native_worker_audit
+                     WHERE run_id=?1 AND status='running'
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM native_flow_queue
+                     WHERE review_id=?1 AND status IN ('queued','running')
+                   )",
                 [run_id],
             )
             .map_err(err)?;
         if inserted != 1 {
-            return Err("Worker authorization was revoked before starting".into());
+            return Err(
+                "Worker requires an unqueued approved review without an active worker".into(),
+            );
         }
         Ok(self.db.connection().last_insert_rowid())
     }
@@ -178,16 +188,60 @@ impl<'a> WorkerAudit<'a> {
         Ok(records)
     }
 
+    /// Close unfinished worker audits after a desktop restart. A killed Docker
+    /// CLI does not prove daemon-side container removal; the fixed error code
+    /// deliberately requires manual inspection of possible leftover workers.
+    /// Its old parent approval is retired in the same SQLite transaction.
     pub fn recover_interrupted(&self) -> Result<usize, String> {
-        self.db
-            .connection()
+        let tx = self.db.connection().unchecked_transaction().map_err(err)?;
+        tx.execute(
+            "UPDATE native_agent_runs
+             SET status='interrupted',cancel_requested=1,
+                 finished_at=CURRENT_TIMESTAMP,
+                 message='Desktop stopped during isolated scan; approve a fresh review'
+             WHERE status='approved'
+               AND id IN (SELECT run_id FROM native_worker_audit
+                          WHERE status='running')",
+            [],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "UPDATE native_agent_steps SET status='cancelled',
+             finished_at=CURRENT_TIMESTAMP
+             WHERE status='pending'
+               AND run_id IN (SELECT run_id FROM native_worker_audit
+                              WHERE status='running')
+               AND EXISTS (
+                 SELECT 1 FROM native_agent_runs r
+                 WHERE r.id=native_agent_steps.run_id AND r.status='interrupted'
+               )",
+            [],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "UPDATE native_delegation_tasks SET status='cancelled'
+             WHERE status IN ('pending','running')
+               AND run_id IN (SELECT run_id FROM native_worker_audit
+                              WHERE status='running')
+               AND EXISTS (
+                 SELECT 1 FROM native_agent_runs r
+                 WHERE r.id=native_delegation_tasks.run_id AND r.status='interrupted'
+               )",
+            [],
+        )
+        .map_err(err)?;
+        let changed = tx
             .execute(
-                "UPDATE native_worker_audit SET status='interrupted',
-             error_code='application_restarted',finished_at=CURRENT_TIMESTAMP
-             WHERE status='running'",
+                "UPDATE native_worker_audit
+                 SET status='interrupted',
+                     error_code='application_restarted_cleanup_unconfirmed',
+                     finished_at=CURRENT_TIMESTAMP
+                 WHERE status='running'",
                 [],
             )
-            .map_err(err)
+            .map_err(err)?;
+        tx.commit().map_err(err)?;
+        Ok(changed)
     }
 
     pub fn latest(&self, run_id: &str) -> Result<Option<WorkerAuditRecord>, String> {
@@ -263,6 +317,101 @@ mod tests {
             "interrupted"
         );
     }
+    #[test]
+    fn a_review_cannot_claim_two_active_workers_or_a_queued_flow() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file.ts"), "export const ok=true;").unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let agents = crate::native_agents::NativeAgents::new(&db);
+        let run = agents.create(&project, "Local audit", 10, 120).unwrap();
+        agents.approve(&run.id).unwrap();
+        let audit = WorkerAudit::new(&db);
+        let first = audit.begin(&run.id).unwrap();
+        assert!(audit.begin(&run.id).is_err());
+        assert!(agents.execute(&run.id).is_err());
+        assert_eq!(audit.list(&run.id).unwrap().len(), 1);
+        audit.finish(first, &Err("fixture failure".into())).unwrap();
+        let second = audit.begin(&run.id).unwrap();
+        audit.finish(second, &Err("fixture failure".into())).unwrap();
+        agents.cancel(&run.id).unwrap();
+
+        // A review already added to the approved FIFO flow queue must not
+        // separately launch an isolated scanner while it awaits dispatch.
+        let planned = agents.create(&project, "Queued review", 10, 120).unwrap();
+        crate::native_flow::NativeFlow::new(&db)
+            .prepare(&planned.id)
+            .unwrap();
+        crate::native_flow::NativeFlow::new(&db)
+            .approve(&planned.id)
+            .unwrap();
+        let overlapping = audit.begin(&planned.id).unwrap();
+        assert!(crate::native_flow_queue::NativeFlowQueue::new(&db)
+            .enqueue(&planned.id)
+            .is_err());
+        audit
+            .finish(overlapping, &Err("fixture ended".into()))
+            .unwrap();
+        crate::native_flow_queue::NativeFlowQueue::new(&db)
+            .enqueue(&planned.id)
+            .unwrap();
+        assert!(audit.begin(&planned.id).is_err());
+        assert_eq!(audit.list(&planned.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn file_backed_restart_closes_worker_and_parent_without_replay() {
+        let scratch = tempfile::tempdir().unwrap();
+        let db_path = scratch.path().join("worker-crash.sqlite3");
+        let source = scratch.path().join("indexed");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("safe.ts"), "export const yes=true;").unwrap();
+
+        let (run_id, audit_id) = {
+            let db = Database::open(&db_path).unwrap();
+            let project = crate::ProjectIndexService::new(&db)
+                .index_project(&source)
+                .unwrap()
+                .project_id;
+            let agents = crate::native_agents::NativeAgents::new(&db);
+            let review = agents.create(&project, "Authorized scan", 10, 120).unwrap();
+            agents.approve(&review.id).unwrap();
+            let ticket = WorkerAudit::new(&db).begin(&review.id).unwrap();
+            (review.id, ticket)
+        };
+
+        let db = Database::open(&db_path).unwrap();
+        let audit = WorkerAudit::new(&db);
+        assert_eq!(audit.recover_interrupted().unwrap(), 1);
+        let saved = audit.latest(&run_id).unwrap().unwrap();
+        assert_eq!(saved.id, audit_id);
+        assert_eq!(saved.status, "interrupted");
+        assert_eq!(
+            saved.error_code.as_deref(),
+            Some("application_restarted_cleanup_unconfirmed")
+        );
+        assert!(saved.finished_at.is_some());
+        assert!(saved.report_sha256.is_none());
+        assert!(saved.vulnerability_count.is_none());
+        let agents = crate::native_agents::NativeAgents::new(&db);
+        let run = agents.get(&run_id).unwrap();
+        assert_eq!(run.status, "interrupted");
+        assert!(run.steps.iter().all(|step| step.status == "cancelled"));
+        assert!(agents.execute(&run_id).is_err());
+        assert!(audit.begin(&run_id).is_err());
+        assert_eq!(audit.recover_interrupted().unwrap(), 0);
+
+        // The previous review's unfinished approval must not lock its project.
+        let replacement = agents
+            .create(&run.project_id, "Fresh reviewed scope", 10, 120)
+            .unwrap();
+        agents.approve(&replacement.id).unwrap();
+        assert!(audit.begin(&replacement.id).is_ok());
+    }
+
     #[test]
     fn rejected_success_after_cancellation_never_persists_findings() {
         let db = Database::open_in_memory().unwrap();
