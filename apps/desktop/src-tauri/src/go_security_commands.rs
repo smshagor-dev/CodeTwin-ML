@@ -241,11 +241,16 @@ fn local_refine(
     }
     for operation in operations {
         if !matches!(operation.op.as_str(), "add" | "modify" | "remove")
-            || !matches!(operation.role.as_str(), "secrets" | "qa" | "database" | "runtime")
+            || !matches!(
+                operation.role.as_str(),
+                "secrets" | "qa" | "database" | "runtime"
+            )
             || operation.after_role.is_some()
-            || (operation.op != "remove" && operation.objective.as_ref().is_none_or(|value| {
-                value.trim().is_empty() || value.len() > 300
-            }))
+            || (operation.op != "remove"
+                && operation
+                    .objective
+                    .as_ref()
+                    .is_none_or(|value| value.trim().is_empty() || value.len() > 300))
         {
             return Err("Unsupported or unsafe specialist refinement".into());
         }
@@ -322,7 +327,10 @@ pub async fn refine_go_security_task_plan(
 ) -> Result<TaskProposal, String> {
     validate_proposal(&current)?;
     let binary = binary_path()?;
-    let folder = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let folder = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
         let db =
             Database::open(folder.join("codetwin.sqlite3")).map_err(|error| error.to_string())?;
@@ -773,21 +781,33 @@ mod tests {
             ],
             rationale: "Unapproved passive task review".into(),
         };
-        let edited = super::local_refine(&binary, &plan, &[super::GoRefineOperation {
-            op: "modify".into(),
-            role: "qa".into(),
-            objective: Some("Review regression tests and missing coverage".into()),
-            after_role: None,
-        }])
+        let edited = super::local_refine(
+            &binary,
+            &plan,
+            &[super::GoRefineOperation {
+                op: "modify".into(),
+                role: "qa".into(),
+                objective: Some("Review regression tests and missing coverage".into()),
+                after_role: None,
+            }],
+        )
         .expect("real upstream-derived Go patch must return a valid Rust DAG");
-        assert_eq!(edited.tasks[2].objective, "Review regression tests and missing coverage");
+        assert_eq!(
+            edited.tasks[2].objective,
+            "Review regression tests and missing coverage"
+        );
         assert_eq!(edited.tasks[2].depends_on, ["source"]);
-        assert!(super::local_refine(&binary, &plan, &[super::GoRefineOperation {
-            op: "remove".into(),
-            role: "scout".into(),
-            objective: None,
-            after_role: None,
-        }]).is_err());
+        assert!(super::local_refine(
+            &binary,
+            &plan,
+            &[super::GoRefineOperation {
+                op: "remove".into(),
+                role: "scout".into(),
+                objective: None,
+                after_role: None,
+            }]
+        )
+        .is_err());
     }
 
     #[test]
