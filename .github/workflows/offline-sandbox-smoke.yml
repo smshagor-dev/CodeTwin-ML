@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       image:
-        description: "Approved offline Trivy image with preloaded DB, pinned as repository@sha256:digest"
+        description: "Approved Trivy image pinned as repository@sha256:digest (DB downloaded in setup only)"
         required: true
         type: string
 
@@ -29,11 +29,23 @@ jobs:
             exit 1
           fi
           echo "CODETWIN_TRIVY_IMAGE=$IMAGE" >> "$GITHUB_ENV"
-      - name: Pull authorized preloaded scanner outside the test sandbox
+      - name: Pull authorized scanner outside the test sandbox
         shell: bash
         run: |
           docker pull "$CODETWIN_TRIVY_IMAGE"
           docker image inspect "$CODETWIN_TRIVY_IMAGE" > /dev/null
+      - name: Preload vulnerability database outside the isolated scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          CACHE_DIR="$(mktemp -d "$RUNNER_TEMP/codetwin-db-XXXXXXXX")"
+          docker run --rm --pull=never \
+            --mount "type=bind,src=$CACHE_DIR,dst=/cache" \
+            "$CODETWIN_TRIVY_IMAGE" image --download-db-only --cache-dir /cache
+          test -s "$CACHE_DIR/db/trivy.db"
+          test -s "$CACHE_DIR/db/metadata.json"
+          chmod -R a+rX "$CACHE_DIR"
+          echo "CODETWIN_TRIVY_DB_DIR=$CACHE_DIR/db" >> "$GITHUB_ENV"
       - name: Run actual network-disabled container and verify persisted audit
         shell: bash
         env:
