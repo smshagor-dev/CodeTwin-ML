@@ -46,10 +46,83 @@ jobs:
           test -s "$CACHE_DIR/db/metadata.json"
           chmod -R a+rX "$CACHE_DIR"
           echo "CODETWIN_TRIVY_DB_DIR=$CACHE_DIR/db" >> "$GITHUB_ENV"
+      - name: Enforce and record actual worker Docker launch contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          REAL_DOCKER="$(command -v docker)"
+          WRAPPER="$RUNNER_TEMP/codetwin-docker-contract"
+          cat > "$WRAPPER" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "$#" -ge 1 && "$1" == run ]]; then
+            network=0
+            readonly=0
+            no_pull=0
+            capdrop=0
+            no_privilege=0
+            limits=0
+            memory=0
+            cpu=0
+            user=0
+            mounts=0
+            project=0
+            database=0
+            output=0
+            rm=0
+            previous=""
+            for arg in "$@"; do
+              if [[ "$previous" == "--network" && "$arg" == none ]]; then network=1; fi
+              case "$arg" in
+                --read-only) readonly=1 ;;
+                --pull=never) no_pull=1 ;;
+                --cap-drop=ALL) capdrop=1 ;;
+                --security-opt=no-new-privileges) no_privilege=1 ;;
+                --pids-limit=64) limits=1 ;;
+                --memory=512m) memory=1 ;;
+                --cpus=1) cpu=1 ;;
+                --user=*) user=1 ;;
+                --rm) rm=1 ;;
+                type=bind,src=*,dst=/workspace,readonly) project=1 ;;
+                type=bind,src=*,dst=/tmp/trivy/db,readonly) database=1 ;;
+                type=bind,src=*,dst=/out) output=1 ;;
+              esac
+              previous="$arg"
+            done
+            if (( network != 1 || readonly != 1 || no_pull != 1 ||
+                  capdrop != 1 || no_privilege != 1 || limits != 1 ||
+                  memory != 1 || cpu != 1 || user != 1 || rm != 1 ||
+                  project != 1 || database != 1 || output != 1 )); then
+              echo "Refused scanner launch: missing required isolation option" >&2
+              exit 78
+            fi
+            printf '%s\n' 'offline_worker_runtime_contract=validated' >> "$CODETWIN_SANDBOX_EVIDENCE"
+          fi
+          exec "$CODETWIN_REAL_DOCKER" "$@"
+          SH
+          chmod 700 "$WRAPPER"
+          echo "CODETWIN_REAL_DOCKER=$REAL_DOCKER" >> "$GITHUB_ENV"
+          echo "CODETWIN_DOCKER_PATH=$WRAPPER" >> "$GITHUB_ENV"
+          echo "CODETWIN_SANDBOX_EVIDENCE=$RUNNER_TEMP/codetwin-runtime-contract.txt" >> "$GITHUB_ENV"
+          # Negative test: unsafe options must be rejected before Docker sees them.
+          if CODETWIN_REAL_DOCKER="$REAL_DOCKER" CODETWIN_SANDBOX_EVIDENCE="$RUNNER_TEMP/refused.txt" \
+              "$WRAPPER" run --network bridge unsafe-image >/dev/null 2>&1; then
+            echo "Unsafe Docker launch was not rejected" >&2
+            exit 1
+          fi
       - name: Run actual network-disabled container and verify persisted audit
         shell: bash
         env:
           CODETWIN_TEST_REAL_SANDBOX: "1"
         run: |
-          export CODETWIN_DOCKER_PATH="$(command -v docker)"
           cargo test -p codetwin-core --test native_real_sandbox -- --nocapture
+          test -s "$CODETWIN_SANDBOX_EVIDENCE"
+          grep -Fxq 'offline_worker_runtime_contract=validated' "$CODETWIN_SANDBOX_EVIDENCE"
+      - name: Preserve minimal Docker runtime contract evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: offline-sandbox-runtime-evidence
+          path: ${{ runner.temp }}/codetwin-runtime-contract.txt
+          if-no-files-found: warn
+          retention-days: 7
