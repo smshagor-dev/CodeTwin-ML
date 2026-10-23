@@ -453,14 +453,10 @@ impl<'a> NativeAgents<'a> {
             // Read and verify the exact predecessor evidence before dispatch.
             crate::native_agent_handoffs::AgentHandoffs::new(self.db)
                 .check_incoming(&run.id, step.position)?;
-            crate::native_agent_delegation::NativeDelegation::new(self.db).start(
+            crate::native_action_log::NativeActionLog::new(self.db).begin_supervised(
                 &run.id,
                 step.position,
                 &step.role,
-            )?;
-            crate::native_action_log::NativeActionLog::new(self.db).begin(
-                &run.id,
-                step.position,
                 &step.tool,
             )?;
             let result = if let Some(prefetched) = prepared.remove(&step.position) {
@@ -602,8 +598,7 @@ impl<'a> NativeAgents<'a> {
             }
             for step in &steps {
                 self.boundary(&run.id, start, run.budget_seconds)?;
-                delegation.start(&run.id, step.position, &step.role)?;
-                log.begin(&run.id, step.position, &step.tool)?;
+                log.begin_supervised(&run.id, step.position, &step.role, &step.tool)?;
             }
 
             // Claiming the second role can race with cancellation from
