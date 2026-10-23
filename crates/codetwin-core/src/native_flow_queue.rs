@@ -142,7 +142,9 @@ impl<'a> NativeFlowQueue<'a> {
             return Err("Approved flow queue changed before dispatch".into());
         }
         tx.commit().map_err(err)?;
-        self.get(&id)?.ok_or("Claimed flow not found".into()).map(Some)
+        self.get(&id)?
+            .ok_or("Claimed flow not found".into())
+            .map(Some)
     }
 
     pub fn finish(&self, review_id: &str, status: &str, detail: &str) -> Result<(), String> {
@@ -267,12 +269,16 @@ mod tests {
         assert!(queue.finish(&first, "completed", "No evidence").is_err());
         let outcome = NativeAgents::new(&db).execute(&first).unwrap();
         assert_eq!(outcome.status, "completed");
-        queue.finish(&first, "completed", "Reviewed evidence committed").unwrap();
+        queue
+            .finish(&first, "completed", "Reviewed evidence committed")
+            .unwrap();
         assert_eq!(queue.claim_next().unwrap().unwrap().review_id, second);
         assert!(queue.cancel_queued(&second).is_err());
         let outcome = NativeAgents::new(&db).execute(&second).unwrap();
         assert_eq!(outcome.status, "completed");
-        queue.finish(&second, "completed", "Reviewed evidence committed").unwrap();
+        queue
+            .finish(&second, "completed", "Reviewed evidence committed")
+            .unwrap();
         assert!(queue.claim_next().unwrap().is_none());
         assert_eq!(queue.list().unwrap().len(), 2);
     }
