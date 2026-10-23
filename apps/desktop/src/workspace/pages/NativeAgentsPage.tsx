@@ -77,6 +77,10 @@ export type ApprovedFlowQueueItem = {
   started_at: string | null;
   finished_at: string | null;
   detail: string;
+  completed_steps: number;
+  total_steps: number;
+  active_role: string | null;
+  review_status: string;
 };
 
 export type AdaptiveFlowFollowup = {
@@ -725,15 +729,27 @@ export function NativeAgentsPage() {
       </div>
       {flowQueue.length === 0
         ? <p className="ws-form-help">No flows have been added to the queue.</p>
-        : flowQueue.map(item => <div key={item.id} className="ws-button-row">
-            <span className="ws-form-help">
-              Review {item.review_id.slice(0, 12)} · {item.status}
-              {item.detail ? " · " + item.detail : ""}
-            </span>
-            {item.status === "queued" && <button className="ws-button ws-button-secondary"
-              disabled={Boolean(busy)} onClick={() => void removeQueuedFlow(item.review_id)}>
-              Remove waiting flow
-            </button>}
+        : flowQueue.map(item => <div key={item.id} className="ws-form-stack">
+            <div className="ws-button-row">
+              <span className="ws-form-help">
+                Review {item.review_id.slice(0, 12)} · {item.status}
+                {" · "}{item.completed_steps}/{item.total_steps} specialists completed
+                {item.active_role ? " · Running: " + item.active_role : ""}
+                {item.detail ? " · " + item.detail : ""}
+              </span>
+              {item.status === "queued" && <button className="ws-button ws-button-secondary"
+                disabled={Boolean(busy)} onClick={() => void removeQueuedFlow(item.review_id)}>
+                Remove waiting flow
+              </button>}
+            </div>
+            <progress
+              value={item.completed_steps}
+              max={Math.max(1, item.total_steps)}
+              aria-label={`Review ${item.review_id.slice(0, 12)} completed specialists`}
+              aria-valuetext={`${item.completed_steps} of ${item.total_steps} specialists completed`}
+            />
+            {item.review_status !== item.status && item.status !== "queued" &&
+              <span className="ws-form-help">Review state: {item.review_status}</span>}
           </div>)}
     </Panel>
     <Panel title="Create a supervised review">
