@@ -70,12 +70,11 @@ use native_agent_reasoning_commands::{
     suggest_native_agent_roles, suggest_native_task_plan,
 };
 use native_orchestration_commands::{
-    clear_native_knowledge, index_native_neural_memory, native_delegation_graph,
-    native_isolated_scan_readiness, native_knowledge_graph, native_neural_readiness,
-    native_task_schedule, native_worker_audit, probe_native_neural_provider,
-    inspect_authorized_network_services,
-    reason_native_knowledge_graph, run_native_isolated_scan, search_native_knowledge,
-    search_native_neural_memory,
+    clear_native_knowledge, index_native_neural_memory, inspect_authorized_network_services,
+    native_delegation_graph, native_isolated_scan_readiness, native_knowledge_graph,
+    native_neural_readiness, native_task_schedule, native_worker_audit,
+    probe_native_neural_provider, reason_native_knowledge_graph, run_native_isolated_scan,
+    search_native_knowledge, search_native_neural_memory,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{

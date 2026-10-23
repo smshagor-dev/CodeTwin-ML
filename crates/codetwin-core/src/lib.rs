@@ -6,7 +6,6 @@ pub use git_commit::{
 };
 pub mod assessment_jobs;
 pub mod native_agent_delegation;
-pub mod network_inspection;
 pub mod native_agent_handoffs;
 pub mod native_agent_knowledge;
 pub mod native_agent_memory;
@@ -17,6 +16,7 @@ pub mod native_graph_reasoning;
 pub mod native_neural_embeddings;
 pub mod native_task_plans;
 pub mod native_worker_audit;
+pub mod network_inspection;
 pub mod tool_catalog;
 pub use tool_catalog::{CatalogRunSummary, CatalogTool, ToolCatalogService};
 pub mod git_review;
