@@ -85,7 +85,8 @@ use native_orchestration_commands::{
     native_delegation_graph, native_isolated_scan_readiness, native_knowledge_graph,
     native_neural_readiness, native_task_schedule, native_worker_audit,
     probe_native_neural_provider, reason_native_knowledge_graph, run_native_isolated_scan,
-    search_native_knowledge, search_native_neural_memory,
+    search_native_knowledge, search_native_neural_memory, verify_worker_cleanup,
+    worker_cleanup_hold_count,
 };
 use network_assessment_commands::{
     approve_network_assessment, cancel_network_assessment, get_network_assessment,
@@ -1123,6 +1124,8 @@ fn main() {
             clear_native_knowledge,
             native_isolated_scan_readiness,
             run_native_isolated_scan,
+            worker_cleanup_hold_count,
+            verify_worker_cleanup,
             native_agent_report,
             list_native_agent_memory,
             clear_native_agent_memory,
