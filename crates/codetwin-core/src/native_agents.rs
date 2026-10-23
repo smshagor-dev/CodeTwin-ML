@@ -711,6 +711,123 @@ mod tests {
     use super::*;
 
     #[test]
+    fn file_backed_restart_preserves_go_audit_and_retires_unfinished_roles() {
+        let workspace = tempfile::tempdir().unwrap();
+        let database_path = workspace.path().join("durable-review.sqlite3");
+        let source_path = workspace.path().join("source");
+        std::fs::create_dir_all(&source_path).unwrap();
+        std::fs::write(source_path.join("safe.ts"), "export const safe = true;").unwrap();
+
+        let run_id = {
+            let db = Database::open(&database_path).unwrap();
+            let project = crate::ProjectIndexService::new(&db)
+                .index_project(&source_path)
+                .unwrap()
+                .project_id;
+            let reviews = NativeAgents::new(&db);
+            let run = reviews
+                .create_with_roles(
+                    &project,
+                    "Authorized read-only review",
+                    10,
+                    120,
+                    &["scout".into(), "source".into(), "qa".into()],
+                )
+                .unwrap();
+            reviews.approve(&run.id).unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_runs SET status='running' WHERE id=?1",
+                    [&run.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_steps SET status='completed',
+                     result_json='{\"scope\":\"verified\"}' WHERE run_id=?1 AND position=0",
+                    [&run.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_delegation_tasks SET status='completed'
+                     WHERE run_id=?1 AND position=0",
+                    [&run.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_agent_steps SET status='running'
+                     WHERE run_id=?1 AND position=1",
+                    [&run.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "UPDATE native_delegation_tasks SET status='running'
+                     WHERE run_id=?1 AND position=1",
+                    [&run.id],
+                )
+                .unwrap();
+            db.connection()
+                .execute(
+                    "INSERT INTO go_dispatch_audit
+                     (run_id,position,role,verdict,ready_json,reason)
+                     VALUES (?1,0,'scout','allowed','[\"scout\"]','approved')",
+                    [&run.id],
+                )
+                .unwrap();
+            run.id
+        };
+
+        // The original database handle is gone, as after an application exit.
+        {
+            let db = Database::open(&database_path).unwrap();
+            let reviews = NativeAgents::new(&db);
+            reviews.recover_interrupted().unwrap();
+            let run = reviews.get(&run_id).unwrap();
+            assert_eq!(run.status, "interrupted");
+            assert_eq!(run.steps[0].result.as_deref(), Some("{\"scope\":\"verified\"}"));
+            assert_eq!(run.steps[0].status, "completed");
+            assert_eq!(run.steps[1].status, "interrupted");
+            assert_eq!(run.steps[2].status, "cancelled");
+            let tasks = crate::native_agent_delegation::NativeDelegation::new(&db)
+                .graph(&run_id)
+                .unwrap();
+            assert_eq!(tasks.tasks[0].status, "completed");
+            assert!(tasks.tasks[1..].iter().all(|task| task.status == "cancelled"));
+            let saved: i64 = db
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM go_dispatch_audit WHERE run_id=?1",
+                    [&run_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(saved, 1);
+            assert!(reviews.execute(&run_id).is_err());
+        }
+
+        // A second restart must not replay, reset or mutate terminal evidence.
+        let db = Database::open(&database_path).unwrap();
+        let reviews = NativeAgents::new(&db);
+        reviews.recover_interrupted().unwrap();
+        let persisted = reviews.get(&run_id).unwrap();
+        assert_eq!(persisted.status, "interrupted");
+        assert_eq!(persisted.steps[0].result.as_deref(), Some("{\"scope\":\"verified\"}"));
+        let incomplete: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM native_delegation_tasks
+                 WHERE run_id=?1 AND status IN ('pending','running')",
+                [&run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(incomplete, 0);
+    }
+
+    #[test]
     fn crash_recovery_retires_unfinished_sqlite_delegation_without_reexecution() {
         let db = Database::open_in_memory().unwrap();
         let root = tempfile::tempdir().unwrap();
