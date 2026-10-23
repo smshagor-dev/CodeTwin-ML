@@ -129,8 +129,8 @@ pub async fn suggest_go_security_task_plan(
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        let db = Database::open(root.join("codetwin.sqlite3"))
-            .map_err(|error| error.to_string())?;
+        let db =
+            Database::open(root.join("codetwin.sqlite3")).map_err(|error| error.to_string())?;
         let project = WorkspaceService::new(&db)
             .get_project(&project_id)
             .map_err(|error| error.to_string())?
