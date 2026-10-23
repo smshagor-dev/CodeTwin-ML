@@ -1,5 +1,6 @@
 mod benchmark_commands;
 mod database_commands;
+mod go_security_commands;
 mod guided_security_commands;
 mod ml_commands;
 mod native_agent_commands;
@@ -47,6 +48,7 @@ use database_commands::{
     database_history, list_database_artifacts, list_database_evidence, list_database_findings,
     list_database_rules, run_database_analysis,
 };
+use go_security_commands::{go_security_engine_readiness, suggest_go_security_task_plan};
 use guided_security_commands::{
     approve_guided_security_plan, compare_guided_security_scans, correlate_guided_security_sources,
     get_guided_security_session, guided_security_risk_graph, guided_security_scorecard,
@@ -1074,6 +1076,8 @@ fn main() {
             run_assessment_job,
             create_native_agent_review,
             create_native_task_review,
+            go_security_engine_readiness,
+            suggest_go_security_task_plan,
             native_task_schedule,
             native_worker_audit,
             native_neural_readiness,

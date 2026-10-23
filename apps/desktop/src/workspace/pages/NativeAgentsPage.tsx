@@ -131,6 +131,7 @@ export function NativeAgentsPage() {
   const [acceptedTaskPlan, setAcceptedTaskPlan] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [goStatus, setGoStatus] = useState<{ configured: boolean; detail: string } | null>(null);
   const [modelStatus, setModelStatus] = useState<{ configured: boolean; detail: string } | null>(null);
   const [insight, setInsight] = useState<{ content: string; created_at: string } | null>(null);
   const [modelConsent, setModelConsent] = useState(false);
@@ -143,6 +144,8 @@ export function NativeAgentsPage() {
   } | null>(null);
 
   useEffect(() => {
+    void workspaceApi.goSecurityReadiness().then(setGoStatus)
+      .catch(reason => setError(String(reason)));
     void workspaceApi.nativeModelReadiness().then(setModelStatus)
       .catch(reason => setError(String(reason)));
     void workspaceApi.nativeIsolatedScanReadiness().then(setWorkerStatus)
@@ -326,6 +329,20 @@ export function NativeAgentsPage() {
     }
   }
 
+  async function suggestGoDecomposition() {
+    if (!activeProjectId || !objective.trim()) return;
+    setBusy("go-decompose"); setError("");
+    const requestedProjectId = activeProjectId;
+    const requestedObjective = objective;
+    setTaskProposal(null);
+    setAcceptedTaskPlan(false);
+    try {
+      const proposal = await workspaceApi.suggestGoSecurityTaskPlan(requestedProjectId, requestedObjective);
+      setTaskProposal({ proposal, projectId: requestedProjectId, objective: requestedObjective });
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+
   async function suggestDecomposition() {
     if (!activeProjectId || !planConsent || !objective.trim()) return;
     setBusy("decompose"); setError("");
@@ -451,12 +468,18 @@ export function NativeAgentsPage() {
             {busy === "suggest" ? "Generating suggestion…" : "Suggest specialist roles"}
           </button>
           <button className="ws-button ws-button-secondary"
+            disabled={!goStatus?.configured || !activeProjectId || !objective.trim() || Boolean(busy)}
+            onClick={() => void suggestGoDecomposition()}>
+            {busy === "go-decompose" ? "Preparing local plan…" : "Propose with local Go (offline)"}
+          </button>
+          <p className="ws-form-help">{goStatus?.detail ?? "Checking local Go security engine…"}</p>
+          <button className="ws-button ws-button-secondary"
             disabled={!modelStatus?.configured || !activeProjectId || !planConsent || !objective.trim() || Boolean(busy)}
             onClick={() => void suggestDecomposition()}>
             {busy === "decompose" ? "Decomposing…" : "Propose multi-step task graph"}
           </button>
           {taskProposal && taskProposal.objective === objective && taskProposal.projectId === activeProjectId && <div>
-            <p><strong>Model-proposed task DAG (not approved)</strong></p>
+            <p><strong>Proposed specialist task DAG (not approved)</strong></p>
             {taskProposal.proposal.tasks.map(task => <p key={task.role}>
               <strong>{task.role}</strong> · {task.objective} · depends on {task.depends_on.join(", ") || "none"}
             </p>)}
