@@ -581,7 +581,9 @@ printf '%s\n' '{"Results":[{"Vulnerabilities":[{},{}],"Misconfigurations":[{}]}]
             .unwrap()
             .project_id;
         let agents = NativeAgents::new(&db);
-        let run = agents.create(&project_id, "Approved local test", 10, 120).unwrap();
+        let run = agents
+            .create(&project_id, "Approved local test", 10, 120)
+            .unwrap();
         agents.approve(&run.id).unwrap();
         let audit = crate::native_worker_audit::WorkerAudit::new(&db);
         let ticket = audit.begin(&run.id).unwrap();
@@ -627,7 +629,9 @@ exec sleep 15
             .unwrap()
             .project_id;
         let agents = NativeAgents::new(&db);
-        let run = agents.create(&project_id, "Cancellable local test", 10, 120).unwrap();
+        let run = agents
+            .create(&project_id, "Cancellable local test", 10, 120)
+            .unwrap();
         agents.approve(&run.id).unwrap();
         let audit = crate::native_worker_audit::WorkerAudit::new(&db);
         let ticket = audit.begin(&run.id).unwrap();
@@ -662,5 +666,4 @@ exec sleep 15
         assert!(saved.report_sha256.is_none());
         assert!(saved.vulnerability_count.is_none());
     }
-
 }
