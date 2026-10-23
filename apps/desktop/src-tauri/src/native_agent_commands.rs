@@ -133,7 +133,22 @@ pub fn verify_native_agent_run(
     app: tauri::AppHandle,
 ) -> Result<AgentVerification, String> {
     let db = open_db(&app)?;
-    AgentHandoffs::new(&db).verify(&id)
+    let mut result = AgentHandoffs::new(&db).verify(&id)?;
+    // Recheck persisted evidence when opening an already completed review.
+    // A later SQLite mismatch must never be shown as "verified" in the UI.
+    if NativeAgents::new(&db).get(&id)?.status == "completed" {
+        if let Err(error) = NativeActionLog::new(&db).verify_completed(&id) {
+            result.verified = false;
+            result.issues.push(error);
+        }
+        if let Err(error) = codetwin_core::native_agent_delegation::NativeDelegation::new(&db)
+            .verify(&id)
+        {
+            result.verified = false;
+            result.issues.push(error);
+        }
+    }
+    Ok(result)
 }
 
 #[tauri::command]
