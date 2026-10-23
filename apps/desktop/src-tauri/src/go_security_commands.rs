@@ -31,8 +31,8 @@ fn binary_path() -> Result<PathBuf, String> {
         }
         return Ok(path);
     }
-    let current = std::env::current_exe()
-        .map_err(|_| "Cannot locate the CodeTwin desktop executable")?;
+    let current =
+        std::env::current_exe().map_err(|_| "Cannot locate the CodeTwin desktop executable")?;
     let name = if cfg!(windows) {
         "codetwin-security.exe"
     } else {
@@ -43,7 +43,10 @@ fn binary_path() -> Result<PathBuf, String> {
         .ok_or("Cannot resolve CodeTwin desktop binary directory")?
         .join(name);
     if !path.is_file() {
-        return Err("Bundled Go security engine missing; rebuild the Tauri application with Go installed".into());
+        return Err(
+            "Bundled Go security engine missing; rebuild the Tauri application with Go installed"
+                .into(),
+        );
     }
     Ok(path)
 }
@@ -70,7 +73,8 @@ fn probe_binary(binary: &Path) -> Result<(), String> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let output = child.wait_with_output()
+                let output = child
+                    .wait_with_output()
                     .map_err(|_| "Cannot read Go security engine health result")?;
                 if !status.success() || output.stdout.len() > 512 {
                     return Err("Go security engine handshake failed".into());
