@@ -70,8 +70,9 @@ impl WorkerSettings {
         {
             return Err("Invalid pinned image repository".into());
         }
-        let db = env::var("CODETWIN_TRIVY_DB_DIR")
-            .map_err(|_| "Set CODETWIN_TRIVY_DB_DIR to the preloaded offline DB directory".to_string())?;
+        let db = env::var("CODETWIN_TRIVY_DB_DIR").map_err(|_| {
+            "Set CODETWIN_TRIVY_DB_DIR to the preloaded offline DB directory".to_string()
+        })?;
         let db_dir = fs::canonicalize(db).map_err(err)?;
         if !db_dir.is_dir()
             || !db_dir.join("trivy.db").is_file()
@@ -146,7 +147,10 @@ fn build_args(
         "--mount".into(),
         format!("type=bind,src={},dst=/out", output.display()),
         "--mount".into(),
-        format!("type=bind,src={},dst=/tmp/trivy/db,readonly", settings.db_dir.display()),
+        format!(
+            "type=bind,src={},dst=/tmp/trivy/db,readonly",
+            settings.db_dir.display()
+        ),
         settings.image.clone(),
         "fs".into(),
         "--cache-dir".into(),
@@ -314,7 +318,9 @@ mod tests {
             .any(|p| p == ["--cap-drop=ALL", "--security-opt=no-new-privileges"]));
         assert!(argv.iter().any(|a| a.contains("dst=/workspace,readonly")));
         assert!(argv.iter().any(|a| a == "--pull=never"));
-        assert!(argv.iter().any(|a| a.contains("dst=/tmp/trivy/db,readonly")));
+        assert!(argv
+            .iter()
+            .any(|a| a.contains("dst=/tmp/trivy/db,readonly")));
         assert!(argv.windows(2).any(|p| p == ["--cache-dir", "/tmp/trivy"]));
         assert!(argv.windows(2).any(|p| p == ["--scanners", "vuln"]));
         assert!(!argv.iter().any(|a| a == "--privileged"));
