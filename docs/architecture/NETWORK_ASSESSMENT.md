@@ -36,6 +36,10 @@ security assessment, not a complete penetration-testing engine.
   are rejected. Private/loopback/link-local addresses require explicit permission.
 - At most 16 direct TCP connections plus selected HTTPS HEAD checks; no redirects,
   HTTP proxy, recursive discovery or CIDR sweeps.
+- Cancellation is checked before each TCP connection and atomically during
+  every SQLite evidence write and final completion. An in-flight TCP/HTTPS
+  request may reach its bounded timeout, but its result cannot be persisted
+  after the assessment is cancelled. Earlier valid observations are retained.
 - A scan may stop between probes on cancellation, time budget or DNS drift.
   Partial evidence is retained, and failures are never marked successful.
 - TLS status indicates only whether one HTTPS request established trust using
@@ -96,3 +100,13 @@ Changing the target, ports, budget or private-network option in the desktop
 review clears the authorization checkbox. The separate Tool Library
 private-network and DNS checks likewise require fresh confirmation when
 their allowed scopes change.
+
+## Cancellation integrity validation
+
+Rust regression coverage simulates an approved scan with one persisted
+observation, revokes it, then verifies the next observation is rejected
+and the cancelled run cannot be finalized as completed. Both transitions
+use single conditional SQLite statements, including across independent
+connections. The check does not forcibly interrupt a socket already
+inside a bounded TCP connect or HTTPS HEAD, but it prevents observations
+from that request being treated as authorized after cancellation.
