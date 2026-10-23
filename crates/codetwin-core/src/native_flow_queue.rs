@@ -623,6 +623,66 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_queue_progress_exposes_both_concurrent_roles_and_failures() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.rs"), "pub fn safe() {}").unwrap();
+        let project = ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let run = NativeAgents::new(&db)
+            .create_with_roles(
+                &project,
+                "Concurrent approved review",
+                10,
+                120,
+                &["scout".into(), "source".into(), "secrets".into(), "qa".into()],
+            )
+            .unwrap();
+        NativeFlow::new(&db).prepare(&run.id).unwrap();
+        NativeFlow::new(&db).approve(&run.id).unwrap();
+        let queue = NativeFlowQueue::new(&db);
+        queue.enqueue(&run.id).unwrap();
+        queue.claim_next().unwrap().unwrap();
+
+        // Two separately claimed native specialists are visible at once.
+        db.connection()
+            .execute(
+                "UPDATE native_agent_steps SET status='running'
+                 WHERE run_id=?1 AND position IN (2,3)",
+                [&run.id],
+            )
+            .unwrap();
+        let current = queue.get(&run.id).unwrap().unwrap();
+        assert_eq!(current.active_role.as_deref(), Some("Secrets Auditor"));
+        assert_eq!(current.active_roles, vec!["Secrets Auditor", "Test Researcher"]);
+        assert_eq!(queue.list().unwrap()[0].active_roles, current.active_roles);
+        assert_eq!(current.total_steps, 4);
+
+        db.connection()
+            .execute(
+                "UPDATE native_agent_steps SET status='failed'
+                 WHERE run_id=?1 AND position=2",
+                [&run.id],
+            )
+            .unwrap();
+        let failed = queue.get(&run.id).unwrap().unwrap();
+        assert_eq!(failed.active_roles, vec!["Test Researcher"]);
+        assert_eq!(failed.issue_role.as_deref(), Some("Secrets Auditor"));
+        assert_eq!(failed.issue_status.as_deref(), Some("failed"));
+
+        db.connection()
+            .execute(
+                "UPDATE native_agent_steps SET status='interrupted'
+                 WHERE run_id=?1 AND position=3",
+                [&run.id],
+            )
+            .unwrap();
+        assert!(queue.get(&run.id).unwrap().unwrap().active_roles.is_empty());
+    }
+
+    #[test]
     fn interrupted_claim_retires_approval_without_dispatching_tools() {
         let db = Database::open_in_memory().unwrap();
         let root = tempfile::tempdir().unwrap();
