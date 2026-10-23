@@ -450,6 +450,59 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn bundled_go_process_executes_approved_rust_review_with_sqlite() {
+        if std::env::var("CODETWIN_TEST_GO_SIDECAR").ok().as_deref() != Some("1") {
+            return;
+        }
+        let target = env!("TAURI_ENV_TARGET_TRIPLE");
+        let suffix = if cfg!(windows) { ".exe" } else { "" };
+        let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("codetwin-security-{target}{suffix}"));
+        let sandbox = tempfile::tempdir().expect("isolated SQLite fixture");
+        let db = super::Database::open(sandbox.path().join("review.sqlite3"))
+            .expect("open SQLite WAL database");
+        let source = sandbox.path().join("project");
+        std::fs::create_dir_all(&source).expect("create indexed project");
+        std::fs::write(source.join("source.ts"), "export const valid = true;")
+            .expect("write benign test source");
+        let project_id = codetwin_core::ProjectIndexService::new(&db)
+            .index_project(&source)
+            .expect("index approved source")
+            .project_id;
+        let reviews = super::NativeAgents::new(&db);
+        let run = reviews
+            .create_with_roles(
+                &project_id,
+                "Review source for quality and security",
+                10,
+                300,
+                &["scout".to_string(), "source".to_string()],
+            )
+            .expect("prepare source review");
+        reviews.approve(&run.id).expect("explicitly approve review");
+        let check = |db: &super::Database,
+                     run: &super::AgentRun,
+                     step: &super::AgentStep| {
+            let advice = super::verified_dispatch(db, &run.id, &binary)?;
+            if advice.ready.iter().any(|role| role == &step.tool) {
+                Ok(())
+            } else {
+                Err("Go scheduler refused the next role".to_string())
+            }
+        };
+        let result = reviews
+            .execute_with_dispatch(&run.id, &check)
+            .expect("complete Rust review with real Go dispatch checks");
+        assert_eq!(result.status, "completed", "{:?}", result.message);
+        assert!(result.steps.iter().all(|step| step.status == "completed"));
+        let evidence = codetwin_core::native_agent_handoffs::AgentHandoffs::new(&db)
+            .verify(&run.id)
+            .expect("verify persisted SQLite evidence handoff");
+        assert!(evidence.verified, "{:?}", evidence.issues);
+    }
+
+    #[test]
     fn bundled_go_process_roundtrips_review_memory() {
         if std::env::var("CODETWIN_TEST_GO_SIDECAR").ok().as_deref() != Some("1") {
             return;
