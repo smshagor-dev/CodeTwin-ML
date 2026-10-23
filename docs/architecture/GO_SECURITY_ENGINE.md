@@ -73,7 +73,11 @@ SQLite migration 0046 records the queue's ordering, terminal status and
 timestamps without duplicating evidence. The desktop startup recovery marks
 a queue item interrupted if its runner was stopped; it does not automatically
 re-execute that item. Cancelled parent reviews are removed from the pending
-queue before a claim. Queue entries cannot add roles, targets or tools, and
+queue before a claim. If cancellation happens after a claim, the queue receipt
+is **cancelled**, not failed; completed, failed and cancelled receipts must
+match their reviewed SQLite parent state. The native review claim atomically
+rejects a still-waiting queued flow, preventing the single-run entrypoint from
+bypassing FIFO order. Queue entries cannot add roles, targets or tools, and
 no model-generated proposal grants review approval.
 
 ## Adaptive follow-up after failure or interruption
