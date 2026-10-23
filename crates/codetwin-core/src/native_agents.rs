@@ -787,7 +787,10 @@ mod tests {
             reviews.recover_interrupted().unwrap();
             let run = reviews.get(&run_id).unwrap();
             assert_eq!(run.status, "interrupted");
-            assert_eq!(run.steps[0].result.as_deref(), Some("{\"scope\":\"verified\"}"));
+            assert_eq!(
+                run.steps[0].result.as_deref(),
+                Some("{\"scope\":\"verified\"}")
+            );
             assert_eq!(run.steps[0].status, "completed");
             assert_eq!(run.steps[1].status, "interrupted");
             assert_eq!(run.steps[2].status, "cancelled");
@@ -795,7 +798,9 @@ mod tests {
                 .graph(&run_id)
                 .unwrap();
             assert_eq!(tasks.tasks[0].status, "completed");
-            assert!(tasks.tasks[1..].iter().all(|task| task.status == "cancelled"));
+            assert!(tasks.tasks[1..]
+                .iter()
+                .all(|task| task.status == "cancelled"));
             let saved: i64 = db
                 .connection()
                 .query_row(
@@ -814,7 +819,10 @@ mod tests {
         reviews.recover_interrupted().unwrap();
         let persisted = reviews.get(&run_id).unwrap();
         assert_eq!(persisted.status, "interrupted");
-        assert_eq!(persisted.steps[0].result.as_deref(), Some("{\"scope\":\"verified\"}"));
+        assert_eq!(
+            persisted.steps[0].result.as_deref(),
+            Some("{\"scope\":\"verified\"}")
+        );
         let incomplete: i64 = db
             .connection()
             .query_row(
