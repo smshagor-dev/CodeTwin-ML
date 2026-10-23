@@ -534,10 +534,138 @@ impl<'a> NativeAgents<'a> {
             }
             crate::native_agent_handoffs::AgentHandoffs::new(self.db)
                 .record(&run.id, step.position)?;
-            if step.tool == "source" && dispatch.is_none() {
+            if step.tool == "source" {
+                if let Some(policy) = dispatch {
+                    // Each optional specialist is independently checked by Go
+                    // *before* its durable running receipt and tool dispatch.
+                    // The supervisor owns every claim, join and evidence write.
+                    return self.run_verified_optional_batches(run, start, policy);
+                }
                 prepared = self.parallel_optional_specialists(run, start)?;
             }
             self.boundary(&run.id, start, run.budget_seconds)?;
+        }
+        Ok(())
+    }
+
+    /// Execute the exact dependency-ready set from the approved SQLite DAG.
+    /// Go verifies each specialist in the set while all are still pending;
+    /// Rust then commits both running receipts before starting native analyzers.
+    /// No tools or unverified roles are accepted from Go. Joined workers finish
+    /// before the supervisor commits evidence and admits another batch.
+    fn run_verified_optional_batches(
+        &self,
+        run: &AgentRun,
+        start: Instant,
+        policy: &dyn Fn(&Database, &AgentRun, &AgentStep) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let delegation = crate::native_agent_delegation::NativeDelegation::new(self.db);
+        let handoffs = crate::native_agent_handoffs::AgentHandoffs::new(self.db);
+        let log = crate::native_action_log::NativeActionLog::new(self.db);
+        let mut remaining = run.steps.len().saturating_sub(2);
+        while remaining != 0 {
+            self.boundary(&run.id, start, run.budget_seconds)?;
+            let ready = delegation.ready_batch(&run.id)?;
+            if ready.is_empty() || ready.len() > 2 || ready.len() > remaining {
+                return Err("No bounded dependency-ready specialist batch".into());
+            }
+            let mut steps = Vec::with_capacity(ready.len());
+            for task in &ready {
+                let step = run
+                    .steps
+                    .iter()
+                    .find(|step| step.position == task.position)
+                    .ok_or("Ready specialist does not match the approved review")?;
+                if !matches!(step.tool.as_str(), "secrets" | "qa" | "database" | "runtime")
+                    || step.role != task.role
+                    || step.tool != task.tool
+                {
+                    return Err("Go-ready batch contained an unregistered specialist".into());
+                }
+                // Verify the full batch before claiming any running receipts.
+                // Policy writes only its bounded decision audit, never tools.
+                policy(self.db, run, step)?;
+                self.boundary(&run.id, start, run.budget_seconds)?;
+                handoffs.check_incoming(&run.id, step.position)?;
+                steps.push(step);
+            }
+            for step in &steps {
+                self.boundary(&run.id, start, run.budget_seconds)?;
+                delegation.start(&run.id, step.position, &step.role)?;
+                log.begin(&run.id, step.position, &step.tool)?;
+            }
+
+            let filename = self
+                .db
+                .connection()
+                .path()
+                .filter(|path| *path != ":memory:")
+                .map(std::path::PathBuf::from);
+            let outcomes: Vec<Result<String, String>> = if steps.len() == 2 {
+                if let Some(path) = filename {
+                    std::thread::scope(|scope| {
+                        let handles = steps
+                            .iter()
+                            .map(|step| {
+                                let path = path.clone();
+                                let project = run.project_id.clone();
+                                let tool = step.tool.clone();
+                                scope.spawn(move || {
+                                    Database::open(&path)
+                                        .map_err(to_error)
+                                        .and_then(|db| run_passive_specialist(&db, &project, &tool))
+                                })
+                            })
+                            .collect::<Vec<_>>();
+                        handles
+                            .into_iter()
+                            .map(|handle| {
+                                handle.join().unwrap_or_else(|_| {
+                                    Err("Concurrent native specialist panicked".into())
+                                })
+                            })
+                            .collect()
+                    })
+                } else {
+                    steps
+                        .iter()
+                        .map(|step| {
+                            run_passive_specialist(self.db, &run.project_id, &step.tool)
+                        })
+                        .collect()
+                }
+            } else {
+                steps
+                    .iter()
+                    .map(|step| run_passive_specialist(self.db, &run.project_id, &step.tool))
+                    .collect()
+            };
+            // Every native thread has joined. Cancellation and deadline checks
+            // run before evidence is accepted; parent finalization will close
+            // any claimed but unfinished action receipts on failure.
+            self.boundary(&run.id, start, run.budget_seconds)?;
+            let mut first_failure = None;
+            for (step, outcome) in steps.iter().zip(outcomes) {
+                let passed = outcome.is_ok();
+                let summary = match outcome {
+                    Ok(summary) => summary,
+                    Err(reason) => {
+                        if first_failure.is_none() {
+                            first_failure = Some(reason.clone());
+                        }
+                        reason
+                    }
+                };
+                delegation.finish(&run.id, step.position, passed)?;
+                log.finish(&run.id, step.position, &step.tool, passed, &summary)?;
+                if passed {
+                    handoffs.record(&run.id, step.position)?;
+                }
+            }
+            if let Some(error) = first_failure {
+                return Err(error);
+            }
+            remaining -= steps.len();
         }
         Ok(())
     }
