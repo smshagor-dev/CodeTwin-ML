@@ -14,6 +14,7 @@ pub mod native_agent_reasoning;
 pub mod native_agent_workers;
 pub mod native_agents;
 pub mod native_flow;
+pub mod native_flow_queue;
 pub mod native_graph_reasoning;
 pub mod native_neural_embeddings;
 pub mod native_task_plans;

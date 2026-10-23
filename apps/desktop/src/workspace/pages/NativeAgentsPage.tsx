@@ -68,6 +68,17 @@ export type AutomatedSecurityFlow = {
   }[];
 };
 
+export type ApprovedFlowQueueItem = {
+  id: number;
+  review_id: string;
+  project_id: string;
+  status: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  detail: string;
+};
+
 export type AdaptiveFlowFollowup = {
   review_id: string;
   proposal: NativeTaskProposal;
@@ -154,6 +165,7 @@ export function NativeAgentsPage() {
   const [graphInference, setGraphInference] = useState<GraphInference | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [automatedFlow, setAutomatedFlow] = useState<AutomatedSecurityFlow | null>(null);
+  const [flowQueue, setFlowQueue] = useState<ApprovedFlowQueueItem[]>([]);
   const [adaptiveFollowup, setAdaptiveFollowup] = useState<AdaptiveFlowFollowup | null>(null);
   const [handoffs, setHandoffs] = useState<AgentHandoff[]>([]);
   const [verification, setVerification] = useState<AgentVerification | null>(null);
@@ -205,6 +217,18 @@ export function NativeAgentsPage() {
       .catch(reason => setError(String(reason)));
     void workspaceApi.nativeNeuralReadiness().then(setNeuralReady)
       .catch(reason => setError(String(reason)));
+  }, []);
+
+  useEffect(() => {
+    void workspaceApi.listApprovedFlowQueue()
+      .then(setFlowQueue)
+      .catch(reason => setError(String(reason)));
+    const timer = window.setInterval(() => {
+      void workspaceApi.listApprovedFlowQueue()
+        .then(setFlowQueue)
+        .catch(() => undefined);
+    }, 3500);
+    return () => window.clearInterval(timer);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -547,6 +571,34 @@ export function NativeAgentsPage() {
     setAcceptedTaskPlan(false);
   }
 
+  async function queueApprovedFlow(id: string) {
+    setBusy("queue-add"); setError("");
+    try {
+      await workspaceApi.enqueueApprovedSecurityFlow(id);
+      setFlowQueue(await workspaceApi.listApprovedFlowQueue());
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+
+  async function removeQueuedFlow(id: string) {
+    setBusy("queue-remove"); setError("");
+    try { setFlowQueue(await workspaceApi.removeQueuedSecurityFlow(id)); }
+    catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+
+  async function runApprovedFlowQueue() {
+    if (!window.confirm(
+      "Run the queued, separately approved passive reviews in FIFO order? The batch stops at the first failed or interrupted review."
+    )) return;
+    setBusy("flow-queue"); setError("");
+    try {
+      setFlowQueue(await workspaceApi.runApprovedSecurityFlowQueue());
+      await refresh();
+    } catch (reason) { setError(String(reason)); await refresh(); }
+    finally { setBusy(""); }
+  }
+
   async function prepareAutomatedFlow(id: string) {
     if (!goStatus?.configured) return;
     setBusy("auto-prepare"); setError("");
@@ -561,6 +613,20 @@ export function NativeAgentsPage() {
     try {
       setAutomatedFlow(await workspaceApi.runAutomatedSecurityFlow(id));
       setAdaptiveFollowup(await workspaceApi.getAutomatedFlowFollowup(id));
+      await refresh();
+    } catch (reason) { setError(String(reason)); await refresh(); }
+    finally { setBusy(""); }
+  }
+
+  async function approveAndQueueAutomatedFlow(id: string) {
+    if (!goStatus?.configured || !window.confirm(
+      "Approve this exact passive specialist plan and add it to the SQLite queue? It will not run until you start the approved flow queue."
+    )) return;
+    setBusy("auto-queue"); setError("");
+    try {
+      setAutomatedFlow(await workspaceApi.approveAutomatedSecurityFlow(id));
+      await workspaceApi.enqueueApprovedSecurityFlow(id);
+      setFlowQueue(await workspaceApi.listApprovedFlowQueue());
       await refresh();
     } catch (reason) { setError(String(reason)); await refresh(); }
     finally { setBusy(""); }
@@ -640,6 +706,36 @@ export function NativeAgentsPage() {
       description="Rust-native supervised review of your indexed source, application security, QA evidence and runtime configuration. Runs are persisted locally."
       actions={<button className="ws-button ws-button-secondary" onClick={() => void refresh().catch(reason => setError(String(reason)))}>Refresh</button>}
     />
+    <Panel title="Approved security flow queue">
+      <p className="ws-form-help">
+        Queue up to eight individually approved local passive reviews. One batch run
+        executes them in order using Go scheduling checks and SQLite action receipts.
+        Failed or interrupted work stops the batch; no automatic restart or retry.
+      </p>
+      <div className="ws-button-row">
+        <button className="ws-button ws-button-primary"
+          disabled={!goStatus?.configured || Boolean(busy) || !flowQueue.some(item => item.status === "queued")}
+          onClick={() => void runApprovedFlowQueue()}>
+          {busy === "flow-queue" ? "Running approved flows…" : "Run approved flow queue"}
+        </button>
+        <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
+          onClick={() => void workspaceApi.listApprovedFlowQueue().then(setFlowQueue).catch(reason => setError(String(reason)))}>
+          Refresh queue
+        </button>
+      </div>
+      {flowQueue.length === 0
+        ? <p className="ws-form-help">No flows have been added to the queue.</p>
+        : flowQueue.map(item => <div key={item.id} className="ws-button-row">
+            <span className="ws-form-help">
+              Review {item.review_id.slice(0, 12)} · {item.status}
+              {item.detail ? " · " + item.detail : ""}
+            </span>
+            {item.status === "queued" && <button className="ws-button ws-button-secondary"
+              disabled={Boolean(busy)} onClick={() => void removeQueuedFlow(item.review_id)}>
+              Remove waiting flow
+            </button>}
+          </div>)}
+    </Panel>
     <Panel title="Create a supervised review">
       <div className="ws-form-stack">
         <ProjectSelect projects={projects} value={activeProjectId} onChange={setActiveProjectId}/>
@@ -1031,12 +1127,22 @@ export function NativeAgentsPage() {
         {selected.status === "planned" && automatedFlow?.review_id !== selected.id && <button className="ws-button ws-button-secondary"
           disabled={!goStatus?.configured || Boolean(busy)}
           onClick={() => void prepareAutomatedFlow(selected.id)}>Prepare automated flow</button>}
+        {selected.status === "planned" && automatedFlow?.review_id === selected.id && <button className="ws-button ws-button-secondary"
+          disabled={!goStatus?.configured || Boolean(busy)}
+          onClick={() => void approveAndQueueAutomatedFlow(selected.id)}>
+          {busy === "auto-queue" ? "Approving and queuing…" : "Approve and queue flow"}
+        </button>}
         {selected.status === "planned" && automatedFlow?.review_id === selected.id && <button className="ws-button ws-button-primary"
           disabled={!goStatus?.configured || Boolean(busy)}
           onClick={() => void approveAndRunAutomatedFlow(selected.id)}>
           {busy === "auto-flow" ? "Running approved flow…" : "Approve and run complete flow"}
         </button>}
-        {selected.status === "approved" && automatedFlow?.review_id === selected.id && automatedFlow.approved_at && <button className="ws-button ws-button-primary"
+        {selected.status === "approved" && automatedFlow?.review_id === selected.id && automatedFlow.approved_at &&
+          !flowQueue.some(item => item.review_id === selected.id) && <button className="ws-button ws-button-secondary"
+          disabled={!goStatus?.configured || Boolean(busy)}
+          onClick={() => void queueApprovedFlow(selected.id)}>Queue approved flow</button>}
+        {selected.status === "approved" && automatedFlow?.review_id === selected.id && automatedFlow.approved_at &&
+          !flowQueue.some(item => item.review_id === selected.id) && <button className="ws-button ws-button-primary"
           disabled={!goStatus?.configured || Boolean(busy)}
           onClick={() => void runApprovedAutomatedFlow(selected.id)}>Run approved automated flow</button>}
         {selected.status === "approved" && automatedFlow?.review_id !== selected.id && <button className="ws-button ws-button-primary" disabled={Boolean(busy)} onClick={() => execute(selected.id)}>Run approved review</button>}
