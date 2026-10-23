@@ -90,6 +90,17 @@ func run(input io.Reader, output io.Writer) error {
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--health" {
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"engine": "codetwin-security", "protocol_version": protocolVersion,
+			"storage": "rust-sqlite", "functions": []string{"plan"},
+		})
+		return
+	}
+	if len(os.Args) != 1 {
+		fmt.Fprintln(os.Stderr, "unsupported Go security engine argument")
+		os.Exit(2)
+	}
 	if err := run(os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "security engine rejected request:", err)
 		os.Exit(1)

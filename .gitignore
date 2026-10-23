@@ -35,3 +35,6 @@ logs/
 *.log
 *.tsbuildinfo
 apps/desktop/src-tauri/gen/
+
+# Generated Go binaries bundled by Tauri; build from pinned source.
+apps/desktop/src-tauri/binaries/

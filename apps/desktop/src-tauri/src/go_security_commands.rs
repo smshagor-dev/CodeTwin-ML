@@ -10,11 +10,12 @@ use codetwin_core::{
     native_task_plans::{parse_proposal, TaskProposal},
     Database, WorkspaceService,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 const MAX_RESPONSE_BYTES: usize = 6000;
 const PLANNER_TIMEOUT: Duration = Duration::from_secs(10);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Serialize)]
 pub struct GoSecurityReadiness {
@@ -23,22 +24,95 @@ pub struct GoSecurityReadiness {
 }
 
 fn binary_path() -> Result<PathBuf, String> {
-    let value = std::env::var_os("CODETWIN_GO_SECURITY_BIN")
-        .ok_or("Set CODETWIN_GO_SECURITY_BIN to the compiled local Go security engine")?;
-    let path = PathBuf::from(value);
-    if !path.is_absolute() || !path.is_file() {
-        return Err("Go security engine must be an existing absolute executable path".into());
+    if let Some(value) = std::env::var_os("CODETWIN_GO_SECURITY_BIN") {
+        let path = PathBuf::from(value);
+        if !path.is_absolute() || !path.is_file() {
+            return Err("Go engine override must be an existing absolute executable path".into());
+        }
+        return Ok(path);
+    }
+    let current =
+        std::env::current_exe().map_err(|_| "Cannot locate the CodeTwin desktop executable")?;
+    let name = if cfg!(windows) {
+        "codetwin-security.exe"
+    } else {
+        "codetwin-security"
+    };
+    let path = current
+        .parent()
+        .ok_or("Cannot resolve CodeTwin desktop binary directory")?
+        .join(name);
+    if !path.is_file() {
+        return Err(
+            "Bundled Go security engine missing; rebuild the Tauri application with Go installed"
+                .into(),
+        );
     }
     Ok(path)
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GoHealth {
+    engine: String,
+    protocol_version: u8,
+    storage: String,
+    functions: Vec<String>,
+}
+
+/// A bounded handshake prevents accidentally dispatching to an unrelated program.
+fn probe_binary(binary: &Path) -> Result<(), String> {
+    let mut child = Command::new(binary)
+        .arg("--health")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Cannot launch Go security engine for health check")?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|_| "Cannot read Go security engine health result")?;
+                if !status.success() || output.stdout.len() > 512 {
+                    return Err("Go security engine handshake failed".into());
+                }
+                let health: GoHealth = serde_json::from_slice(&output.stdout)
+                    .map_err(|_| "Go security engine handshake was not valid JSON")?;
+                if health.engine != "codetwin-security"
+                    || health.protocol_version != 1
+                    || health.storage != "rust-sqlite"
+                    || !health.functions.iter().any(|feature| feature == "plan")
+                {
+                    return Err("Incompatible Go security engine protocol".into());
+                }
+                return Ok(());
+            }
+            Ok(None) if start.elapsed() < PROBE_TIMEOUT => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Go security engine handshake timed out".into());
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Go security engine handshake process failed".into());
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub fn go_security_engine_readiness() -> GoSecurityReadiness {
-    match binary_path() {
-        Ok(_) => GoSecurityReadiness {
+    match binary_path().and_then(|path| probe_binary(&path)) {
+        Ok(()) => GoSecurityReadiness {
             configured: true,
-            detail: "Local Go security planner is configured; no network or PostgreSQL required"
-                .into(),
+            detail: "Bundled Go planner verified; approved reviews use SQLite".into(),
         },
         Err(reason) => GoSecurityReadiness {
             configured: false,
@@ -54,6 +128,7 @@ struct PlannerRequest<'a> {
 }
 
 fn local_plan(binary: &Path, objective: &str) -> Result<TaskProposal, String> {
+    probe_binary(binary)?;
     let request = serde_json::to_vec(&PlannerRequest {
         protocol_version: 1,
         objective,
