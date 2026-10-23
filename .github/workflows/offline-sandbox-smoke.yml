@@ -65,7 +65,8 @@ jobs:
             memory=0
             cpu=0
             user=0
-            mounts=0
+            tmpfs=0
+            unsafe=0
             project=0
             database=0
             output=0
@@ -83,15 +84,19 @@ jobs:
                 --cpus=1) cpu=1 ;;
                 --user=*) user=1 ;;
                 --rm) rm=1 ;;
+                --tmpfs=/tmp:rw,noexec,nosuid,size=64m) tmpfs=1 ;;
+                --privileged|--cap-add=*|--network=*|--volume|--volume=*|--security-opt=seccomp=unconfined) unsafe=1 ;;
                 type=bind,src=*,dst=/workspace,readonly) project=1 ;;
                 type=bind,src=*,dst=/tmp/trivy/db,readonly) database=1 ;;
                 type=bind,src=*,dst=/out) output=1 ;;
+                type=bind,*) unsafe=1 ;;
               esac
               previous="$arg"
             done
             if (( network != 1 || readonly != 1 || no_pull != 1 ||
                   capdrop != 1 || no_privilege != 1 || limits != 1 ||
                   memory != 1 || cpu != 1 || user != 1 || rm != 1 ||
+                  tmpfs != 1 || unsafe != 0 ||
                   project != 1 || database != 1 || output != 1 )); then
               echo "Refused scanner launch: missing required isolation option" >&2
               exit 78
