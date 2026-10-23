@@ -95,6 +95,16 @@ role and status (never scanner output or secrets). Tests compare the current
 role to the persisted display label, not the lower-case tool identifier.
 All reads are local to SQLite, without sending source data or findings to Go.
 
+### Concurrent specialist evidence integrity
+
+The Go-verified path now uses the same bounded two-slot scheduling limit as
+the persisted dependency graph; the native supervisor, not Go, owns the
+actual passive scanner execution and SQLite writes. Both results are joined
+before moving to the next batch. A denied role prevents that batch's tools
+from starting; a cancelled or failed batch cannot be replayed automatically.
+File-backed tests reopen SQLite and verify terminal receipts, approved role
+order and handoff fingerprints.
+
 ### Crash recovery for claimed queues
 
 When the queue has claimed a review but the Rust supervisor cannot start,
@@ -194,11 +204,18 @@ LLM-generated action planner or unrestricted PentAGI autonomy.
   invokes the Go scheduler before each registered Rust specialist. Go can deny
   the next role; it never executes the scanner, touches the SQLite database or
   alters the approved DAG. Rust persists each state transition and verifies all
-  handoffs. The Go-gated path disables speculative parallel prefetch so no
-  specialist runs before its own scheduling decision. This is not arbitrary
-  PentAGI tool execution. Rust persists each Go-gated allowed/denied
-  decision in `go_dispatch_audit` (SQLite), including run, role, bounded ready
-  roles, reason and time. The Agents page can display that audit. No source
+  handoffs. After mandatory reconnaissance and source review, Rust requests Go
+  scheduling approval for **each member** of a dependency-ready optional batch.
+  When two independent roles occupy consecutive approved positions and the
+  review uses file-backed SQLite, both durable running receipts are claimed
+  before the native passive analyzers execute concurrently. The supervisor
+  joins both threads, checks cancellation/deadlines, commits evidence in role
+  order, and creates verifiable signed handoffs. Dependent or nonconsecutive
+  roles fall back to serial execution; no speculative analyzer runs without its
+  own successful Go scheduling decision. This is not arbitrary PentAGI tool
+  execution. Rust persists each Go-gated allowed/denied decision in
+  `go_dispatch_audit` (SQLite), including run, role, bounded ready roles,
+  reason and time. The Agents page can display that audit. No source
   bytes, credentials or scanner output are saved in decision records.
 - Go chooses registered passive specialists; Rust checks the indexed project,
   hashes, user approval, budgets, dependencies, cancellation and audit state.
