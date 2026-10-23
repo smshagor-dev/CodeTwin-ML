@@ -44,6 +44,16 @@ fn real_docker_offline_scan_records_a_durable_receipt() {
         result.expect("A pinned offline Trivy image with a preloaded vulnerability DB is required");
     assert_eq!(receipt.run_id, run.id);
     assert_eq!(receipt.report_sha256.len(), 64);
-    assert_eq!(audit.latest(&run.id).unwrap().unwrap().status, "success");
+    assert!(receipt.report_sha256.bytes().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(
+        receipt.image_digest,
+        std::env::var("CODETWIN_TRIVY_IMAGE").unwrap()
+    );
+    let saved = audit.latest(&run.id).unwrap().unwrap();
+    assert_eq!(saved.status, "success");
+    assert_eq!(saved.image_digest.as_deref(), Some(receipt.image_digest.as_str()));
+    assert_eq!(saved.report_sha256.as_deref(), Some(receipt.report_sha256.as_str()));
+    assert_eq!(saved.vulnerability_count, Some(receipt.vulnerability_count));
+    assert_eq!(saved.misconfiguration_count, Some(receipt.misconfiguration_count));
     assert_eq!(audit.recover_interrupted().unwrap(), 0);
 }
