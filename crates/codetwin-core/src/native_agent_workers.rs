@@ -208,6 +208,21 @@ impl<'a> IsolatedWorker<'a> {
         if !authorized {
             return Err("Explicit authorization to scan this local project is required".into());
         }
+        let settings = WorkerSettings::load()?;
+        self.scan_with_settings(run_id, authorized, settings)
+    }
+
+    // The same guarded implementation runs under production Docker and a
+    // local process contract fixture that cannot contact the Docker daemon.
+    fn scan_with_settings(
+        &self,
+        run_id: &str,
+        authorized: bool,
+        settings: WorkerSettings,
+    ) -> Result<IsolatedScanReceipt, String> {
+        if !authorized {
+            return Err("Explicit authorization to scan this local project is required".into());
+        }
         let run = NativeAgents::new(self.db).get(run_id)?;
         if run.status != "approved" {
             return Err("Approve the native review before a separate container scan".into());
@@ -220,7 +235,6 @@ impl<'a> IsolatedWorker<'a> {
         if !root.is_dir() {
             return Err("Project root is not a directory".into());
         }
-        let settings = WorkerSettings::load()?;
         let tmp = tempfile::tempdir().map_err(err)?;
         if !safe_mount_path(&root) || !safe_mount_path(tmp.path()) {
             return Err("Mount paths cannot contain Docker option separators".into());
