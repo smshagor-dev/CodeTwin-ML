@@ -108,6 +108,14 @@ Each short-lived file-backed worker opens only the already migrated SQLite
 database; it does not create a new database, re-run schema initialization or
 change journal mode. This removes avoidable schema setup contention while
 two registered passive analyzers start.
+The native supervisor now claims the delegated role, specialist step and action
+receipt in **one SQLite write transaction**, checking the exact registered role,
+approved parent and completed dependencies. After work has joined, it commits
+the delegation result, step result and SHA-256 action digest in **one
+transaction**. A failed claim or stale delegation rolls back all three state
+changes. Existing read-only scanners still run only under the prior approval,
+and no finished specialist is automatically retried.
+
 For a joined batch where just one passive specialist fails, the supervisor
 persists **both** terminal specialist receipts and their result digests in
 approved position order. The successful sibling's evidence is retained, while

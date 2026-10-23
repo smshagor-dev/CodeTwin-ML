@@ -453,14 +453,10 @@ impl<'a> NativeAgents<'a> {
             // Read and verify the exact predecessor evidence before dispatch.
             crate::native_agent_handoffs::AgentHandoffs::new(self.db)
                 .check_incoming(&run.id, step.position)?;
-            crate::native_agent_delegation::NativeDelegation::new(self.db).start(
+            crate::native_action_log::NativeActionLog::new(self.db).begin_supervised(
                 &run.id,
                 step.position,
                 &step.role,
-            )?;
-            crate::native_action_log::NativeActionLog::new(self.db).begin(
-                &run.id,
-                step.position,
                 &step.tool,
             )?;
             let result = if let Some(prefetched) = prepared.remove(&step.position) {
@@ -503,12 +499,7 @@ impl<'a> NativeAgents<'a> {
             };
             match result {
                 Ok(summary) => {
-                    crate::native_agent_delegation::NativeDelegation::new(self.db).finish(
-                        &run.id,
-                        step.position,
-                        true,
-                    )?;
-                    crate::native_action_log::NativeActionLog::new(self.db).finish(
+                    crate::native_action_log::NativeActionLog::new(self.db).finish_supervised(
                         &run.id,
                         step.position,
                         &step.tool,
@@ -517,12 +508,7 @@ impl<'a> NativeAgents<'a> {
                     )?;
                 }
                 Err(error) => {
-                    crate::native_agent_delegation::NativeDelegation::new(self.db).finish(
-                        &run.id,
-                        step.position,
-                        false,
-                    )?;
-                    crate::native_action_log::NativeActionLog::new(self.db).finish(
+                    crate::native_action_log::NativeActionLog::new(self.db).finish_supervised(
                         &run.id,
                         step.position,
                         &step.tool,
@@ -612,8 +598,7 @@ impl<'a> NativeAgents<'a> {
             }
             for step in &steps {
                 self.boundary(&run.id, start, run.budget_seconds)?;
-                delegation.start(&run.id, step.position, &step.role)?;
-                log.begin(&run.id, step.position, &step.tool)?;
+                log.begin_supervised(&run.id, step.position, &step.role, &step.tool)?;
             }
 
             // Claiming the second role can race with cancellation from
@@ -685,7 +670,6 @@ impl<'a> NativeAgents<'a> {
         if outcomes.len() != steps.len() || steps.is_empty() || steps.len() > 2 {
             return Err("Invalid bounded specialist result count".into());
         }
-        let delegation = crate::native_agent_delegation::NativeDelegation::new(self.db);
         let handoffs = crate::native_agent_handoffs::AgentHandoffs::new(self.db);
         let log = crate::native_action_log::NativeActionLog::new(self.db);
         let mut first_failure = None;
@@ -700,8 +684,7 @@ impl<'a> NativeAgents<'a> {
                     reason
                 }
             };
-            delegation.finish(&run.id, step.position, passed)?;
-            log.finish(&run.id, step.position, &step.tool, passed, &summary)?;
+            log.finish_supervised(&run.id, step.position, &step.tool, passed, &summary)?;
             // Never create new downstream handoffs from a failed batch.
             // The successful sibling's evidence remains visible in its own
             // committed receipt, but dependent work cannot be dispatched.
@@ -1385,11 +1368,7 @@ mod tests {
                 })
                 .collect();
             let error = agents
-                .finish_verified_batch(
-                    &review,
-                    &[&review.steps[2], &review.steps[3]],
-                    outcomes,
-                )
+                .finish_verified_batch(&review, &[&review.steps[2], &review.steps[3]], outcomes)
                 .unwrap_err();
             assert_eq!(error, "Injected isolated specialist failure");
             let current = agents.get(&review.id).unwrap();

@@ -82,19 +82,15 @@ impl Database {
     /// journal mode or accidentally create a missing database while two
     /// analyzers start concurrently. The parent connection owns migrations.
     pub(crate) fn open_native_worker(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
-        let connection = Connection::open_with_flags(
-            path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
-        )?;
+        let connection =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         connection.pragma_update(None, "foreign_keys", "ON")?;
         // Fail closed if called with an unrelated or uninitialized SQLite file.
-        let _: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM schema_migrations",
-            [],
-            |row| row.get(0),
-        )?;
+        let _: i64 = connection.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })?;
         Ok(Self { connection })
     }
 
@@ -1356,7 +1352,9 @@ mod tests {
         assert_eq!(wal.to_ascii_lowercase(), "wal");
         let migration_count: i64 = worker
             .connection()
-            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert!(migration_count > 0);
         // No worker connection needs a new migration or database file.
