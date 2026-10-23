@@ -386,3 +386,23 @@ review revocation; neither a raw command-line error nor a path is stored.
 
 This is application-controlled cancellation while the desktop process runs;
 it is not independent proof of cleanup after app termination or daemon crash.
+
+## Offline subprocess contract integration tests
+
+The normal Linux Rust unit suite now launches a **real, test-controlled local
+subprocess**, using the same guarded launch, timeout, approval polling, argument
+construction, JSON report parsing and SQLite audit path as the production
+offline scanner. The fixture validates the generated Docker CLI command
+includes `--network none`, a read-only root and no image pull, and it
+emits a fixed JSON report into the expected private output path. A second
+file-backed SQLite WAL fixture revokes review approval while the child is
+still running, exercises process termination and verifies the durable
+`worker_cancelled` audit without persisted scan findings. These fixtures
+use only a locally written shell script and localhost-free filesystem
+operations. They do not require Docker or any external target.
+
+**Important:** This is process-contract integration coverage, not proof of
+Docker daemon or Trivy correctness. The separate, explicitly authorized
+`native_real_sandbox` test remains the physical isolation and vulnerability
+database integration gate. Do not describe a green regular CI run as a
+successful real Docker/Trivy verification.

@@ -208,6 +208,21 @@ impl<'a> IsolatedWorker<'a> {
         if !authorized {
             return Err("Explicit authorization to scan this local project is required".into());
         }
+        let settings = WorkerSettings::load()?;
+        self.scan_with_settings(run_id, authorized, settings)
+    }
+
+    // The same guarded implementation runs under production Docker and a
+    // local process contract fixture that cannot contact the Docker daemon.
+    fn scan_with_settings(
+        &self,
+        run_id: &str,
+        authorized: bool,
+        settings: WorkerSettings,
+    ) -> Result<IsolatedScanReceipt, String> {
+        if !authorized {
+            return Err("Explicit authorization to scan this local project is required".into());
+        }
         let run = NativeAgents::new(self.db).get(run_id)?;
         if run.status != "approved" {
             return Err("Approve the native review before a separate container scan".into());
@@ -220,7 +235,6 @@ impl<'a> IsolatedWorker<'a> {
         if !root.is_dir() {
             return Err("Project root is not a directory".into());
         }
-        let settings = WorkerSettings::load()?;
         let tmp = tempfile::tempdir().map_err(err)?;
         if !safe_mount_path(&root) || !safe_mount_path(tmp.path()) {
             return Err("Mount paths cannot contain Docker option separators".into());
@@ -508,5 +522,148 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         assert!(IsolatedWorker::new(&db).scan("missing", false).is_err());
         assert!(IsolatedWorker::new(&db).scan("missing", true).is_err());
+    }
+    #[cfg(unix)]
+    fn fixture_settings(script: &Path, root: &Path) -> WorkerSettings {
+        WorkerSettings {
+            docker: script.to_path_buf(),
+            image: format!("fixture/scanner@sha256:{}", "a".repeat(64)),
+            db_dir: root.to_path_buf(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_fixture_script(path: &Path, source: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, source).unwrap();
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn approved_worker_runs_offline_subprocess_and_persists_receipt() {
+        // This runs a real test-controlled process, not a Docker daemon.
+        // It tests actual Rust CLI arguments and the response/audit lifecycle.
+        const SCRIPT: &str = r#"#!/bin/sh
+set -eu
+if [ "$1" = "rm" ]; then exit 0; fi
+[ "$1" = "run" ] || exit 11
+network=""
+readonly=""
+pull=""
+output=""
+previous=""
+for arg in "$@"; do
+  if [ "$previous" = "--network" ]; then network="$arg"; fi
+  if [ "$arg" = "--read-only" ]; then readonly=yes; fi
+  if [ "$arg" = "--pull=never" ]; then pull=yes; fi
+  case "$arg" in
+    type=bind,src=*,dst=/out)
+      output=$(printf '%s' "$arg" | cut -d ',' -f 2 | cut -c5-)
+      ;;
+  esac
+  previous="$arg"
+done
+[ "$network" = "none" ] && [ "$readonly" = "yes" ] &&
+  [ "$pull" = "yes" ] && [ -n "$output" ] || exit 12
+printf '%s\n' '{"Results":[{"Vulnerabilities":[{},{}],"Misconfigurations":[{}]}]}' > "$output/report.json"
+"#;
+        let fixtures = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("index.js"), "export const safe=true;").unwrap();
+        let script = fixtures.path().join("offline-scanner-fixture.sh");
+        write_fixture_script(&script, SCRIPT);
+        let db = Database::open_in_memory().unwrap();
+        let project_id = crate::ProjectIndexService::new(&db)
+            .index_project(source.path())
+            .unwrap()
+            .project_id;
+        let agents = NativeAgents::new(&db);
+        let run = agents
+            .create(&project_id, "Approved local test", 10, 120)
+            .unwrap();
+        agents.approve(&run.id).unwrap();
+        let audit = crate::native_worker_audit::WorkerAudit::new(&db);
+        let ticket = audit.begin(&run.id).unwrap();
+        let result = IsolatedWorker::new(&db).scan_with_settings(
+            &run.id,
+            true,
+            fixture_settings(&script, fixtures.path()),
+        );
+        audit.finish(ticket, &result).unwrap();
+        let receipt = result.unwrap();
+        assert_eq!(receipt.vulnerability_count, 2);
+        assert_eq!(receipt.misconfiguration_count, 1);
+        assert_eq!(receipt.report_sha256.len(), 64);
+        assert_eq!(audit.latest(&run.id).unwrap().unwrap().status, "success");
+        assert!(!fixtures.path().join("report.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revoked_review_stops_live_subprocess_and_records_cancellation() {
+        // Two SQLite WAL connections coordinate cancellation while an actual
+        // test-controlled subprocess runs; no external target or daemon.
+        let fixtures = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("index.js"), "export const safe=true;").unwrap();
+        let ready = fixtures.path().join("worker-ready");
+        let script = fixtures.path().join("sleeping-scanner-fixture.sh");
+        let template = r#"#!/bin/sh
+set -eu
+if [ "$1" = "rm" ]; then exit 0; fi
+[ "$1" = "run" ] || exit 13
+: > "__READY_FILE__"
+exec sleep 15
+"#;
+        write_fixture_script(
+            &script,
+            &template.replace("__READY_FILE__", ready.to_str().unwrap()),
+        );
+        let database_path = fixtures.path().join("worker.sqlite3");
+        let db = Database::open(&database_path).unwrap();
+        let project_id = crate::ProjectIndexService::new(&db)
+            .index_project(source.path())
+            .unwrap()
+            .project_id;
+        let agents = NativeAgents::new(&db);
+        let run = agents
+            .create(&project_id, "Cancellable local test", 10, 120)
+            .unwrap();
+        agents.approve(&run.id).unwrap();
+        let audit = crate::native_worker_audit::WorkerAudit::new(&db);
+        let ticket = audit.begin(&run.id).unwrap();
+        let run_id = run.id.clone();
+        let settings = fixture_settings(&script, fixtures.path());
+        let worker = std::thread::spawn(move || {
+            let db = Database::open(&database_path).unwrap();
+            let result = IsolatedWorker::new(&db).scan_with_settings(&run_id, true, settings);
+            crate::native_worker_audit::WorkerAudit::new(&db)
+                .finish(ticket, &result)
+                .unwrap();
+            result
+        });
+
+        for _ in 0..100 {
+            if ready.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if !ready.exists() {
+            agents.cancel(&run.id).unwrap();
+            let _ = worker.join();
+            panic!("Test subprocess did not start before deadline");
+        }
+        agents.cancel(&run.id).unwrap();
+        let failure = worker.join().unwrap().unwrap_err();
+        assert!(failure.contains("authorization was revoked"));
+        let saved = audit.latest(&run.id).unwrap().unwrap();
+        assert_eq!(saved.status, "failed");
+        assert_eq!(saved.error_code.as_deref(), Some("worker_cancelled"));
+        assert!(saved.report_sha256.is_none());
+        assert!(saved.vulnerability_count.is_none());
     }
 }
