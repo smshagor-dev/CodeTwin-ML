@@ -1256,7 +1256,7 @@ mod tests {
 
     #[test]
     fn completed_review_requires_all_receipts_to_match_exact_specialist_evidence() {
-        for mutation in ["none", "digest", "result", "missing", "status", "after"] {
+        for mutation in ["none", "digest", "result", "missing", "status", "timestamp", "after"] {
             let fixture = tempfile::tempdir().unwrap();
             let path = fixture.path().join("receipt-integrity.sqlite3");
             let project_root = fixture.path().join("project");
