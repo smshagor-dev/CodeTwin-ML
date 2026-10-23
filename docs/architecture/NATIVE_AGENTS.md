@@ -406,3 +406,20 @@ Docker daemon or Trivy correctness. The separate, explicitly authorized
 `native_real_sandbox` test remains the physical isolation and vulnerability
 database integration gate. Do not describe a green regular CI run as a
 successful real Docker/Trivy verification.
+
+## Reproducible pretrained neural model smoke
+
+The separate, manually triggered `local-neural-smoke.yml` workflow downloads
+an approved public SentenceTransformers model at an immutable commit and
+verifies the pinned `model.safetensors` SHA-256 **before** serving it.
+Inference runs on the local loopback endpoint with offline Hugging Face and
+Transformers settings. The workflow then validates actual 384-dimensional
+unit-normalized vectors, consistent repeated public input, distinct vectors
+for different fixed public inputs, and the Rust integration probe. It
+uploads only short, non-sensitive model provenance and outcome summaries.
+
+This is deliberately opt-in: it downloads public model weights and requires
+a Python/PyTorch inference runtime, so it is not part of normal PR CI.
+A passing normal unit suite is not proof of pretrained neural inference.
+Only a completed, successful `Real Local Neural Embedding Integration`
+workflow run provides that evidence.
