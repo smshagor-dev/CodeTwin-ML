@@ -475,7 +475,8 @@ mod tests {
         barrier.wait();
         let successes = handles
             .into_iter()
-            .filter(|handle| handle.join().unwrap())
+            .map(|handle| handle.join().unwrap())
+            .filter(|claimed| *claimed)
             .count();
         assert_eq!(successes, 2);
 
