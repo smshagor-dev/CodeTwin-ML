@@ -63,7 +63,35 @@ def _json_bytes(value: dict[str, Any]) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
+def _policy_parent_snapshot(path: Path) -> tuple[int, int, int, int, int]:
+    """Reject unsafe immediate parents and symlinked directory components.
+
+    This is a point-in-time POSIX path check, not an atomic filesystem handle.
+    """
+    parent = path.parent
+    parent_metadata = parent.lstat()
+    for component in (parent, *parent.parents):
+        metadata = component.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError("Symlink in signed-policy directory path is not allowed")
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError("Signed-policy path contains a non-directory")
+    if parent_metadata.st_mode & 0o022:
+        raise ValueError("Signed-policy parent directory must not be writable by group or others")
+    if parent_metadata.st_uid not in (os.geteuid(), 0):
+        raise ValueError("Signed-policy parent directory must be owned by this user or root")
+    return (
+        parent_metadata.st_dev,
+        parent_metadata.st_ino,
+        parent_metadata.st_mode,
+        parent_metadata.st_uid,
+        parent_metadata.st_ctime_ns,
+    )
+
+
 def _read_signed_policy_bytes(path: Path) -> bytes:
+    path = Path(os.path.abspath(path))
+    parent_before = _policy_parent_snapshot(path)
     before = path.lstat()
     if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
         raise ValueError("Signed policy must be a regular non-symlink file")
@@ -95,6 +123,8 @@ def _read_signed_policy_bytes(path: Path) -> bytes:
             raise ValueError("Signed policy changed while reading")
     if len(raw) > MAX_POLICY_BYTES:
         raise ValueError("Signed policy exceeds 16 KiB")
+    if _policy_parent_snapshot(path) != parent_before:
+        raise ValueError("Signed-policy parent directory changed while reading")
     return raw
 
 
