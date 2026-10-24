@@ -219,6 +219,55 @@ class VerifiedRotationTests(unittest.TestCase):
                 self._publish()
         self._unchanged()
 
+    def test_rejects_equivalent_previous_policy_rewrite_during_verification(self) -> None:
+        from scripts.verify_signer_policy_rotation import _validated_policy
+
+        calls = 0
+
+        def rewrite_after_validation(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+            nonlocal calls
+            result = _validated_policy(envelope, authority)
+            calls += 1
+            if calls == 1:
+                # JSON spacing changes, but the authenticated typed-envelope digest does not.
+                self.previous.write_text(
+                    json.dumps(json.loads(self.previous.read_text()), indent=2),
+                    encoding="utf-8",
+                )
+            return result
+
+        with patch(
+            "scripts.verify_signer_policy_rotation._validated_policy",
+            side_effect=rewrite_after_validation,
+        ):
+            with self.assertRaisesRegex(ValueError, "Previous signed policy changed"):
+                self._publish()
+        self._unchanged()
+
+    def test_rejects_equivalent_replacement_policy_rewrite_during_verification(self) -> None:
+        from scripts.verify_signer_policy_rotation import _validated_policy
+
+        calls = 0
+
+        def rewrite_after_validation(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+            nonlocal calls
+            result = _validated_policy(envelope, authority)
+            calls += 1
+            if calls == 2:
+                self.replacement.write_text(
+                    json.dumps(json.loads(self.replacement.read_text()), indent=2),
+                    encoding="utf-8",
+                )
+            return result
+
+        with patch(
+            "scripts.verify_signer_policy_rotation._validated_policy",
+            side_effect=rewrite_after_validation,
+        ):
+            with self.assertRaisesRegex(ValueError, "Replacement signed policy changed"):
+                self._publish()
+        self._unchanged()
+
     def test_rejects_missing_approval_before_verification(self) -> None:
         with self.assertRaisesRegex(ValueError, "approval"):
             self._publish(approved=False)
