@@ -378,6 +378,14 @@ pub fn verify_signed_trusted_signer_policy(
     if authority_key != declared {
         return Err("Policy authority does not match independently trusted key".into());
     }
+    // A policy authority must not also be an evidence signer, even when its
+    // signer entry is revoked. Otherwise compromise of a review-signing key
+    // can become compromise of policy approval and signer revocation.
+    for signer in &signed.policy.signers {
+        if hex_decode(&signer.public_key_hex, 32)? == authority_key {
+            return Err("Policy authority key must be distinct from every evidence signer key".into());
+        }
+    }
     let signature = hex_decode(&signed.signature_hex, 64)?;
     UnparsedPublicKey::new(&ED25519, authority_key)
         .verify(&payload, &signature)
@@ -475,6 +483,83 @@ mod tests {
         rand::SystemRandom,
         signature::{Ed25519KeyPair, KeyPair},
     };
+
+    #[test]
+    fn signed_trust_policy_rejects_authority_used_as_an_evidence_signer() {
+        let random = SystemRandom::new();
+        let reused_pkcs8 = Ed25519KeyPair::generate_pkcs8(&random).unwrap();
+        let reused = Ed25519KeyPair::from_pkcs8(reused_pkcs8.as_ref()).unwrap();
+        let separate_pkcs8 = Ed25519KeyPair::generate_pkcs8(&random).unwrap();
+        let separate = Ed25519KeyPair::from_pkcs8(separate_pkcs8.as_ref()).unwrap();
+        let reused_public = hex_encode(reused.public_key().as_ref());
+        let separate_public = hex_encode(separate.public_key().as_ref());
+
+        let mut policy = TrustedSignerPolicy {
+            format: TRUST_POLICY_FORMAT.into(),
+            revision: 1,
+            signers: vec![TrustedSignerEntry {
+                public_key_hex: reused_public.clone(),
+                status: TrustedSignerStatus::Trusted,
+            }],
+        };
+        for status in [TrustedSignerStatus::Trusted, TrustedSignerStatus::Revoked] {
+            policy.signers[0].status = status;
+            let signed_by_reused_key = SignedTrustedSignerPolicy {
+                policy: policy.clone(),
+                authority_public_key_hex: reused_public.clone(),
+                signature_hex: hex_encode(
+                    reused
+                        .sign(&signer_policy_signing_payload(&policy).unwrap())
+                        .as_ref(),
+                ),
+            };
+            assert!(
+                verify_signed_trusted_signer_policy(
+                    &signed_by_reused_key,
+                    &reused_public,
+                    1,
+                )
+                .unwrap_err()
+                .contains("must be distinct"),
+                "even a valid authority signature must not reuse an evidence signer key"
+            );
+        }
+
+        // A separately pinned authority key still authenticates the same
+        // policy, including a revoked evidence signer, without weakening
+        // independent authority or policy-revision checks.
+        let signed_by_independent_authority = SignedTrustedSignerPolicy {
+            policy: policy.clone(),
+            authority_public_key_hex: separate_public.clone(),
+            signature_hex: hex_encode(
+                separate
+                    .sign(&signer_policy_signing_payload(&policy).unwrap())
+                    .as_ref(),
+            ),
+        };
+        verify_signed_trusted_signer_policy(
+            &signed_by_independent_authority,
+            &separate_public,
+            1,
+        )
+        .unwrap();
+        assert!(
+            verify_signed_trusted_signer_policy(
+                &signed_by_independent_authority,
+                &reused_public,
+                1,
+            )
+            .is_err()
+        );
+        assert!(
+            verify_signed_trusted_signer_policy(
+                &signed_by_independent_authority,
+                &separate_public,
+                2,
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn evidence_snapshot_is_consistent_across_concurrent_wal_commits() {
