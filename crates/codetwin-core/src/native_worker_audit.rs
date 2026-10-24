@@ -296,11 +296,8 @@ impl<'a> WorkerAudit<'a> {
                  ) ORDER BY id",
             )
             .map_err(err)?;
-        statement
-            .query_map([], |row| row.get(0))
-            .map_err(err)?
-            .collect::<Result<Vec<i64>, _>>()
-            .map_err(err)
+        let rows = statement.query_map([], |row| row.get(0)).map_err(err)?;
+        rows.collect::<Result<Vec<i64>, _>>().map_err(err)
     }
 
     /// All approval checks and the release are evaluated under one SQLite
@@ -320,7 +317,9 @@ impl<'a> WorkerAudit<'a> {
             return Err("Cannot release cleanup hold while a worker is active".into());
         }
         if Self::unconfirmed_ids_on(&tx)? != observed {
-            return Err("Worker cleanup holds changed during Docker verification; probe again".into());
+            return Err(
+                "Worker cleanup holds changed during Docker verification; probe again".into(),
+            );
         }
         let updated = tx
             .execute(
