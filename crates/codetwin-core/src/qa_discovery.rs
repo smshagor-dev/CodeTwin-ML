@@ -6,7 +6,7 @@ use std::{
 };
 
 use qa_analyzer::{detect_artifacts, is_candidate_path, QaArtifactKind};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -529,7 +529,12 @@ fn persist_scan(
         .iter()
         .map(|item| item.id.as_str())
         .collect();
-    let transaction = connection.unchecked_transaction()?;
+    // Acquire the WAL writer slot before reading current artifacts. When a
+    // scanner finds zero matching files, the first SQL in a DEFERRED
+    // transaction would otherwise be a SELECT; a concurrent specialist
+    // commit can make its later write fail immediately with SQLITE_BUSY_SNAPSHOT
+    // even though the native-worker busy timeout is configured.
+    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
 
     for artifact in &collection.artifacts {
         transaction.execute(
@@ -679,6 +684,68 @@ mod tests {
             )
             .expect("insert project");
         id
+    }
+
+    #[test]
+    fn empty_discovery_waits_for_concurrent_wal_writer_before_reading() {
+        let folder = tempdir().unwrap();
+        let database_path = folder.path().join("qa-concurrent.sqlite3");
+        let reader = Database::open(&database_path).unwrap();
+        let project_id = project(&reader, folder.path());
+        let run_id = "qa-concurrent-review";
+        reader
+            .connection()
+            .execute(
+                "INSERT INTO analysis_runs(id,project_id,status,analyzer_version,run_kind)
+                 VALUES (?1,?2,'running','qa-discovery-v1','qa_discovery')",
+                rusqlite::params![run_id, &project_id],
+            )
+            .unwrap();
+
+        // The second specialist already holds a WAL write reservation.
+        // BEGIN DEFERRED would read a stale snapshot before attempting the
+        // first insert, producing a lock/snapshot-upgrade failure.
+        let (started, ready) = std::sync::mpsc::channel();
+        let writer_project = project_id.clone();
+        let writer_path = database_path.clone();
+        let writer = std::thread::spawn(move || {
+            let database = Database::open_native_worker(&writer_path).unwrap();
+            let transaction = database.connection().unchecked_transaction().unwrap();
+            transaction
+                .execute(
+                    "UPDATE projects SET display_name='Concurrent writer' WHERE id=?1",
+                    [&writer_project],
+                )
+                .unwrap();
+            started.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            transaction.commit().unwrap();
+        });
+        ready.recv().unwrap();
+
+        let outcome = super::persist_scan(
+            reader.connection(),
+            &project_id,
+            run_id,
+            super::ScanCollection {
+                coverage_complete: true,
+                ..super::ScanCollection::default()
+            },
+            0,
+        );
+        writer.join().unwrap();
+        let summary = outcome.expect("the empty passive QA scan must wait for the writer");
+        assert!(summary.coverage_complete);
+        assert_eq!(summary.artifacts_discovered, 0);
+        let status: String = reader
+            .connection()
+            .query_row(
+                "SELECT status FROM analysis_runs WHERE id=?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "completed");
     }
 
     #[test]
