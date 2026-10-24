@@ -383,7 +383,9 @@ pub fn verify_signed_trusted_signer_policy(
     // can become compromise of policy approval and signer revocation.
     for signer in &signed.policy.signers {
         if hex_decode(&signer.public_key_hex, 32)? == authority_key {
-            return Err("Policy authority key must be distinct from every evidence signer key".into());
+            return Err(
+                "Policy authority key must be distinct from every evidence signer key".into(),
+            );
         }
     }
     let signature = hex_decode(&signed.signature_hex, 64)?;
@@ -514,13 +516,9 @@ mod tests {
                 ),
             };
             assert!(
-                verify_signed_trusted_signer_policy(
-                    &signed_by_reused_key,
-                    &reused_public,
-                    1,
-                )
-                .unwrap_err()
-                .contains("must be distinct"),
+                verify_signed_trusted_signer_policy(&signed_by_reused_key, &reused_public, 1,)
+                    .unwrap_err()
+                    .contains("must be distinct"),
                 "even a valid authority signature must not reuse an evidence signer key"
             );
         }
@@ -537,28 +535,20 @@ mod tests {
                     .as_ref(),
             ),
         };
-        verify_signed_trusted_signer_policy(
+        verify_signed_trusted_signer_policy(&signed_by_independent_authority, &separate_public, 1)
+            .unwrap();
+        assert!(verify_signed_trusted_signer_policy(
             &signed_by_independent_authority,
-            &separate_public,
+            &reused_public,
             1,
         )
-        .unwrap();
-        assert!(
-            verify_signed_trusted_signer_policy(
-                &signed_by_independent_authority,
-                &reused_public,
-                1,
-            )
-            .is_err()
-        );
-        assert!(
-            verify_signed_trusted_signer_policy(
-                &signed_by_independent_authority,
-                &separate_public,
-                2,
-            )
-            .is_err()
-        );
+        .is_err());
+        assert!(verify_signed_trusted_signer_policy(
+            &signed_by_independent_authority,
+            &separate_public,
+            2,
+        )
+        .is_err());
     }
 
     #[test]
