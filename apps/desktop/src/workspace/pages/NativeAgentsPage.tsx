@@ -205,6 +205,12 @@ export function NativeAgentsPage() {
   const [externalSignature, setExternalSignature] = useState("");
   const [importedBundleJson, setImportedBundleJson] = useState("");
   const [trustedPolicyJson, setTrustedPolicyJson] = useState("");
+  const [preparedPolicyRequest, setPreparedPolicyRequest] = useState<{
+    payload_hex: string; payload_sha256_hex: string;
+  } | null>(null);
+  const [signedPolicyJson, setSignedPolicyJson] = useState("");
+  const [trustedAuthorityPublicKey, setTrustedAuthorityPublicKey] = useState("");
+  const [minimumPolicyRevision, setMinimumPolicyRevision] = useState("1");
   const [attestationVerdict, setAttestationVerdict] = useState("");
   const [objective, setObjective] = useState("Review the selected project's security, code quality and reliability. Report confirmed evidence and unresolved issues.");
   const [maxFiles, setMaxFiles] = useState(500);
@@ -831,6 +837,44 @@ export function NativeAgentsPage() {
     }
   }
 
+  async function prepareSignerPolicyRequest() {
+    if (busy) return;
+    setBusy("prepare-signer-policy");
+    setError("");
+    setPreparedPolicyRequest(null);
+    try {
+      const request = await workspaceApi.prepareNativeSignerPolicyRequest(trustedPolicyJson);
+      setPreparedPolicyRequest(request);
+    } catch (reason) {
+      setError("Could not prepare signer policy: " + String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function verifyImportedWithSignedSignerPolicy() {
+    if (busy) return;
+    setBusy("verify-signed-signer-policy");
+    setError("");
+    setAttestationVerdict("");
+    try {
+      const [runId, revision] = await workspaceApi.verifyNativeReviewWithSignedSignerPolicy(
+        importedBundleJson,
+        signedPolicyJson,
+        trustedAuthorityPublicKey.trim(),
+        minimumPolicyRevision.trim(),
+      );
+      setAttestationVerdict(
+        "Policy authority signature, signer status and current SQLite evidence verified " +
+        "at policy revision " + revision + " for review " + runId,
+      );
+    } catch (reason) {
+      setError("Authenticated signer policy verification failed: " + String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function auditEvidenceHistory(loadOlder = false) {
     if (!activeProjectId || busy) return;
     const projectId = activeProjectId;
@@ -1347,6 +1391,7 @@ export function NativeAgentsPage() {
             <span>Independent signer trust policy for key rotation and revocation</span>
             <textarea rows={5} value={trustedPolicyJson} onChange={event => {
               setTrustedPolicyJson(event.target.value);
+              setPreparedPolicyRequest(null);
               setAttestationVerdict("");
             }} placeholder={'{"format":"codetwin-signer-trust-v1","revision":1,"signers":[{"public_key_hex":"<64 hex>","status":"trusted"}]}'}/>
           </label>
@@ -1354,7 +1399,8 @@ export function NativeAgentsPage() {
             Use the latest policy from your independently trusted administrator or secure
             configuration. Mark a compromised key as "revoked", keep rotated approved keys
             "trusted". Do not copy a trust policy from the evidence bundle.
-            The policy itself is not authenticated by CodeTwin; older policies may be unsafe.
+            This unsigned-policy check does not authenticate policy origin or prevent rollback.
+            For stronger verification use the separately signed policy below.
           </p>
           <button className="ws-button ws-button-secondary"
             disabled={!importedBundleJson.trim() || !trustedPolicyJson.trim() ||
@@ -1362,7 +1408,61 @@ export function NativeAgentsPage() {
               Boolean(busy)}
             onClick={() => void verifyImportedWithSignerPolicy()}>
             {busy === "verify-signer-policy" ? "Checking signer policy…" :
-              "Verify using rotation and revocation policy"}
+              "Verify with unsigned policy (no authenticity check)"}
+          </button>
+          <button className="ws-button ws-button-secondary"
+            disabled={!trustedPolicyJson.trim() || trustedPolicyJson.length > 16 * 1024 || Boolean(busy)}
+            onClick={() => void prepareSignerPolicyRequest()}>
+            {busy === "prepare-signer-policy" ? "Preparing…" : "Export policy bytes for external authority signing"}
+          </button>
+          {preparedPolicyRequest && <>
+            <p className="ws-form-help">
+              Exact Ed25519 message SHA-256: <code>{preparedPolicyRequest.payload_sha256_hex}</code>.
+              Sign the decoded hex bytes externally; never paste or store a private key here.
+            </p>
+            <textarea className="ws-field" rows={3} readOnly
+              aria-label="Policy signing payload hex"
+              value={preparedPolicyRequest.payload_hex} />
+            <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
+              onClick={() => void navigator.clipboard.writeText(preparedPolicyRequest.payload_hex)
+                .catch(reason => setError("Could not copy policy signing payload: " + String(reason))}>
+              Copy policy signing payload hex
+            </button>
+          </>}
+          <label className="ws-field">
+            <span>Externally signed policy envelope JSON</span>
+            <textarea rows={5} value={signedPolicyJson} onChange={event => {
+              setSignedPolicyJson(event.target.value);
+              setAttestationVerdict("");
+            }} placeholder={'{"policy":{"format":"codetwin-signer-trust-v1","revision":2,"signers":[]},"authority_public_key_hex":"<64 hex>","signature_hex":"<128 hex>"}'} />
+          </label>
+          <label className="ws-field">
+            <span>Independently pinned policy authority Ed25519 public key (64 hex)</span>
+            <input value={trustedAuthorityPublicKey} onChange={event => {
+              setTrustedAuthorityPublicKey(event.target.value);
+              setAttestationVerdict("");
+            }} placeholder="Public key from a trusted channel, not from the envelope" />
+          </label>
+          <label className="ws-field">
+            <span>Minimum acceptable policy revision from independent trusted records</span>
+            <input value={minimumPolicyRevision} inputMode="numeric" onChange={event => {
+              setMinimumPolicyRevision(event.target.value);
+              setAttestationVerdict("");
+            }} placeholder="Positive revision, not copied from the policy" />
+          </label>
+          <p className="ws-form-help">
+            The authority key and revision floor must come from a trusted source outside
+            the evidence and SQLite. This checks policy authenticity and a supplied floor,
+            but does not securely distribute policies or maintain an anti-rollback ledger.
+          </p>
+          <button className="ws-button ws-button-secondary"
+            disabled={!importedBundleJson.trim() || !signedPolicyJson.trim() ||
+              importedBundleJson.length > 512 * 1024 || signedPolicyJson.length > 16 * 1024 ||
+              !/^[0-9a-fA-F]{64}$/.test(trustedAuthorityPublicKey.trim()) ||
+              !/^[1-9][0-9]*$/.test(minimumPolicyRevision.trim()) || Boolean(busy)}
+            onClick={() => void verifyImportedWithSignedSignerPolicy()}>
+            {busy === "verify-signed-signer-policy" ? "Authenticating policy…" :
+              "Verify authenticated signer policy and SQLite evidence"}
           </button>
           {attestationVerdict && <p role="status">{attestationVerdict}</p>}
         </div>
