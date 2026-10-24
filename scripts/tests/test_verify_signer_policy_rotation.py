@@ -404,6 +404,76 @@ class VerifiedRotationTests(unittest.TestCase):
         self.assertEqual(self.replacement.read_bytes(), original_bytes)
         self._unchanged()
 
+    def test_rejects_writable_policy_parent_for_both_inputs(self) -> None:
+        for name in ("previous", "replacement"):
+            with self.subTest(policy=name):
+                directory = self.root / "policy-input"
+                directory.mkdir(mode=0o700)
+                original = getattr(self, name)
+                moved = directory / original.name
+                original.rename(moved)
+                setattr(self, name, moved)
+                try:
+                    directory.chmod(0o770)
+                    with self.assertRaisesRegex(
+                        ValueError, "parent directory must not be writable"
+                    ):
+                        self._publish()
+                    self._unchanged()
+                finally:
+                    directory.chmod(0o700)
+                    moved.rename(original)
+                    setattr(self, name, original)
+                    directory.rmdir()
+
+    def test_rejects_symlinked_policy_parent(self) -> None:
+        linked = self.root / "linked-policy-directory"
+        linked.symlink_to(self.root, target_is_directory=True)
+        previous = self.previous
+        self.previous = linked / previous.name
+        try:
+            with self.assertRaisesRegex(ValueError, "Symlink in signed-policy"):
+                self._publish()
+            self._unchanged()
+        finally:
+            self.previous = previous
+            linked.unlink()
+
+    def test_rejects_policy_parent_made_writable_during_verification(self) -> None:
+        from scripts.verify_signer_policy_rotation import _validated_policy
+
+        directory = self.root / "policy-input"
+        directory.mkdir(mode=0o700)
+        original = self.replacement
+        moved = directory / original.name
+        original.rename(moved)
+        self.replacement = moved
+        calls = 0
+
+        def change_parent(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+            nonlocal calls
+            result = _validated_policy(envelope, authority)
+            calls += 1
+            if calls == 2:
+                directory.chmod(0o770)
+            return result
+
+        try:
+            with patch(
+                "scripts.verify_signer_policy_rotation._validated_policy",
+                side_effect=change_parent,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "parent directory must not be writable"
+                ):
+                    self._publish()
+            self._unchanged()
+        finally:
+            directory.chmod(0o700)
+            moved.rename(original)
+            self.replacement = original
+            directory.rmdir()
+
     def test_rejects_missing_approval_before_verification(self) -> None:
         with self.assertRaisesRegex(ValueError, "approval"):
             self._publish(approved=False)
