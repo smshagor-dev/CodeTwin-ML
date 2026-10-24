@@ -118,7 +118,12 @@ check, including before anchor publication. Cooperating publishers are
 serialized with a persistent advisory lock. The signed policy inputs are limited to 16 KiB each and read from regular
 non-symlink files. Signed-policy inputs must also not be group- or world-writable
 (permissions such as 0600 or 0644 are accepted); the check is repeated on
-the opened file descriptor. This rejects locally writable inputs, but does not
+the opened file descriptor. The reader also checks inode metadata again
+after reading, rejecting observed changes to size, ownership, link count,
+permissions, or modification/change timestamps, even if the JSON bytes are
+restored. This is a best-effort race check, not a stable filesystem snapshot:
+changes between checks or by a privileged writer may still escape detection.
+These checks reject locally writable inputs, but do not
 authenticate their owner, protect writable parent directories, or prevent a
 privileged process from replacing files after verification. Verification is
 performed before acquiring the anchor lock;
