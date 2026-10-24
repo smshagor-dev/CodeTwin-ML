@@ -67,6 +67,8 @@ def _read_signed_policy_bytes(path: Path) -> bytes:
     before = path.lstat()
     if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
         raise ValueError("Signed policy must be a regular non-symlink file")
+    if before.st_mode & 0o022:
+        raise ValueError("Signed policy must not be writable by group or others")
     if before.st_size > MAX_POLICY_BYTES:
         raise ValueError("Signed policy exceeds 16 KiB")
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
@@ -78,6 +80,8 @@ def _read_signed_policy_bytes(path: Path) -> bytes:
             or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
         ):
             raise ValueError("Signed policy changed while opening")
+        if after.st_mode & 0o022:
+            raise ValueError("Signed policy must not be writable by group or others")
         raw = stream.read(MAX_POLICY_BYTES + 1)
     if len(raw) > MAX_POLICY_BYTES:
         raise ValueError("Signed policy exceeds 16 KiB")
