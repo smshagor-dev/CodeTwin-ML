@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Atomically publish a *public* trust-anchor pair after independent verification.
 
-This is an optional POSIX administrator tool, not a signature verifier or key
-vault. It cannot authenticate pins, verify policy signatures, or prevent an
-attacker with write access to the administrator's anchor directory from
-rolling back the entire directory. Keep independent trusted copies.
+This is an optional POSIX administrator tool, not a private-key vault.
+The command verifies both signed policy envelopes and independently supplied
+pins before publishing; it cannot authenticate the source of those pins or
+prevent a privileged rollback of the anchor directory. Keep independent copies.
 """
 
 from __future__ import annotations
@@ -16,6 +16,11 @@ from pathlib import Path
 import stat
 import tempfile
 from typing import Any
+
+if __package__:
+    from .verify_signer_policy_rotation import verify_rotation_files
+else:
+    from verify_signer_policy_rotation import verify_rotation_files
 
 FORMAT = "codetwin-external-signer-anchor-v1"
 MAX_ANCHOR_BYTES = 4096
@@ -190,9 +195,46 @@ def publish(
         os.close(lock_fd)
 
 
+def publish_verified(
+    anchor_file: Path,
+    *,
+    previous_policy_file: Path,
+    replacement_policy_file: Path,
+    expected_revision: int,
+    expected_sha256: str,
+    authority_public_key_hex: str,
+    replacement_revision: int,
+    replacement_sha256: str,
+    approved: bool,
+) -> dict[str, Any]:
+    """Require authenticated signed-policy rotation before public anchor CAS."""
+    if not approved:
+        raise ValueError("Explicit external administrator approval is required")
+    verify_rotation_files(
+        previous_policy_file,
+        replacement_policy_file,
+        authority_public_key_hex=authority_public_key_hex,
+        expected_revision=expected_revision,
+        expected_sha256=expected_sha256,
+        replacement_revision=replacement_revision,
+        replacement_sha256=replacement_sha256,
+    )
+    return publish(
+        anchor_file,
+        expected_revision=expected_revision,
+        expected_sha256=expected_sha256,
+        authority_public_key_hex=authority_public_key_hex,
+        replacement_revision=replacement_revision,
+        replacement_sha256=replacement_sha256,
+        approved=True,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--anchor-file", required=True, type=Path)
+    parser.add_argument("--previous-signed-policy", required=True, type=Path)
+    parser.add_argument("--replacement-signed-policy", required=True, type=Path)
     parser.add_argument("--expected-revision", required=True, type=int)
     parser.add_argument("--expected-sha256", required=True)
     parser.add_argument("--authority-public-key", required=True)
@@ -201,8 +243,10 @@ def main() -> None:
     parser.add_argument("--approve", action="store_true", help="Explicit administrator approval")
     args = parser.parse_args()
     try:
-        result = publish(
+        result = publish_verified(
             args.anchor_file,
+            previous_policy_file=args.previous_signed_policy,
+            replacement_policy_file=args.replacement_signed_policy,
             expected_revision=args.expected_revision,
             expected_sha256=args.expected_sha256,
             authority_public_key_hex=args.authority_public_key,
