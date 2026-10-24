@@ -95,6 +95,7 @@ def _parse_signed_policy(raw: bytes) -> dict[str, Any]:
 def _read_signed_policy(path: Path) -> dict[str, Any]:
     return _parse_signed_policy(_read_signed_policy_bytes(path))
 
+
 def _validated_policy(envelope: dict[str, Any], authority: bytes) -> tuple[int, bytes]:
     policy = _exact_fields(
         envelope["policy"], {"format", "revision", "signers"}, "Signer policy"
