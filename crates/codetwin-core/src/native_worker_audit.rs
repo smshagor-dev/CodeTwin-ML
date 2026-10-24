@@ -1,6 +1,6 @@
 //! Durable, privacy-reduced local audit for separately authorized container workers.
 use crate::{native_agent_workers::IsolatedScanReceipt, Database};
-use rusqlite::params;
+use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,18 +269,46 @@ impl<'a> WorkerAudit<'a> {
             .map_err(err)
     }
 
-    /// The public entrypoint always checks the currently configured Docker
-    /// daemon. A caller cannot clear the hold based on UI confirmation alone.
+    /// The public entrypoint always probes the configured Docker daemon. Take
+    /// a snapshot of the exact unresolved audit IDs *before* the external
+    /// probe: a second worker can report a fresh cleanup failure during the
+    /// probe, and that later hold must never be cleared by an earlier result.
     pub fn verify_and_release_cleanup_hold(&self) -> Result<usize, String> {
-        if self.cleanup_hold_count()? == 0 {
+        let observed = self.unconfirmed_cleanup_ids()?;
+        if observed.is_empty() {
             return Ok(0);
         }
         crate::native_agent_workers::verify_no_leftover_containers()?;
-        self.release_after_confirmed_probe()
+        self.release_observed_cleanup_holds(&observed)
     }
 
-    fn release_after_confirmed_probe(&self) -> Result<usize, String> {
-        let tx = self.db.connection().unchecked_transaction().map_err(err)?;
+    fn unconfirmed_cleanup_ids(&self) -> Result<Vec<i64>, String> {
+        Self::unconfirmed_ids_on(self.db.connection())
+    }
+
+    fn unconfirmed_ids_on(connection: &Connection) -> Result<Vec<i64>, String> {
+        let mut statement = connection
+            .prepare(
+                "SELECT id FROM native_worker_audit WHERE error_code IN (
+                   'application_restarted_cleanup_unconfirmed',
+                   'worker_cleanup_unconfirmed',
+                   'worker_cancelled_cleanup_unconfirmed'
+                 ) ORDER BY id",
+            )
+            .map_err(err)?;
+        statement
+            .query_map([], |row| row.get(0))
+            .map_err(err)?
+            .collect::<Result<Vec<i64>, _>>()
+            .map_err(err)
+    }
+
+    /// All approval checks and the release are evaluated under one SQLite
+    /// immediate writer transaction, so no concurrent audit commit can change
+    /// the held set between the recheck and update.
+    fn release_observed_cleanup_holds(&self, observed: &[i64]) -> Result<usize, String> {
+        let tx = Transaction::new_unchecked(self.db.connection(), TransactionBehavior::Immediate)
+            .map_err(err)?;
         let active: i64 = tx
             .query_row(
                 "SELECT COUNT(*) FROM native_worker_audit WHERE status='running'",
@@ -290,6 +318,9 @@ impl<'a> WorkerAudit<'a> {
             .map_err(err)?;
         if active != 0 {
             return Err("Cannot release cleanup hold while a worker is active".into());
+        }
+        if Self::unconfirmed_ids_on(&tx)? != observed {
+            return Err("Worker cleanup holds changed during Docker verification; probe again".into());
         }
         let updated = tx
             .execute(
@@ -310,8 +341,18 @@ impl<'a> WorkerAudit<'a> {
                 [],
             )
             .map_err(err)?;
+        if updated != observed.len() {
+            return Err("Worker cleanup holds changed during release; probe again".into());
+        }
         tx.commit().map_err(err)?;
         Ok(updated)
+    }
+
+    // Only unit tests bypass the external Docker probe to exercise the
+    // transaction itself. Production callers cannot invoke this shortcut.
+    #[cfg(test)]
+    fn release_after_confirmed_probe(&self) -> Result<usize, String> {
+        self.release_observed_cleanup_holds(&self.unconfirmed_cleanup_ids()?)
     }
 
     pub fn latest(&self, run_id: &str) -> Result<Option<WorkerAuditRecord>, String> {
@@ -537,6 +578,51 @@ mod tests {
             .finish(ticket, &Err("fixture completed".into()))
             .unwrap();
         assert_eq!(audit.release_after_confirmed_probe().unwrap(), 0);
+    }
+
+    #[test]
+    fn cleanup_probe_snapshot_rejects_new_unverified_worker_failure() {
+        let db = Database::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("safe.rs"), "pub fn safe() {}").unwrap();
+        let project_id = crate::ProjectIndexService::new(&db)
+            .index_project(root.path())
+            .unwrap()
+            .project_id;
+        let agents = crate::native_agents::NativeAgents::new(&db);
+        let first = agents.create(&project_id, "First worker", 10, 120).unwrap();
+        agents.approve(&first.id).unwrap();
+        let second = agents.create(&project_id, "Second worker", 10, 120).unwrap();
+        agents.approve(&second.id).unwrap();
+
+        let audit = WorkerAudit::new(&db);
+        // Two independently approved workers are already active. The first
+        // reports an unconfirmed cleanup, and an administrator starts a probe.
+        let first_id = audit.begin(&first.id).unwrap();
+        let second_id = audit.begin(&second.id).unwrap();
+        let reason = "Offline scanner exited unsuccessfully; container removal unconfirmed";
+        audit.finish(first_id, &Err(reason.into())).unwrap();
+        let observed = audit.unconfirmed_cleanup_ids().unwrap();
+        assert_eq!(observed, vec![first_id]);
+
+        // While the external Docker probe runs, the second worker finishes
+        // with another unresolved cleanup. An old empty-container result
+        // must not clear this newly created hold or the previous one.
+        audit.finish(second_id, &Err(reason.into())).unwrap();
+        assert_eq!(audit.cleanup_hold_count().unwrap(), 2);
+        assert!(audit
+            .release_observed_cleanup_holds(&observed)
+            .unwrap_err()
+            .contains("changed during Docker verification"));
+        assert_eq!(audit.cleanup_hold_count().unwrap(), 2);
+        assert!(audit.begin(&first.id).is_err());
+
+        // After a new probe covers both holds, the transaction can release
+        // the exact observed set and preserves durable classification.
+        let fresh = audit.unconfirmed_cleanup_ids().unwrap();
+        assert_eq!(fresh, vec![first_id, second_id]);
+        assert_eq!(audit.release_observed_cleanup_holds(&fresh).unwrap(), 2);
+        assert_eq!(audit.cleanup_hold_count().unwrap(), 0);
     }
 
     #[test]
