@@ -13,6 +13,7 @@ pub mod native_agent_memory;
 pub mod native_agent_reasoning;
 pub mod native_agent_workers;
 pub mod native_agents;
+pub mod native_evidence_signatures;
 pub mod native_flow;
 pub mod native_flow_queue;
 pub mod native_graph_reasoning;
