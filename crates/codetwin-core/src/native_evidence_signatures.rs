@@ -608,8 +608,7 @@ mod tests {
                     status: TrustedSignerStatus::Trusted,
                 }],
             };
-            let signature = authority
-                .sign(&signer_policy_signing_payload(&policy).unwrap());
+            let signature = authority.sign(&signer_policy_signing_payload(&policy).unwrap());
             SignedTrustedSignerPolicy {
                 policy,
                 authority_public_key_hex: authority_key.clone(),
@@ -634,19 +633,26 @@ mod tests {
                 new_digest,
             )
         };
-        assert_eq!(check(&previous, &replacement, 4, &old_pin, &new_pin).unwrap(), 5);
+        assert_eq!(
+            check(&previous, &replacement, 4, &old_pin, &new_pin).unwrap(),
+            5
+        );
         assert!(check(&previous, &previous, 4, &old_pin, &old_pin)
             .unwrap_err()
             .contains("strictly increase"));
         assert!(check(&replacement, &previous, 4, &new_pin, &old_pin)
             .unwrap_err()
             .contains("strictly increase"));
-        assert!(check(&previous, &replacement, 4, &"00".repeat(32), &new_pin)
-            .unwrap_err()
-            .contains("Previous policy"));
-        assert!(check(&previous, &replacement, 4, &old_pin, &"00".repeat(32))
-            .unwrap_err()
-            .contains("Replacement policy"));
+        assert!(
+            check(&previous, &replacement, 4, &"00".repeat(32), &new_pin)
+                .unwrap_err()
+                .contains("Previous policy")
+        );
+        assert!(
+            check(&previous, &replacement, 4, &old_pin, &"00".repeat(32))
+                .unwrap_err()
+                .contains("Replacement policy")
+        );
         assert!(check(&previous, &replacement, 5, &old_pin, &new_pin).is_err());
         assert!(check(&previous, &replacement, 0, &old_pin, &new_pin).is_err());
         assert!(check(&previous, &replacement, 4, "bad", &new_pin).is_err());
