@@ -108,8 +108,11 @@ The helper refuses missing approval, invalid authority signatures, pin mismatche
 policy-key reuse, stale compare-and-swap expectations, revision decreases,
 unchanged digests, malformed data, symlinks, shared file
 permissions and a nonprivate anchor directory. Rotation verification re-reads
-both signed-policy inputs after validating their signatures and pins and
-rejects any change observed during that check. This is not an atomic snapshot:
+both signed-policy inputs **byte-for-byte** after validating their signatures
+and pins and rejects any change observed during that check, including a JSON
+whitespace-only rewrite whose typed-envelope digest remains unchanged. The
+independent SHA-256 pin still covers the canonical typed envelope, not the raw
+file bytes. This is not an atomic snapshot:
 a noncooperating or privileged writer can still replace a file after the
 check, including before anchor publication. Cooperating publishers are
 serialized with a persistent advisory lock. The signed policy inputs are limited to 16 KiB each and read from regular
