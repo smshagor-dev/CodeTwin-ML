@@ -1425,7 +1425,7 @@ export function NativeAgentsPage() {
               value={preparedPolicyRequest.payload_hex} />
             <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
               onClick={() => void navigator.clipboard.writeText(preparedPolicyRequest.payload_hex)
-                .catch(reason => setError("Could not copy policy signing payload: " + String(reason))}>
+                .catch(reason => setError("Could not copy policy signing payload: " + String(reason)))}>
               Copy policy signing payload hex
             </button>
           </>}
