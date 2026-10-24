@@ -79,6 +79,15 @@ def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _anchor_metadata(value: os.stat_result) -> tuple[int, ...]:
+    # Observe in-place writes and mode/ownership changes, not just inode swaps.
+    return (
+        value.st_dev, value.st_ino, value.st_mode, value.st_uid,
+        value.st_gid, value.st_nlink, value.st_size,
+        value.st_mtime_ns, value.st_ctime_ns,
+    )
+
+
 def _read_anchor(path: Path) -> dict[str, Any]:
     before = path.lstat()
     _private_regular_file(before, "Trust anchor")
@@ -86,12 +95,19 @@ def _read_anchor(path: Path) -> dict[str, Any]:
         raise ValueError("Trust anchor exceeds size limit")
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
-        after = os.fstat(fd)
-        _private_regular_file(after, "Trust anchor")
-        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        opened = os.fstat(fd)
+        _private_regular_file(opened, "Trust anchor")
+        if _anchor_metadata(before) != _anchor_metadata(opened):
             raise ValueError("Trust anchor changed while opening")
         with os.fdopen(fd, "rb", closefd=False) as stream:
             raw = stream.read(MAX_ANCHOR_BYTES + 1)
+        finished = os.fstat(fd)
+        _private_regular_file(finished, "Trust anchor")
+        if _anchor_metadata(opened) != _anchor_metadata(finished):
+            raise ValueError("Trust anchor changed during read")
+        # A replaced path may still leave the opened descriptor valid.
+        if _anchor_metadata(path.lstat()) != _anchor_metadata(finished):
+            raise ValueError("Trust anchor path changed during read")
     finally:
         os.close(fd)
     if len(raw) > MAX_ANCHOR_BYTES:
