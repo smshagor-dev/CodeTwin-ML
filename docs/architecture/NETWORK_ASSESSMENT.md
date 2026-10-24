@@ -143,3 +143,23 @@ mismatch in the default Python CI. The checker is *not* yet wired into the
 Network Assessment desktop table: this paragraph must not be interpreted as
 an added desktop capability. Usage and real-run prerequisites are in
 `docs/LOCAL_SECURITY_VALIDATION.md`.
+
+## Offline evidence JSON reports
+
+For a terminal reviewed assessment (`completed`, `failed`, `cancelled`,
+`interrupted` or `partial`), **Generate offline evidence JSON** reads only
+existing SQLite observations. It does not resolve a hostname, contact a
+target or execute any tool. The report contains the exact stored scope
+and results, expected/tested port counts, open-port inventory, a clear
+incomplete-coverage flag, and cautious review notes for unverified TLS
+or headers absent from a single HEAD response. A missing header is not
+automatically called a vulnerability.
+
+`evidence_sha256` is the SHA-256 of the compact JSON serialization of
+the saved `NetworkAssessmentRun` snapshot (the nested `run` field).
+It is a reproducible fingerprint for change detection, **not** a
+cryptographic signature, immutable third-party attestation, chain-of-custody
+proof or confirmation that the operator has permission to probe the target.
+No credentials or raw response headers are included. The report is
+presented for user-controlled copying; no additional files are written
+and no report is uploaded.

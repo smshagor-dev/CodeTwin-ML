@@ -94,7 +94,8 @@ use native_orchestration_commands::{
 };
 use network_assessment_commands::{
     approve_network_assessment, cancel_network_assessment, get_network_assessment,
-    list_network_assessments, prepare_network_assessment, run_network_assessment,
+    list_network_assessments, network_assessment_evidence_report, prepare_network_assessment,
+    run_network_assessment,
 };
 use project_discovery::ProjectProfile;
 use qa_commands::{
@@ -1085,6 +1086,7 @@ fn main() {
             cancel_network_assessment,
             list_network_assessments,
             get_network_assessment,
+            network_assessment_evidence_report,
             create_assessment_plan,
             list_assessment_jobs,
             cancel_assessment_job,

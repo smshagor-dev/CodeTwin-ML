@@ -87,6 +87,9 @@ export const workspaceApi = {
     return invoke<import("./security/NetworkAssessmentPanel").NetworkAssessmentRun>(
       "get_network_assessment", { id });
   },
+  networkAssessmentEvidenceReport(id: string) {
+    return invoke<string>("network_assessment_evidence_report", { id });
+  },
   listGoDispatchAudit(id: string) {
     return invoke<{ id: number; position: number; role: string; verdict: string;
       ready: string[]; reason: string; created_at: string }[]>("list_go_dispatch_audit", { id });

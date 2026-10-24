@@ -63,6 +63,20 @@ pub struct NetworkAssessmentRun {
     pub probes: Vec<NetworkProbe>,
 }
 
+/// On-demand, locally generated evidence. The digest fingerprints the
+/// serialized run snapshot; it is not a signature or target attestation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkAssessmentReport {
+    pub schema_version: u32,
+    pub run: NetworkAssessmentRun,
+    pub evidence_sha256: String,
+    pub expected_ports: usize,
+    pub tested_ports: usize,
+    pub open_ports: Vec<u16>,
+    pub incomplete: bool,
+    pub review_notes: Vec<String>,
+}
+
 pub struct NetworkAssessment<'a> {
     db: &'a Database,
 }
@@ -189,6 +203,73 @@ impl<'a> NetworkAssessment<'a> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(err)?;
         Ok(run)
+    }
+
+    /// Build a deterministic, privacy-reduced report from saved observations.
+    /// No network connections or scanner commands are started by this method.
+    /// Only terminal runs can be represented as evidence.
+    pub fn evidence_report(&self, id: &str) -> Result<String, String> {
+        let run = self.get(id)?;
+        if !matches!(
+            run.status.as_str(),
+            "completed" | "failed" | "cancelled" | "interrupted" | "partial"
+        ) {
+            return Err("Finish or cancel the assessment before exporting evidence".into());
+        }
+        let bytes = serde_json::to_vec(&run).map_err(err)?;
+        let evidence_sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let open_ports: Vec<u16> = run
+            .probes
+            .iter()
+            .filter(|probe| probe.status == "open")
+            .map(|probe| probe.port)
+            .collect();
+        let incomplete = run.status != "completed" || run.probes.len() != run.ports.len();
+        let mut review_notes = Vec::new();
+        if incomplete {
+            review_notes.push(
+                "Assessment is incomplete, failed or cancelled; untested ports are unknown".into(),
+            );
+        }
+        for probe in &run.probes {
+            if probe.tls_status.as_deref() == Some("not_verified") {
+                review_notes.push(format!(
+                    "TCP {}: HTTPS trust was not verified; no specific certificate defect is established",
+                    probe.port
+                ));
+            }
+            if let Some(posture) = &probe.https_posture {
+                if matches!(
+                    posture.hsts_state.as_str(),
+                    "invalid" | "disabled" | "short_duration"
+                ) {
+                    review_notes.push(format!(
+                        "TCP {}: HSTS observation is {}; review the authorized application configuration",
+                        probe.port, posture.hsts_state
+                    ));
+                }
+                if !posture.csp_observed
+                    || !posture.nosniff_observed
+                    || !posture.referrer_policy_observed
+                {
+                    review_notes.push(format!(
+                        "TCP {}: some security headers were not observed on the HTTPS HEAD response; this does not prove a vulnerability",
+                        probe.port
+                    ));
+                }
+            }
+        }
+        let report = NetworkAssessmentReport {
+            schema_version: 1,
+            expected_ports: run.ports.len(),
+            tested_ports: run.probes.len(),
+            open_ports,
+            incomplete,
+            evidence_sha256,
+            review_notes,
+            run,
+        };
+        serde_json::to_string_pretty(&report).map_err(err)
     }
 
     pub fn list(&self, limit: usize) -> Result<Vec<NetworkAssessmentRun>, String> {
@@ -918,6 +999,67 @@ mod tests {
         assert_eq!(service.get(&first.id).unwrap().status, "interrupted");
         assert!(service.execute(&first.id).is_err());
         assert_eq!(service.get(&second.id).unwrap().status, "approved");
+    }
+
+    #[test]
+    fn evidence_report_is_offline_deterministic_and_labels_coverage() {
+        let db = Database::open_in_memory().unwrap();
+        let service = NetworkAssessment::new(&db);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let run = service
+            .prepare(NetworkAssessmentRequest {
+                target: "127.0.0.1".into(),
+                ports: vec![port],
+                authorization_confirmed: true,
+                allow_private_networks: true,
+                budget_seconds: 5,
+            })
+            .unwrap();
+        assert!(service.evidence_report(&run.id).is_err());
+        service.approve(&run.id).unwrap();
+        let finished = service.execute(&run.id).unwrap();
+        assert_eq!(finished.status, "completed");
+        drop(listener);
+        let first = service.evidence_report(&run.id).unwrap();
+        assert_eq!(first, service.evidence_report(&run.id).unwrap());
+        let report: NetworkAssessmentReport = serde_json::from_str(&first).unwrap();
+        assert_eq!(report.schema_version, 1);
+        assert!(!report.incomplete);
+        assert_eq!(report.expected_ports, 1);
+        assert_eq!(report.tested_ports, 1);
+        assert_eq!(report.open_ports, vec![port]);
+        let normalized = serde_json::to_vec(&finished).unwrap();
+        assert_eq!(
+            report.evidence_sha256,
+            format!("{:x}", Sha256::digest(&normalized))
+        );
+        assert_eq!(report.evidence_sha256.len(), 64);
+    }
+
+    #[test]
+    fn cancelled_evidence_report_never_claims_complete_coverage() {
+        let db = Database::open_in_memory().unwrap();
+        let service = NetworkAssessment::new(&db);
+        let run = service
+            .prepare(NetworkAssessmentRequest {
+                target: "127.0.0.1".into(),
+                ports: vec![50001, 50002],
+                authorization_confirmed: true,
+                allow_private_networks: true,
+                budget_seconds: 5,
+            })
+            .unwrap();
+        service.cancel(&run.id).unwrap();
+        let result: NetworkAssessmentReport =
+            serde_json::from_str(&service.evidence_report(&run.id).unwrap()).unwrap();
+        assert!(result.incomplete);
+        assert_eq!(result.expected_ports, 2);
+        assert_eq!(result.tested_ports, 0);
+        assert!(result
+            .review_notes
+            .iter()
+            .any(|note| note.contains("unknown")));
     }
 
     #[test]
