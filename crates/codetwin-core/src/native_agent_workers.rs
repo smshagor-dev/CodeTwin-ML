@@ -320,6 +320,12 @@ impl<'a> IsolatedWorker<'a> {
     }
 }
 
+#[cfg(unix)]
+fn opened_report_matches_path(path: &fs::Metadata, opened: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    path.dev() == opened.dev() && path.ino() == opened.ino()
+}
+
 /// Read only an ordinary file created by the finished worker in its private output
 /// directory. Bound memory at the read boundary instead of trusting an earlier
 /// size check: the untrusted report can change between metadata and read.
@@ -336,13 +342,8 @@ fn read_scanner_report(path: &Path) -> Result<Vec<u8>, String> {
         return Err("Scanner report must be a regular file".into());
     }
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if path_metadata.dev() != opened_metadata.dev()
-            || path_metadata.ino() != opened_metadata.ino()
-        {
-            return Err("Scanner report changed while opening".into());
-        }
+    if !opened_report_matches_path(&path_metadata, &opened_metadata) {
+        return Err("Scanner report changed while opening".into());
     }
     if opened_metadata.len() > MAX_REPORT_BYTES {
         return Err("Scanner report exceeded the 2 MB safety limit".into());
@@ -579,6 +580,22 @@ mod tests {
             symlink(&report, &linked).unwrap();
             assert!(read_scanner_report(&linked).is_err());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scanner_report_identity_checks_reject_file_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = temp.path().join("original.json");
+        let other = temp.path().join("other.json");
+        std::fs::write(&original, b"original").unwrap();
+        std::fs::write(&other, b"other").unwrap();
+
+        let path_metadata = std::fs::symlink_metadata(&original).unwrap();
+        let opened_original = std::fs::File::open(&original).unwrap().metadata().unwrap();
+        let opened_other = std::fs::File::open(&other).unwrap().metadata().unwrap();
+        assert!(opened_report_matches_path(&path_metadata, &opened_original));
+        assert!(!opened_report_matches_path(&path_metadata, &opened_other));
     }
 
     #[cfg(unix)]
