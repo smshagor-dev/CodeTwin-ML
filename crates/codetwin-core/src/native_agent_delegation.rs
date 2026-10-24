@@ -1,7 +1,7 @@
 //! Bounded multi-step delegation across pre-approved, native specialist tools.
 //! This is an auditable task DAG, not an untrusted LLM shell executor.
 use crate::{native_agents::NativeAgents, Database};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
