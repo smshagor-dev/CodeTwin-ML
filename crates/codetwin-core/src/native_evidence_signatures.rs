@@ -655,36 +655,42 @@ mod tests {
             &policy_pin,
         )
         .unwrap();
-        assert!(verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
-            &reopened,
-            &bundle,
-            &signed_policy,
-            &authority_key,
-            1,
-            &"00".repeat(32),
-        )
-        .unwrap_err()
-        .contains("independently pinned"));
-        assert!(verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
-            &reopened,
-            &bundle,
-            &signed_policy,
-            &authority_key,
-            1,
-            "invalid",
-        )
-        .is_err());
+        assert!(
+            verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
+                &reopened,
+                &bundle,
+                &signed_policy,
+                &authority_key,
+                1,
+                &"00".repeat(32),
+            )
+            .unwrap_err()
+            .contains("independently pinned")
+        );
+        assert!(
+            verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
+                &reopened,
+                &bundle,
+                &signed_policy,
+                &authority_key,
+                1,
+                "invalid",
+            )
+            .is_err()
+        );
         let mut altered_envelope = signed_policy.clone();
         altered_envelope.signature_hex = "00".repeat(64);
-        assert!(verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
-            &reopened,
-            &bundle,
-            &altered_envelope,
-            &authority_key,
-            1,
-            &policy_pin,
-        )
-        .is_err());
+        assert!(
+            verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
+                &reopened,
+                &bundle,
+                &altered_envelope,
+                &authority_key,
+                1,
+                &policy_pin,
+            )
+            .is_err()
+        );
 
         assert!(verify_signed_trusted_signer_policy(&signed_policy, &authority_key, 0).is_err());
         assert!(
@@ -730,15 +736,17 @@ mod tests {
         // Both envelopes are genuinely signed. A stale envelope remains
         // unacceptable when the independent current-envelope pin rotates.
         let rotated_pin = signed_signer_policy_sha256_hex(&signed_rotated_policy).unwrap();
-        assert!(verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
-            &reopened,
-            &bundle,
-            &signed_policy,
-            &authority_key,
-            1,
-            &rotated_pin,
-        )
-        .is_err());
+        assert!(
+            verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
+                &reopened,
+                &bundle,
+                &signed_policy,
+                &authority_key,
+                1,
+                &rotated_pin,
+            )
+            .is_err()
+        );
         verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
             &reopened,
             &rotated_bundle,
