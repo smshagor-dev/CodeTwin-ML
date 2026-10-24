@@ -591,7 +591,9 @@ mod tests {
         let agents = crate::native_agents::NativeAgents::new(&db);
         let first = agents.create(&project_id, "First worker", 10, 120).unwrap();
         agents.approve(&first.id).unwrap();
-        let second = agents.create(&project_id, "Second worker", 10, 120).unwrap();
+        let second = agents
+            .create(&project_id, "Second worker", 10, 120)
+            .unwrap();
         agents.approve(&second.id).unwrap();
 
         let audit = WorkerAudit::new(&db);
