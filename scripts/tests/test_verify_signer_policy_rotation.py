@@ -113,6 +113,49 @@ class VerifiedRotationTests(unittest.TestCase):
         self.assertEqual(json.loads(self.anchor.read_text()), result)
         self.assertNotIn("signature_hex", result)
 
+    def test_verified_publisher_checks_both_policies_again_under_lock(self) -> None:
+        with patch(
+            "scripts.publish_signer_trust_anchor.verify_rotation_files",
+            wraps=verify_rotation_files,
+        ) as verified:
+            self._publish()
+        self.assertEqual(verified.call_count, 2)
+
+    def test_valid_policy_swap_after_preflight_blocks_anchor_publication(self) -> None:
+        # A separately signed policy can replace an input after initial
+        # preflight, but its hash cannot silently become the new anchor.
+        for changed in ("previous", "replacement"):
+            with self.subTest(changed=changed):
+                # Reset both source policies and the independently pinned
+                # digests between scenarios.
+                self.old_pin = self._write_signed(self.previous, 4)
+                self.new_pin = self._write_signed(self.replacement, 5)
+                self.anchor.write_text(json.dumps(self.original), encoding="utf-8")
+                self.anchor.chmod(0o600)
+                calls = 0
+
+                def swap_after_preflight(*args: object, **kwargs: object) -> int:
+                    nonlocal calls
+                    verified_revision = verify_rotation_files(*args, **kwargs)
+                    calls += 1
+                    if calls == 1:
+                        path = self.previous if changed == "previous" else self.replacement
+                        self._write_signed(
+                            path,
+                            4 if changed == "previous" else 5,
+                            signer_status="revoked",
+                        )
+                    return verified_revision
+
+                with patch(
+                    "scripts.publish_signer_trust_anchor.verify_rotation_files",
+                    side_effect=swap_after_preflight,
+                ):
+                    with self.assertRaisesRegex(ValueError, "independently pinned"):
+                        self._publish()
+                self.assertEqual(calls, 1, "publication must fail on the second check")
+                self._unchanged()
+
     def test_wrong_previous_or_replacement_pin_is_rejected(self) -> None:
         for name in ("expected_sha256", "replacement_sha256"):
             with self.subTest(name=name):
