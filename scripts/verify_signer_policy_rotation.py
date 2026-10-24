@@ -169,4 +169,10 @@ def verify_rotation_files(
         raise ValueError("Previous policy revision does not match the current anchor")
     if replacement_value != replacement_revision or replacement_value <= previous_value:
         raise ValueError("Replacement policy revision must strictly increase")
+    # Detect changes observed during signature verification before reporting success.
+    # This is not an atomic snapshot or a defense against privileged file replacement.
+    if _read_signed_policy(previous_policy_file) != previous:
+        raise ValueError("Previous signed policy changed during verification")
+    if _read_signed_policy(replacement_policy_file) != replacement:
+        raise ValueError("Replacement signed policy changed during verification")
     return replacement_value

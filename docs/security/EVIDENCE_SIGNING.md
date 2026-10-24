@@ -107,7 +107,11 @@ python scripts/publish_signer_trust_anchor.py \
 The helper refuses missing approval, invalid authority signatures, pin mismatches,
 policy-key reuse, stale compare-and-swap expectations, revision decreases,
 unchanged digests, malformed data, symlinks, shared file
-permissions and a nonprivate anchor directory. Cooperating publishers are
+permissions and a nonprivate anchor directory. Rotation verification re-reads
+both signed-policy inputs after validating their signatures and pins and
+rejects any change observed during that check. This is not an atomic snapshot:
+a noncooperating or privileged writer can still replace a file after the
+check, including before anchor publication. Cooperating publishers are
 serialized with a persistent advisory lock. The signed policy inputs are limited to 16 KiB each and read from regular
 non-symlink files. Verification is performed before acquiring the anchor lock;
 the pinned digests and compare-and-swap expectations bind the checked policy
