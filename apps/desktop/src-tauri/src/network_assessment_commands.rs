@@ -58,3 +58,11 @@ pub async fn run_network_assessment(
     .await
     .map_err(|error| error.to_string())?
 }
+
+#[tauri::command]
+pub fn network_assessment_evidence_report(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    with_database(&state, |db| NetworkAssessment::new(db).evidence_report(&id))
+}

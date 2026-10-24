@@ -68,6 +68,8 @@ export function NetworkAssessmentPanel() {
   const [selected, setSelected] = useState<NetworkAssessmentRun | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [evidenceJson, setEvidenceJson] = useState("");
+  const [copyStatus, setCopyStatus] = useState("");
 
   const refresh = useCallback(async () => {
     const history = await workspaceApi.listNetworkAssessments(30);
@@ -80,6 +82,11 @@ export function NetworkAssessmentPanel() {
   useEffect(() => {
     void refresh().catch(reason => setError(String(reason)));
   }, [refresh]);
+
+  useEffect(() => {
+    setEvidenceJson("");
+    setCopyStatus("");
+  }, [selectedId]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -140,6 +147,26 @@ export function NetworkAssessmentPanel() {
       const actual = await workspaceApi.getNetworkAssessment(selected.id).catch(() => null);
       if (actual) setSelected(actual);
     } finally { setBusy(""); }
+  }
+
+  async function generateEvidenceReport() {
+    if (!selected) return;
+    setBusy("report");
+    setError("");
+    try {
+      setEvidenceJson(await workspaceApi.networkAssessmentEvidenceReport(selected.id));
+      setCopyStatus("");
+    } catch (reason) { setError(String(reason)); }
+    finally { setBusy(""); }
+  }
+
+  async function copyEvidenceReport() {
+    try {
+      await navigator.clipboard.writeText(evidenceJson);
+      setCopyStatus("Evidence JSON copied");
+    } catch {
+      setCopyStatus("Clipboard unavailable; select and copy the report below");
+    }
   }
 
   return <div className="ws-form-stack">
@@ -215,6 +242,23 @@ export function NetworkAssessmentPanel() {
           <button className="ws-button ws-button-secondary" disabled={busy === "cancel"}
             onClick={() => void act("cancel")}>Cancel</button>}
       </div>
+      {["completed", "failed", "cancelled", "interrupted", "partial"].includes(selected.status) &&
+        <div className="ws-top-actions">
+          <button className="ws-button ws-button-secondary" disabled={Boolean(busy)}
+            onClick={() => void generateEvidenceReport()}>
+            {busy === "report" ? "Preparing report…" : "Generate offline evidence JSON"}
+          </button>
+        </div>}
+      {evidenceJson && <details>
+        <summary>Network assessment evidence report</summary>
+        <p className="ws-form-help">This report uses saved observations only. Its SHA-256
+          fingerprints the JSON evidence; it is not a cryptographic signature or proof
+          of permission to scan.</p>
+        <button className="ws-button ws-button-secondary" type="button"
+          onClick={() => void copyEvidenceReport()}>Copy JSON</button>
+        {copyStatus && <p role="status">{copyStatus}</p>}
+        <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{evidenceJson}</pre>
+      </details>}
       {selected.message && <p role="alert" className="ws-warning-box">{selected.message}</p>}
       {selected.probes.length > 0 && <table className="ws-table"><thead><tr>
         <th>Port</th><th>TCP</th><th>Resolved address</th><th>Latency</th><th>HTTPS trust</th><th>HTTPS headers</th>
