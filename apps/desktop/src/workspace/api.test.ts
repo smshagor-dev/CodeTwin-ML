@@ -32,7 +32,8 @@ describe("workspace API workflows", () => {
       "ab".repeat(32),
     );
     expect(result).toEqual(["review-1", 3]);
-    expect(invokeMock).toHaveBeenCalledExactlyOnceWith(
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith(
       "verify_native_review_with_signed_signer_policy",
       {
         bundleJson: "bundle-json",
