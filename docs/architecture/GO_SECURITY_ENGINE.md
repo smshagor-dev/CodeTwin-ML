@@ -275,7 +275,7 @@ invalid signatures, outdated revisions, revoked/unlisted evidence signers,
 and mismatched current SQLite evidence. The bundle is limited to 512 KiB
 and the signed policy envelope to 16 KiB. No security tool is executed.
 
-**Limitations:** An envelope's own `authority_public_key_hex` is not a
+The verifier also rejects authority-signed policies that list the authority key as an evidence signer (whether trusted or revoked). Policy approval and review evidence signing must use independent Ed25519 keys; a reused key defeats separation of duties.\n\n**Limitations:** An envelope's own `authority_public_key_hex` is not a
 trust anchor. The operator must authenticate the authority key through
 an independent channel and maintain an authentic, up-to-date revision
 floor outside CodeTwin/SQLite. A stolen authority key or an outdated
