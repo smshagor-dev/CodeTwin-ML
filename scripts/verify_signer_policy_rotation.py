@@ -83,6 +83,16 @@ def _read_signed_policy_bytes(path: Path) -> bytes:
         if after.st_mode & 0o022:
             raise ValueError("Signed policy must not be writable by group or others")
         raw = stream.read(MAX_POLICY_BYTES + 1)
+        finished = os.fstat(stream.fileno())
+        # A writer can alter the opened inode after the first fstat and while
+        # bytes are being read. Reject observed metadata changes even when
+        # the writer restores identical JSON bytes before the next path read.
+        metadata_fields = (
+            "st_dev", "st_ino", "st_mode", "st_uid", "st_nlink",
+            "st_size", "st_mtime_ns", "st_ctime_ns",
+        )
+        if any(getattr(after, field) != getattr(finished, field) for field in metadata_fields):
+            raise ValueError("Signed policy changed while reading")
     if len(raw) > MAX_POLICY_BYTES:
         raise ValueError("Signed policy exceeds 16 KiB")
     return raw
