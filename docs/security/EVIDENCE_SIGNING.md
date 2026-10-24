@@ -115,7 +115,14 @@ check, including before anchor publication. Cooperating publishers are
 serialized with a persistent advisory lock. The signed policy inputs are limited to 16 KiB each and read from regular
 non-symlink files. Verification is performed before acquiring the anchor lock;
 the pinned digests and compare-and-swap expectations bind the checked policy
-to the published metadata. The replacement is written to a
+to the published metadata. The authenticated CLI performs a second full
+signature, revision, key-separation and pin check **while holding the
+publication lock**, after confirming the current anchor and immediately before
+writing its replacement. This detects a signed-policy swap between initial
+preflight and acquiring the lock; a changed policy fails closed without
+replacing the anchor. Independent policy files are not locked, so a privileged
+or noncooperating writer can still replace them after the second check. The
+replacement is written to a
 private temporary file, flushed, atomically renamed over the old file, and
 the directory is synced. An interrupted operation can require administrator
 inspection; if durability fails *after* rename, do not blindly retry.
