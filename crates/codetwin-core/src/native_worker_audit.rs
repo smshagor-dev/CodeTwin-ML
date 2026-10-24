@@ -589,11 +589,7 @@ mod tests {
             .unwrap()
             .project_id;
         let second_root = tempfile::tempdir().unwrap();
-        std::fs::write(
-            second_root.path().join("safe.rs"),
-            "pub fn second() {}",
-        )
-        .unwrap();
+        std::fs::write(second_root.path().join("safe.rs"), "pub fn second() {}").unwrap();
         let second_project = crate::ProjectIndexService::new(&db)
             .index_project(second_root.path())
             .unwrap()
