@@ -7,9 +7,9 @@ use codetwin_core::{
         assemble_detached_signature, prepare_external_attestation,
         prepare_signer_policy_signing_request, verify_bundle_against_sqlite,
         verify_bundle_with_pinned_signed_signer_policy_against_sqlite,
-        verify_bundle_with_signer_policy_against_sqlite, PreparedReviewEvidence,
-        PreparedSignerPolicySigningRequest, SignedReviewEvidence, SignedTrustedSignerPolicy,
-        TrustedSignerPolicy,
+        verify_bundle_with_signer_policy_against_sqlite, verify_external_signer_policy_rotation,
+        PreparedReviewEvidence, PreparedSignerPolicySigningRequest, SignedReviewEvidence,
+        SignedTrustedSignerPolicy, TrustedSignerPolicy,
     },
     Database,
 };
@@ -272,6 +272,40 @@ pub fn verify_native_review_with_signed_signer_policy(
         &independently_pinned_policy_sha256_hex,
     )?;
     Ok((bundle.manifest.run_id, signed_policy.policy.revision))
+}
+
+/// Validate a proposed externally administered policy change without
+/// persisting or deriving any trust anchors from the imported policy JSON.
+#[tauri::command]
+pub fn check_native_signer_policy_rotation(
+    previous_signed_policy_json: String,
+    replacement_signed_policy_json: String,
+    trusted_authority_public_key_hex: String,
+    current_minimum_revision: String,
+    independently_pinned_previous_sha256_hex: String,
+    independently_pinned_replacement_sha256_hex: String,
+) -> Result<u64, String> {
+    if previous_signed_policy_json.len() > 16 * 1024
+        || replacement_signed_policy_json.len() > 16 * 1024
+    {
+        return Err("Signed signer trust policy exceeds 16 KiB".into());
+    }
+    let floor = current_minimum_revision
+        .parse::<u64>()
+        .map_err(|_| "Minimum policy revision must be a positive u64".to_string())?;
+    let previous: SignedTrustedSignerPolicy = serde_json::from_str(&previous_signed_policy_json)
+        .map_err(|_| "Malformed previous signed signer trust policy".to_string())?;
+    let replacement: SignedTrustedSignerPolicy =
+        serde_json::from_str(&replacement_signed_policy_json)
+            .map_err(|_| "Malformed replacement signed signer trust policy".to_string())?;
+    verify_external_signer_policy_rotation(
+        &previous,
+        &replacement,
+        &trusted_authority_public_key_hex,
+        floor,
+        &independently_pinned_previous_sha256_hex,
+        &independently_pinned_replacement_sha256_hex,
+    )
 }
 
 #[tauri::command]

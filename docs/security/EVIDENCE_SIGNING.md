@@ -24,13 +24,41 @@ For signer rotation/revocation, the stricter desktop verifier now requires
 3. The SHA-256 of the **exact trusted signed policy envelope**, also maintained
    outside CodeTwin (64 hex characters).
 
-The Ed25519 policy authority public key **must not appear among any evidence signer keys** in that policy, including revoked entries. The authenticated-policy verifier enforces this separation so that compromise of an evidence signing key cannot also act as policy approval authority. Deploy a distinct externally managed authority key; existing same-key policies must be reissued by an independent authority before verification.\n\nAll three must come from an authenticated channel separate from the imported
+The Ed25519 policy authority public key **must not appear among any evidence signer keys** in that policy, including revoked entries. The authenticated-policy verifier enforces this separation so that compromise of an evidence signing key cannot also act as policy approval authority. Deploy a distinct externally managed authority key; existing same-key policies must be reissued by an independent authority before verification.
+
+All three must come from an authenticated channel separate from the imported
 evidence and the SQLite database. CodeTwin does not maintain a protected
 revision ledger or distribute trusted pins. If the operator reuses an old
 external revision floor and digest, an older valid policy can still be
 accepted. Rotate the digest and revision floor together when the authority
 issues a new policy. Revoked signers are rejected under the supplied policy;
 old signatures cannot be retroactively revoked without a current policy.
+
+## Checking a proposed policy rotation
+
+The desktop's `check_native_signer_policy_rotation` command (also exposed by
+`workspaceApi.checkNativeSignerPolicyRotation`) performs a **read-only
+preflight**. Supply the previously authenticated signed policy, its externally
+held SHA-256 pin, the replacement signed policy and its independently
+authenticated SHA-256 pin, the pinned authority public key, and the current
+externally maintained positive revision floor. Each policy is limited to
+16 KiB.
+
+Both Ed25519 authority signatures and both exact-envelope pins must verify
+under the **same** independently pinned authority. The previous policy must
+meet the current revision floor, and the replacement revision must be
+strictly higher. The command returns the proposed new revision floor only
+after all checks succeed; it does not update any file, SQLite row, external
+pin, hardware key, or policy. Changing the authority key requires a separate,
+authenticated out-of-band procedure and is deliberately not handled here.
+
+After independently approving a rotation, an external administrator must
+atomically publish and protect the replacement pin and returned revision
+floor in their own trusted system. Do not calculate either trusted pin from
+unverified imported JSON. A successful preflight **does not provide durable
+rollback protection**: stale or attacker-supplied external anchors can still
+authorize stale policies. The application cannot verify the external
+administrator's custody, approval, or distribution channel.
 
 ## Computing the exact-envelope pin
 

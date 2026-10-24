@@ -405,6 +405,45 @@ pub fn signed_signer_policy_sha256_hex(
     Ok(hex_encode(&Sha256::digest(&envelope)))
 }
 
+/// Read-only preflight for an externally administered trust-policy rotation.
+/// Both SHA-256 pins and the authority key must arrive from independently
+/// authenticated channels. This never persists pins, advances a protected
+/// revision floor, or approves an authority-key change.
+pub fn verify_external_signer_policy_rotation(
+    previous: &SignedTrustedSignerPolicy,
+    replacement: &SignedTrustedSignerPolicy,
+    trusted_authority_public_key_hex: &str,
+    current_minimum_revision: u64,
+    independently_pinned_previous_sha256_hex: &str,
+    independently_pinned_replacement_sha256_hex: &str,
+) -> Result<u64, String> {
+    verify_signed_trusted_signer_policy(
+        previous,
+        trusted_authority_public_key_hex,
+        current_minimum_revision,
+    )?;
+    verify_signed_trusted_signer_policy(
+        replacement,
+        trusted_authority_public_key_hex,
+        current_minimum_revision,
+    )?;
+
+    let previous_pin = hex_decode(independently_pinned_previous_sha256_hex, 32)?;
+    let previous_digest = hex_decode(&signed_signer_policy_sha256_hex(previous)?, 32)?;
+    if previous_pin != previous_digest {
+        return Err("Previous policy does not match the independently pinned SHA-256".into());
+    }
+    let replacement_pin = hex_decode(independently_pinned_replacement_sha256_hex, 32)?;
+    let replacement_digest = hex_decode(&signed_signer_policy_sha256_hex(replacement)?, 32)?;
+    if replacement_pin != replacement_digest {
+        return Err("Replacement policy does not match the independently pinned SHA-256".into());
+    }
+    if replacement.policy.revision <= previous.policy.revision {
+        return Err("Replacement signer policy revision must strictly increase".into());
+    }
+    Ok(replacement.policy.revision)
+}
+
 /// An additional exact-envelope pin, supplied outside CodeTwin/SQLite.
 /// A valid but older authority-signed policy with the same acceptable
 /// revision floor is rejected when its digest differs from the current pin.
@@ -547,6 +586,87 @@ mod tests {
             &signed_by_independent_authority,
             &separate_public,
             2,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn policy_rotation_preflight_rejects_rollback_wrong_pins_and_forgery() {
+        let rng = SystemRandom::new();
+        let authority_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let authority = Ed25519KeyPair::from_pkcs8(authority_pkcs8.as_ref()).unwrap();
+        let signer_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let signer = Ed25519KeyPair::from_pkcs8(signer_pkcs8.as_ref()).unwrap();
+        let authority_key = hex_encode(authority.public_key().as_ref());
+        let signer_key = hex_encode(signer.public_key().as_ref());
+        let sign_policy = |revision| {
+            let policy = TrustedSignerPolicy {
+                format: TRUST_POLICY_FORMAT.into(),
+                revision,
+                signers: vec![TrustedSignerEntry {
+                    public_key_hex: signer_key.clone(),
+                    status: TrustedSignerStatus::Trusted,
+                }],
+            };
+            let signature = authority.sign(&signer_policy_signing_payload(&policy).unwrap());
+            SignedTrustedSignerPolicy {
+                policy,
+                authority_public_key_hex: authority_key.clone(),
+                signature_hex: hex_encode(signature.as_ref()),
+            }
+        };
+        let previous = sign_policy(4);
+        let replacement = sign_policy(5);
+        let old_pin = signed_signer_policy_sha256_hex(&previous).unwrap();
+        let new_pin = signed_signer_policy_sha256_hex(&replacement).unwrap();
+        let check = |old: &SignedTrustedSignerPolicy,
+                     new: &SignedTrustedSignerPolicy,
+                     floor,
+                     old_digest: &str,
+                     new_digest: &str| {
+            verify_external_signer_policy_rotation(
+                old,
+                new,
+                &authority_key,
+                floor,
+                old_digest,
+                new_digest,
+            )
+        };
+        assert_eq!(
+            check(&previous, &replacement, 4, &old_pin, &new_pin).unwrap(),
+            5
+        );
+        assert!(check(&previous, &previous, 4, &old_pin, &old_pin)
+            .unwrap_err()
+            .contains("strictly increase"));
+        assert!(check(&replacement, &previous, 4, &new_pin, &old_pin)
+            .unwrap_err()
+            .contains("strictly increase"));
+        assert!(
+            check(&previous, &replacement, 4, &"00".repeat(32), &new_pin)
+                .unwrap_err()
+                .contains("Previous policy")
+        );
+        assert!(
+            check(&previous, &replacement, 4, &old_pin, &"00".repeat(32))
+                .unwrap_err()
+                .contains("Replacement policy")
+        );
+        assert!(check(&previous, &replacement, 5, &old_pin, &new_pin).is_err());
+        assert!(check(&previous, &replacement, 0, &old_pin, &new_pin).is_err());
+        assert!(check(&previous, &replacement, 4, "bad", &new_pin).is_err());
+        let mut forged = replacement.clone();
+        forged.policy.revision = 6;
+        let forged_pin = signed_signer_policy_sha256_hex(&forged).unwrap();
+        assert!(check(&previous, &forged, 4, &old_pin, &forged_pin).is_err());
+        assert!(verify_external_signer_policy_rotation(
+            &previous,
+            &replacement,
+            &signer_key,
+            4,
+            &old_pin,
+            &new_pin,
         )
         .is_err());
     }
