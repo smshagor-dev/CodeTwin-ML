@@ -192,6 +192,46 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         self._assert_unchanged()
         self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
 
+    def test_rejects_lock_path_replacement_while_acquiring(self) -> None:
+        import fcntl
+
+        lock_path = self.root / "anchor.json.lock"
+        moved = self.root / "previous-lock"
+        original_flock = fcntl.flock
+
+        def replace_after_lock(fd: int, operation: int) -> None:
+            original_flock(fd, operation)
+            if operation == fcntl.LOCK_EX:
+                lock_path.rename(moved)
+                lock_path.write_text("replacement", encoding="utf-8")
+                lock_path.chmod(0o600)
+
+        with patch("fcntl.flock", side_effect=replace_after_lock):
+            with self.assertRaisesRegex(ValueError, "Anchor lock changed"):
+                self._publish()
+        self._assert_unchanged()
+        self.assertTrue(moved.is_file())
+
+    def test_rejects_lock_metadata_change_while_acquiring(self) -> None:
+        import fcntl
+
+        lock_path = self.root / "anchor.json.lock"
+        original_flock = fcntl.flock
+
+        def touch_after_lock(fd: int, operation: int) -> None:
+            original_flock(fd, operation)
+            if operation == fcntl.LOCK_EX:
+                metadata = os.fstat(fd)
+                os.utime(
+                    lock_path,
+                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000),
+                )
+
+        with patch("fcntl.flock", side_effect=touch_after_lock):
+            with self.assertRaisesRegex(ValueError, "Anchor lock changed"):
+                self._publish()
+        self._assert_unchanged()
+
     def test_rejects_symlink_lock_file(self) -> None:
         outside = self.root / "outside"
         outside.write_text("do not change", encoding="utf-8")
