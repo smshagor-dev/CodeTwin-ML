@@ -42,7 +42,7 @@ func TestRefinementProducesAnIndependentCanonicalProposal(t *testing.T) {
 	before := append([]task(nil), original.Tasks...)
 	result, err := refinePlan(refineRequest{
 		ProtocolVersion: protocolVersion,
-		Current: original,
+		Current:         original,
 		Operations: []refineOp{
 			{Op: "add", Role: "secrets", Objective: "  Inspect approved source for secrets  "},
 			{Op: "modify", Role: "qa", Objective: "  Review test evidence  "},
@@ -86,8 +86,8 @@ func TestRefinementRejectsRepeatedEditsWithoutPartialResults(t *testing.T) {
 		before := append([]task(nil), original.Tasks...)
 		result, err := refinePlan(refineRequest{
 			ProtocolVersion: protocolVersion,
-			Current: original,
-			Operations: changes,
+			Current:         original,
+			Operations:      changes,
 		})
 		if err == nil || len(result.Tasks) != 0 {
 			t.Fatalf("ambiguous edits yielded a plan: %#v, error %v", result, err)
