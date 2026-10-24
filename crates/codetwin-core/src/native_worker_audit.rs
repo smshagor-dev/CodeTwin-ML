@@ -588,11 +588,21 @@ mod tests {
             .index_project(root.path())
             .unwrap()
             .project_id;
+        let second_root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            second_root.path().join("safe.rs"),
+            "pub fn second() {}",
+        )
+        .unwrap();
+        let second_project = crate::ProjectIndexService::new(&db)
+            .index_project(second_root.path())
+            .unwrap()
+            .project_id;
         let agents = crate::native_agents::NativeAgents::new(&db);
         let first = agents.create(&project_id, "First worker", 10, 120).unwrap();
         agents.approve(&first.id).unwrap();
         let second = agents
-            .create(&project_id, "Second worker", 10, 120)
+            .create(&second_project, "Second worker", 10, 120)
             .unwrap();
         agents.approve(&second.id).unwrap();
 
