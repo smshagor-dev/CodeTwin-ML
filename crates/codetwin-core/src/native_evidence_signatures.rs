@@ -446,8 +446,10 @@ mod tests {
         let reader = Database::open(&path).unwrap();
         reader
             .connection()
-            .execute_batch("CREATE TABLE snapshot_probe (value INTEGER NOT NULL);
-                            INSERT INTO snapshot_probe(value) VALUES (1);")
+            .execute_batch(
+                "CREATE TABLE snapshot_probe (value INTEGER NOT NULL);
+                            INSERT INTO snapshot_probe(value) VALUES (1);",
+            )
             .unwrap();
         let writer = Database::open(&path).unwrap();
 
