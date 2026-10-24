@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-
 )
 
 type refineRequest struct {
