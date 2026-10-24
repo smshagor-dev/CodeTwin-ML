@@ -170,6 +170,23 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Signed policy changed during audit"):
                 self._audit()
 
+    def test_detects_equivalent_policy_rewrite_during_audit(self) -> None:
+        from scripts.audit_signer_trust_anchor import _validated_policy
+
+        def rewrite(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+            result = _validated_policy(envelope, authority)
+            # Whitespace changes without altering the authenticated typed envelope.
+            self.policy.write_text(
+                json.dumps(json.loads(self.policy.read_text(encoding="utf-8")), indent=2),
+                encoding="utf-8",
+            )
+            return result
+
+        with patch("scripts.audit_signer_trust_anchor._validated_policy", side_effect=rewrite):
+            with self.assertRaisesRegex(ValueError, "Signed policy changed during audit"):
+                self._audit()
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
     def test_rejects_policy_symlink_swap_during_audit(self) -> None:
         from scripts.audit_signer_trust_anchor import _validated_policy
 
