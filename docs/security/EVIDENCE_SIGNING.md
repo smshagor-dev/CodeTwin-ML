@@ -123,9 +123,15 @@ after reading, rejecting observed changes to size, ownership, link count,
 permissions, or modification/change timestamps, even if the JSON bytes are
 restored. This is a best-effort race check, not a stable filesystem snapshot:
 changes between checks or by a privileged writer may still escape detection.
-These checks reject locally writable inputs, but do not
-authenticate their owner, protect writable parent directories, or prevent a
-privileged process from replacing files after verification. Verification is
+The POSIX policy reader also rejects symlinks in any directory component
+and requires the immediate parent directory to be owned by the current user
+or root and not writable by group or others. It rechecks the parent inode,
+owner, permissions and change timestamp after each bounded file read.
+Keep policy files in a separately controlled, non-writable directory; a
+world-writable immediate parent such as /tmp is deliberately rejected.
+These checks do not authenticate the policy file owner, protect all ancestor
+directories against replacement, guarantee an atomic path snapshot, or prevent
+a privileged process from replacing files after verification. Verification is
 performed before acquiring the anchor lock;
 the pinned digests and compare-and-swap expectations bind the checked policy
 to the published metadata. The authenticated CLI performs a second full
