@@ -312,6 +312,26 @@ pub fn signer_policy_signing_payload(policy: &TrustedSignerPolicy) -> Result<Vec
     Ok(payload)
 }
 
+/// Public bytes for an external policy authority to sign. The authority's
+/// private key must stay outside CodeTwin and its SQLite database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreparedSignerPolicySigningRequest {
+    pub policy: TrustedSignerPolicy,
+    pub payload_hex: String,
+    pub payload_sha256_hex: String,
+}
+
+pub fn prepare_signer_policy_signing_request(
+    policy: TrustedSignerPolicy,
+) -> Result<PreparedSignerPolicySigningRequest, String> {
+    let payload = signer_policy_signing_payload(&policy)?;
+    Ok(PreparedSignerPolicySigningRequest {
+        policy,
+        payload_hex: hex_encode(&payload),
+        payload_sha256_hex: hex_encode(&Sha256::digest(&payload)),
+    })
+}
+
 /// The revision floor is supplied by the caller, not by the signed policy.
 /// It must be protected and updated independently; this is not a built-in
 /// anti-rollback store and cannot detect an outdated external floor.
@@ -490,6 +510,12 @@ mod tests {
         let authority_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
         let authority = Ed25519KeyPair::from_pkcs8(authority_pkcs8.as_ref()).unwrap();
         let authority_key = hex_encode(authority.public_key().as_ref());
+        let policy_request = prepare_signer_policy_signing_request(policy.clone()).unwrap();
+        assert_eq!(
+            policy_request.payload_hex,
+            hex_encode(&signer_policy_signing_payload(&policy).unwrap())
+        );
+        assert_eq!(policy_request.payload_sha256_hex.len(), 64);
         let signed_policy = SignedTrustedSignerPolicy {
             policy: policy.clone(),
             authority_public_key_hex: authority_key.clone(),
