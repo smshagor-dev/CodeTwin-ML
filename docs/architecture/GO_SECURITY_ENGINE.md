@@ -217,6 +217,21 @@ not consult the revocation policy; use policy verification when revocation
 enforcement is required. Neither the signature nor the policy proves that
 a completed review found every vulnerability.
 
+### Consistent SQLite evidence snapshots
+
+Review attestation export and every SQLite-backed signed-evidence verification
+read the completed run, specialist receipts, delegation state and handoffs
+within one short-lived SQLite WAL **read transaction**. This prevents a
+concurrent database writer from creating a signed manifest assembled from
+different committed versions. The snapshot is released on success and on
+error, without committing or changing analyzer evidence. Signatures remain
+detached, and authority/private keys remain outside SQLite.
+
+Each fresh verification creates a **new** snapshot and compares its complete
+manifest to the imported signed one. A signature cannot guarantee future
+database immutability, so callers should verify again before relying on
+evidence later. This is not an anti-rollback trust-policy store.
+
 ### Authority-signed trust policy verification
 
 The desktop now also accepts an **authority-signed policy envelope**. A policy
