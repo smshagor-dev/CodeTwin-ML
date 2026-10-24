@@ -65,11 +65,13 @@ administrator's custody, approval, or distribution channel.
 After the desktop's **read-only** rotation preflight succeeds, a separately
 authorized administrator can use `scripts/publish_signer_trust_anchor.py`
 to update the **public** revision and exact-envelope SHA-256 together in one
-on-disk JSON record. This helper is not called by the desktop, does not sign
-or verify Ed25519 signatures, and does not generate or store private keys.
-The administrator must verify both signed policies and obtain **both pins**
-and the authority key through independent authenticated channels *before*
-running it. `--approve` signals deliberate operator intent, not a
+on-disk JSON record. This helper is not called by the desktop, never signs,
+and never generates or stores private keys. The CLI now independently verifies
+**both Ed25519 policy authority signatures**, key separation, policy revision
+continuity, and both exact-envelope SHA-256 pins before attempting the update.
+It requires Python 3 and the pinned `cryptography==46.0.4` dependency.
+The administrator must still obtain **both pins** and the authority key
+through independent authenticated channels *before* running it. `--approve` signals deliberate operator intent, not a
 cryptographic or human-identity approval certificate.
 
 Bootstrap `anchor.json` separately from previously authenticated values
@@ -92,6 +94,8 @@ authenticated** values, not hashes copied from an unverified import:
 ```bash
 python scripts/publish_signer_trust_anchor.py \
   --anchor-file /trusted/private/anchor.json \
+  --previous-signed-policy /trusted/input/previous-policy.json \
+  --replacement-signed-policy /trusted/input/replacement-policy.json \
   --authority-public-key <independently-pinned-authority-key> \
   --expected-revision 4 \
   --expected-sha256 <independently-pinned-previous-digest> \
@@ -100,10 +104,14 @@ python scripts/publish_signer_trust_anchor.py \
   --approve
 ```
 
-The helper refuses missing approval, stale compare-and-swap expectations,
-revision decreases, unchanged digests, malformed data, symlinks, shared file
+The helper refuses missing approval, invalid authority signatures, pin mismatches,
+policy-key reuse, stale compare-and-swap expectations, revision decreases,
+unchanged digests, malformed data, symlinks, shared file
 permissions and a nonprivate anchor directory. Cooperating publishers are
-serialized with a persistent advisory lock. The replacement is written to a
+serialized with a persistent advisory lock. The signed policy inputs are limited to 16 KiB each and read from regular
+non-symlink files. Verification is performed before acquiring the anchor lock;
+the pinned digests and compare-and-swap expectations bind the checked policy
+to the published metadata. The replacement is written to a
 private temporary file, flushed, atomically renamed over the old file, and
 the directory is synced. An interrupted operation can require administrator
 inspection; if durability fails *after* rename, do not blindly retry.
@@ -122,7 +130,8 @@ was approved or that the authority private key is safe.
 Run its regression tests with:
 
 ```bash
-python -m unittest discover -s scripts/tests -p 'test_publish_signer_trust_anchor.py' -v
+python -m pip install 'cryptography==46.0.4'
+python -m unittest discover -s scripts/tests -p 'test_*.py' -v
 ```
 
 ## Computing the exact-envelope pin
