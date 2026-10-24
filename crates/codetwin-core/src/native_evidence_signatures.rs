@@ -64,7 +64,7 @@ fn hex_decode(text: &str, expected_bytes: usize) -> Result<Vec<u8>, String> {
 }
 
 fn fingerprint(text: &str) -> String {
-    hex_encode(Sha256::digest(text.as_bytes()).as_slice())
+    hex_encode(&Sha256::digest(text.as_bytes()))
 }
 
 /// Read and validate a completed review before preparing its external
@@ -260,6 +260,10 @@ mod tests {
         let signature = hex_encode(signer.sign(&external_signing_payload(&manifest).unwrap()).as_ref());
         let bundle = assemble_detached_signature(manifest.clone(), &trusted, &signature).unwrap();
         verify_bundle_against_sqlite(&db, &bundle, &trusted).unwrap();
+        let json = serde_json::to_string(&bundle).unwrap();
+        let restored: SignedReviewEvidence = serde_json::from_str(&json).unwrap();
+        verify_with_trusted_public_key(&restored, &trusted).unwrap();
+        assert_eq!(restored.manifest, manifest);
 
         let another_key = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
         let different = Ed25519KeyPair::from_pkcs8(another_key.as_ref()).unwrap();
