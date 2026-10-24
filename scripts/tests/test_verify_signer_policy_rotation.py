@@ -346,6 +346,64 @@ class VerifiedRotationTests(unittest.TestCase):
         finally:
             self.replacement.chmod(0o600)
 
+    def test_rejects_permission_change_during_policy_read(self) -> None:
+        original_fstat = os.fstat
+        for target in (self.previous, self.replacement):
+            with self.subTest(policy=target.name):
+                target_inode = target.stat().st_ino
+                calls = 0
+
+                def mutate_on_second_stat(fd: int) -> os.stat_result:
+                    nonlocal calls
+                    metadata = original_fstat(fd)
+                    if metadata.st_ino == target_inode:
+                        calls += 1
+                        if calls == 2:
+                            target.chmod(0o400)
+                            return original_fstat(fd)
+                    return metadata
+
+                try:
+                    with patch(
+                        "scripts.verify_signer_policy_rotation.os.fstat",
+                        side_effect=mutate_on_second_stat,
+                    ):
+                        with self.assertRaisesRegex(ValueError, "changed while reading"):
+                            self._publish()
+                    self.assertGreaterEqual(calls, 2)
+                    self._unchanged()
+                finally:
+                    target.chmod(0o600)
+
+    def test_rejects_metadata_change_with_identical_policy_bytes(self) -> None:
+        original_fstat = os.fstat
+        target_inode = self.replacement.stat().st_ino
+        calls = 0
+        original_bytes = self.replacement.read_bytes()
+
+        def change_mtime_on_second_stat(fd: int) -> os.stat_result:
+            nonlocal calls
+            metadata = original_fstat(fd)
+            if metadata.st_ino == target_inode:
+                calls += 1
+                if calls == 2:
+                    os.utime(
+                        self.replacement,
+                        ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000),
+                    )
+                    return original_fstat(fd)
+            return metadata
+
+        with patch(
+            "scripts.verify_signer_policy_rotation.os.fstat",
+            side_effect=change_mtime_on_second_stat,
+        ):
+            with self.assertRaisesRegex(ValueError, "changed while reading"):
+                self._publish()
+        self.assertGreaterEqual(calls, 2)
+        self.assertEqual(self.replacement.read_bytes(), original_bytes)
+        self._unchanged()
+
     def test_rejects_missing_approval_before_verification(self) -> None:
         with self.assertRaisesRegex(ValueError, "approval"):
             self._publish(approved=False)
