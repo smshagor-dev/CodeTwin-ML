@@ -167,7 +167,9 @@ class TrustAnchorPublisherTests(unittest.TestCase):
             nonlocal calls
             metadata = original_fstat(fd)
             calls += 1
-            if calls == 1:
+            if calls == 2:
+                # Swap the path after the descriptor's final metadata snapshot,
+                # so this specifically exercises the path recheck.
                 self.anchor.rename(moved)
                 self.anchor.symlink_to(moved)
             return metadata
