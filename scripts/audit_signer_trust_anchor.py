@@ -59,15 +59,16 @@ def audit_anchor(
     ):
         raise ValueError("External anchor differs from independently trusted values")
 
-    policy_revision, policy_digest = _validated_policy(
-        _read_signed_policy(signed_policy_file), authority
-    )
+    policy_before = _read_signed_policy(signed_policy_file)
+    policy_revision, policy_digest = _validated_policy(policy_before, authority)
     if policy_revision != revision or policy_digest != digest:
         raise ValueError("Signed policy differs from independently trusted revision or digest")
 
     _private_directory(path.parent)
     if _read_anchor(path) != before:
         raise ValueError("External anchor changed during audit")
+    if _read_signed_policy(signed_policy_file) != policy_before:
+        raise ValueError("Signed policy changed during audit")
     return {
         "status": "verified_against_supplied_pins",
         "minimum_revision": revision,

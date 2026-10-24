@@ -154,8 +154,9 @@ anchor or SQLite, and does not invoke any security scans. It checks the
 private POSIX anchor directory, the existing anchor record, the signed
 policy's Ed25519 authority signature and signer-key separation, and
 equality with **all three** independently trusted inputs. It re-reads
-the anchor to detect a change observed during the audit. A stale anchor
-or mismatched pin fails closed (exit code 2). The command does not
+both the anchor and signed-policy file to detect changes observed during
+the audit, including a policy symlink swap. A stale anchor, changed
+signed policy or mismatched pin fails closed (exit code 2). The command does not
 establish that the independent inputs are authentic or fresh: they must
 be delivered through a separately protected administrator channel.
 It is a point-in-time consistency check, not a tamper-proof ledger,

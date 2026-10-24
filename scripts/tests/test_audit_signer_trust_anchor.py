@@ -156,5 +156,38 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                 self._audit()
 
 
+    def test_detects_policy_changed_during_signature_verification(self) -> None:
+        from scripts.audit_signer_trust_anchor import _validated_policy
+
+        def mutate(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+            result = _validated_policy(envelope, authority)
+            replacement = json.loads(self.policy.read_text(encoding="utf-8"))
+            replacement["policy"]["signers"][0]["status"] = "revoked"
+            self.policy.write_text(json.dumps(replacement), encoding="utf-8")
+            return result
+
+        with patch("scripts.audit_signer_trust_anchor._validated_policy", side_effect=mutate):
+            with self.assertRaisesRegex(ValueError, "Signed policy changed during audit"):
+                self._audit()
+
+    def test_rejects_policy_symlink_swap_during_audit(self) -> None:
+        from scripts.audit_signer_trust_anchor import _validated_policy
+
+        def replace_with_symlink(
+            envelope: dict[str, object], authority: bytes
+        ) -> tuple[int, bytes]:
+            result = _validated_policy(envelope, authority)
+            original = self.root / "original-policy.json"
+            self.policy.rename(original)
+            self.policy.symlink_to(original)
+            return result
+
+        with patch(
+            "scripts.audit_signer_trust_anchor._validated_policy",
+            side_effect=replace_with_symlink,
+        ):
+            with self.assertRaisesRegex(ValueError, "non-symlink"):
+                self._audit()
+
 if __name__ == "__main__":
     unittest.main()
