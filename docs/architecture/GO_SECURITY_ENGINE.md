@@ -383,7 +383,13 @@ name=^/codetwin-scan- --format {{.Names}}` using the configured trusted CLI.
 Only a successful empty container listing for the current configured daemon
 allows SQLite to replace the outstanding codes with traceable
 `*_cleanup_checked` codes. A failed command, timeout or any matching container
-keeps the block. Operators must also ensure Docker is pointed at the correct
+keeps the block.
+The release verifies the **exact set of unresolved worker audit IDs** observed
+before the Docker probe. After the probe, one SQLite IMMEDIATE transaction
+rejects any added/changed hold or still-running worker before updating the
+stored statuses; a fresh unconfirmed cleanup discovered during the probe
+requires a fresh probe and cannot be cleared by its predecessor's result.
+The hold release does not prove privileged daemon or filesystem integrity. Operators must also ensure Docker is pointed at the correct
 daemon/context; checking a different daemon does not prove earlier cleanup.
 Restart recovery does **not** auto-run a scanner, auto-retry or delete containers.
 
