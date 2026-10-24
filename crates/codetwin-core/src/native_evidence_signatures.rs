@@ -219,6 +219,83 @@ pub fn verify_with_trusted_public_key(
         .map_err(|_| "Ed25519 evidence signature verification failed".into())
 }
 
+/// A policy is supplied and pinned independently of signed evidence.
+/// It is never sourced from the bundle or implicitly trusted from SQLite.
+const TRUST_POLICY_FORMAT: &str = "codetwin-signer-trust-v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustedSignerPolicy {
+    pub format: String,
+    pub revision: u64,
+    pub signers: Vec<TrustedSignerEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustedSignerStatus {
+    Trusted,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustedSignerEntry {
+    pub public_key_hex: String,
+    pub status: TrustedSignerStatus,
+}
+
+/// Key rotation: multiple independent keys may remain trusted. Revocation:
+/// a revoked entry makes that key unacceptable even for previously signed
+/// evidence. This verifier does not authenticate the policy itself; callers
+/// must obtain and pin an authentic, current policy outside CodeTwin.
+pub fn verify_with_trusted_signer_policy(
+    bundle: &SignedReviewEvidence,
+    policy: &TrustedSignerPolicy,
+) -> Result<(), String> {
+    if policy.format != TRUST_POLICY_FORMAT {
+        return Err("Unsupported signer trust policy format".into());
+    }
+    if policy.revision == 0 || policy.signers.is_empty() || policy.signers.len() > 64 {
+        return Err("Signer trust policy has invalid revision or signer count".into());
+    }
+    let advertised = hex_decode(&bundle.signer_public_key_hex, 32)?;
+    let mut distinct = std::collections::HashSet::with_capacity(policy.signers.len());
+    let mut matched = None;
+    for signer in &policy.signers {
+        let key = hex_decode(&signer.public_key_hex, 32)?;
+        if !distinct.insert(key.clone()) {
+            return Err("Signer trust policy contains duplicate public keys".into());
+        }
+        if key == advertised {
+            matched = Some(signer);
+        }
+    }
+    match matched {
+        Some(entry) if entry.status == TrustedSignerStatus::Trusted => {
+            verify_with_trusted_public_key(bundle, &entry.public_key_hex)
+        }
+        Some(_) => Err("Evidence signing key has been revoked".into()),
+        None => Err("Evidence signer is not present in the independently trusted policy".into()),
+    }
+}
+
+/// Keep revocation evaluation and SQLite evidence validation together.
+/// A stale or user-modified policy cannot be detected here: it must be
+/// authenticated and protected separately by the policy's owner.
+pub fn verify_bundle_with_signer_policy_against_sqlite(
+    db: &Database,
+    bundle: &SignedReviewEvidence,
+    policy: &TrustedSignerPolicy,
+) -> Result<(), String> {
+    verify_with_trusted_signer_policy(bundle, policy)?;
+    let current = build_verified_manifest(db, &bundle.manifest.run_id)?;
+    if current != bundle.manifest {
+        return Err("Signed review snapshot no longer matches SQLite evidence".into());
+    }
+    Ok(())
+}
+
 /// Live SQLite re-validation catches changed receipts, handoffs, and results
 /// after the signed snapshot was exported. It never updates historical state.
 pub fn verify_bundle_against_sqlite(
