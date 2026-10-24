@@ -3,6 +3,10 @@ use codetwin_core::{
     native_agent_handoffs::{AgentHandoff, AgentHandoffs, AgentVerification},
     native_agent_memory::{AgentMemory, MemoryEntry},
     native_agents::{AgentRun, HistoricalEvidenceAudit, NativeAgents},
+    native_evidence_signatures::{
+        assemble_detached_signature, prepare_external_attestation, verify_bundle_against_sqlite,
+        PreparedReviewEvidence, SignedReviewEvidence,
+    },
     Database,
 };
 use tauri::Manager;
@@ -145,6 +149,53 @@ pub fn audit_native_evidence_history(
 ) -> Result<HistoricalEvidenceAudit, String> {
     let db = open_db(&app)?;
     NativeAgents::new(&db).audit_completed_history_page(&project_id, limit, before_rowid.as_deref())
+}
+
+/// Exports only public fingerprints and the exact bytes an external signer
+/// must sign. No private-key generation or access in CodeTwin.
+#[tauri::command]
+pub fn prepare_native_review_attestation(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<PreparedReviewEvidence, String> {
+    let db = open_db(&app)?;
+    prepare_external_attestation(&db, &id)
+}
+
+/// Attach a signature from an independent signer and check it immediately
+/// against the freshly generated, still-verified SQLite evidence. The
+/// trusted key is explicitly supplied by the user, not learned from SQLite.
+#[tauri::command]
+pub fn assemble_native_review_attestation(
+    id: String,
+    signature_hex: String,
+    trusted_public_key_hex: String,
+    app: tauri::AppHandle,
+) -> Result<SignedReviewEvidence, String> {
+    let db = open_db(&app)?;
+    let request = prepare_external_attestation(&db, &id)?;
+    let bundle =
+        assemble_detached_signature(request.manifest, &trusted_public_key_hex, &signature_hex)?;
+    verify_bundle_against_sqlite(&db, &bundle, &trusted_public_key_hex)?;
+    Ok(bundle)
+}
+
+/// Read-only verification of an imported signed bundle. A separately pinned
+/// public key is mandatory even if the JSON includes a claimed signer key.
+#[tauri::command]
+pub fn verify_native_review_attestation(
+    bundle_json: String,
+    trusted_public_key_hex: String,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    if bundle_json.len() > 512 * 1024 {
+        return Err("Signed evidence bundle exceeds 512 KiB".into());
+    }
+    let bundle: SignedReviewEvidence = serde_json::from_str(&bundle_json)
+        .map_err(|_| "Malformed signed evidence bundle".to_string())?;
+    let db = open_db(&app)?;
+    verify_bundle_against_sqlite(&db, &bundle, &trusted_public_key_hex)?;
+    Ok(bundle.manifest.run_id)
 }
 
 #[tauri::command]
