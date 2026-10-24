@@ -64,9 +64,35 @@ fn fingerprint(text: &str) -> String {
     hex_encode(&Sha256::digest(text.as_bytes()))
 }
 
+/// Every table contributing to a signed manifest must be read from one
+/// consistent SQLite WAL snapshot. A concurrent cancellation, repair, or
+/// evidence update must not splice together values from different commits.
+/// Roll back a read-only transaction even on errors; no evidence is written.
+fn with_verified_read_snapshot<T>(
+    db: &Database,
+    read: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let snapshot = db
+        .connection()
+        .unchecked_transaction()
+        .map_err(|error| format!("Cannot open SQLite evidence snapshot: {error}"))?;
+    let result = read();
+    snapshot
+        .rollback()
+        .map_err(|error| format!("Cannot close SQLite evidence snapshot: {error}"))?;
+    result
+}
+
 /// Read and validate a completed review before preparing its external
 /// attestation. No keys or signatures are written to SQLite, and no tools run.
 pub fn build_verified_manifest(
+    db: &Database,
+    run_id: &str,
+) -> Result<ReviewEvidenceManifest, String> {
+    with_verified_read_snapshot(db, || build_manifest_from_snapshot(db, run_id))
+}
+
+fn build_manifest_from_snapshot(
     db: &Database,
     run_id: &str,
 ) -> Result<ReviewEvidenceManifest, String> {
@@ -412,6 +438,52 @@ mod tests {
         rand::SystemRandom,
         signature::{Ed25519KeyPair, KeyPair},
     };
+
+    #[test]
+    fn evidence_snapshot_is_consistent_across_concurrent_wal_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot-consistency.sqlite3");
+        let reader = Database::open(&path).unwrap();
+        reader
+            .connection()
+            .execute_batch("CREATE TABLE snapshot_probe (value INTEGER NOT NULL);
+                            INSERT INTO snapshot_probe(value) VALUES (1);")
+            .unwrap();
+        let writer = Database::open(&path).unwrap();
+
+        with_verified_read_snapshot(&reader, || {
+            let first: i64 = reader
+                .connection()
+                .query_row("SELECT value FROM snapshot_probe", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(first, 1);
+
+            // WAL permits a second connection to commit during the read.
+            // The evidence reader must still observe the first snapshot.
+            writer
+                .connection()
+                .execute("UPDATE snapshot_probe SET value=2", [])
+                .unwrap();
+            let second: i64 = reader
+                .connection()
+                .query_row("SELECT value FROM snapshot_probe", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(second, first);
+            Ok(())
+        })
+        .unwrap();
+        assert!(reader.connection().is_autocommit());
+        let current: i64 = reader
+            .connection()
+            .query_row("SELECT value FROM snapshot_probe", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(current, 2, "a later verification must see the new commit");
+
+        let rejected: Result<(), String> =
+            with_verified_read_snapshot(&reader, || Err("invalid review".into()));
+        assert_eq!(rejected.unwrap_err(), "invalid review");
+        assert!(reader.connection().is_autocommit());
+    }
 
     #[test]
     fn detached_signatures_require_external_trust_and_detect_mutations() {
