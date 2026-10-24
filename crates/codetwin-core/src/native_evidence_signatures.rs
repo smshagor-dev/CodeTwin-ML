@@ -386,6 +386,62 @@ mod tests {
         )
         .is_err());
 
+        let rotated_key = hex_encode(different.public_key().as_ref());
+        let mut policy = TrustedSignerPolicy {
+            format: TRUST_POLICY_FORMAT.into(),
+            revision: 1,
+            signers: vec![
+                TrustedSignerEntry {
+                    public_key_hex: trusted.clone(),
+                    status: TrustedSignerStatus::Trusted,
+                },
+                TrustedSignerEntry {
+                    public_key_hex: rotated_key.clone(),
+                    status: TrustedSignerStatus::Trusted,
+                },
+            ],
+        };
+        verify_bundle_with_signer_policy_against_sqlite(&reopened, &bundle, &policy).unwrap();
+        let rotated_signature = hex_encode(
+            different
+                .sign(&external_signing_payload(&manifest).unwrap())
+                .as_ref(),
+        );
+        let rotated_bundle =
+            assemble_detached_signature(manifest.clone(), &rotated_key, &rotated_signature)
+                .unwrap();
+        verify_with_trusted_signer_policy(&rotated_bundle, &policy).unwrap();
+
+        // Revoking a former signing key invalidates its older bundles
+        // while allowing another independently trusted rotation key.
+        policy.revision = 2;
+        policy.signers[0].status = TrustedSignerStatus::Revoked;
+        assert!(verify_with_trusted_signer_policy(&bundle, &policy)
+            .unwrap_err()
+            .contains("revoked"));
+        verify_bundle_with_signer_policy_against_sqlite(&reopened, &rotated_bundle, &policy)
+            .unwrap();
+        policy.signers.pop();
+        assert!(verify_with_trusted_signer_policy(&rotated_bundle, &policy)
+            .unwrap_err()
+            .contains("not present"));
+        policy.signers.push(TrustedSignerEntry {
+            public_key_hex: trusted.to_uppercase(),
+            status: TrustedSignerStatus::Trusted,
+        });
+        assert!(verify_with_trusted_signer_policy(&bundle, &policy)
+            .unwrap_err()
+            .contains("duplicate"));
+        policy.signers.pop();
+        policy.revision = 0;
+        assert!(verify_with_trusted_signer_policy(&bundle, &policy).is_err());
+        policy.revision = 3;
+        policy.format = "unrecognized-format".into();
+        assert!(verify_with_trusted_signer_policy(&bundle, &policy).is_err());
+        let mut invalid_json = serde_json::to_value(&policy).unwrap();
+        invalid_json["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<TrustedSignerPolicy>(invalid_json).is_err());
+
         let mut modified = bundle.clone();
         modified.manifest.project_id = "another-project".into();
         assert!(verify_with_trusted_public_key(&modified, &trusted).is_err());
