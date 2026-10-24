@@ -181,6 +181,42 @@ signed snapshot relative to the trusted key; it does not establish that an
 assessment covered every vulnerability or that the signer is trustworthy
 without a separate identity and key-management process.
 
+### External signer rotation and revocation policy
+
+Signed evidence can be checked against a **separately supplied** signer trust
+policy rather than a single public key. The desktop form accepts a current
+policy in JSON, for example (replace the placeholder with a real key):
+
+```json
+{
+  "format": "codetwin-signer-trust-v1",
+  "revision": 2,
+  "signers": [
+    {"public_key_hex": "REPLACE_WITH_64_HEX_CHARACTERS", "status": "revoked"},
+    {"public_key_hex": "REPLACE_WITH_ANOTHER_64_HEX_KEY", "status": "trusted"}
+  ]
+}
+```
+
+The policy verifier allows between 1 and 64 unique Ed25519 public keys,
+requires a positive revision and rejects malformed entries, duplicate keys
+(including case variants), unknown policy formats, unrecognized signers
+and any signer marked `revoked`. Rotation may keep both old and new keys
+`trusted` temporarily; after revocation, even older signatures from that
+key fail. Trust policy verification revalidates the current SQLite evidence
+and does not modify existing reviews or replay tools. Imported evidence JSON
+is limited to 512 KiB and independently supplied policy JSON to 16 KiB.
+
+**Critical trust boundary:** CodeTwin does **not** securely distribute,
+authenticate, persist, or enforce monotonic revisions of these policies.
+The operator must protect the policy outside the SQLite database and obtain
+its current authentic version from an independent trusted channel. A stale or
+maliciously replaced policy can falsely accept a revoked key. Existing
+single-key verification remains a separate compatibility option and does
+not consult the revocation policy; use policy verification when revocation
+enforcement is required. Neither the signature nor the policy proves that
+a completed review found every vulnerability.
+
 ### Completed specialist receipt consistency
 
 A security review may be published as `completed` only after the supervisor
