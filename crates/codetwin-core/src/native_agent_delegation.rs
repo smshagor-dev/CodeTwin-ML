@@ -490,7 +490,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(running, 2);
-        assert!(NativeDelegation::new(&db).ready_batch(&run.id).unwrap().is_empty());
+        assert!(NativeDelegation::new(&db)
+            .ready_batch(&run.id)
+            .unwrap()
+            .is_empty());
         let active = NativeDelegation::new(&db)
             .graph(&run.id)
             .unwrap()
@@ -503,7 +506,13 @@ mod tests {
                 .finish(&run.id, task.position, true)
                 .unwrap();
         }
-        assert_eq!(NativeDelegation::new(&db).ready_batch(&run.id).unwrap().len(), 2);
+        assert_eq!(
+            NativeDelegation::new(&db)
+                .ready_batch(&run.id)
+                .unwrap()
+                .len(),
+            2
+        );
         db.connection()
             .execute(
                 "UPDATE native_agent_runs SET cancel_requested=1 WHERE id=?1",
