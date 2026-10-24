@@ -6,7 +6,7 @@ use codetwin_core::{
     native_evidence_signatures::{
         assemble_detached_signature, prepare_external_attestation,
         prepare_signer_policy_signing_request, verify_bundle_against_sqlite,
-        verify_bundle_with_signed_signer_policy_against_sqlite,
+        verify_bundle_with_pinned_signed_signer_policy_against_sqlite,
         verify_bundle_with_signer_policy_against_sqlite, PreparedReviewEvidence,
         PreparedSignerPolicySigningRequest, SignedReviewEvidence, SignedTrustedSignerPolicy,
         TrustedSignerPolicy,
@@ -238,14 +238,15 @@ pub fn prepare_native_signer_policy_request(
 }
 
 /// This stricter path authenticates the policy using a separately pinned
-/// authority key and enforces an externally maintained minimum revision.
-/// The revision floor is not derived from the imported policy or SQLite.
+/// authority key, an independently pinned envelope digest and a minimum
+/// revision. None of these trust anchors are read from SQLite or the bundle.
 #[tauri::command]
 pub fn verify_native_review_with_signed_signer_policy(
     bundle_json: String,
     signed_policy_json: String,
     trusted_authority_public_key_hex: String,
     minimum_revision: String,
+    independently_pinned_policy_sha256_hex: String,
     app: tauri::AppHandle,
 ) -> Result<(String, u64), String> {
     if bundle_json.len() > 512 * 1024 || signed_policy_json.len() > 16 * 1024 {
@@ -262,12 +263,13 @@ pub fn verify_native_review_with_signed_signer_policy(
     let signed_policy: SignedTrustedSignerPolicy = serde_json::from_str(&signed_policy_json)
         .map_err(|_| "Malformed signed signer trust policy".to_string())?;
     let db = open_db(&app)?;
-    verify_bundle_with_signed_signer_policy_against_sqlite(
+    verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
         &db,
         &bundle,
         &signed_policy,
         &trusted_authority_public_key_hex,
         revision_floor,
+        &independently_pinned_policy_sha256_hex,
     )?;
     Ok((bundle.manifest.run_id, signed_policy.policy.revision))
 }
