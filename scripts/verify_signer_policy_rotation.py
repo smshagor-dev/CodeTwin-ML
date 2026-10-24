@@ -43,6 +43,7 @@ def _hex_bytes(value: Any, size: int, label: str) -> bytes:
         not isinstance(value, str)
         or len(value) != size * 2
         or not value.isascii()
+        or any(char not in "0123456789abcdefABCDEF" for char in value)
     ):
         raise ValueError(f"{label} must be {size * 2} hexadecimal characters")
     try:
@@ -87,7 +88,7 @@ def _read_signed_policy(path: Path) -> dict[str, Any]:
     )
 
 
-def _validated_policy(envelope: dict[str, Any], authority: bytes) -> tuple[int, bytes, bytes]:
+def _validated_policy(envelope: dict[str, Any], authority: bytes) -> tuple[int, bytes]:
     policy = _exact_fields(
         envelope["policy"], {"format", "revision", "signers"}, "Signer policy"
     )
@@ -134,7 +135,7 @@ def _validated_policy(envelope: dict[str, Any], authority: bytes) -> tuple[int, 
         "authority_public_key_hex": envelope["authority_public_key_hex"],
         "signature_hex": envelope["signature_hex"],
     }
-    return revision, hashlib.sha256(_json_bytes(typed_envelope)).digest(), signature
+    return revision, hashlib.sha256(_json_bytes(typed_envelope)).digest()
 
 
 def verify_rotation_files(
@@ -160,8 +161,8 @@ def verify_rotation_files(
     replacement_revision = _positive_revision(replacement_revision, "Replacement revision")
     previous = _read_signed_policy(previous_policy_file)
     replacement = _read_signed_policy(replacement_policy_file)
-    previous_value, previous_digest, _ = _validated_policy(previous, authority)
-    replacement_value, replacement_digest, _ = _validated_policy(replacement, authority)
+    previous_value, previous_digest = _validated_policy(previous, authority)
+    replacement_value, replacement_digest = _validated_policy(replacement, authority)
     if previous_digest != previous_pin or replacement_digest != replacement_pin:
         raise ValueError("Signed policy does not match independently pinned SHA-256")
     if previous_value != expected_revision:
