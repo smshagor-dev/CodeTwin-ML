@@ -51,14 +51,11 @@ fn hex_decode(text: &str, expected_bytes: usize) -> Result<Vec<u8>, String> {
     if text.len() != expected_bytes * 2 || !text.is_ascii() {
         return Err("Invalid Ed25519 key or signature length".into());
     }
-    text.as_bytes()
-        .chunks_exact(2)
-        .map(|pair| {
-            std::str::from_utf8(pair)
-                .map_err(|_| "Invalid hex encoding".to_string())
-                .and_then(|digits| {
-                    u8::from_str_radix(digits, 16).map_err(|_| "Invalid hex encoding".into())
-                })
+    (0..text.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&text[index..index + 2], 16)
+                .map_err(|_| "Invalid hex encoding".into())
         })
         .collect()
 }
