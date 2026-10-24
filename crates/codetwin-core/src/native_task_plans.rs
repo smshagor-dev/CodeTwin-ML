@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 const ALLOWED: [&str; 6] = ["scout", "source", "secrets", "qa", "database", "runtime"];
+const MAX_PARALLEL: usize = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -106,6 +107,7 @@ pub fn validate_proposal(plan: &TaskProposal) -> Result<TaskSchedule, String> {
                             .all(|dep| done.contains(dep.as_str()))
                     })
             })
+            .take(MAX_PARALLEL)
             .map(str::to_string)
             .collect();
         if ready.is_empty() {
@@ -119,7 +121,7 @@ pub fn validate_proposal(plan: &TaskProposal) -> Result<TaskSchedule, String> {
     }
     Ok(TaskSchedule {
         batches,
-        max_parallel: 2,
+        max_parallel: MAX_PARALLEL,
     })
 }
 
@@ -173,6 +175,50 @@ mod tests {
             vec![vec!["scout"], vec!["source"], vec!["qa", "runtime"],]
         );
         assert_eq!(schedule.max_parallel, 2);
+    }
+
+    #[test]
+    fn full_review_schedule_never_exceeds_the_runtime_two_worker_limit() {
+        let mut plan = valid();
+        plan.tasks.insert(
+            2,
+            PlannedSpecialist {
+                role: "secrets".into(),
+                objective: "Inspect secrets".into(),
+                depends_on: vec!["source".into()],
+            },
+        );
+        plan.tasks.insert(
+            4,
+            PlannedSpecialist {
+                role: "database".into(),
+                objective: "Inspect schema".into(),
+                depends_on: vec!["source".into()],
+            },
+        );
+        let schedule = validate_proposal(&plan).unwrap();
+        assert_eq!(
+            schedule.batches,
+            vec![
+                vec!["scout"],
+                vec!["source"],
+                vec!["secrets", "qa"],
+                vec!["database", "runtime"],
+            ]
+        );
+        assert_eq!(schedule.max_parallel, 2);
+        assert!(schedule
+            .batches
+            .iter()
+            .all(|batch| batch.len() <= schedule.max_parallel));
+
+        // A later dependency cannot be scheduled in the same batch as the
+        // specialist whose completed receipt it is supposed to consume.
+        plan.tasks[5].depends_on = vec!["source".into(), "database".into()];
+        let chained = validate_proposal(&plan).unwrap();
+        assert_eq!(chained.batches[2], vec!["secrets", "qa"]);
+        assert_eq!(chained.batches[3], vec!["database"]);
+        assert_eq!(chained.batches[4], vec!["runtime"]);
     }
 
     #[test]
