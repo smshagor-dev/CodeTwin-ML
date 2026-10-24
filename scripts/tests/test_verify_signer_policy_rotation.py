@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 import tempfile
 import unittest
 
@@ -174,6 +175,48 @@ class VerifiedRotationTests(unittest.TestCase):
         self.replacement.write_bytes(b"x" * (16 * 1024 + 1))
         with self.assertRaisesRegex(ValueError, "16 KiB"):
             self._publish()
+        self._unchanged()
+
+    def test_rejects_previous_policy_changed_during_verification(self) -> None:
+        from scripts.verify_signer_policy_rotation import _validated_policy
+
+        calls = 0
+
+        def change_after_validation(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+            nonlocal calls
+            result = _validated_policy(envelope, authority)
+            calls += 1
+            if calls == 1:
+                self._write_signed(self.previous, 4, signer_status="revoked")
+            return result
+
+        with patch(
+            "scripts.verify_signer_policy_rotation._validated_policy",
+            side_effect=change_after_validation,
+        ):
+            with self.assertRaisesRegex(ValueError, "Previous signed policy changed during verification"):
+                self._publish()
+        self._unchanged()
+
+    def test_rejects_replacement_policy_changed_during_verification(self) -> None:
+        from scripts.verify_signer_policy_rotation import _validated_policy
+
+        calls = 0
+
+        def change_after_validation(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+            nonlocal calls
+            result = _validated_policy(envelope, authority)
+            calls += 1
+            if calls == 2:
+                self._write_signed(self.replacement, 5, signer_status="revoked")
+            return result
+
+        with patch(
+            "scripts.verify_signer_policy_rotation._validated_policy",
+            side_effect=change_after_validation,
+        ):
+            with self.assertRaisesRegex(ValueError, "Replacement signed policy changed during verification"):
+                self._publish()
         self._unchanged()
 
     def test_rejects_missing_approval_before_verification(self) -> None:
