@@ -63,7 +63,7 @@ def _json_bytes(value: dict[str, Any]) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def _read_signed_policy(path: Path) -> dict[str, Any]:
+def _read_signed_policy_bytes(path: Path) -> bytes:
     before = path.lstat()
     if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
         raise ValueError("Signed policy must be a regular non-symlink file")
@@ -81,11 +81,19 @@ def _read_signed_policy(path: Path) -> dict[str, Any]:
         raw = stream.read(MAX_POLICY_BYTES + 1)
     if len(raw) > MAX_POLICY_BYTES:
         raise ValueError("Signed policy exceeds 16 KiB")
+    return raw
+
+
+def _parse_signed_policy(raw: bytes) -> dict[str, Any]:
     return _exact_fields(
         json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_fields),
         {"policy", "authority_public_key_hex", "signature_hex"},
         "Signed policy envelope",
     )
+
+
+def _read_signed_policy(path: Path) -> dict[str, Any]:
+    return _parse_signed_policy(_read_signed_policy_bytes(path))
 
 
 def _validated_policy(envelope: dict[str, Any], authority: bytes) -> tuple[int, bytes]:
@@ -159,8 +167,10 @@ def verify_rotation_files(
     replacement_pin = _hex_bytes(replacement_sha256, 32, "Replacement independent pin")
     expected_revision = _positive_revision(expected_revision, "Expected revision")
     replacement_revision = _positive_revision(replacement_revision, "Replacement revision")
-    previous = _read_signed_policy(previous_policy_file)
-    replacement = _read_signed_policy(replacement_policy_file)
+    previous_bytes = _read_signed_policy_bytes(previous_policy_file)
+    replacement_bytes = _read_signed_policy_bytes(replacement_policy_file)
+    previous = _parse_signed_policy(previous_bytes)
+    replacement = _parse_signed_policy(replacement_bytes)
     previous_value, previous_digest = _validated_policy(previous, authority)
     replacement_value, replacement_digest = _validated_policy(replacement, authority)
     if previous_digest != previous_pin or replacement_digest != replacement_pin:
@@ -169,10 +179,10 @@ def verify_rotation_files(
         raise ValueError("Previous policy revision does not match the current anchor")
     if replacement_value != replacement_revision or replacement_value <= previous_value:
         raise ValueError("Replacement policy revision must strictly increase")
-    # Detect changes observed during signature verification before reporting success.
+    # Detect byte-level changes observed during signature verification before success.
     # This is not an atomic snapshot or a defense against privileged file replacement.
-    if _read_signed_policy(previous_policy_file) != previous:
+    if _read_signed_policy_bytes(previous_policy_file) != previous_bytes:
         raise ValueError("Previous signed policy changed during verification")
-    if _read_signed_policy(replacement_policy_file) != replacement:
+    if _read_signed_policy_bytes(replacement_policy_file) != replacement_bytes:
         raise ValueError("Replacement signed policy changed during verification")
     return replacement_value
