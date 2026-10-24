@@ -222,6 +222,7 @@ pub fn verify_with_trusted_public_key(
 /// A policy is supplied and pinned independently of signed evidence.
 /// It is never sourced from the bundle or implicitly trusted from SQLite.
 const TRUST_POLICY_FORMAT: &str = "codetwin-signer-trust-v1";
+const TRUST_POLICY_DOMAIN: &[u8] = b"CodeTwin-ML/signer-policy/ed25519/v1\0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -278,6 +279,79 @@ pub fn verify_with_trusted_signer_policy(
         Some(_) => Err("Evidence signing key has been revoked".into()),
         None => Err("Evidence signer is not present in the independently trusted policy".into()),
     }
+}
+
+/// Signed policy metadata does not establish trust in its advertised key.
+/// The authority public key must be pinned through an independent channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedTrustedSignerPolicy {
+    pub policy: TrustedSignerPolicy,
+    pub authority_public_key_hex: String,
+    pub signature_hex: String,
+}
+
+/// Exact domain-separated bytes to send to an external Ed25519 policy signer.
+/// No private key is generated, imported, or stored by this module.
+pub fn signer_policy_signing_payload(policy: &TrustedSignerPolicy) -> Result<Vec<u8>, String> {
+    if policy.format != TRUST_POLICY_FORMAT {
+        return Err("Unsupported signer trust policy format".into());
+    }
+    if policy.revision == 0 || policy.signers.is_empty() || policy.signers.len() > 64 {
+        return Err("Signer trust policy has invalid revision or signer count".into());
+    }
+    let mut distinct = std::collections::HashSet::with_capacity(policy.signers.len());
+    for signer in &policy.signers {
+        let key = hex_decode(&signer.public_key_hex, 32)?;
+        if !distinct.insert(key) {
+            return Err("Signer trust policy contains duplicate public keys".into());
+        }
+    }
+    let mut payload = TRUST_POLICY_DOMAIN.to_vec();
+    payload.extend(serde_json::to_vec(policy).map_err(|e| e.to_string())?);
+    Ok(payload)
+}
+
+/// The revision floor is supplied by the caller, not by the signed policy.
+/// It must be protected and updated independently; this is not a built-in
+/// anti-rollback store and cannot detect an outdated external floor.
+pub fn verify_signed_trusted_signer_policy(
+    signed: &SignedTrustedSignerPolicy,
+    trusted_authority_public_key_hex: &str,
+    minimum_revision: u64,
+) -> Result<(), String> {
+    if minimum_revision == 0 {
+        return Err("An independently pinned positive minimum revision is required".into());
+    }
+    let payload = signer_policy_signing_payload(&signed.policy)?;
+    if signed.policy.revision < minimum_revision {
+        return Err("Signer trust policy revision is below the independent minimum".into());
+    }
+    let authority_key = hex_decode(trusted_authority_public_key_hex, 32)?;
+    let declared = hex_decode(&signed.authority_public_key_hex, 32)?;
+    if authority_key != declared {
+        return Err("Policy authority does not match independently trusted key".into());
+    }
+    let signature = hex_decode(&signed.signature_hex, 64)?;
+    UnparsedPublicKey::new(&ED25519, authority_key)
+        .verify(&payload, &signature)
+        .map_err(|_| "Ed25519 signer policy authority signature verification failed".into())
+}
+
+/// Verify policy authority, signer revocation and live SQLite evidence.
+pub fn verify_bundle_with_signed_signer_policy_against_sqlite(
+    db: &Database,
+    bundle: &SignedReviewEvidence,
+    signed_policy: &SignedTrustedSignerPolicy,
+    trusted_authority_public_key_hex: &str,
+    minimum_revision: u64,
+) -> Result<(), String> {
+    verify_signed_trusted_signer_policy(
+        signed_policy,
+        trusted_authority_public_key_hex,
+        minimum_revision,
+    )?;
+    verify_bundle_with_signer_policy_against_sqlite(db, bundle, &signed_policy.policy)
 }
 
 /// Keep revocation evaluation and SQLite evidence validation together.
@@ -412,10 +486,75 @@ mod tests {
                 .unwrap();
         verify_with_trusted_signer_policy(&rotated_bundle, &policy).unwrap();
 
+        // Policy authority and review signer are distinct ephemeral test keys.
+        let authority_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let authority = Ed25519KeyPair::from_pkcs8(authority_pkcs8.as_ref()).unwrap();
+        let authority_key = hex_encode(authority.public_key().as_ref());
+        let signed_policy = SignedTrustedSignerPolicy {
+            policy: policy.clone(),
+            authority_public_key_hex: authority_key.clone(),
+            signature_hex: hex_encode(
+                authority
+                    .sign(&signer_policy_signing_payload(&policy).unwrap())
+                    .as_ref(),
+            ),
+        };
+        verify_bundle_with_signed_signer_policy_against_sqlite(
+            &reopened,
+            &bundle,
+            &signed_policy,
+            &authority_key,
+            1,
+        )
+        .unwrap();
+        assert!(verify_signed_trusted_signer_policy(&signed_policy, &authority_key, 0).is_err());
+        assert!(verify_signed_trusted_signer_policy(&signed_policy, &authority_key, 2)
+            .unwrap_err()
+            .contains("below"));
+        assert!(verify_signed_trusted_signer_policy(&signed_policy, &rotated_key, 1).is_err());
+        let mut forged_policy = signed_policy.clone();
+        forged_policy.policy.signers[0].status = TrustedSignerStatus::Revoked;
+        assert!(verify_signed_trusted_signer_policy(&forged_policy, &authority_key, 1).is_err());
+        forged_policy = signed_policy.clone();
+        forged_policy.signature_hex = "00".repeat(64);
+        assert!(verify_signed_trusted_signer_policy(&forged_policy, &authority_key, 1).is_err());
+        forged_policy = signed_policy.clone();
+        forged_policy.authority_public_key_hex = rotated_key.clone();
+        assert!(verify_signed_trusted_signer_policy(&forged_policy, &authority_key, 1).is_err());
+        let mut unexpected = serde_json::to_value(&signed_policy).unwrap();
+        unexpected["extra"] = json!(true);
+        assert!(serde_json::from_value::<SignedTrustedSignerPolicy>(unexpected).is_err());
+
         // Revoking a former signing key invalidates its older bundles
         // while allowing another independently trusted rotation key.
         policy.revision = 2;
         policy.signers[0].status = TrustedSignerStatus::Revoked;
+        let signed_rotated_policy = SignedTrustedSignerPolicy {
+            policy: policy.clone(),
+            authority_public_key_hex: authority_key.clone(),
+            signature_hex: hex_encode(
+                authority
+                    .sign(&signer_policy_signing_payload(&policy).unwrap())
+                    .as_ref(),
+            ),
+        };
+        verify_bundle_with_signed_signer_policy_against_sqlite(
+            &reopened,
+            &rotated_bundle,
+            &signed_rotated_policy,
+            &authority_key,
+            2,
+        )
+        .unwrap();
+        assert!(verify_bundle_with_signed_signer_policy_against_sqlite(
+            &reopened,
+            &bundle,
+            &signed_rotated_policy,
+            &authority_key,
+            2,
+        )
+        .is_err());
+        assert!(verify_signed_trusted_signer_policy(&signed_policy, &authority_key, 2).is_err());
         assert!(verify_with_trusted_signer_policy(&bundle, &policy)
             .unwrap_err()
             .contains("revoked"));
