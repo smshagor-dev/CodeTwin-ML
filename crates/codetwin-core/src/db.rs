@@ -84,7 +84,12 @@ impl Database {
     pub(crate) fn open_native_worker(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
         let connection =
             Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
-        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        // Passive specialists may persist independent analyzer results at the
+        // same time. On Windows, short-lived SQLite WAL write contention can
+        // exceed the generic five-second timeout. Wait for the active writer
+        // rather than marking an approved review failed solely due to a lock.
+        // This is bounded and applies only to native specialist connections.
+        connection.busy_timeout(std::time::Duration::from_secs(30))?;
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         connection.pragma_update(None, "foreign_keys", "ON")?;
         // Fail closed if called with an unrelated or uninitialized SQLite file.
@@ -1350,6 +1355,11 @@ mod tests {
             .unwrap();
         assert_eq!(foreign_keys, 1);
         assert_eq!(wal.to_ascii_lowercase(), "wal");
+        let worker_timeout_ms: i64 = worker
+            .connection()
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(worker_timeout_ms, 30_000);
         let migration_count: i64 = worker
             .connection()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
@@ -1364,6 +1374,51 @@ mod tests {
         let invalid = root.path().join("uninitialized.sqlite3");
         rusqlite::Connection::open(&invalid).unwrap();
         assert!(Database::open_native_worker(&invalid).is_err());
+    }
+
+    #[test]
+    fn native_worker_waits_for_concurrent_sqlite_writer() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("parallel-writes.sqlite3");
+        let owner = Database::open(&path).unwrap();
+        owner
+            .connection()
+            .execute_batch("CREATE TABLE native_lock_probe (value INTEGER NOT NULL);")
+            .unwrap();
+        // The worker opens after migrations and before the owner holds a
+        // write transaction. Only the owner may apply migrations.
+        let worker = Database::open_native_worker(&path).unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (start_tx, start_rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            start_rx.recv().unwrap();
+            worker
+                .connection()
+                .execute("INSERT INTO native_lock_probe(value) VALUES (2)", [])
+                .unwrap();
+        });
+        ready_rx.recv().unwrap();
+        let transaction = owner.connection().unchecked_transaction().unwrap();
+        transaction
+            .execute("INSERT INTO native_lock_probe(value) VALUES (1)", [])
+            .unwrap();
+        start_tx.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(250));
+        transaction.commit().unwrap();
+        handle.join().unwrap();
+        let values = owner
+            .connection()
+            .prepare("SELECT value FROM native_lock_probe ORDER BY value")
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(values, vec![1, 2]);
     }
 
     #[test]
