@@ -60,6 +60,71 @@ rollback protection**: stale or attacker-supplied external anchors can still
 authorize stale policies. The application cannot verify the external
 administrator's custody, approval, or distribution channel.
 
+## Optional atomic publication of external anchor metadata (POSIX)
+
+After the desktop's **read-only** rotation preflight succeeds, a separately
+authorized administrator can use `scripts/publish_signer_trust_anchor.py`
+to update the **public** revision and exact-envelope SHA-256 together in one
+on-disk JSON record. This helper is not called by the desktop, does not sign
+or verify Ed25519 signatures, and does not generate or store private keys.
+The administrator must verify both signed policies and obtain **both pins**
+and the authority key through independent authenticated channels *before*
+running it. `--approve` signals deliberate operator intent, not a
+cryptographic or human-identity approval certificate.
+
+Bootstrap `anchor.json` separately from previously authenticated values
+in an administrator-owned directory **outside the checkout and SQLite data**,
+with directory mode 0700 and file mode 0600. Its exact four fields are:
+
+```json
+{
+  "format": "codetwin-external-signer-anchor-v1",
+  "authority_public_key_hex": "<64 lowercase hex characters>",
+  "minimum_revision": 4,
+  "signed_policy_sha256_hex": "<64 lowercase hex characters>"
+}
+```
+
+The stored revision must equal the current trusted policy revision. To
+publish a previously checked replacement, use the **independently
+authenticated** values, not hashes copied from an unverified import:
+
+```bash
+python scripts/publish_signer_trust_anchor.py \
+  --anchor-file /trusted/private/anchor.json \
+  --authority-public-key <independently-pinned-authority-key> \
+  --expected-revision 4 \
+  --expected-sha256 <independently-pinned-previous-digest> \
+  --replacement-revision 5 \
+  --replacement-sha256 <independently-pinned-replacement-digest> \
+  --approve
+```
+
+The helper refuses missing approval, stale compare-and-swap expectations,
+revision decreases, unchanged digests, malformed data, symlinks, shared file
+permissions and a nonprivate anchor directory. Cooperating publishers are
+serialized with a persistent advisory lock. The replacement is written to a
+private temporary file, flushed, atomically renamed over the old file, and
+the directory is synced. An interrupted operation can require administrator
+inspection; if durability fails *after* rename, do not blindly retry.
+
+**Limitations:** This is POSIX-only, not a Windows ACL implementation or a
+hardware-backed monotonic counter. The directory and all path components
+must be administrator controlled; a privileged attacker or process able to
+replace the directory can roll it back. File locking does not stop
+noncooperating writers. Retain the authoritative anchor independently in a
+protected external system and audit its changes. Never derive trusted
+inputs from this file alone. Desktop evidence verification still requires
+separately supplied current pins and revision, and will not automatically
+trust the helper's output. An external publisher cannot prove that a policy
+was approved or that the authority private key is safe.
+
+Run its regression tests with:
+
+```bash
+python -m unittest discover -s scripts/tests -p 'test_publish_signer_trust_anchor.py' -v
+```
+
 ## Computing the exact-envelope pin
 
 An administrator can calculate the digest on a **previously authenticated**
