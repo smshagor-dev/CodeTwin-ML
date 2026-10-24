@@ -1,7 +1,7 @@
 //! Bounded, durable SQLite queue for *separately approved* passive flows.
 //! Queue claims do not grant review approval or execute arbitrary tools.
 use crate::Database;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,8 +39,12 @@ impl<'a> NativeFlowQueue<'a> {
 
     /// A queued item must refer to an existing, explicitly approved flow.
     /// At most eight unfinished items are permitted per desktop profile.
+    /// Acquire the SQLite WAL writer slot *before* counting or checking the
+    /// parent approval. A deferred read-then-write transaction could lose its
+    /// snapshot to another desktop connection and return SQLITE_BUSY_SNAPSHOT.
     pub fn enqueue(&self, review_id: &str) -> Result<QueuedFlow, String> {
-        let tx = self.db.connection().unchecked_transaction().map_err(err)?;
+        let tx = Transaction::new_unchecked(self.db.connection(), TransactionBehavior::Immediate)
+            .map_err(err)?;
         let waiting: i64 = tx
             .query_row(
                 "SELECT COUNT(*) FROM native_flow_queue WHERE status IN ('queued','running')",
@@ -156,7 +160,8 @@ impl<'a> NativeFlowQueue<'a> {
     /// flow while the previous one is active or after a restart. No queued
     /// item can circumvent its parent review's explicit approval.
     pub fn claim_next(&self) -> Result<Option<QueuedFlow>, String> {
-        let tx = self.db.connection().unchecked_transaction().map_err(err)?;
+        let tx = Transaction::new_unchecked(self.db.connection(), TransactionBehavior::Immediate)
+            .map_err(err)?;
         let already_running: i64 = tx
             .query_row(
                 "SELECT COUNT(*) FROM native_flow_queue WHERE status='running'",
@@ -217,7 +222,8 @@ impl<'a> NativeFlowQueue<'a> {
         {
             return Err("Invalid terminal flow receipt".into());
         }
-        let tx = self.db.connection().unchecked_transaction().map_err(err)?;
+        let tx = Transaction::new_unchecked(self.db.connection(), TransactionBehavior::Immediate)
+            .map_err(err)?;
         let actual: String = tx
             .query_row(
                 "SELECT status FROM native_agent_runs WHERE id=?1",
@@ -274,7 +280,8 @@ impl<'a> NativeFlowQueue<'a> {
     /// queue runner must never auto-replay an action after restart. Recover
     /// legacy interrupted receipts whose parent remained approved as well.
     pub fn recover_interrupted(&self) -> Result<(), String> {
-        let tx = self.db.connection().unchecked_transaction().map_err(err)?;
+        let tx = Transaction::new_unchecked(self.db.connection(), TransactionBehavior::Immediate)
+            .map_err(err)?;
         let stranded = {
             let mut statement = tx
                 .prepare(
@@ -402,6 +409,71 @@ mod tests {
         NativeFlow::new(db).prepare(&review.id).unwrap();
         NativeFlow::new(db).approve(&review.id).unwrap();
         review.id
+    }
+
+    /// Hold a WAL write transaction on another connection until the queue
+    /// operation starts. This exercises lock acquisition instead of relying on
+    /// nondeterministic interleaving of two near-simultaneous queue requests.
+    fn with_competing_sqlite_writer(
+        database_path: &std::path::Path,
+        project_id: &str,
+        operation: impl FnOnce(),
+    ) {
+        let database_path = database_path.to_path_buf();
+        let project_id = project_id.to_string();
+        let (ready, started) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let database = Database::open_native_worker(&database_path).unwrap();
+            let tx = database.connection().unchecked_transaction().unwrap();
+            tx.execute(
+                "UPDATE projects SET display_name='Concurrent queue writer' WHERE id=?1",
+                [&project_id],
+            )
+            .unwrap();
+            ready.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            tx.commit().unwrap();
+        });
+        started.recv().unwrap();
+        operation();
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn file_backed_queue_enqueue_claim_and_interrupt_wait_for_sqlite_writer() {
+        let fixture = tempfile::tempdir().unwrap();
+        let database_path = fixture.path().join("concurrent-queue.sqlite3");
+        let source = fixture.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("safe.rs"), "pub fn safe() {}").unwrap();
+        let database = Database::open(&database_path).unwrap();
+        let project_id = ProjectIndexService::new(&database)
+            .index_project(&source)
+            .unwrap()
+            .project_id;
+        let review_id = approved(&database, &project_id);
+        let queue = NativeFlowQueue::new(&database);
+
+        with_competing_sqlite_writer(&database_path, &project_id, || {
+            let receipt = queue.enqueue(&review_id).unwrap();
+            assert_eq!(receipt.status, "queued");
+        });
+        with_competing_sqlite_writer(&database_path, &project_id, || {
+            assert_eq!(queue.claim_next().unwrap().unwrap().review_id, review_id);
+        });
+        assert!(queue.claim_next().is_err());
+
+        with_competing_sqlite_writer(&database_path, &project_id, || {
+            queue
+                .finish(&review_id, "interrupted", "Runner unavailable")
+                .unwrap();
+        });
+        let receipt = queue.get(&review_id).unwrap().unwrap();
+        assert_eq!(receipt.status, "interrupted");
+        assert_eq!(receipt.review_status, "interrupted");
+        assert!(cancellation_requested(&database, &review_id));
+        assert!(NativeAgents::new(&database).execute(&review_id).is_err());
+        assert!(queue.claim_next().unwrap().is_none());
     }
 
     #[test]
