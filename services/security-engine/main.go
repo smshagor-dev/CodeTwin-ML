@@ -1,5 +1,5 @@
-// CodeTwin's offline review planner uses a bounded Flow -> Task -> Specialist model.
-// PentAGI-inspired architecture; no PentAGI packages, proprietary APIs or tools are embedded.
+// CodeTwin's offline review planner uses a bounded, locally validated
+// Flow -> Task -> Specialist model. Execution remains approval-gated in Rust.
 package main
 
 import (
