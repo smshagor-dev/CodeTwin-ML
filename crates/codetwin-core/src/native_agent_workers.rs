@@ -320,18 +320,38 @@ impl<'a> IsolatedWorker<'a> {
     }
 }
 
+#[cfg(unix)]
+fn opened_report_matches_path(path: &fs::Metadata, opened: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    path.dev() == opened.dev() && path.ino() == opened.ino()
+}
+
 /// Read only an ordinary file created by the finished worker in its private output
-/// directory. Reject symlinks, directories and oversized reports.
+/// directory. Bound memory at the read boundary instead of trusting an earlier
+/// size check: the untrusted report can change between metadata and read.
+/// Unix verifies the opened file identity to reject symlink/replacement races.
 fn read_scanner_report(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata =
+    let path_metadata =
         fs::symlink_metadata(path).map_err(|_| "Scanner returned no report".to_string())?;
-    if !metadata.file_type().is_file() {
+    if !path_metadata.file_type().is_file() {
         return Err("Scanner report must be a regular file, not a symlink".into());
     }
-    if metadata.len() > MAX_REPORT_BYTES {
+    let file = fs::File::open(path).map_err(|_| "Could not open scanner report".to_string())?;
+    let opened_metadata = file.metadata().map_err(err)?;
+    if !opened_metadata.is_file() {
+        return Err("Scanner report must be a regular file".into());
+    }
+    #[cfg(unix)]
+    if !opened_report_matches_path(&path_metadata, &opened_metadata) {
+        return Err("Scanner report changed while opening".into());
+    }
+    if opened_metadata.len() > MAX_REPORT_BYTES {
         return Err("Scanner report exceeded the 2 MB safety limit".into());
     }
-    let bytes = fs::read(path).map_err(err)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_REPORT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(err)?;
     if bytes.len() as u64 > MAX_REPORT_BYTES {
         return Err("Scanner output exceeded safe limit".into());
     }
@@ -544,6 +564,15 @@ mod tests {
             (0, 0)
         );
         assert!(read_scanner_report(temp.path()).is_err());
+        // Even if the size changes after the metadata check, reading is
+        // bounded to MAX_REPORT_BYTES + 1 and an oversized result fails.
+        std::fs::write(&report, vec![b'x'; MAX_REPORT_BYTES as usize]).unwrap();
+        assert_eq!(
+            read_scanner_report(&report).unwrap().len(),
+            MAX_REPORT_BYTES as usize
+        );
+        std::fs::write(&report, vec![b'x'; MAX_REPORT_BYTES as usize + 1]).unwrap();
+        assert!(read_scanner_report(&report).is_err());
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
@@ -551,6 +580,22 @@ mod tests {
             symlink(&report, &linked).unwrap();
             assert!(read_scanner_report(&linked).is_err());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scanner_report_identity_checks_reject_file_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = temp.path().join("original.json");
+        let other = temp.path().join("other.json");
+        std::fs::write(&original, b"original").unwrap();
+        std::fs::write(&other, b"other").unwrap();
+
+        let path_metadata = std::fs::symlink_metadata(&original).unwrap();
+        let opened_original = std::fs::File::open(&original).unwrap().metadata().unwrap();
+        let opened_other = std::fs::File::open(&other).unwrap().metadata().unwrap();
+        assert!(opened_report_matches_path(&path_metadata, &opened_original));
+        assert!(!opened_report_matches_path(&path_metadata, &opened_other));
     }
 
     #[cfg(unix)]
