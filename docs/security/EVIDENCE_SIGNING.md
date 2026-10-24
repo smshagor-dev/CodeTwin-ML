@@ -141,11 +141,11 @@ against independently authenticated **current** authority, revision and
 exact-envelope digest values, and the corresponding signed policy:
 
 ```bash
-python scripts/audit_signer_trust_anchor.py \\
-  --anchor-file /trusted/private/anchor.json \\
-  --signed-policy /trusted/input/current-policy.json \\
-  --authority-public-key <independently-pinned-authority-key> \\
-  --expected-revision 5 \\
+python scripts/audit_signer_trust_anchor.py \
+  --anchor-file /trusted/private/anchor.json \
+  --signed-policy /trusted/input/current-policy.json \
+  --authority-public-key <independently-pinned-authority-key> \
+  --expected-revision 5 \
   --expected-sha256 <independently-pinned-current-digest>
 ```
 
