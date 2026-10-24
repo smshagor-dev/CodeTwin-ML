@@ -18,17 +18,18 @@ if __package__:
     from .publish_signer_trust_anchor import _private_directory, _read_anchor
     from .verify_signer_policy_rotation import (
         _hex_bytes,
+        _parse_signed_policy,
         _positive_revision,
         _read_signed_policy_bytes,
-        _parse_signed_policy,
         _validated_policy,
     )
 else:
     from publish_signer_trust_anchor import _private_directory, _read_anchor
     from verify_signer_policy_rotation import (
         _hex_bytes,
+        _parse_signed_policy,
         _positive_revision,
-        _read_signed_policy,
+        _read_signed_policy_bytes,
         _validated_policy,
     )
 
