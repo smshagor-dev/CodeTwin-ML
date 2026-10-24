@@ -311,9 +311,11 @@ export const workspaceApi = {
     signedPolicyJson: string,
     trustedAuthorityPublicKeyHex: string,
     minimumRevision: string,
+    independentlyPinnedPolicySha256Hex: string,
   ) {
     return invoke<[string, number]>("verify_native_review_with_signed_signer_policy", {
       bundleJson, signedPolicyJson, trustedAuthorityPublicKeyHex, minimumRevision,
+      independentlyPinnedPolicySha256Hex,
     });
   },
   nativeAgentReport(id: string) {
