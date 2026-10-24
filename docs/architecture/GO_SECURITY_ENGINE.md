@@ -39,6 +39,24 @@ SQLite-backed state. This preview does not dispatch tools. Inspect the
 proposed DAG, choose **Use this reviewed task plan**, then create and separately
 approve/run the existing Rust review.
 
+### Atomic delegated specialist slots
+
+Model-proposed task DAG previews now contain **at most two specialists per
+execution batch**, matching the registered Rust supervisor's parallel ceiling.
+A task dependent on an earlier specialist is not marked ready until that
+specialist's prior batch completes.
+
+A delegated task claim uses **one SQLite UPDATE** that checks the exact role,
+running parent review, cancellation flag, completed dependencies, and the
+number of already running specialists. The two-slot ceiling is therefore
+enforced by SQLite when competing desktop/worker connections claim the same
+review, rather than by an unsafe read-then-write sequence. Read-only
+`ready_batch` previews subtract already running specialists from available
+slots. Regression tests race four approved passive role claims on separate
+file-backed WAL connections and verify exactly two active slots, denied
+duplicates and cancellation boundaries. The preview is not execution
+authorization; active tools are still governed by the reviewed Rust flow.
+
 ## Automated Flow → Task → Subtask → Action
 
 From **Agents**, first prepare a normal indexed project review (optionally
