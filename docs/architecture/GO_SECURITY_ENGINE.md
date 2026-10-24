@@ -130,6 +130,39 @@ never changes the historical parent review's persisted status or runs a tool.
 SHA-256 remains a consistency fingerprint and cannot defeat a database writer
 who is able to rewrite both the evidence and fingerprints.
 
+### Externally verifiable review attestation
+
+The Rust core exposes a detached **Ed25519 evidence attestation** API in
+`native_evidence_signatures`. A completed review must pass the existing
+receipt, handoff and delegation verifiers before a manifest can be assembled.
+The manifest contains a versioned, domain-separated canonical JSON payload
+of the project/review identity, objective fingerprint, completion times,
+specialist result SHA-256 fingerprints, stored action receipts, handoff
+records and delegation graph. Raw analyzed source files and specialist
+response text are **not copied** into the attestation payload.
+
+`external_signing_payload` returns the bytes to sign in an **external**
+trusted signer (such as an HSM or OS-protected user key). After the signer
+returns the detached Ed25519 signature, `assemble_detached_signature`
+validates it cryptographically. The verifier **requires an independently
+pinned public key** via `verify_with_trusted_public_key` and refuses
+signer substitution based solely on the advertised bundle public key.
+`verify_bundle_against_sqlite` rechecks the signature and compares the
+signed manifest against current, independently validated SQLite evidence.
+This detects modifications to stored specialist output, action digests,
+handoffs, delegation, and review metadata after attestation. The signed
+manifest remains independently verifiable even if the original database is
+not available, but that independent check proves only what was signed,
+not whether scanning originally detected every vulnerability.
+
+**Private-key custody is not provided by this core module.** No private
+key is generated or stored in SQLite, the repository, or the signed bundle.
+The caller must use a separately trusted signer and securely provision/pin
+its public key. Export/UI integration and an actual OS/hardware key-provider
+workflow remain future integration work. A newly generated in-memory test
+key is used only in regression tests. Do not represent plain SHA-256 digests
+or a bundle with a self-advertised key as authenticated evidence.
+
 ### Completed specialist receipt consistency
 
 A security review may be published as `completed` only after the supervisor
