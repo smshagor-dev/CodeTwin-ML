@@ -218,62 +218,61 @@ impl<'a> NativeDelegation<'a> {
         if failed {
             return Ok(Vec::new());
         }
+        let active = graph
+            .tasks
+            .iter()
+            .filter(|task| task.status == "running")
+            .count();
+        // A preview must never propose additional workers beyond the same
+        // two-slot limit enforced by the atomic SQLite dispatch claim.
+        let available = 2usize.saturating_sub(active);
         Ok(graph
             .tasks
             .into_iter()
             .filter(|task| {
                 task.status == "pending" && task.requires.iter().all(|dep| completed.contains(dep))
             })
-            .take(2)
+            .take(available)
             .collect())
     }
 
-    /// Gate dispatch against an immutable role identity and all completed dependencies.
+    /// Claim an approved specialist in a single SQLite UPDATE. All state,
+    /// role, dependency, cancellation, and concurrency checks execute under
+    /// one SQLite writer lock, so a second connection cannot bypass the
+    /// two-worker ceiling between a read and a later state transition.
     pub fn start(&self, run_id: &str, position: usize, role: &str) -> Result<(), String> {
-        let run = NativeAgents::new(self.db).get(run_id)?;
-        if run.status != "running" {
-            return Err("Review is not running".into());
-        }
-        let planned = self
-            .db
-            .connection()
-            .query_row(
-                "SELECT role,status FROM native_delegation_tasks WHERE run_id=?1 AND position=?2",
-                params![run_id, position],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-            .map_err(err)?
-            .ok_or("No authorized delegated task")?;
-        if planned.0 != role || planned.1 != "pending" {
-            return Err("Delegation role mismatch or duplicate execution".into());
-        }
-        let unfinished: i64 = self
-            .db
-            .connection()
-            .query_row(
-                "SELECT COUNT(*) FROM native_delegation_dependencies d
-             LEFT JOIN native_delegation_tasks r
-              ON r.run_id=d.run_id AND r.position=d.requires_position
-             WHERE d.run_id=?1 AND d.position=?2 AND (r.status IS NULL OR r.status!='completed')",
-                params![run_id, position],
-                |row| row.get(0),
-            )
-            .map_err(err)?;
-        if unfinished != 0 {
-            return Err("Delegation dependencies have not completed".into());
-        }
-        let updated = self
+        let changed = self
             .db
             .connection()
             .execute(
-                "UPDATE native_delegation_tasks SET status='running'
-             WHERE run_id=?1 AND position=?2 AND status='pending'",
-                params![run_id, position],
+                "UPDATE native_delegation_tasks
+                 SET status='running'
+                 WHERE run_id=?1 AND position=?2 AND role=?3 AND status='pending'
+                   AND EXISTS (
+                     SELECT 1 FROM native_agent_runs r
+                     WHERE r.id=?1 AND r.status='running' AND r.cancel_requested=0
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM native_delegation_dependencies d
+                     LEFT JOIN native_delegation_tasks predecessor
+                       ON predecessor.run_id=d.run_id
+                      AND predecessor.position=d.requires_position
+                     WHERE d.run_id=?1 AND d.position=?2
+                       AND (predecessor.status IS NULL
+                            OR predecessor.status!='completed')
+                   )
+                   AND (
+                     SELECT COUNT(*) FROM native_delegation_tasks active
+                     WHERE active.run_id=?1 AND active.status='running'
+                   ) < 2",
+                params![run_id, position, role],
             )
             .map_err(err)?;
-        if updated != 1 {
-            return Err("Delegation state changed before dispatch".into());
+        if changed != 1 {
+            return Err(
+                "Specialist claim rejected: review state, role, dependencies, or parallel limit"
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -407,6 +406,114 @@ mod tests {
         assert_eq!(batch.len(), 2);
         assert_eq!(batch[0].tool, "secrets");
         assert_eq!(batch[1].tool, "qa");
+    }
+
+    #[test]
+    fn atomic_claim_never_allows_three_parallel_specialists_across_wal_connections() {
+        let scratch = tempfile::tempdir().unwrap();
+        let sqlite = scratch.path().join("delegation-parallel.sqlite3");
+        let root = scratch.path().join("source");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("safe.rs"), "pub fn safe() {}").unwrap();
+        let db = Database::open(&sqlite).unwrap();
+        let project = crate::ProjectIndexService::new(&db)
+            .index_project(&root)
+            .unwrap()
+            .project_id;
+        let roles = ["scout", "source", "secrets", "qa", "database", "runtime"]
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        let run = NativeAgents::new(&db)
+            .create_with_roles(&project, "Approved bounded review", 10, 300, &roles)
+            .unwrap();
+        NativeAgents::new(&db).approve(&run.id).unwrap();
+        // Simulate the supervisor after the mandatory prerequisite receipts.
+        db.connection()
+            .execute(
+                "UPDATE native_agent_runs SET status='running' WHERE id=?1",
+                [&run.id],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "UPDATE native_delegation_tasks SET status='completed'
+                 WHERE run_id=?1 AND position IN (0,1)",
+                [&run.id],
+            )
+            .unwrap();
+
+        let ready = NativeDelegation::new(&db).ready_batch(&run.id).unwrap();
+        assert_eq!(ready.len(), 2);
+        assert_eq!(ready[0].tool, "secrets");
+        assert_eq!(ready[1].tool, "qa");
+
+        // Concurrent callers each use their own SQLite connection. Only the
+        // first two can hold a running delegation; later claims are denied
+        // even if the roles themselves have satisfied dependencies.
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(5));
+        let mut handles = Vec::new();
+        let optional = NativeDelegation::new(&db)
+            .graph(&run.id)
+            .unwrap()
+            .tasks
+            .into_iter()
+            .filter(|task| task.position > 1)
+            .collect::<Vec<_>>();
+        for candidate in optional {
+            let path = sqlite.clone();
+            let run_id = run.id.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let connection = Database::open_native_worker(&path).unwrap();
+                barrier.wait();
+                NativeDelegation::new(&connection)
+                    .start(&run_id, candidate.position, &candidate.role)
+                    .is_ok()
+            }));
+        }
+        barrier.wait();
+        let successes = handles
+            .into_iter()
+            .filter(|handle| handle.join().unwrap())
+            .count();
+        assert_eq!(successes, 2);
+
+        let running: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM native_delegation_tasks
+                 WHERE run_id=?1 AND status='running'",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(running, 2);
+        assert!(NativeDelegation::new(&db).ready_batch(&run.id).unwrap().is_empty());
+        let active = NativeDelegation::new(&db)
+            .graph(&run.id)
+            .unwrap()
+            .tasks
+            .into_iter()
+            .filter(|task| task.status == "running")
+            .collect::<Vec<_>>();
+        for task in active {
+            NativeDelegation::new(&db)
+                .finish(&run.id, task.position, true)
+                .unwrap();
+        }
+        assert_eq!(NativeDelegation::new(&db).ready_batch(&run.id).unwrap().len(), 2);
+        db.connection()
+            .execute(
+                "UPDATE native_agent_runs SET cancel_requested=1 WHERE id=?1",
+                [&run.id],
+            )
+            .unwrap();
+        let next = NativeDelegation::new(&db).ready_batch(&run.id).unwrap();
+        assert!(!next.is_empty());
+        assert!(NativeDelegation::new(&db)
+            .start(&run.id, next[0].position, &next[0].role)
+            .is_err());
     }
 
     #[test]
