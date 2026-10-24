@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -36,6 +37,67 @@ func TestRefineAddModifyRemoveAndRequireSeparateApproval(t *testing.T) {
 		t.Fatalf("refined plan did not preserve dependency gate: %#v", p)
 	}
 }
+func TestRefinementProducesAnIndependentCanonicalProposal(t *testing.T) {
+	original := baseRefinementPlan()
+	before := append([]task(nil), original.Tasks...)
+	result, err := refinePlan(refineRequest{
+		ProtocolVersion: protocolVersion,
+		Current: original,
+		Operations: []refineOp{
+			{Op: "add", Role: "secrets", Objective: "  Inspect approved source for secrets  "},
+			{Op: "modify", Role: "qa", Objective: "  Review test evidence  "},
+			{Op: "remove", Role: "runtime"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{result.Tasks[0].Role, result.Tasks[1].Role, result.Tasks[2].Role, result.Tasks[3].Role}; !reflect.DeepEqual(got, []string{"scout", "source", "secrets", "qa"}) {
+		t.Fatalf("the registered role order changed: %v", got)
+	}
+	if result.Tasks[2].Objective != "Inspect approved source for secrets" ||
+		result.Tasks[3].Objective != "Review test evidence" {
+		t.Fatalf("specialist objectives were not normalized: %#v", result.Tasks)
+	}
+	if !reflect.DeepEqual(original.Tasks, before) {
+		t.Fatal("refinement mutated its input")
+	}
+	if !reflect.DeepEqual(result.Tasks[2].DependsOn, []string{"source"}) {
+		t.Fatal("new specialist lost mandatory dependency")
+	}
+}
+
+func TestRefinementRejectsRepeatedEditsWithoutPartialResults(t *testing.T) {
+	for _, changes := range [][]refineOp{
+		{
+			{Op: "modify", Role: "qa", Objective: "First"},
+			{Op: "modify", Role: "qa", Objective: "Second"},
+		},
+		{
+			{Op: "remove", Role: "qa"},
+			{Op: "add", Role: "qa", Objective: "Reinsert"},
+		},
+		{
+			{Op: "add", Role: "secrets", Objective: "New"},
+			{Op: "remove", Role: "secrets"},
+		},
+	} {
+		original := baseRefinementPlan()
+		before := append([]task(nil), original.Tasks...)
+		result, err := refinePlan(refineRequest{
+			ProtocolVersion: protocolVersion,
+			Current: original,
+			Operations: changes,
+		})
+		if err == nil || len(result.Tasks) != 0 {
+			t.Fatalf("ambiguous edits yielded a plan: %#v, error %v", result, err)
+		}
+		if !reflect.DeepEqual(original.Tasks, before) {
+			t.Fatalf("failed refinements mutated the original: %#v", changes)
+		}
+	}
+}
+
 func TestRefinementRejectsUnapprovedAndAmbiguousOperations(t *testing.T) {
 	for _, ops := range [][]refineOp{
 		{{Op: "remove", Role: "scout"}},
