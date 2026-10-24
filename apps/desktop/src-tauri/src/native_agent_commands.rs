@@ -4,8 +4,8 @@ use codetwin_core::{
     native_agent_memory::{AgentMemory, MemoryEntry},
     native_agents::{AgentRun, HistoricalEvidenceAudit, NativeAgents},
     native_evidence_signatures::{
-        assemble_detached_signature, prepare_external_attestation, verify_bundle_against_sqlite,
-        prepare_signer_policy_signing_request,
+        assemble_detached_signature, prepare_external_attestation,
+        prepare_signer_policy_signing_request, verify_bundle_against_sqlite,
         verify_bundle_with_signed_signer_policy_against_sqlite,
         verify_bundle_with_signer_policy_against_sqlite, PreparedReviewEvidence,
         PreparedSignerPolicySigningRequest, SignedReviewEvidence, SignedTrustedSignerPolicy,
