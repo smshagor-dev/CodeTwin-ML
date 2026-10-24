@@ -155,13 +155,31 @@ manifest remains independently verifiable even if the original database is
 not available, but that independent check proves only what was signed,
 not whether scanning originally detected every vulnerability.
 
-**Private-key custody is not provided by this core module.** No private
-key is generated or stored in SQLite, the repository, or the signed bundle.
-The caller must use a separately trusted signer and securely provision/pin
-its public key. Export/UI integration and an actual OS/hardware key-provider
-workflow remain future integration work. A newly generated in-memory test
-key is used only in regression tests. Do not represent plain SHA-256 digests
-or a bundle with a self-advertised key as authenticated evidence.
+The Agents Dashboard exposes the completed-review signing request through
+**Prepare signed evidence** and **Copy signing payload hex**. The hex must
+be decoded into the original bytes before an independently managed Ed25519
+key signs it. The page shows a SHA-256 fingerprint of the signing request
+for an external comparison; that fingerprint is not a signature. Enter the
+externally obtained 64-character public key and 128-character detached
+signature to assemble a signed bundle only after Rust validates the signature
+against the current SQLite review. The signed evidence JSON may be copied
+and independently verified later by pasting it into the import box and
+supplying the public key **from a separate trusted source**, never only
+from the imported bundle itself. Verification also checks the live,
+locally stored evidence; it will fail if the signed review no longer exists
+or its saved artifacts were modified. Import is capped at 512 KiB and does
+not launch security tools or modify SQLite.
+
+**Private-key custody is not provided by CodeTwin.** No private key is
+generated or stored in SQLite, the repository, the exported payload, or
+the signed bundle. A configured operating-system key provider, hardware token,
+or external signing service remains necessary to create authentic signatures.
+The user must verify and pin the expected signer's public key independently.
+An ephemeral key in regression tests validates the byte format and cannot
+represent a production signing identity. The signature authenticates the
+signed snapshot relative to the trusted key; it does not establish that an
+assessment covered every vulnerability or that the signer is trustworthy
+without a separate identity and key-management process.
 
 ### Completed specialist receipt consistency
 

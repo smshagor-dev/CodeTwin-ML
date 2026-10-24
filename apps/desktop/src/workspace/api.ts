@@ -283,6 +283,19 @@ export const workspaceApi = {
       "audit_native_evidence_history", { projectId, limit, beforeRowid },
     );
   },
+  prepareNativeReviewAttestation(id: string) {
+    return invoke<import("./pages/NativeAgentsPage").PreparedReviewEvidence>(
+      "prepare_native_review_attestation", { id },
+    );
+  },
+  assembleNativeReviewAttestation(id: string, signatureHex: string, trustedPublicKeyHex: string) {
+    return invoke<import("./pages/NativeAgentsPage").SignedReviewEvidence>(
+      "assemble_native_review_attestation", { id, signatureHex, trustedPublicKeyHex },
+    );
+  },
+  verifyNativeReviewAttestation(bundleJson: string, trustedPublicKeyHex: string) {
+    return invoke<string>("verify_native_review_attestation", { bundleJson, trustedPublicKeyHex });
+  },
   nativeAgentReport(id: string) {
     return invoke<string>("native_agent_report", { id });
   },

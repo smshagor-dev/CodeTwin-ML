@@ -70,11 +70,12 @@ use ml_commands::{
     run_ml_file_inference,
 };
 use native_agent_commands::{
-    approve_native_agent_review, audit_native_evidence_history, cancel_native_agent_review,
-    clear_native_agent_memory, create_native_agent_review, create_native_task_review,
-    list_native_action_receipts, list_native_agent_handoffs, list_native_agent_memory,
-    list_native_agent_reviews, native_agent_report, native_agent_review, run_native_agent_review,
-    verify_native_agent_run,
+    approve_native_agent_review, assemble_native_review_attestation, audit_native_evidence_history,
+    cancel_native_agent_review, clear_native_agent_memory, create_native_agent_review,
+    create_native_task_review, list_native_action_receipts, list_native_agent_handoffs,
+    list_native_agent_memory, list_native_agent_reviews, native_agent_report, native_agent_review,
+    prepare_native_review_attestation, run_native_agent_review, verify_native_agent_run,
+    verify_native_review_attestation,
 };
 use native_agent_reasoning_commands::{
     interpret_native_agent_review, native_agent_insight, native_model_readiness,
@@ -1134,6 +1135,9 @@ fn main() {
             list_native_agent_handoffs,
             verify_native_agent_run,
             audit_native_evidence_history,
+            prepare_native_review_attestation,
+            assemble_native_review_attestation,
+            verify_native_review_attestation,
             native_model_readiness,
             native_agent_insight,
             interpret_native_agent_review,

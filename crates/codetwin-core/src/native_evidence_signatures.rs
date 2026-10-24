@@ -151,6 +151,29 @@ pub fn build_verified_manifest(
     })
 }
 
+/// Portable, public signing request. The hex payload MUST be decoded to
+/// bytes before passing it to an independent Ed25519 signer. It is not a
+/// private key, and its SHA-256 is for comparing exported requests only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreparedReviewEvidence {
+    pub manifest: ReviewEvidenceManifest,
+    pub payload_hex: String,
+    pub payload_sha256_hex: String,
+}
+
+pub fn prepare_external_attestation(
+    db: &Database,
+    run_id: &str,
+) -> Result<PreparedReviewEvidence, String> {
+    let manifest = build_verified_manifest(db, run_id)?;
+    let payload = external_signing_payload(&manifest)?;
+    Ok(PreparedReviewEvidence {
+        manifest,
+        payload_hex: hex_encode(&payload),
+        payload_sha256_hex: hex_encode(&Sha256::digest(&payload)),
+    })
+}
+
 /// Bytes to sign with an OS keyring, hardware token, or external key service.
 /// This module never generates, loads, stores or exports a private key.
 pub fn external_signing_payload(manifest: &ReviewEvidenceManifest) -> Result<Vec<u8>, String> {
@@ -245,7 +268,15 @@ mod tests {
         let complete = reviews.execute(&run.id).unwrap();
         assert_eq!(complete.status, "completed", "{:?}", complete.message);
 
+        let prepared = prepare_external_attestation(&db, &run.id).unwrap();
         let manifest = build_verified_manifest(&db, &run.id).unwrap();
+        assert_eq!(prepared.manifest, manifest);
+        assert_eq!(prepared.payload_hex.len() % 2, 0);
+        assert_eq!(prepared.payload_sha256_hex.len(), 64);
+        assert_eq!(
+            prepared.payload_hex,
+            hex_encode(&external_signing_payload(&manifest).unwrap())
+        );
         let plain_text = serde_json::to_string(&manifest).unwrap();
         assert!(!plain_text.contains("pub fn safe()"));
         assert!(!plain_text.contains("Externally attested read-only review"));
@@ -266,6 +297,8 @@ mod tests {
         let json = serde_json::to_string(&bundle).unwrap();
         let restored: SignedReviewEvidence = serde_json::from_str(&json).unwrap();
         verify_with_trusted_public_key(&restored, &trusted).unwrap();
+        let reopened = Database::open(temp.path().join("review.sqlite3")).unwrap();
+        verify_bundle_against_sqlite(&reopened, &restored, &trusted).unwrap();
         assert_eq!(restored.manifest, manifest);
 
         let another_key = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();

@@ -121,6 +121,18 @@ export type HistoricalEvidenceAudit = {
   next_before_rowid: string | null;
 };
 
+export type PreparedReviewEvidence = {
+  manifest: { run_id: string; [key: string]: unknown };
+  payload_hex: string;
+  payload_sha256_hex: string;
+};
+
+export type SignedReviewEvidence = {
+  manifest: { run_id: string; [key: string]: unknown };
+  signer_public_key_hex: string;
+  signature_hex: string;
+};
+
 export type AgentVerification = {
   run_id: string;
   verified: boolean;
@@ -187,6 +199,12 @@ export function NativeAgentsPage() {
   const [handoffs, setHandoffs] = useState<AgentHandoff[]>([]);
   const [verification, setVerification] = useState<AgentVerification | null>(null);
   const [historyAudit, setHistoryAudit] = useState<HistoricalEvidenceAudit | null>(null);
+  const [preparedAttestation, setPreparedAttestation] = useState<PreparedReviewEvidence | null>(null);
+  const [signedAttestation, setSignedAttestation] = useState<SignedReviewEvidence | null>(null);
+  const [trustedPublicKey, setTrustedPublicKey] = useState("");
+  const [externalSignature, setExternalSignature] = useState("");
+  const [importedBundleJson, setImportedBundleJson] = useState("");
+  const [attestationVerdict, setAttestationVerdict] = useState("");
   const [objective, setObjective] = useState("Review the selected project's security, code quality and reliability. Report confirmed evidence and unresolved issues.");
   const [maxFiles, setMaxFiles] = useState(500);
   const [budget, setBudget] = useState(600);
@@ -734,6 +752,63 @@ export function NativeAgentsPage() {
     }
   }
 
+  async function prepareAttestation() {
+    const id = selectedId || runs[0]?.id;
+    if (!id || busy) return;
+    setBusy("prepare-attestation");
+    setError("");
+    setPreparedAttestation(null);
+    setSignedAttestation(null);
+    setAttestationVerdict("");
+    try {
+      const request = await workspaceApi.prepareNativeReviewAttestation(id);
+      setPreparedAttestation(request);
+    } catch (reason) {
+      setError("Could not prepare verified evidence: " + String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function assembleAttestation() {
+    if (!preparedAttestation || busy) return;
+    setBusy("assemble-attestation");
+    setError("");
+    setAttestationVerdict("");
+    setSignedAttestation(null);
+    try {
+      const bundle = await workspaceApi.assembleNativeReviewAttestation(
+        preparedAttestation.manifest.run_id,
+        externalSignature.trim(),
+        trustedPublicKey.trim(),
+      );
+      setSignedAttestation(bundle);
+      setAttestationVerdict("Signed evidence matches the independent public key and current SQLite review.");
+    } catch (reason) {
+      setError("Signed evidence was not accepted: " + String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function verifyImportedAttestation() {
+    if (busy) return;
+    setBusy("verify-attestation");
+    setError("");
+    setAttestationVerdict("");
+    try {
+      const id = await workspaceApi.verifyNativeReviewAttestation(
+        importedBundleJson,
+        trustedPublicKey.trim(),
+      );
+      setAttestationVerdict("Imported signature and current SQLite evidence verified for review " + id);
+    } catch (reason) {
+      setError("Imported evidence verification failed: " + String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function auditEvidenceHistory(loadOlder = false) {
     if (!activeProjectId || busy) return;
     const projectId = activeProjectId;
@@ -1176,6 +1251,77 @@ export function NativeAgentsPage() {
               {item.issues.map((issue, index) => <p key={index}>{issue}</p>)}
             </div>)}
           </div>}
+        </div>
+        <div className="ws-form-stack">
+          <h4>Detached Ed25519 review attestation</h4>
+          <p className="ws-form-help">
+            For completed reviews, export the exact public signing payload. Decode the hex into
+            bytes and sign those bytes with an independent Ed25519 signer. Keep the private key
+            outside CodeTwin and SQLite. A public key copied from an untrusted bundle alone
+            cannot establish the signer’s identity.
+          </p>
+          <div className="ws-button-row">
+            <button className="ws-button ws-button-secondary"
+              disabled={!selected || selected.status !== "completed" || Boolean(busy)}
+              onClick={() => void prepareAttestation()}>
+              {busy === "prepare-attestation" ? "Preparing…" : "Prepare signed evidence"}
+            </button>
+            {preparedAttestation?.manifest.run_id === selected?.id && <button
+              className="ws-button ws-button-secondary" disabled={Boolean(busy)}
+              onClick={() => void navigator.clipboard.writeText(preparedAttestation.payload_hex)
+                .catch(reason => setError("Could not copy payload: " + String(reason)))}>
+              Copy signing payload hex
+            </button>}
+          </div>
+          {preparedAttestation?.manifest.run_id === selected?.id && <p className="ws-form-help">
+            Signing payload SHA-256: <code>{preparedAttestation.payload_sha256_hex}</code>.
+            The hex payload contains the exact domain-separated signed bytes, not a private key.
+          </p>}
+          <label className="ws-field">
+            <span>Independently trusted Ed25519 public key (64 hex characters)</span>
+            <input value={trustedPublicKey} onChange={event => {
+              setTrustedPublicKey(event.target.value);
+              setAttestationVerdict("");
+              setSignedAttestation(null);
+            }} placeholder="Enter a key obtained outside the evidence bundle" />
+          </label>
+          <label className="ws-field">
+            <span>Detached Ed25519 signature from your external signer (128 hex characters)</span>
+            <textarea rows={2} value={externalSignature} onChange={event => {
+              setExternalSignature(event.target.value);
+              setAttestationVerdict("");
+              setSignedAttestation(null);
+            }} placeholder="Paste signature hex; never paste a private key" />
+          </label>
+          <div className="ws-button-row">
+            <button className="ws-button ws-button-secondary"
+              disabled={!preparedAttestation || preparedAttestation.manifest.run_id !== selected?.id ||
+                !/^[0-9a-fA-F]{64}$/.test(trustedPublicKey.trim()) ||
+                !/^[0-9a-fA-F]{128}$/.test(externalSignature.trim()) || Boolean(busy)}
+              onClick={() => void assembleAttestation()}>
+              {busy === "assemble-attestation" ? "Checking signature…" : "Verify and assemble signed bundle"}
+            </button>
+            {signedAttestation?.manifest.run_id === selected?.id && <button
+              className="ws-button ws-button-secondary" disabled={Boolean(busy)}
+              onClick={() => void navigator.clipboard.writeText(JSON.stringify(signedAttestation, null, 2))
+                .catch(reason => setError("Could not copy signed bundle: " + String(reason)))}>
+              Copy signed evidence JSON
+            </button>}
+          </div>
+          <label className="ws-field">
+            <span>Independently verify an imported signed evidence bundle</span>
+            <textarea rows={4} value={importedBundleJson} onChange={event => {
+              setImportedBundleJson(event.target.value);
+              setAttestationVerdict("");
+            }} placeholder="Paste signed evidence JSON; use the trusted public key above" />
+          </label>
+          <button className="ws-button ws-button-secondary"
+            disabled={!importedBundleJson.trim() ||
+              !/^[0-9a-fA-F]{64}$/.test(trustedPublicKey.trim()) || Boolean(busy)}
+            onClick={() => void verifyImportedAttestation()}>
+            {busy === "verify-attestation" ? "Verifying…" : "Verify imported signature and SQLite snapshot"}
+          </button>
+          {attestationVerdict && <p role="status">{attestationVerdict}</p>}
         </div>
         <div className="ws-history-list">{handoffs.map(edge =>
           <details key={edge.from_position + ":" + edge.to_position}>
