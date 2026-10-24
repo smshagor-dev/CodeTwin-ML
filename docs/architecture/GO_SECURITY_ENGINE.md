@@ -70,7 +70,15 @@ handoffs and SQLite action receipts. A failed/interrupted review stops the
 batch, leaving later queued flows unexecuted.
 
 SQLite migration 0046 records the queue's ordering, terminal status and
-timestamps without duplicating evidence. The desktop startup recovery marks
+timestamps without duplicating evidence.
+Queue admission, FIFO claim, terminal receipt and startup recovery acquire a
+SQLite IMMEDIATE write transaction **before** reading current state. This
+serializes competing desktop connections at the WAL writer boundary, rather
+than attempting an unsafe deferred read-to-write upgrade after another
+connection commits. A file-backed regression test exercises enqueue, claim
+and interruption while an independent SQLite writer temporarily holds that
+reservation. Ordinary queue reads remain nonblocking where SQLite permits.
+ The desktop startup recovery marks
 a queue item interrupted if its runner was stopped; it does not automatically
 re-execute that item. Cancelled parent reviews are removed from the pending
 queue before a claim. If cancellation happens after a claim, the queue receipt
