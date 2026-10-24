@@ -127,7 +127,7 @@ func refinePlan(req refineRequest) (proposal, error) {
 	// insertion instruction, defines all ordering. Existing dependencies
 	// survive unchanged; final validation rejects dangling references.
 	result := proposal{
-		Tasks: make([]task, 0, len(selected)),
+		Tasks:     make([]task, 0, len(selected)),
 		Rationale: "Local CodeTwin refinement of an unapproved passive review; Rust approval is still required.",
 	}
 	for _, role := range auditedRoles {
