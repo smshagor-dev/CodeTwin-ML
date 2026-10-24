@@ -311,6 +311,41 @@ class VerifiedRotationTests(unittest.TestCase):
                 self._publish()
         self._unchanged()
 
+    def test_rejects_group_or_world_writable_policy_inputs(self) -> None:
+        for policy in (self.previous, self.replacement):
+            with self.subTest(policy=policy.name):
+                policy.chmod(0o666)
+                try:
+                    with self.assertRaisesRegex(ValueError, "writable by group or others"):
+                        self._publish()
+                    self._unchanged()
+                finally:
+                    policy.chmod(0o600)
+
+    def test_rejects_policy_made_writable_during_verification(self) -> None:
+        from scripts.verify_signer_policy_rotation import _validated_policy
+
+        calls = 0
+
+        def change_permissions(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+            nonlocal calls
+            result = _validated_policy(envelope, authority)
+            calls += 1
+            if calls == 2:
+                self.replacement.chmod(0o666)
+            return result
+
+        try:
+            with patch(
+                "scripts.verify_signer_policy_rotation._validated_policy",
+                side_effect=change_permissions,
+            ):
+                with self.assertRaisesRegex(ValueError, "writable by group or others"):
+                    self._publish()
+            self._unchanged()
+        finally:
+            self.replacement.chmod(0o600)
+
     def test_rejects_missing_approval_before_verification(self) -> None:
         with self.assertRaisesRegex(ValueError, "approval"):
             self._publish(approved=False)
