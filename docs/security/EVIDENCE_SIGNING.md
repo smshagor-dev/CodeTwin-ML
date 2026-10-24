@@ -134,6 +134,35 @@ python -m pip install 'cryptography==46.0.4'
 python -m unittest discover -s scripts/tests -p 'test_*.py' -v
 ```
 
+## Read-only external anchor audit
+
+Before trusting a published anchor, a separate administrator can check it
+against independently authenticated **current** authority, revision and
+exact-envelope digest values, and the corresponding signed policy:
+
+```bash
+python scripts/audit_signer_trust_anchor.py \\
+  --anchor-file /trusted/private/anchor.json \\
+  --signed-policy /trusted/input/current-policy.json \\
+  --authority-public-key <independently-pinned-authority-key> \\
+  --expected-revision 5 \\
+  --expected-sha256 <independently-pinned-current-digest>
+```
+
+This audit is read-only: it creates no lock file, does not modify the
+anchor or SQLite, and does not invoke any security scans. It checks the
+private POSIX anchor directory, the existing anchor record, the signed
+policy's Ed25519 authority signature and signer-key separation, and
+equality with **all three** independently trusted inputs. It re-reads
+the anchor to detect a change observed during the audit. A stale anchor
+or mismatched pin fails closed (exit code 2). The command does not
+establish that the independent inputs are authentic or fresh: they must
+be delivered through a separately protected administrator channel.
+It is a point-in-time consistency check, not a tamper-proof ledger,
+hardware monotonic counter, filesystem snapshot or defense against a
+privileged attacker who can replace files between reads. Do not
+derive the expected revision or digest from the anchor being audited.
+
 ## Computing the exact-envelope pin
 
 An administrator can calculate the digest on a **previously authenticated**
