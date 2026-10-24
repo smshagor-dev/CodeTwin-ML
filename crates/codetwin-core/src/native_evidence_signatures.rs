@@ -534,9 +534,11 @@ mod tests {
         )
         .unwrap();
         assert!(verify_signed_trusted_signer_policy(&signed_policy, &authority_key, 0).is_err());
-        assert!(verify_signed_trusted_signer_policy(&signed_policy, &authority_key, 2)
-            .unwrap_err()
-            .contains("below"));
+        assert!(
+            verify_signed_trusted_signer_policy(&signed_policy, &authority_key, 2)
+                .unwrap_err()
+                .contains("below")
+        );
         assert!(verify_signed_trusted_signer_policy(&signed_policy, &rotated_key, 1).is_err());
         let mut forged_policy = signed_policy.clone();
         forged_policy.policy.signers[0].status = TrustedSignerStatus::Revoked;
