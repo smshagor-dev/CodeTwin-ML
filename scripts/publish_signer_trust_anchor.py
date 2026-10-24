@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 import stat
 import tempfile
-from typing import Any
+from typing import Any, Callable
 
 if __package__:
     from .verify_signer_policy_rotation import verify_rotation_files
@@ -153,6 +153,7 @@ def publish(
     replacement_revision: int,
     replacement_sha256: str,
     approved: bool,
+    _verify_before_replace: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """CAS update a single public revision/digest record; never signs a policy."""
     if not approved:
@@ -178,6 +179,12 @@ def publish(
             or current["authority_public_key_hex"] != authority_public_key_hex
         ):
             raise ValueError("Current anchor does not match independently supplied expectations")
+        # For the authenticated CLI flow, repeat verification under the
+        # publisher lock immediately before the durable replacement. The
+        # first preflight alone cannot detect a signed-policy swap between
+        # external validation and acquiring the publication lock.
+        if _verify_before_replace is not None:
+            _verify_before_replace()
         replacement = {
             "format": FORMAT,
             "authority_public_key_hex": authority_public_key_hex,
@@ -210,15 +217,20 @@ def publish_verified(
     """Require authenticated signed-policy rotation before public anchor CAS."""
     if not approved:
         raise ValueError("Explicit external administrator approval is required")
-    verify_rotation_files(
-        previous_policy_file,
-        replacement_policy_file,
-        authority_public_key_hex=authority_public_key_hex,
-        expected_revision=expected_revision,
-        expected_sha256=expected_sha256,
-        replacement_revision=replacement_revision,
-        replacement_sha256=replacement_sha256,
-    )
+    def verify_current_inputs() -> None:
+        verify_rotation_files(
+            previous_policy_file,
+            replacement_policy_file,
+            authority_public_key_hex=authority_public_key_hex,
+            expected_revision=expected_revision,
+            expected_sha256=expected_sha256,
+            replacement_revision=replacement_revision,
+            replacement_sha256=replacement_sha256,
+        )
+
+    # Fail before acquiring a lock on invalid policy inputs, and repeat the
+    # same signature/pin validation while holding the publication lock.
+    verify_current_inputs()
     return publish(
         anchor_file,
         expected_revision=expected_revision,
@@ -227,6 +239,7 @@ def publish_verified(
         replacement_revision=replacement_revision,
         replacement_sha256=replacement_sha256,
         approved=True,
+        _verify_before_replace=verify_current_inputs,
     )
 
 
