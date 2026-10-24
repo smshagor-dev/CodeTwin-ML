@@ -296,6 +296,11 @@ export const workspaceApi = {
   verifyNativeReviewAttestation(bundleJson: string, trustedPublicKeyHex: string) {
     return invoke<string>("verify_native_review_attestation", { bundleJson, trustedPublicKeyHex });
   },
+  verifyNativeReviewWithSignerPolicy(bundleJson: string, trustedPolicyJson: string) {
+    return invoke<[string, number]>("verify_native_review_with_signer_policy", {
+      bundleJson, trustedPolicyJson,
+    });
+  },
   nativeAgentReport(id: string) {
     return invoke<string>("native_agent_report", { id });
   },
