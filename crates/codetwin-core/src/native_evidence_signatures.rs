@@ -384,6 +384,43 @@ pub fn verify_signed_trusted_signer_policy(
         .map_err(|_| "Ed25519 signer policy authority signature verification failed".into())
 }
 
+/// SHA-256 of the typed, deterministically serialized signed policy envelope.
+/// Pin this value through an independent channel; a digest copied from the
+/// untrusted envelope provides no authenticity or rollback protection.
+/// This is distinct from the policy signing payload's SHA-256.
+pub fn signed_signer_policy_sha256_hex(
+    signed: &SignedTrustedSignerPolicy,
+) -> Result<String, String> {
+    let envelope = serde_json::to_vec(signed).map_err(|error| error.to_string())?;
+    Ok(hex_encode(&Sha256::digest(&envelope)))
+}
+
+/// An additional exact-envelope pin, supplied outside CodeTwin/SQLite.
+/// A valid but older authority-signed policy with the same acceptable
+/// revision floor is rejected when its digest differs from the current pin.
+/// This does not fetch or protect the pin; its owner must update it securely.
+pub fn verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
+    db: &Database,
+    bundle: &SignedReviewEvidence,
+    signed_policy: &SignedTrustedSignerPolicy,
+    trusted_authority_public_key_hex: &str,
+    minimum_revision: u64,
+    independently_pinned_policy_sha256_hex: &str,
+) -> Result<(), String> {
+    let expected = hex_decode(independently_pinned_policy_sha256_hex, 32)?;
+    let actual = hex_decode(&signed_signer_policy_sha256_hex(signed_policy)?, 32)?;
+    if expected != actual {
+        return Err("Signed signer policy does not match the independently pinned SHA-256".into());
+    }
+    verify_bundle_with_signed_signer_policy_against_sqlite(
+        db,
+        bundle,
+        signed_policy,
+        trusted_authority_public_key_hex,
+        minimum_revision,
+    )
+}
+
 /// Verify policy authority, signer revocation and live SQLite evidence.
 pub fn verify_bundle_with_signed_signer_policy_against_sqlite(
     db: &Database,
@@ -607,6 +644,54 @@ mod tests {
             1,
         )
         .unwrap();
+        let policy_pin = signed_signer_policy_sha256_hex(&signed_policy).unwrap();
+        assert_eq!(policy_pin.len(), 64);
+        verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
+            &reopened,
+            &bundle,
+            &signed_policy,
+            &authority_key,
+            1,
+            &policy_pin,
+        )
+        .unwrap();
+        assert!(
+            verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
+                &reopened,
+                &bundle,
+                &signed_policy,
+                &authority_key,
+                1,
+                &"00".repeat(32),
+            )
+            .unwrap_err()
+            .contains("independently pinned")
+        );
+        assert!(
+            verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
+                &reopened,
+                &bundle,
+                &signed_policy,
+                &authority_key,
+                1,
+                "invalid",
+            )
+            .is_err()
+        );
+        let mut altered_envelope = signed_policy.clone();
+        altered_envelope.signature_hex = "00".repeat(64);
+        assert!(
+            verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
+                &reopened,
+                &bundle,
+                &altered_envelope,
+                &authority_key,
+                1,
+                &policy_pin,
+            )
+            .is_err()
+        );
+
         assert!(verify_signed_trusted_signer_policy(&signed_policy, &authority_key, 0).is_err());
         assert!(
             verify_signed_trusted_signer_policy(&signed_policy, &authority_key, 2)
@@ -648,6 +733,30 @@ mod tests {
             2,
         )
         .unwrap();
+        // Both envelopes are genuinely signed. A stale envelope remains
+        // unacceptable when the independent current-envelope pin rotates.
+        let rotated_pin = signed_signer_policy_sha256_hex(&signed_rotated_policy).unwrap();
+        assert!(
+            verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
+                &reopened,
+                &bundle,
+                &signed_policy,
+                &authority_key,
+                1,
+                &rotated_pin,
+            )
+            .is_err()
+        );
+        verify_bundle_with_pinned_signed_signer_policy_against_sqlite(
+            &reopened,
+            &rotated_bundle,
+            &signed_rotated_policy,
+            &authority_key,
+            2,
+            &rotated_pin,
+        )
+        .unwrap();
+
         assert!(verify_bundle_with_signed_signer_policy_against_sqlite(
             &reopened,
             &bundle,

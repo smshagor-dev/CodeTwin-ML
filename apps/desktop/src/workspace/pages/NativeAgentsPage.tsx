@@ -211,6 +211,7 @@ export function NativeAgentsPage() {
   const [signedPolicyJson, setSignedPolicyJson] = useState("");
   const [trustedAuthorityPublicKey, setTrustedAuthorityPublicKey] = useState("");
   const [minimumPolicyRevision, setMinimumPolicyRevision] = useState("1");
+  const [pinnedPolicySha256, setPinnedPolicySha256] = useState("");
   const [attestationVerdict, setAttestationVerdict] = useState("");
   const [objective, setObjective] = useState("Review the selected project's security, code quality and reliability. Report confirmed evidence and unresolved issues.");
   const [maxFiles, setMaxFiles] = useState(500);
@@ -863,10 +864,12 @@ export function NativeAgentsPage() {
         signedPolicyJson,
         trustedAuthorityPublicKey.trim(),
         minimumPolicyRevision.trim(),
+        pinnedPolicySha256.trim(),
       );
       setAttestationVerdict(
         "Policy authority signature, signer status and current SQLite evidence verified " +
-        "at policy revision " + revision + " for review " + runId,
+        "against an independent policy SHA-256 pin at revision " + revision +
+        " for review " + runId,
       );
     } catch (reason) {
       setError("Authenticated signer policy verification failed: " + String(reason));
@@ -1450,16 +1453,26 @@ export function NativeAgentsPage() {
               setAttestationVerdict("");
             }} placeholder="Positive revision, not copied from the policy" />
           </label>
+          <label className="ws-field">
+            <span>Independently pinned signed policy envelope SHA-256 (64 hex)</span>
+            <input value={pinnedPolicySha256} onChange={event => {
+              setPinnedPolicySha256(event.target.value);
+              setAttestationVerdict("");
+            }} placeholder="Digest of the trusted, typed JSON envelope from a separate channel" />
+          </label>
           <p className="ws-form-help">
-            The authority key and revision floor must come from a trusted source outside
-            the evidence and SQLite. This checks policy authenticity and a supplied floor,
-            but does not securely distribute policies or maintain an anti-rollback ledger.
+            Pin the SHA-256 of the typed JSON envelope (policy, authority_public_key_hex,
+            signature_hex) from a trusted administrator. The pin must be distributed and
+            updated outside CodeTwin and SQLite; copying a hash from the untrusted JSON
+            does not establish trust. Authority key, digest and revision floor are all
+            required. This does not securely distribute policies or maintain a rollback ledger.
           </p>
           <button className="ws-button ws-button-secondary"
             disabled={!importedBundleJson.trim() || !signedPolicyJson.trim() ||
               importedBundleJson.length > 512 * 1024 || signedPolicyJson.length > 16 * 1024 ||
               !/^[0-9a-fA-F]{64}$/.test(trustedAuthorityPublicKey.trim()) ||
-              !/^[1-9][0-9]*$/.test(minimumPolicyRevision.trim()) || Boolean(busy)}
+              !/^[1-9][0-9]*$/.test(minimumPolicyRevision.trim()) ||
+              !/^[0-9a-fA-F]{64}$/.test(pinnedPolicySha256.trim()) || Boolean(busy)}
             onClick={() => void verifyImportedWithSignedSignerPolicy()}>
             {busy === "verify-signed-signer-policy" ? "Authenticating policy…" :
               "Verify authenticated signer policy and SQLite evidence"}

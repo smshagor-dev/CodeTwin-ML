@@ -6,7 +6,7 @@ const openMock = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: openMock }));
 
-import { chooseProjectFolder, importProjectPath, validateWebsiteUrl } from "./api";
+import { chooseProjectFolder, importProjectPath, validateWebsiteUrl, workspaceApi } from "./api";
 import type { AppPreferences } from "./types";
 
 const basePreferences: AppPreferences = {
@@ -20,6 +20,29 @@ describe("workspace API workflows", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     openMock.mockReset();
+  });
+
+  it("passes the independently pinned signed-policy digest to native verification", async () => {
+    invokeMock.mockResolvedValueOnce(["review-1", 3]);
+    const result = await workspaceApi.verifyNativeReviewWithSignedSignerPolicy(
+      "bundle-json",
+      "signed-policy-json",
+      "authority-public-key",
+      "3",
+      "ab".repeat(32),
+    );
+    expect(result).toEqual(["review-1", 3]);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith(
+      "verify_native_review_with_signed_signer_policy",
+      {
+        bundleJson: "bundle-json",
+        signedPolicyJson: "signed-policy-json",
+        trustedAuthorityPublicKeyHex: "authority-public-key",
+        minimumRevision: "3",
+        independentlyPinnedPolicySha256Hex: "ab".repeat(32),
+      },
+    );
   });
 
   it("handles native folder selection and cancellation without indexing", async () => {
