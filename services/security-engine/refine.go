@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-
-	"codetwin/security-engine/refinement"
 )
 
 type refineRequest struct {
@@ -69,6 +67,10 @@ func validTaskProposal(p proposal) error {
 	return nil
 }
 
+// refinePlan computes an independent candidate from the immutable approved-role
+// vocabulary. Nothing is written to the caller's plan. The complete result
+// must pass the same dependency checks as a newly proposed passive review.
+// This implementation is specific to CodeTwin's six registered specialists.
 func refinePlan(req refineRequest) (proposal, error) {
 	if req.ProtocolVersion != protocolVersion || len(req.Operations) < 1 || len(req.Operations) > 8 {
 		return proposal{}, errors.New("unsupported refinement protocol or operation count")
@@ -76,80 +78,67 @@ func refinePlan(req refineRequest) (proposal, error) {
 	if err := validTaskProposal(req.Current); err != nil {
 		return proposal{}, err
 	}
-	planned := make([]refinement.Subtask, 0, len(req.Current.Tasks))
-	existing := make(map[string]task, len(req.Current.Tasks))
-	for _, current := range req.Current.Tasks {
-		planned = append(planned, refinement.Subtask{
-			ID: roleID(current.Role), Title: current.Role, Description: current.Objective,
-		})
-		existing[current.Role] = current
+
+	// Each task is a value, so edits to this candidate cannot mutate the
+	// original proposal or its dependency lists.
+	selected := make(map[string]task, len(req.Current.Tasks))
+	for _, original := range req.Current.Tasks {
+		selected[original.Role] = original
 	}
-	converted := make([]refinement.Operation, 0, len(req.Operations))
-	for _, op := range req.Operations {
-		id := roleID(op.Role)
-		if id == 0 || op.Role == "scout" || op.Role == "source" {
+	visited := make(map[string]bool, len(req.Operations))
+	for _, change := range req.Operations {
+		if roleID(change.Role) <= 2 {
 			return proposal{}, errors.New("mandatory or unregistered role cannot be patched")
 		}
-		patch := refinement.Operation{Op: op.Op, ID: &id}
-		switch op.Op {
+		if visited[change.Role] {
+			return proposal{}, errors.New("multiple edits to one specialist are ambiguous")
+		}
+		visited[change.Role] = true
+		current, present := selected[change.Role]
+		switch change.Op {
 		case "add":
-			if _, has := existing[op.Role]; has || len(op.Objective) > 300 ||
-				strings.TrimSpace(op.Objective) == "" {
+			objective := strings.TrimSpace(change.Objective)
+			if present || objective == "" || len(change.Objective) > 300 {
 				return proposal{}, errors.New("invalid or duplicate added specialist")
 			}
-			patch.Title, patch.Description = op.Role, strings.TrimSpace(op.Objective)
-			// Insert after the last canonical predecessor already selected.
-			var after int64
-			for _, item := range planned {
-				if item.ID < id && item.ID > after {
-					after = item.ID
-				}
-			}
-			patch.AfterID = &after
-		case "remove":
-			if _, has := existing[op.Role]; !has {
-				return proposal{}, errors.New("cannot remove missing specialist")
+			selected[change.Role] = task{
+				Role: change.Role, Objective: objective, DependsOn: []string{"source"},
 			}
 		case "modify":
-			if _, has := existing[op.Role]; !has || len(op.Objective) > 300 ||
-				strings.TrimSpace(op.Objective) == "" {
+			objective := strings.TrimSpace(change.Objective)
+			if !present || objective == "" || len(change.Objective) > 300 {
 				return proposal{}, errors.New("invalid specialist objective modification")
 			}
-			patch.Description = strings.TrimSpace(op.Objective)
+			current.Objective = objective
+			selected[change.Role] = current
+		case "remove":
+			if !present {
+				return proposal{}, errors.New("cannot remove missing specialist")
+			}
+			delete(selected, change.Role)
 		case "reorder":
 			return proposal{}, errors.New("audited specialist order cannot be changed")
 		default:
 			return proposal{}, errors.New("unknown task patch action")
 		}
-		converted = append(converted, patch)
 	}
-	updated, err := refinement.Apply(planned, converted)
-	if err != nil {
-		return proposal{}, err
+
+	// The approved role registry, rather than an LLM-controlled index or
+	// insertion instruction, defines all ordering. Existing dependencies
+	// survive unchanged; final validation rejects dangling references.
+	result := proposal{
+		Tasks:     make([]task, 0, len(selected)),
+		Rationale: "Local CodeTwin refinement of an unapproved passive review; Rust approval is still required.",
 	}
-	output := proposal{
-		Tasks:     make([]task, 0, len(updated)),
-		Rationale: "Local Go refinement of an unapproved passive review; Rust approval is still required.",
-	}
-	for _, item := range updated {
-		if item.Title == "scout" || item.Title == "source" {
-			// Mandatory task titles are immutable; objectives are unchanged.
-			output.Tasks = append(output.Tasks, existing[item.Title])
-			continue
-		}
-		if initial, ok := existing[item.Title]; ok {
-			initial.Objective = item.Description
-			output.Tasks = append(output.Tasks, initial)
-		} else {
-			output.Tasks = append(output.Tasks, task{
-				Role: item.Title, Objective: item.Description, DependsOn: []string{"source"},
-			})
+	for _, role := range auditedRoles {
+		if chosen, ok := selected[role]; ok {
+			result.Tasks = append(result.Tasks, chosen)
 		}
 	}
-	if err := validTaskProposal(output); err != nil {
+	if err := validTaskProposal(result); err != nil {
 		return proposal{}, fmt.Errorf("unsafe refinement rejected: %w", err)
 	}
-	return output, nil
+	return result, nil
 }
 
 func runRefine(input io.Reader, output io.Writer) error {

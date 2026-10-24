@@ -56,7 +56,7 @@ delegated Subtasks, whose individual Actions are durable receipts from migration
 and action receipts. Cancellation, failure and interruption stop the supervised
 chain without automatic retry after a crash. This is **single-approved passive
 review automation**, not permission to target arbitrary networks or run exploits.
-Full PentAGI multi-flow dynamic autonomous orchestration is not yet ported.
+Unbounded recursive agent orchestration is not supported by this scoped workflow.
 
 ## Bounded multi-flow queue (SQLite only)
 
@@ -397,7 +397,7 @@ the user must inspect the suggestion, create a new review and approve it again.
 If a process stops before suggesting, **Suggest scoped follow-up** can generate
 the same draft after restarting. Completed flows do not produce unnecessary
 follow-up work. This is deterministic evidence/status-based adaptation—not an
-LLM-generated action planner or unrestricted PentAGI autonomy.
+LLM-generated action planner or unrestricted agent execution.
 
 ## Protocol and security boundaries
 
@@ -414,13 +414,11 @@ LLM-generated action planner or unrestricted PentAGI autonomy.
   terminal completed/failed status; unknown fields and oversized history fail
   closed. A memory suggestion never authorizes execution.
 - `--refine` accepts a bounded, unapproved task proposal and a strictly
-  typed add/remove/modify delta. Its two-pass delta algorithm is adapted
-  from PentAGI's MIT-licensed `backend/pkg/providers/subtask_patch.go`.
-  The original MIT license and provenance are retained under
-  `services/security-engine/licenses/pentagi/`. The Go code is independent
-  of PentAGI's PostgreSQL and provider runtime. Only registered optional
-  passive specialists may be added, removed, or modified; the audited role
-  order and mandatory task dependencies remain immutable. The desktop UI
+  typed add/remove/modify request. CodeTwin reconstructs the candidate
+  from its own fixed specialist registry, with independent validation of the
+  complete result. Failed or ambiguous edits cannot modify the original
+  plan or expose partial results. Only registered optional passive roles
+  can change, and mandatory role order and dependencies remain immutable. The desktop UI
   can refine a proposed plan before creating a review. Rust independently
   validates both the input and output task DAG, and the result is **not**
   executed or stored as an approved review until the user explicitly
@@ -443,7 +441,7 @@ LLM-generated action planner or unrestricted PentAGI autonomy.
   joins both threads, checks cancellation/deadlines, commits evidence in role
   order, and creates verifiable signed handoffs. Dependent or nonconsecutive
   roles fall back to serial execution; no speculative analyzer runs without its
-  own successful Go scheduling decision. This is not arbitrary PentAGI tool
+  own successful Go scheduling decision. This never permits arbitrary security-tool
   execution. Rust persists each Go-gated allowed/denied decision in
   `go_dispatch_audit` (SQLite), including run, role, bounded ready roles,
   reason and time. The Agents page can display that audit. No source
@@ -481,19 +479,14 @@ LLM-generated action planner or unrestricted PentAGI autonomy.
   **after** Go verification and **before** starting a native specialist, so
   approval checks cannot inadvertently cross a cancellation boundary.
 
-## Upstream and scope
+## Code ownership and scope
 
-PentAGI's Flow/Task/Subtask/Agent separation informed this adapter's design.
-**The original PentAGI orchestrator, exploit-tool packages, and
-PostgreSQL-based services have not been copied into this module.**
-The task-delta refinement logic is a separately licensed upstream-derived
-component, not a wholesale PentAGI backend transplant. They cannot
-be dropped unchanged into an SQLite-only desktop application. Reusing upstream
-source directly will require a separately reviewed SQLite storage adapter,
-dependency-license inventory, tool sandboxing, engagement authorization,
-recovery tests, and a process-boundary contract. Do not present this
-first bridge as full PentAGI parity.
+The Go service implements CodeTwin's bounded offline planning, dispatch,
+follow-up, and role-refinement rules without vendoring an external agent
+engine. Rust owns the SQLite storage, permissions, authorized scope, and
+specialist execution. A proposed task cannot authorize arbitrary commands
+or unapproved network activity.
 
-See PentAGI's MIT LICENSE and NOTICE at
-https://github.com/vxcontrol/pentagi; third-party and Cloud SDK service
-restrictions must be reviewed before distributing derived components.
+Third-party frameworks, toolchains, and runtime dependencies retain their
+own licensing terms. Replacing a formerly adapted component does not remove
+those obligations or alter the root project's existing license.
