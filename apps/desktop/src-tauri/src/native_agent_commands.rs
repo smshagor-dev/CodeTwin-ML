@@ -4,9 +4,12 @@ use codetwin_core::{
     native_agent_memory::{AgentMemory, MemoryEntry},
     native_agents::{AgentRun, HistoricalEvidenceAudit, NativeAgents},
     native_evidence_signatures::{
-        assemble_detached_signature, prepare_external_attestation, verify_bundle_against_sqlite,
+        assemble_detached_signature, prepare_external_attestation,
+        prepare_signer_policy_signing_request, verify_bundle_against_sqlite,
+        verify_bundle_with_signed_signer_policy_against_sqlite,
         verify_bundle_with_signer_policy_against_sqlite, PreparedReviewEvidence,
-        SignedReviewEvidence, TrustedSignerPolicy,
+        PreparedSignerPolicySigningRequest, SignedReviewEvidence, SignedTrustedSignerPolicy,
+        TrustedSignerPolicy,
     },
     Database,
 };
@@ -218,6 +221,55 @@ pub fn verify_native_review_with_signer_policy(
     let db = open_db(&app)?;
     verify_bundle_with_signer_policy_against_sqlite(&db, &bundle, &policy)?;
     Ok((bundle.manifest.run_id, policy.revision))
+}
+
+/// Export deterministic, domain-separated policy bytes for a separately
+/// managed Ed25519 authority. Never accept or store private signing material.
+#[tauri::command]
+pub fn prepare_native_signer_policy_request(
+    policy_json: String,
+) -> Result<PreparedSignerPolicySigningRequest, String> {
+    if policy_json.len() > 16 * 1024 {
+        return Err("External signer trust policy exceeds 16 KiB".into());
+    }
+    let policy: TrustedSignerPolicy = serde_json::from_str(&policy_json)
+        .map_err(|_| "Malformed external signer trust policy".to_string())?;
+    prepare_signer_policy_signing_request(policy)
+}
+
+/// This stricter path authenticates the policy using a separately pinned
+/// authority key and enforces an externally maintained minimum revision.
+/// The revision floor is not derived from the imported policy or SQLite.
+#[tauri::command]
+pub fn verify_native_review_with_signed_signer_policy(
+    bundle_json: String,
+    signed_policy_json: String,
+    trusted_authority_public_key_hex: String,
+    minimum_revision: String,
+    app: tauri::AppHandle,
+) -> Result<(String, u64), String> {
+    if bundle_json.len() > 512 * 1024 || signed_policy_json.len() > 16 * 1024 {
+        return Err("Signed evidence or signed trust policy exceeds input limits".into());
+    }
+    let revision_floor = minimum_revision
+        .parse::<u64>()
+        .map_err(|_| "Minimum policy revision must be a positive u64".to_string())?;
+    if revision_floor == 0 {
+        return Err("Minimum policy revision must be positive".into());
+    }
+    let bundle: SignedReviewEvidence = serde_json::from_str(&bundle_json)
+        .map_err(|_| "Malformed signed evidence bundle".to_string())?;
+    let signed_policy: SignedTrustedSignerPolicy = serde_json::from_str(&signed_policy_json)
+        .map_err(|_| "Malformed signed signer trust policy".to_string())?;
+    let db = open_db(&app)?;
+    verify_bundle_with_signed_signer_policy_against_sqlite(
+        &db,
+        &bundle,
+        &signed_policy,
+        &trusted_authority_public_key_hex,
+        revision_floor,
+    )?;
+    Ok((bundle.manifest.run_id, signed_policy.policy.revision))
 }
 
 #[tauri::command]

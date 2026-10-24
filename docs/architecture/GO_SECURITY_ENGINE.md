@@ -217,6 +217,61 @@ not consult the revocation policy; use policy verification when revocation
 enforcement is required. Neither the signature nor the policy proves that
 a completed review found every vulnerability.
 
+### Authority-signed trust policy verification
+
+The desktop now also accepts an **authority-signed policy envelope**. A policy
+administrator writes a `codetwin-signer-trust-v1` JSON policy with a positive,
+monotonically managed revision, and uses **Export policy bytes for external
+authority signing** to obtain the exact UTF-8 message in hex. Decode the hex
+and sign those bytes with an independently managed Ed25519 authority key
+(OS keyring, hardware token or separate signing service). CodeTwin never
+imports the private key or signs on behalf of that authority.
+
+The signed envelope has this shape; all placeholder hex strings must be
+replaced with actual public key and detached signature bytes:
+
+```json
+{
+  "policy": {
+    "format": "codetwin-signer-trust-v1",
+    "revision": 2,
+    "signers": [
+      {"public_key_hex": "64_HEX_CHARACTERS_FOR_SIGNER", "status": "trusted"}
+    ]
+  },
+  "authority_public_key_hex": "64_HEX_CHARACTERS_FOR_AUTHORITY",
+  "signature_hex": "128_HEX_CHARACTERS_FOR_SIGNATURE"
+}
+```
+
+The authority signs `b"CodeTwin-ML/signer-policy/ed25519/v1\\0"`
+followed by Rust `serde_json::to_vec(policy)` bytes. The exported
+`payload_hex` is authoritative for signing: **do not** sign the SHA-256
+display string, the hex text, a reserialized JSON object, or the evidence
+bundle itself. The signer key for review evidence is distinct from the
+policy authority key in the documented trust model.
+
+For verification, import the signed review evidence and signed policy
+envelope, then enter the policy authority's **independently pinned**
+64-hex-character Ed25519 public key and a positive **minimum acceptable
+policy revision from independent records**. The verifier rejects malformed
+policies, duplicate keys, altered policy bytes, mismatched authority keys,
+invalid signatures, outdated revisions, revoked/unlisted evidence signers,
+and mismatched current SQLite evidence. The bundle is limited to 512 KiB
+and the signed policy envelope to 16 KiB. No security tool is executed.
+
+**Limitations:** An envelope's own `authority_public_key_hex` is not a
+trust anchor. The operator must authenticate the authority key through
+an independent channel and maintain an authentic, up-to-date revision
+floor outside CodeTwin/SQLite. A stolen authority key or an outdated
+external revision floor is not detected by this feature. CodeTwin does not
+persist a monotonic anti-rollback ledger, distribute trusted policy updates,
+or provide production private-key custody. The older unsigned policy and
+single-key verification options remain for compatibility and **do not**
+authenticate the trust policy or enforce its freshness. A valid signature
+only authenticates the review snapshot relative to the configured trust
+chain; it does not prove that the security review is complete.
+
 ### Completed specialist receipt consistency
 
 A security review may be published as `completed` only after the supervisor

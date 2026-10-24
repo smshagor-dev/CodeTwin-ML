@@ -301,6 +301,21 @@ export const workspaceApi = {
       bundleJson, trustedPolicyJson,
     });
   },
+  prepareNativeSignerPolicyRequest(policyJson: string) {
+    return invoke<{ policy: unknown; payload_hex: string; payload_sha256_hex: string }>(
+      "prepare_native_signer_policy_request", { policyJson },
+    );
+  },
+  verifyNativeReviewWithSignedSignerPolicy(
+    bundleJson: string,
+    signedPolicyJson: string,
+    trustedAuthorityPublicKeyHex: string,
+    minimumRevision: string,
+  ) {
+    return invoke<[string, number]>("verify_native_review_with_signed_signer_policy", {
+      bundleJson, signedPolicyJson, trustedAuthorityPublicKeyHex, minimumRevision,
+    });
+  },
   nativeAgentReport(id: string) {
     return invoke<string>("native_agent_report", { id });
   },
