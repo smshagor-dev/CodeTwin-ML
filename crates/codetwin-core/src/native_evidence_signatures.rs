@@ -88,7 +88,9 @@ pub fn build_verified_manifest(
     let receipts = NativeActionLog::new(db).list(run_id)?;
     let handoffs = AgentHandoffs::new(db).list(run_id)?;
     let delegation = NativeDelegation::new(db).graph(run_id)?;
-    let finished_at = run.finished_at.ok_or("Completed review lacks finish time")?;
+    let finished_at = run
+        .finished_at
+        .ok_or("Completed review lacks finish time")?;
     Ok(ReviewEvidenceManifest {
         format: FORMAT.into(),
         run_id: run.id,
@@ -257,7 +259,11 @@ mod tests {
         let ephemeral_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
         let signer = Ed25519KeyPair::from_pkcs8(ephemeral_pkcs8.as_ref()).unwrap();
         let trusted = hex_encode(signer.public_key().as_ref());
-        let signature = hex_encode(signer.sign(&external_signing_payload(&manifest).unwrap()).as_ref());
+        let signature = hex_encode(
+            signer
+                .sign(&external_signing_payload(&manifest).unwrap())
+                .as_ref(),
+        );
         let bundle = assemble_detached_signature(manifest.clone(), &trusted, &signature).unwrap();
         verify_bundle_against_sqlite(&db, &bundle, &trusted).unwrap();
         let json = serde_json::to_string(&bundle).unwrap();
@@ -270,7 +276,8 @@ mod tests {
         assert!(verify_with_trusted_public_key(
             &bundle,
             &hex_encode(different.public_key().as_ref())
-        ).is_err());
+        )
+        .is_err());
 
         let mut modified = bundle.clone();
         modified.manifest.project_id = "another-project".into();
