@@ -18,16 +18,18 @@ if __package__:
     from .publish_signer_trust_anchor import _private_directory, _read_anchor
     from .verify_signer_policy_rotation import (
         _hex_bytes,
+        _parse_signed_policy,
         _positive_revision,
-        _read_signed_policy,
+        _read_signed_policy_bytes,
         _validated_policy,
     )
 else:
     from publish_signer_trust_anchor import _private_directory, _read_anchor
     from verify_signer_policy_rotation import (
         _hex_bytes,
+        _parse_signed_policy,
         _positive_revision,
-        _read_signed_policy,
+        _read_signed_policy_bytes,
         _validated_policy,
     )
 
@@ -59,7 +61,8 @@ def audit_anchor(
     ):
         raise ValueError("External anchor differs from independently trusted values")
 
-    policy_before = _read_signed_policy(signed_policy_file)
+    policy_before_bytes = _read_signed_policy_bytes(signed_policy_file)
+    policy_before = _parse_signed_policy(policy_before_bytes)
     policy_revision, policy_digest = _validated_policy(policy_before, authority)
     if policy_revision != revision or policy_digest != digest:
         raise ValueError("Signed policy differs from independently trusted revision or digest")
@@ -67,7 +70,7 @@ def audit_anchor(
     _private_directory(path.parent)
     if _read_anchor(path) != before:
         raise ValueError("External anchor changed during audit")
-    if _read_signed_policy(signed_policy_file) != policy_before:
+    if _read_signed_policy_bytes(signed_policy_file) != policy_before_bytes:
         raise ValueError("Signed policy changed during audit")
     return {
         "status": "verified_against_supplied_pins",
