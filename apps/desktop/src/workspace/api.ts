@@ -318,6 +318,20 @@ export const workspaceApi = {
       independentlyPinnedPolicySha256Hex,
     });
   },
+  checkNativeSignerPolicyRotation(
+    previousSignedPolicyJson: string,
+    replacementSignedPolicyJson: string,
+    trustedAuthorityPublicKeyHex: string,
+    currentMinimumRevision: string,
+    independentlyPinnedPreviousSha256Hex: string,
+    independentlyPinnedReplacementSha256Hex: string,
+  ) {
+    return invoke<number>("check_native_signer_policy_rotation", {
+      previousSignedPolicyJson, replacementSignedPolicyJson,
+      trustedAuthorityPublicKeyHex, currentMinimumRevision,
+      independentlyPinnedPreviousSha256Hex, independentlyPinnedReplacementSha256Hex,
+    });
+  },
   nativeAgentReport(id: string) {
     return invoke<string>("native_agent_report", { id });
   },

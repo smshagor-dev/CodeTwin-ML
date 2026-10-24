@@ -75,6 +75,7 @@ use native_agent_commands::{
     create_native_task_review, list_native_action_receipts, list_native_agent_handoffs,
     list_native_agent_memory, list_native_agent_reviews, native_agent_report, native_agent_review,
     prepare_native_review_attestation, prepare_native_signer_policy_request,
+    check_native_signer_policy_rotation,
     run_native_agent_review, verify_native_agent_run, verify_native_review_attestation,
     verify_native_review_with_signed_signer_policy, verify_native_review_with_signer_policy,
 };
@@ -1142,6 +1143,7 @@ fn main() {
             verify_native_review_with_signer_policy,
             prepare_native_signer_policy_request,
             verify_native_review_with_signed_signer_policy,
+            check_native_signer_policy_rotation,
             native_model_readiness,
             native_agent_insight,
             interpret_native_agent_review,

@@ -45,6 +45,21 @@ describe("workspace API workflows", () => {
     );
   });
 
+  it("passes independently authenticated old and replacement pins to policy preflight", async () => {
+    invokeMock.mockResolvedValueOnce(6);
+    await expect(workspaceApi.checkNativeSignerPolicyRotation(
+      "old-policy", "new-policy", "authority", "5", "aa".repeat(32), "bb".repeat(32),
+    )).resolves.toBe(6);
+    expect(invokeMock).toHaveBeenCalledWith("check_native_signer_policy_rotation", {
+      previousSignedPolicyJson: "old-policy",
+      replacementSignedPolicyJson: "new-policy",
+      trustedAuthorityPublicKeyHex: "authority",
+      currentMinimumRevision: "5",
+      independentlyPinnedPreviousSha256Hex: "aa".repeat(32),
+      independentlyPinnedReplacementSha256Hex: "bb".repeat(32),
+    });
+  });
+
   it("handles native folder selection and cancellation without indexing", async () => {
     openMock.mockResolvedValueOnce(null);
     await expect(chooseProjectFolder()).resolves.toBeNull();
