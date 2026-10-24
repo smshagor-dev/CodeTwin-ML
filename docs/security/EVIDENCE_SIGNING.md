@@ -24,7 +24,7 @@ For signer rotation/revocation, the stricter desktop verifier now requires
 3. The SHA-256 of the **exact trusted signed policy envelope**, also maintained
    outside CodeTwin (64 hex characters).
 
-All three must come from an authenticated channel separate from the imported
+The Ed25519 policy authority public key **must not appear among any evidence signer keys** in that policy, including revoked entries. The authenticated-policy verifier enforces this separation so that compromise of an evidence signing key cannot also act as policy approval authority. Deploy a distinct externally managed authority key; existing same-key policies must be reissued by an independent authority before verification.\n\nAll three must come from an authenticated channel separate from the imported
 evidence and the SQLite database. CodeTwin does not maintain a protected
 revision ledger or distribute trusted pins. If the operator reuses an old
 external revision floor and digest, an older valid policy can still be
