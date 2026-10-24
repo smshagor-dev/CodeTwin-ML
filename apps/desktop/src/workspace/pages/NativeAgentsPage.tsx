@@ -204,6 +204,7 @@ export function NativeAgentsPage() {
   const [trustedPublicKey, setTrustedPublicKey] = useState("");
   const [externalSignature, setExternalSignature] = useState("");
   const [importedBundleJson, setImportedBundleJson] = useState("");
+  const [trustedPolicyJson, setTrustedPolicyJson] = useState("");
   const [attestationVerdict, setAttestationVerdict] = useState("");
   const [objective, setObjective] = useState("Review the selected project's security, code quality and reliability. Report confirmed evidence and unresolved issues.");
   const [maxFiles, setMaxFiles] = useState(500);
@@ -809,6 +810,27 @@ export function NativeAgentsPage() {
     }
   }
 
+  async function verifyImportedWithSignerPolicy() {
+    if (busy) return;
+    setBusy("verify-signer-policy");
+    setError("");
+    setAttestationVerdict("");
+    try {
+      const [runId, revision] = await workspaceApi.verifyNativeReviewWithSignerPolicy(
+        importedBundleJson,
+        trustedPolicyJson,
+      );
+      setAttestationVerdict(
+        "Signed evidence and SQLite verified against independently pinned signer policy revision " +
+        revision + " for review " + runId,
+      );
+    } catch (reason) {
+      setError("Signer policy verification failed: " + String(reason));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function auditEvidenceHistory(loadOlder = false) {
     if (!activeProjectId || busy) return;
     const projectId = activeProjectId;
@@ -1319,7 +1341,28 @@ export function NativeAgentsPage() {
             disabled={!importedBundleJson.trim() ||
               !/^[0-9a-fA-F]{64}$/.test(trustedPublicKey.trim()) || Boolean(busy)}
             onClick={() => void verifyImportedAttestation()}>
-            {busy === "verify-attestation" ? "Verifying…" : "Verify imported signature and SQLite snapshot"}
+            {busy === "verify-attestation" ? "Verifying…" : "Verify with single pinned key (no revocation check)"}
+          </button>
+          <label className="ws-field">
+            <span>Independent signer trust policy for key rotation and revocation</span>
+            <textarea rows={5} value={trustedPolicyJson} onChange={event => {
+              setTrustedPolicyJson(event.target.value);
+              setAttestationVerdict("");
+            }} placeholder={'{"format":"codetwin-signer-trust-v1","revision":1,"signers":[{"public_key_hex":"<64 hex>","status":"trusted"}]}'}/>
+          </label>
+          <p className="ws-form-help">
+            Use the latest policy from your independently trusted administrator or secure
+            configuration. Mark a compromised key as "revoked", keep rotated approved keys
+            "trusted". Do not copy a trust policy from the evidence bundle.
+            The policy itself is not authenticated by CodeTwin; older policies may be unsafe.
+          </p>
+          <button className="ws-button ws-button-secondary"
+            disabled={!importedBundleJson.trim() || !trustedPolicyJson.trim() ||
+              importedBundleJson.length > 512 * 1024 || trustedPolicyJson.length > 16 * 1024 ||
+              Boolean(busy)}
+            onClick={() => void verifyImportedWithSignerPolicy()}>
+            {busy === "verify-signer-policy" ? "Checking signer policy…" :
+              "Verify using rotation and revocation policy"}
           </button>
           {attestationVerdict && <p role="status">{attestationVerdict}</p>}
         </div>

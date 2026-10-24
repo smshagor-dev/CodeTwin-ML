@@ -75,7 +75,7 @@ use native_agent_commands::{
     create_native_task_review, list_native_action_receipts, list_native_agent_handoffs,
     list_native_agent_memory, list_native_agent_reviews, native_agent_report, native_agent_review,
     prepare_native_review_attestation, run_native_agent_review, verify_native_agent_run,
-    verify_native_review_attestation,
+    verify_native_review_attestation, verify_native_review_with_signer_policy,
 };
 use native_agent_reasoning_commands::{
     interpret_native_agent_review, native_agent_insight, native_model_readiness,
@@ -1138,6 +1138,7 @@ fn main() {
             prepare_native_review_attestation,
             assemble_native_review_attestation,
             verify_native_review_attestation,
+            verify_native_review_with_signer_policy,
             native_model_readiness,
             native_agent_insight,
             interpret_native_agent_review,
