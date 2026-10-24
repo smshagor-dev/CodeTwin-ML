@@ -184,9 +184,12 @@ anchor or SQLite, and does not invoke any security scans. It checks the
 private POSIX anchor directory, the existing anchor record, the signed
 policy's Ed25519 authority signature and signer-key separation, and
 equality with **all three** independently trusted inputs. It re-reads
-both the anchor and signed-policy file to detect changes observed during
-the audit, including a policy symlink swap. A stale anchor, changed
-signed policy or mismatched pin fails closed (exit code 2). The command does not
+the anchor and the signed-policy file to detect changes observed during
+the audit. The policy re-read compares exact file bytes, so a whitespace-only
+JSON rewrite or a policy symlink swap also fails closed (exit code 2), even
+when the typed-envelope digest remains the same. This is a point-in-time
+comparison, not continuous filesystem monitoring. A stale anchor, changed
+signed policy or mismatched independent pin is rejected. The command does not
 establish that the independent inputs are authentic or fresh: they must
 be delivered through a separately protected administrator channel.
 It is a point-in-time consistency check, not a tamper-proof ledger,
