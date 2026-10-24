@@ -146,6 +146,14 @@ private temporary file, flushed, atomically renamed over the old file, and
 the directory is synced. An interrupted operation can require administrator
 inspection; if durability fails *after* rename, do not blindly retry.
 
+The public anchor reader checks its opened inode metadata (owner, mode,
+link count, size, and modification/change timestamps) before and after the
+bounded read, and checks that the anchor path still points to the same
+metadata. It fails closed on observed in-place changes or path swaps.
+This narrows read-time races but does not create an atomic filesystem snapshot:
+a privileged or noncooperating writer can still change the anchor after
+the final check or restore metadata between observations.
+
 **Limitations:** This is POSIX-only, not a Windows ACL implementation or a
 hardware-backed monotonic counter. The directory and all path components
 must be administrator controlled; a privileged attacker or process able to

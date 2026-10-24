@@ -133,6 +133,50 @@ class TrustAnchorPublisherTests(unittest.TestCase):
             )
         self._assert_unchanged()
 
+    def test_rejects_anchor_metadata_change_during_read(self) -> None:
+        from scripts.publish_signer_trust_anchor import _read_anchor
+
+        original_fstat = os.fstat
+        calls = 0
+
+        def touch_after_open(fd: int) -> os.stat_result:
+            nonlocal calls
+            metadata = original_fstat(fd)
+            calls += 1
+            if calls == 1:
+                # Identical JSON bytes but changed modification metadata.
+                os.utime(
+                    self.anchor,
+                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000),
+                )
+            return metadata
+
+        with patch("scripts.publish_signer_trust_anchor.os.fstat", side_effect=touch_after_open):
+            with self.assertRaisesRegex(ValueError, "changed during read"):
+                _read_anchor(self.anchor)
+        self._assert_unchanged()
+
+    def test_rejects_anchor_path_swap_during_read(self) -> None:
+        from scripts.publish_signer_trust_anchor import _read_anchor
+
+        original_fstat = os.fstat
+        moved = self.root / "moved-anchor.json"
+        calls = 0
+
+        def swap_after_open(fd: int) -> os.stat_result:
+            nonlocal calls
+            metadata = original_fstat(fd)
+            calls += 1
+            if calls == 1:
+                self.anchor.rename(moved)
+                self.anchor.symlink_to(moved)
+            return metadata
+
+        with patch("scripts.publish_signer_trust_anchor.os.fstat", side_effect=swap_after_open):
+            with self.assertRaisesRegex(ValueError, "path changed during read"):
+                _read_anchor(self.anchor)
+        self.assertEqual(json.loads(moved.read_text(encoding="utf-8")), self.original)
+
     def test_rejects_duplicate_json_fields(self) -> None:
         raw = self.anchor.read_text()
         self.anchor.write_text(raw.replace('"format":', '"format":"spoofed","format":'))
