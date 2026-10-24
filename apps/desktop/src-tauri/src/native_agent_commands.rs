@@ -5,7 +5,8 @@ use codetwin_core::{
     native_agents::{AgentRun, HistoricalEvidenceAudit, NativeAgents},
     native_evidence_signatures::{
         assemble_detached_signature, prepare_external_attestation, verify_bundle_against_sqlite,
-        PreparedReviewEvidence, SignedReviewEvidence,
+        verify_bundle_with_signer_policy_against_sqlite, PreparedReviewEvidence,
+        SignedReviewEvidence, TrustedSignerPolicy,
     },
     Database,
 };
@@ -196,6 +197,27 @@ pub fn verify_native_review_attestation(
     let db = open_db(&app)?;
     verify_bundle_against_sqlite(&db, &bundle, &trusted_public_key_hex)?;
     Ok(bundle.manifest.run_id)
+}
+
+/// The user supplies a trusted, current policy independently of the signed
+/// bundle. No signer keys or policies are loaded from the SQLite database.
+/// Strict input bounds keep untrusted imports from consuming excess memory.
+#[tauri::command]
+pub fn verify_native_review_with_signer_policy(
+    bundle_json: String,
+    trusted_policy_json: String,
+    app: tauri::AppHandle,
+) -> Result<(String, u64), String> {
+    if bundle_json.len() > 512 * 1024 || trusted_policy_json.len() > 16 * 1024 {
+        return Err("Signed evidence or external trust policy exceeds input limits".into());
+    }
+    let bundle: SignedReviewEvidence = serde_json::from_str(&bundle_json)
+        .map_err(|_| "Malformed signed evidence bundle".to_string())?;
+    let policy: TrustedSignerPolicy = serde_json::from_str(&trusted_policy_json)
+        .map_err(|_| "Malformed external signer trust policy".to_string())?;
+    let db = open_db(&app)?;
+    verify_bundle_with_signer_policy_against_sqlite(&db, &bundle, &policy)?;
+    Ok((bundle.manifest.run_id, policy.revision))
 }
 
 #[tauri::command]
