@@ -321,17 +321,36 @@ impl<'a> IsolatedWorker<'a> {
 }
 
 /// Read only an ordinary file created by the finished worker in its private output
-/// directory. Reject symlinks, directories and oversized reports.
+/// directory. Bound memory at the read boundary instead of trusting an earlier
+/// size check: the untrusted report can change between metadata and read.
+/// Unix verifies the opened file identity to reject symlink/replacement races.
 fn read_scanner_report(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata =
+    let path_metadata =
         fs::symlink_metadata(path).map_err(|_| "Scanner returned no report".to_string())?;
-    if !metadata.file_type().is_file() {
+    if !path_metadata.file_type().is_file() {
         return Err("Scanner report must be a regular file, not a symlink".into());
     }
-    if metadata.len() > MAX_REPORT_BYTES {
+    let file = fs::File::open(path).map_err(|_| "Could not open scanner report".to_string())?;
+    let opened_metadata = file.metadata().map_err(err)?;
+    if !opened_metadata.is_file() {
+        return Err("Scanner report must be a regular file".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if path_metadata.dev() != opened_metadata.dev()
+            || path_metadata.ino() != opened_metadata.ino()
+        {
+            return Err("Scanner report changed while opening".into());
+        }
+    }
+    if opened_metadata.len() > MAX_REPORT_BYTES {
         return Err("Scanner report exceeded the 2 MB safety limit".into());
     }
-    let bytes = fs::read(path).map_err(err)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_REPORT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(err)?;
     if bytes.len() as u64 > MAX_REPORT_BYTES {
         return Err("Scanner output exceeded safe limit".into());
     }
@@ -544,6 +563,15 @@ mod tests {
             (0, 0)
         );
         assert!(read_scanner_report(temp.path()).is_err());
+        // Even if the size changes after the metadata check, reading is
+        // bounded to MAX_REPORT_BYTES + 1 and an oversized result fails.
+        std::fs::write(&report, vec![b'x'; MAX_REPORT_BYTES as usize]).unwrap();
+        assert_eq!(
+            read_scanner_report(&report).unwrap().len(),
+            MAX_REPORT_BYTES as usize
+        );
+        std::fs::write(&report, vec![b'x'; MAX_REPORT_BYTES as usize + 1]).unwrap();
+        assert!(read_scanner_report(&report).is_err());
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
