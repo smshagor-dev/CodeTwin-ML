@@ -115,8 +115,9 @@ independent SHA-256 pin still covers the canonical typed envelope, not the raw
 file bytes. This is not an atomic snapshot:
 a noncooperating or privileged writer can still replace a file after the
 check, including before anchor publication. Cooperating publishers are
-serialized with a persistent advisory lock. Lock acquisition is nonblocking:
-if another publisher holds the lock, the helper fails closed with a busy-lock
+serialized with a persistent advisory lock. The lock file is opened nonblocking to reject
+FIFO substitution without waiting for a pipe writer. Lock acquisition also
+uses a nonblocking advisory lock: if another publisher holds the lock, the helper fails closed with a busy-lock
 error rather than waiting indefinitely. An operator may retry after checking
 the other publisher; no automatic retry or lock removal is performed.
 After acquiring that lock,

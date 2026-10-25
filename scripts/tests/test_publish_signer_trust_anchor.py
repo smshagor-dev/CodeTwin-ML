@@ -358,7 +358,7 @@ class TrustAnchorPublisherTests(unittest.TestCase):
                 moved.rename(self.root)
         self._assert_unchanged()
 
-    def test_rejects_directory_symlink_swap_while_waiting_for_lock(self) -> None:
+    def test_rejects_directory_symlink_swap_during_lock_acquisition(self) -> None:
         import fcntl
 
         moved = self.root.with_name(self.root.name + "-previous")
@@ -448,6 +448,14 @@ class TrustAnchorPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Anchor lock changed"):
                 self._publish()
         self._assert_unchanged()
+
+    def test_rejects_fifo_lock_file_without_blocking(self) -> None:
+        lock_path = self.root / "anchor.json.lock"
+        os.mkfifo(lock_path, 0o600)
+        with self.assertRaisesRegex(ValueError, "Anchor lock must be a private regular file"):
+            self._publish()
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
 
     def test_rejects_symlink_lock_file(self) -> None:
         outside = self.root / "outside"

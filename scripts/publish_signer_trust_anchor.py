@@ -135,7 +135,7 @@ def _lock_directory(directory: Path, anchor_name: str) -> tuple[int, tuple[int, 
     import fcntl
 
     lock_path = directory / (anchor_name + ".lock")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
         opened = os.fstat(fd)
         _private_regular_file(opened, "Anchor lock")
@@ -147,7 +147,7 @@ def _lock_directory(directory: Path, anchor_name: str) -> tuple[int, tuple[int, 
             raise ValueError("Anchor publisher lock is busy") from error
         locked = os.fstat(fd)
         _private_regular_file(locked, "Anchor lock")
-        # Waiting for a cooperating publisher must not silently continue on
+        # Acquiring the lock must not silently continue on
         # an unlinked/replaced lock inode (which would split lock domains).
         if (
             _anchor_metadata(opened) != _anchor_metadata(locked)
