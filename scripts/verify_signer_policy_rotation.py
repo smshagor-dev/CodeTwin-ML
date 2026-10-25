@@ -244,6 +244,11 @@ def verify_rotation_files(
     # swaps between reads must also fail closed.
     previous_snapshot = _policy_path_snapshot(previous_path)
     replacement_snapshot = _policy_path_snapshot(replacement_path)
+    # A rotation must compare two distinct file identities. Reusing one
+    # pathname (or a hard-link alias) could otherwise let sequential reads
+    # observe different policy generations from a mutable shared inode.
+    if previous_snapshot[1][:2] == replacement_snapshot[1][:2]:
+        raise ValueError("Previous and replacement signed policies must be distinct files")
     previous_bytes = _read_signed_policy_bytes(previous_path)
     replacement_bytes = _read_signed_policy_bytes(replacement_path)
     previous = _parse_signed_policy(previous_bytes)
