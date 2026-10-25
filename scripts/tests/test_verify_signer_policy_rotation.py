@@ -339,10 +339,13 @@ class VerifiedRotationTests(unittest.TestCase):
                     "scripts.verify_signer_policy_rotation._validated_policy",
                     side_effect=swap,
                 ):
+                    # Both policies share a parent here; changing either inode
+                    # can invalidate the earlier policy's parent snapshot first.
                     with self.assertRaisesRegex(
-                        ValueError, label + " signed policy changed during verification"
+                        ValueError, "signed policy changed during verification"
                     ):
                         self._verify()
+                self.assertEqual(calls, call_index)
                 self.assertEqual(target.read_bytes(), original_bytes)
                 self._unchanged()
 
