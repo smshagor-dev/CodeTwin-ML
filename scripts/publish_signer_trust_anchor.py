@@ -61,6 +61,30 @@ def _private_directory(directory: Path) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
+def _checkout_root() -> Path | None:
+    """Identify the source tree when this helper is run from a checkout."""
+    root = Path(__file__).resolve().parent.parent
+    if (root / "Cargo.toml").is_file() and (root / "scripts" / "publish_signer_trust_anchor.py").is_file():
+        return root
+    return None
+
+
+def _require_external_anchor_path(path: Path) -> None:
+    """Refuse to publish or audit trust state within the application checkout.
+
+    This is a placement guard, not proof of independently protected custody.
+    """
+    checkout = _checkout_root()
+    if checkout is None:
+        return
+    resolved = path.resolve(strict=False)
+    if (
+        path == checkout or checkout in path.parents
+        or resolved == checkout or checkout in resolved.parents
+    ):
+        raise ValueError("External trust anchor must be outside the CodeTwin source checkout")
+
+
 def _private_regular_file(metadata: os.stat_result, name: str) -> None:
     if (
         not stat.S_ISREG(metadata.st_mode)
@@ -258,6 +282,7 @@ def _publish_anchor(
         raise ValueError("Replacement digest must differ from current digest")
 
     path = Path(os.path.abspath(anchor_file))
+    _require_external_anchor_path(path)
     directory_identity = _private_directory(path.parent)
     lock_fd, lock_metadata = _lock_directory(path.parent, path.name)
     try:

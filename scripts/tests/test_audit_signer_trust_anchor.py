@@ -89,6 +89,16 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(self.anchor.stat().st_mode), 0o600)
         self.assertFalse((self.root / "anchor.json.lock").exists())
 
+    def test_refuses_anchor_inside_source_checkout_without_writes(self) -> None:
+        with patch(
+            "scripts.publish_signer_trust_anchor._checkout_root",
+            return_value=self.root,
+        ):
+            with self.assertRaisesRegex(ValueError, "outside the CodeTwin source checkout"):
+                self._audit()
+        self.assertEqual(json.loads(self.anchor.read_text(encoding="utf-8")), self.original)
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
     def test_independent_revision_floor_detects_rolled_back_anchor(self) -> None:
         self._write_anchor({**self.original, "minimum_revision": 7})
         with self.assertRaisesRegex(ValueError, "independently trusted"):
