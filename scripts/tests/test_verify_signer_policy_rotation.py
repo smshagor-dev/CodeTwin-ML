@@ -404,6 +404,62 @@ class VerifiedRotationTests(unittest.TestCase):
         self.assertEqual(self.replacement.read_bytes(), original_bytes)
         self._unchanged()
 
+    def test_rejects_identical_policy_inode_swap_during_read(self) -> None:
+        original_fstat = os.fstat
+        for name in ("previous", "replacement"):
+            with self.subTest(policy=name):
+                target = getattr(self, name)
+                target_inode = target.stat().st_ino
+                original_bytes = target.read_bytes()
+                calls = 0
+
+                def swap_on_second_stat(fd: int) -> os.stat_result:
+                    nonlocal calls
+                    metadata = original_fstat(fd)
+                    if metadata.st_ino == target_inode:
+                        calls += 1
+                        if calls == 2:
+                            staged = self.root / ("staged-" + target.name)
+                            staged.write_bytes(original_bytes)
+                            staged.chmod(0o600)
+                            os.replace(staged, target)
+                    return metadata
+
+                with patch(
+                    "scripts.verify_signer_policy_rotation.os.fstat",
+                    side_effect=swap_on_second_stat,
+                ):
+                    with self.assertRaisesRegex(ValueError, "Signed policy path changed during read"):
+                        self._publish()
+                self.assertEqual(calls, 2)
+                self.assertEqual(target.read_bytes(), original_bytes)
+                self._unchanged()
+
+    def test_rejects_policy_symlink_swap_during_read(self) -> None:
+        original_fstat = os.fstat
+        target_inode = self.replacement.stat().st_ino
+        original_path = self.root / "original-replacement.json"
+        calls = 0
+
+        def link_on_second_stat(fd: int) -> os.stat_result:
+            nonlocal calls
+            metadata = original_fstat(fd)
+            if metadata.st_ino == target_inode:
+                calls += 1
+                if calls == 2:
+                    self.replacement.rename(original_path)
+                    self.replacement.symlink_to(original_path)
+            return metadata
+
+        with patch(
+            "scripts.verify_signer_policy_rotation.os.fstat",
+            side_effect=link_on_second_stat,
+        ):
+            with self.assertRaisesRegex(ValueError, "Signed policy path changed during read"):
+                self._publish()
+        self.assertEqual(calls, 2)
+        self._unchanged()
+
     def test_rejects_writable_policy_parent_for_both_inputs(self) -> None:
         for name in ("previous", "replacement"):
             with self.subTest(policy=name):
