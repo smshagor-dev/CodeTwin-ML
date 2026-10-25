@@ -460,6 +460,47 @@ class VerifiedRotationTests(unittest.TestCase):
         self.assertEqual(calls, 2)
         self._unchanged()
 
+    def test_policy_fifo_swap_before_open_fails_without_blocking(self) -> None:
+        original_open = os.open
+        swaps = 0
+
+        def swap_to_fifo(path: object, flags: int, *args: object, **kwargs: object) -> int:
+            nonlocal swaps
+            if os.fspath(path) == os.fspath(self.replacement):
+                # Check the flag before opening: a missing flag must fail the
+                # test, not hang the CI process waiting for a FIFO writer.
+                self.assertTrue(flags & os.O_NONBLOCK)
+                swaps += 1
+                self.replacement.unlink()
+                os.mkfifo(self.replacement, 0o600)
+            return original_open(path, flags, *args, **kwargs)
+
+        with patch("scripts.verify_signer_policy_rotation.os.open", side_effect=swap_to_fifo):
+            with self.assertRaisesRegex(ValueError, "Signed policy changed while opening"):
+                self._publish()
+        self.assertEqual(swaps, 1)
+        self._unchanged()
+
+    def test_anchor_fifo_swap_before_open_fails_without_blocking(self) -> None:
+        from scripts.publish_signer_trust_anchor import _read_anchor
+
+        original_open = os.open
+        swaps = 0
+
+        def swap_to_fifo(path: object, flags: int, *args: object, **kwargs: object) -> int:
+            nonlocal swaps
+            if os.fspath(path) == os.fspath(self.anchor):
+                self.assertTrue(flags & os.O_NONBLOCK)
+                swaps += 1
+                self.anchor.unlink()
+                os.mkfifo(self.anchor, 0o600)
+            return original_open(path, flags, *args, **kwargs)
+
+        with patch("scripts.publish_signer_trust_anchor.os.open", side_effect=swap_to_fifo):
+            with self.assertRaisesRegex(ValueError, "Trust anchor must be a private regular file"):
+                _read_anchor(self.anchor)
+        self.assertEqual(swaps, 1)
+
     def test_rejects_writable_policy_parent_for_both_inputs(self) -> None:
         for name in ("previous", "replacement"):
             with self.subTest(policy=name):
