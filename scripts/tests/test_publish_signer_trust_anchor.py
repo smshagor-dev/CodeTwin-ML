@@ -77,6 +77,20 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         self._assert_unchanged()
         self.assertFalse((self.root / "anchor.json.lock").exists())
 
+    def test_internal_publisher_rejects_noncallable_verification_hook(self) -> None:
+        with self.assertRaisesRegex(ValueError, "verification callback is required"):
+            self._publish(_verify_before_replace=False)
+        self._assert_unchanged()
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
+    def test_internal_publisher_rejects_negative_verification_result(self) -> None:
+        for result in (False, 0, "verified"):
+            with self.subTest(result=result):
+                with self.assertRaisesRegex(ValueError, "callback rejected publication"):
+                    self._publish(_verify_before_replace=lambda: result)
+                self._assert_unchanged()
+                self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
     def test_busy_publisher_lock_fails_closed_without_waiting(self) -> None:
         import fcntl
 
