@@ -89,6 +89,15 @@ def _policy_parent_snapshot(path: Path) -> tuple[int, int, int, int, int]:
     )
 
 
+def _policy_file_metadata(metadata: os.stat_result) -> tuple[int, ...]:
+    """Observe inode identity and security-relevant metadata across file reads."""
+    return (
+        metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_uid,
+        metadata.st_gid, metadata.st_nlink, metadata.st_size,
+        metadata.st_mtime_ns, metadata.st_ctime_ns,
+    )
+
+
 def _policy_path_snapshot(path: Path) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """Observe a policy pathname and its parent across a full rotation check.
 
@@ -98,12 +107,7 @@ def _policy_path_snapshot(path: Path) -> tuple[tuple[int, ...], tuple[int, ...]]
     """
     parent = _policy_parent_snapshot(path)
     metadata = path.lstat()
-    fields = (
-        metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_uid,
-        metadata.st_gid, metadata.st_nlink, metadata.st_size,
-        metadata.st_mtime_ns, metadata.st_ctime_ns,
-    )
-    return parent, fields
+    return parent, _policy_file_metadata(metadata)
 
 
 def _read_signed_policy_bytes(path: Path) -> bytes:
@@ -124,8 +128,10 @@ def _read_signed_policy_bytes(path: Path) -> bytes:
         if (
             not stat.S_ISREG(after.st_mode)
             or after.st_nlink != 1
-            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            or _policy_file_metadata(before) != _policy_file_metadata(after)
         ):
+            # The inode may be unchanged while mode, owner, group, size or
+            # timestamps change between the pathname check and open().
             raise ValueError("Signed policy changed while opening")
         if after.st_mode & 0o022:
             raise ValueError("Signed policy must not be writable by group or others")
@@ -134,21 +140,14 @@ def _read_signed_policy_bytes(path: Path) -> bytes:
         # A writer can alter the opened inode after the first fstat and while
         # bytes are being read. Reject observed metadata changes even when
         # the writer restores identical JSON bytes before the next path read.
-        metadata_fields = (
-            "st_dev", "st_ino", "st_mode", "st_uid", "st_nlink",
-            "st_size", "st_mtime_ns", "st_ctime_ns",
-        )
-        if any(getattr(after, field) != getattr(finished, field) for field in metadata_fields):
+        if _policy_file_metadata(after) != _policy_file_metadata(finished):
             raise ValueError("Signed policy changed while reading")
     if len(raw) > MAX_POLICY_BYTES:
         raise ValueError("Signed policy exceeds 16 KiB")
     # The opened descriptor can remain valid after the pathname is swapped.
     # Reject an observed replacement even when the new inode has identical bytes.
     path_after = path.lstat()
-    if any(
-        getattr(finished, field) != getattr(path_after, field)
-        for field in metadata_fields
-    ):
+    if _policy_file_metadata(finished) != _policy_file_metadata(path_after):
         raise ValueError("Signed policy path changed during read")
     if _policy_parent_snapshot(path) != parent_before:
         raise ValueError("Signed-policy parent directory changed while reading")
