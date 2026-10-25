@@ -160,7 +160,8 @@ publication lock**, after confirming the current anchor and immediately before
 writing its replacement. This detects a signed-policy swap between initial
 preflight and acquiring the lock; a changed policy fails closed without
 replacing the anchor. Independent policy files are not locked, so a privileged
-or noncooperating writer can still replace them after the second check. The publisher also records the validated current anchor inode metadata
+or noncooperating writer can still replace them after the second check.
+The publisher also records the validated current anchor inode metadata
 and checks it again after staging the replacement, immediately before rename.
 An observed inode swap or metadata rewrite (including identical JSON bytes)
 fails closed without publishing. This narrows races with noncooperating
