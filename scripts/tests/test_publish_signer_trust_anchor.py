@@ -60,6 +60,40 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
         self.assertTrue((self.root / "anchor.json.lock").is_file())
 
+    def test_busy_publisher_lock_fails_closed_without_waiting(self) -> None:
+        import fcntl
+
+        lock_path = self.root / "anchor.json.lock"
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(ValueError, "Anchor publisher lock is busy"):
+                self._publish()
+            self._assert_unchanged()
+            self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+
+        # A legitimate later attempt can proceed after the holder releases it.
+        self.assertEqual(self._publish()["minimum_revision"], 5)
+
+    def test_busy_lock_never_calls_publication_callback(self) -> None:
+        import fcntl
+
+        lock_path = self.root / "anchor.json.lock"
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch("scripts.publish_signer_trust_anchor._atomic_replace") as replace:
+                with self.assertRaisesRegex(ValueError, "Anchor publisher lock is busy"):
+                    self._publish()
+                replace.assert_not_called()
+            self._assert_unchanged()
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+
     def test_rejects_stale_cas_after_successful_update(self) -> None:
         self._publish()
         with self.assertRaisesRegex(ValueError, "does not match"):
@@ -332,7 +366,7 @@ class TrustAnchorPublisherTests(unittest.TestCase):
 
         def swap_after_lock(fd: int, operation: int) -> None:
             original_flock(fd, operation)
-            if operation == fcntl.LOCK_EX:
+            if operation == (fcntl.LOCK_EX | fcntl.LOCK_NB):
                 self.root.rename(moved)
                 self.root.symlink_to(moved, target_is_directory=True)
 
@@ -384,7 +418,7 @@ class TrustAnchorPublisherTests(unittest.TestCase):
 
         def replace_after_lock(fd: int, operation: int) -> None:
             original_flock(fd, operation)
-            if operation == fcntl.LOCK_EX:
+            if operation == (fcntl.LOCK_EX | fcntl.LOCK_NB):
                 lock_path.rename(moved)
                 lock_path.write_text("replacement", encoding="utf-8")
                 lock_path.chmod(0o600)
@@ -403,7 +437,7 @@ class TrustAnchorPublisherTests(unittest.TestCase):
 
         def touch_after_lock(fd: int, operation: int) -> None:
             original_flock(fd, operation)
-            if operation == fcntl.LOCK_EX:
+            if operation == (fcntl.LOCK_EX | fcntl.LOCK_NB):
                 metadata = os.fstat(fd)
                 os.utime(
                     lock_path,

@@ -139,7 +139,12 @@ def _lock_directory(directory: Path, anchor_name: str) -> tuple[int, tuple[int, 
     try:
         opened = os.fstat(fd)
         _private_regular_file(opened, "Anchor lock")
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        # Never wait indefinitely for another publisher or a held lock.
+        # A busy lock is a safe, explicit failure; the operator may retry.
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError("Anchor publisher lock is busy") from error
         locked = os.fstat(fd)
         _private_regular_file(locked, "Anchor lock")
         # Waiting for a cooperating publisher must not silently continue on
