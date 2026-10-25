@@ -185,6 +185,74 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Duplicate"):
             self._publish()
 
+    def test_atomic_replace_uses_one_directory_descriptor(self) -> None:
+        original_replace = os.replace
+        observed: list[tuple[int, int]] = []
+
+        def inspect_replace(source: str, destination: str, **kwargs: int) -> None:
+            self.assertEqual(destination, self.anchor.name)
+            self.assertTrue(source.startswith(".trust-anchor-"))
+            observed.append((kwargs["src_dir_fd"], kwargs["dst_dir_fd"]))
+            original_replace(source, destination, **kwargs)
+
+        with patch("scripts.publish_signer_trust_anchor.os.replace", side_effect=inspect_replace):
+            self._publish()
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0][0], observed[0][1])
+        self.assertEqual(json.loads(self.anchor.read_text())["minimum_revision"], 5)
+
+    def test_rejects_directory_swap_before_opening_publication_fd(self) -> None:
+        moved = self.root.with_name(self.root.name + "-previous")
+        original_open = os.open
+        swapped = False
+
+        def swap_before_open(path: object, flags: int, mode: int = 0o777, *,
+                             dir_fd: int | None = None) -> int:
+            nonlocal swapped
+            if not swapped and flags & os.O_DIRECTORY and Path(path) == self.root:
+                swapped = True
+                self.root.rename(moved)
+                self.root.mkdir(mode=0o700)
+                self._write_anchor(self.original)
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        try:
+            with patch("scripts.publish_signer_trust_anchor.os.open", side_effect=swap_before_open):
+                with self.assertRaisesRegex(ValueError, "directory changed before atomic replacement"):
+                    self._publish()
+            self._assert_unchanged()
+            self.assertEqual(json.loads((moved / "anchor.json").read_text()), self.original)
+        finally:
+            if moved.exists():
+                self.anchor.unlink()
+                self.root.rmdir()
+                moved.rename(self.root)
+
+    def test_rename_cannot_write_into_swapped_directory(self) -> None:
+        moved = self.root.with_name(self.root.name + "-previous")
+        original_replace = os.replace
+
+        def swap_during_replace(source: str, destination: str, **kwargs: int) -> None:
+            self.root.rename(moved)
+            self.root.mkdir(mode=0o700)
+            self._write_anchor(self.original)
+            original_replace(source, destination, **kwargs)
+
+        try:
+            with patch("scripts.publish_signer_trust_anchor.os.replace", side_effect=swap_during_replace):
+                with self.assertRaisesRegex(ValueError, "directory changed after publication"):
+                    self._publish()
+            # The old directory may already have been published; the swapped-in
+            # pathname must never receive that update.
+            self._assert_unchanged()
+            self.assertEqual(json.loads((moved / "anchor.json").read_text())["minimum_revision"], 5)
+            self.assertEqual(list(moved.glob(".trust-anchor-*.tmp")), [])
+        finally:
+            if moved.exists():
+                self.anchor.unlink()
+                self.root.rmdir()
+                moved.rename(self.root)
+
     def test_failed_atomic_replace_keeps_previous_record(self) -> None:
         with patch("scripts.publish_signer_trust_anchor.os.replace", side_effect=OSError("disk error")):
             with self.assertRaisesRegex(OSError, "disk error"):
