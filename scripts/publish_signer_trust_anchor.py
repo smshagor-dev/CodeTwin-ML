@@ -130,8 +130,18 @@ def _lock_directory(directory: Path, anchor_name: str) -> int:
     lock_path = directory / (anchor_name + ".lock")
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
-        _private_regular_file(os.fstat(fd), "Anchor lock")
+        opened = os.fstat(fd)
+        _private_regular_file(opened, "Anchor lock")
         fcntl.flock(fd, fcntl.LOCK_EX)
+        locked = os.fstat(fd)
+        _private_regular_file(locked, "Anchor lock")
+        # Waiting for a cooperating publisher must not silently continue on
+        # an unlinked/replaced lock inode (which would split lock domains).
+        if (
+            _anchor_metadata(opened) != _anchor_metadata(locked)
+            or _anchor_metadata(locked) != _anchor_metadata(lock_path.lstat())
+        ):
+            raise ValueError("Anchor lock changed while acquiring")
         return fd
     except BaseException:
         os.close(fd)

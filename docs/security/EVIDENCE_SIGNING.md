@@ -115,7 +115,13 @@ independent SHA-256 pin still covers the canonical typed envelope, not the raw
 file bytes. This is not an atomic snapshot:
 a noncooperating or privileged writer can still replace a file after the
 check, including before anchor publication. Cooperating publishers are
-serialized with a persistent advisory lock. The signed policy inputs are limited to 16 KiB each and read from regular
+serialized with a persistent advisory lock. After acquiring that lock,
+the publisher checks that its opened lock inode and the lock pathname still
+have matching ownership, permissions, size and timestamps. An observed lock
+replacement or metadata mutation fails closed before updating the anchor.
+This narrows accidental split-lock races, but an uncooperative writer can
+still replace the lock pathname after the check; directory custody remains
+an external administrator responsibility. The signed policy inputs are limited to 16 KiB each and read from regular
 non-symlink files. Signed-policy inputs must also not be group- or world-writable
 (permissions such as 0600 or 0644 are accepted); the check is repeated on
 the opened file descriptor. The reader also checks inode metadata again
