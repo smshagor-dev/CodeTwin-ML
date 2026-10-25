@@ -101,6 +101,35 @@ class TrustAnchorPublisherTests(unittest.TestCase):
                 self._assert_unchanged()
                 self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
 
+    def test_rejects_negative_verification_after_staging(self) -> None:
+        calls = 0
+
+        def verify_again() -> bool:
+            nonlocal calls
+            calls += 1
+            return calls == 1
+
+        with self.assertRaisesRegex(ValueError, "callback rejected publication"):
+            self._publish(_verify_before_replace=verify_again)
+        self.assertEqual(calls, 2)
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
+    def test_rejects_verification_error_after_staging(self) -> None:
+        calls = 0
+
+        def verify_again() -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise ValueError("Late signed-policy change")
+
+        with self.assertRaisesRegex(ValueError, "Late signed-policy change"):
+            self._publish(_verify_before_replace=verify_again)
+        self.assertEqual(calls, 2)
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
     def test_busy_publisher_lock_fails_closed_without_waiting(self) -> None:
         import fcntl
 
