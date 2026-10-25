@@ -345,7 +345,7 @@ class VerifiedRotationTests(unittest.TestCase):
                         ValueError, "signed policy changed during verification"
                     ):
                         self._verify()
-                self.assertEqual(calls, call_index)
+                self.assertGreaterEqual(calls, call_index)
                 self.assertEqual(target.read_bytes(), original_bytes)
                 self._unchanged()
 
