@@ -126,8 +126,8 @@ replacement or in-place metadata change is rejected without publishing.
 This narrows accidental split-lock races, but an uncooperative or privileged
 writer can still replace the lock pathname after the final check; these
 point-in-time checks are not an atomic lock custody guarantee. Directory
-custody remains an external administrator responsibility. The publisher also remembers the
-private anchor directory device/inode before acquiring the lock and rechecks
+custody remains an external administrator responsibility. The publisher also
+remembers the private anchor directory device/inode before acquiring the lock and rechecks
 that identity and directory permissions after acquiring the lock and again
 immediately before replacement. A detected directory swap, symlink, or
 permission relaxation fails closed. Lock-file creation may change directory
