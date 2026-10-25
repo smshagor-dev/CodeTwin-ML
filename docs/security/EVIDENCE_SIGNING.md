@@ -121,7 +121,14 @@ have matching ownership, permissions, size and timestamps. An observed lock
 replacement or metadata mutation fails closed before updating the anchor.
 This narrows accidental split-lock races, but an uncooperative writer can
 still replace the lock pathname after the check; directory custody remains
-an external administrator responsibility. The signed policy inputs are limited to 16 KiB each and read from regular
+an external administrator responsibility. The publisher also remembers the
+private anchor directory device/inode before acquiring the lock and rechecks
+that identity and directory permissions after acquiring the lock and again
+immediately before replacement. A detected directory swap, symlink, or
+permission relaxation fails closed. Lock-file creation may change directory
+timestamps, so these directory identity checks deliberately compare only
+device and inode; they do not constitute an atomic directory snapshot or
+prevent a privileged writer from swapping the path after the final check. The signed policy inputs are limited to 16 KiB each and read from regular
 non-symlink files. Signed-policy inputs must also not be group- or world-writable
 (permissions such as 0600 or 0644 are accepted); the check is repeated on
 the opened file descriptor. The reader also checks inode metadata again

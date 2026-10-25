@@ -46,7 +46,7 @@ def _positive_revision(value: int, name: str) -> int:
     return value
 
 
-def _private_directory(directory: Path) -> None:
+def _private_directory(directory: Path) -> tuple[int, int]:
     if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
         raise ValueError("Atomic anchor publishing is supported only on POSIX")
     for component in (directory, *directory.parents):
@@ -58,6 +58,7 @@ def _private_directory(directory: Path) -> None:
     metadata = directory.lstat()
     if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
         raise ValueError("Anchor directory must be owned by this user and private (0700)")
+    return metadata.st_dev, metadata.st_ino
 
 
 def _private_regular_file(metadata: os.stat_result, name: str) -> None:
@@ -195,9 +196,12 @@ def publish(
         raise ValueError("Replacement digest must differ from current digest")
 
     path = Path(os.path.abspath(anchor_file))
-    _private_directory(path.parent)
+    directory_identity = _private_directory(path.parent)
     lock_fd = _lock_directory(path.parent, path.name)
     try:
+        # The path may have changed while waiting for the advisory lock.
+        if _private_directory(path.parent) != directory_identity:
+            raise ValueError("Anchor directory changed while acquiring lock")
         current = _read_anchor(path)
         if (
             current["minimum_revision"] != expected_revision
@@ -211,6 +215,10 @@ def publish(
         # external validation and acquiring the publication lock.
         if _verify_before_replace is not None:
             _verify_before_replace()
+        # Do not publish into a swapped or newly exposed directory.
+        # This remains a point-in-time check, not an atomic path snapshot.
+        if _private_directory(path.parent) != directory_identity:
+            raise ValueError("Anchor directory changed before publication")
         replacement = {
             "format": FORMAT,
             "authority_public_key_hex": authority_public_key_hex,
