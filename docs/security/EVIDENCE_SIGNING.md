@@ -16,6 +16,15 @@ binds the signed manifest to the key; it does not prove that a human approved
 the underlying review, that external tools were secure, or that the result is
 complete.
 
+Imported signed evidence envelopes and typed manifests reject unknown JSON
+fields. Previously, an extra top-level or manifest claim could be silently
+discarded by deserialization while the signature on the recognized fields
+still verified. Rejecting such fields avoids presenting unsigned additions
+as authenticated evidence. The nested specialist, receipt, handoff and
+delegation JSON values remain part of the signed payload, but a valid
+signature alone still does not establish their truth or prove an operator's
+approval. A fresh SQLite evidence comparison remains necessary.
+
 For signer rotation/revocation, the stricter desktop verifier now requires
 **three independent inputs**, in addition to the signed policy JSON:
 
