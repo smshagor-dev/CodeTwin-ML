@@ -7,6 +7,7 @@ use crate::{
     native_agent_handoffs::AgentHandoffs, native_agents::NativeAgents, Database,
 };
 use ring::signature::{UnparsedPublicKey, ED25519};
+use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -25,9 +26,13 @@ pub struct ReviewEvidenceManifest {
     pub created_at: String,
     pub finished_at: String,
     pub objective_sha256: String,
+    #[serde(deserialize_with = "deserialize_strict_nested_values")]
     pub specialists: Vec<Value>,
+    #[serde(deserialize_with = "deserialize_strict_nested_values")]
     pub receipts: Vec<Value>,
+    #[serde(deserialize_with = "deserialize_strict_nested_values")]
     pub handoffs: Vec<Value>,
+    #[serde(deserialize_with = "deserialize_strict_nested_values")]
     pub delegation: Vec<Value>,
 }
 
@@ -39,6 +44,86 @@ pub struct SignedReviewEvidence {
     pub manifest: ReviewEvidenceManifest,
     pub signer_public_key_hex: String,
     pub signature_hex: String,
+}
+
+// serde_json::Value normally accepts duplicate object keys and keeps the last
+// value. A raw imported evidence document could therefore contain conflicting
+// nested claims while still deserializing to the originally signed manifest.
+// Reject duplicates recursively without changing the signed JSON wire format.
+struct StrictNestedValue(Value);
+
+impl<'de> Deserialize<'de> for StrictNestedValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct StrictVisitor;
+
+        impl<'de> Visitor<'de> for StrictVisitor {
+            type Value = StrictNestedValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON value without duplicate object keys")
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(StrictNestedValue(Value::Null))
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(StrictNestedValue(Value::Bool(value)))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(StrictNestedValue(Value::Number(value.into())))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(StrictNestedValue(Value::Number(value.into())))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                let number = serde_json::Number::from_f64(value)
+                    .ok_or_else(|| E::custom("Non-finite evidence number"))?;
+                Ok(StrictNestedValue(Value::Number(number)))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(StrictNestedValue(Value::String(value.to_owned())))
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(value) = access.next_element::<StrictNestedValue>()? {
+                    values.push(value.0);
+                }
+                Ok(StrictNestedValue(Value::Array(values)))
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some((key, value)) = access.next_entry::<String, StrictNestedValue>()? {
+                    if values.contains_key(&key) {
+                        return Err(serde::de::Error::custom(
+                            "Duplicate nested review-evidence JSON field",
+                        ));
+                    }
+                    values.insert(key, value.0);
+                }
+                Ok(StrictNestedValue(Value::Object(values)))
+            }
+        }
+
+        deserializer.deserialize_any(StrictVisitor)
+    }
+}
+
+fn deserialize_strict_nested_values<'de, D>(deserializer: D) -> Result<Vec<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let values = Vec::<StrictNestedValue>::deserialize(deserializer)?;
+    Ok(values.into_iter().map(|value| value.0).collect())
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -526,6 +611,62 @@ mod tests {
         rand::SystemRandom,
         signature::{Ed25519KeyPair, KeyPair},
     };
+
+    #[test]
+    fn imported_evidence_rejects_duplicate_nested_json_keys() {
+        let manifest = ReviewEvidenceManifest {
+            format: FORMAT.into(),
+            run_id: "review".into(),
+            project_id: "project".into(),
+            created_at: "2026-01-01".into(),
+            finished_at: "2026-01-02".into(),
+            objective_sha256: "00".repeat(32),
+            specialists: vec![json!({"position": 1, "details": {"status": "ok"}})],
+            receipts: vec![json!({"position": 1})],
+            handoffs: vec![json!({"position": 1})],
+            delegation: vec![json!({"position": 1})],
+        };
+        let bundle = SignedReviewEvidence {
+            manifest,
+            signer_public_key_hex: "11".repeat(32),
+            signature_hex: "22".repeat(64),
+        };
+        let original = serde_json::to_string(&bundle).unwrap();
+        let parsed: SignedReviewEvidence = serde_json::from_str(&original).unwrap();
+        assert_eq!(
+            serde_json::to_value(&parsed).unwrap(),
+            serde_json::to_value(&bundle).unwrap()
+        );
+
+        for field in ["specialists", "receipts", "handoffs", "delegation"] {
+            let marker = format!("\\"{field}\\":[{{");
+            let altered = original.replacen(&marker, &format!("{marker}\\"position\\":1,"), 1);
+            assert_ne!(altered, original);
+            // Ordinary Value parsing collapses the duplicate into the same
+            // signed content. Strict evidence parsing must reject the raw JSON.
+            let ordinary: Value = serde_json::from_str(&altered).unwrap();
+            assert_eq!(ordinary, serde_json::to_value(&bundle).unwrap());
+            assert!(
+                serde_json::from_str::<SignedReviewEvidence>(&altered).is_err(),
+                "duplicate nested field in {field} must fail closed"
+            );
+        }
+
+        let deeply_nested = original.replacen(
+            "\\"status\\":\\"ok\\"",
+            "\\"status\\":\\"ok\\",\\"status\\":\\"ok\\"",
+            1,
+        );
+        assert_ne!(deeply_nested, original);
+        assert_eq!(
+            serde_json::from_str::<Value>(&deeply_nested).unwrap(),
+            serde_json::to_value(&bundle).unwrap()
+        );
+        assert!(
+            serde_json::from_str::<SignedReviewEvidence>(&deeply_nested).is_err(),
+            "duplicate keys must be rejected at every nesting depth"
+        );
+    }
 
     #[test]
     fn signed_trust_policy_rejects_authority_used_as_an_evidence_signer() {
