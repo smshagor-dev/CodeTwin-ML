@@ -244,9 +244,11 @@ the audit. The anchor re-read compares both parsed values and inode metadata
 (including ownership, permissions, size and timestamps), rejecting observed
 same-content inode swaps or in-place metadata changes. It also rechecks the
 private directory device/inode between reads. The policy re-read compares exact
-file bytes, so a whitespace-only
-JSON rewrite or a policy symlink swap also fails closed (exit code 2), even
-when the typed-envelope digest remains the same. This is a point-in-time
+file bytes, while the audit also compares policy inode metadata (including
+ownership, mode, size and timestamps) and parent-directory identity across
+both reads. Observed identical-byte inode swaps, in-place metadata changes,
+whitespace-only JSON rewrites or policy symlink swaps fail closed (exit code 2),
+even when the typed-envelope digest remains the same. This is a point-in-time
 comparison, not continuous filesystem monitoring. A stale anchor, changed
 signed policy or mismatched independent pin is rejected. The command does not
 establish that the independent inputs are authentic or fresh: they must
