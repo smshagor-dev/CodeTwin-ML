@@ -63,6 +63,16 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
         self.assertTrue((self.root / "anchor.json.lock").is_file())
 
+    def test_refuses_anchor_inside_source_checkout_before_lock_creation(self) -> None:
+        with patch(
+            "scripts.publish_signer_trust_anchor._checkout_root",
+            return_value=self.root,
+        ):
+            with self.assertRaisesRegex(ValueError, "outside the CodeTwin source checkout"):
+                self._publish()
+        self._assert_unchanged()
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
     def test_internal_publisher_rejects_missing_verification_hook(self) -> None:
         with self.assertRaisesRegex(ValueError, "verification callback is required"):
             _publish_anchor(

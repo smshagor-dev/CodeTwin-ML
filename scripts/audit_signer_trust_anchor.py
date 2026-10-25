@@ -17,6 +17,7 @@ from pathlib import Path
 if __package__:
     from .publish_signer_trust_anchor import (
         _anchor_metadata, _private_directory, _read_anchor_with_metadata,
+        _require_external_anchor_path,
     )
     from .verify_signer_policy_rotation import (
         _hex_bytes,
@@ -29,6 +30,7 @@ if __package__:
 else:
     from publish_signer_trust_anchor import (
         _anchor_metadata, _private_directory, _read_anchor_with_metadata,
+        _require_external_anchor_path,
     )
     from verify_signer_policy_rotation import (
         _hex_bytes,
@@ -59,6 +61,7 @@ def audit_anchor(
     digest = _hex_bytes(expected_sha256, 32, "Independent signed-policy SHA-256")
     revision = _positive_revision(expected_revision, "Independent revision")
     path = Path(os.path.abspath(anchor_file))
+    _require_external_anchor_path(path)
     directory_identity = _private_directory(path.parent)
     before, before_metadata = _read_anchor_with_metadata(path)
     if (

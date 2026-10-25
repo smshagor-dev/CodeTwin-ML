@@ -102,7 +102,14 @@ cryptographic or human-identity approval certificate.
 
 Bootstrap `anchor.json` separately from previously authenticated values
 in an administrator-owned directory **outside the checkout and SQLite data**,
-with directory mode 0700 and file mode 0600. Its exact four fields are:
+with directory mode 0700 and file mode 0600. The publisher and read-only
+auditor now refuse an anchor path inside the detected CodeTwin source checkout
+(including paths resolving into it), before creating a publisher lock. This
+prevents accidental placement of public revision-floor state in the source
+tree; it does **not** prove independent storage, prevent copying the anchor
+elsewhere, or protect against privileged rollback. Keep the authoritative
+revision and digest in a separately protected system, not only in this JSON
+file. Its exact four fields are:
 
 ```json
 {
