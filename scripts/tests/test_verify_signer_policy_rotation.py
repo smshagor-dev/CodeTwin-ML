@@ -311,6 +311,76 @@ class VerifiedRotationTests(unittest.TestCase):
                 self._publish()
         self._unchanged()
 
+    def test_rejects_identical_inode_swap_between_rotation_reads(self) -> None:
+        from scripts.verify_signer_policy_rotation import _validated_policy
+
+        for name, call_index, label in (
+            ("previous", 1, "Previous"),
+            ("replacement", 2, "Replacement"),
+        ):
+            with self.subTest(policy=name):
+                target = getattr(self, name)
+                calls = 0
+                original_bytes = target.read_bytes()
+
+                def swap(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+                    nonlocal calls
+                    result = _validated_policy(envelope, authority)
+                    calls += 1
+                    if calls == call_index:
+                        old_path = self.root / ("old-" + target.name)
+                        target.rename(old_path)
+                        target.write_bytes(original_bytes)
+                        target.chmod(0o600)
+                        self.assertNotEqual(target.stat().st_ino, old_path.stat().st_ino)
+                    return result
+
+                with patch(
+                    "scripts.verify_signer_policy_rotation._validated_policy",
+                    side_effect=swap,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError, label + " signed policy changed during verification"
+                    ):
+                        self._verify()
+                self.assertEqual(target.read_bytes(), original_bytes)
+                self._unchanged()
+
+    def test_rejects_metadata_mutation_between_rotation_reads(self) -> None:
+        from scripts.verify_signer_policy_rotation import _validated_policy
+
+        for name, call_index, label in (
+            ("previous", 1, "Previous"),
+            ("replacement", 2, "Replacement"),
+        ):
+            with self.subTest(policy=name):
+                target = getattr(self, name)
+                calls = 0
+                original_bytes = target.read_bytes()
+
+                def touch(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+                    nonlocal calls
+                    result = _validated_policy(envelope, authority)
+                    calls += 1
+                    if calls == call_index:
+                        metadata = target.stat()
+                        os.utime(
+                            target,
+                            ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000),
+                        )
+                    return result
+
+                with patch(
+                    "scripts.verify_signer_policy_rotation._validated_policy",
+                    side_effect=touch,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError, label + " signed policy changed during verification"
+                    ):
+                        self._verify()
+                self.assertEqual(target.read_bytes(), original_bytes)
+                self._unchanged()
+
     def test_rejects_group_or_world_writable_policy_inputs(self) -> None:
         for policy in (self.previous, self.replacement):
             with self.subTest(policy=policy.name):
