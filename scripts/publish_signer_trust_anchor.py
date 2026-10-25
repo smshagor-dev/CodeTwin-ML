@@ -240,13 +240,13 @@ def _publish_anchor(
     replacement_revision: int,
     replacement_sha256: str,
     approved: bool,
-    _verify_before_replace: Callable[[], None] | None = None,
+    _verify_before_replace: Callable[[], bool | None] | None = None,
 ) -> dict[str, Any]:
     """Internal CAS primitive; a callback is mandatory but not an identity proof."""
     if not approved:
         raise ValueError("Explicit external administrator approval is required")
-    if _verify_before_replace is None:
-        raise ValueError("Signed-policy verification callback is required before publication")
+    if not callable(_verify_before_replace):
+        raise ValueError("Callable signed-policy verification callback is required before publication")
     expected_revision = _positive_revision(expected_revision, "Expected revision")
     replacement_revision = _positive_revision(replacement_revision, "Replacement revision")
     if replacement_revision <= expected_revision:
@@ -275,7 +275,9 @@ def _publish_anchor(
         # publisher lock immediately before the durable replacement. The
         # first preflight alone cannot detect a signed-policy swap between
         # external validation and acquiring the publication lock.
-        _verify_before_replace()
+        verification_result = _verify_before_replace()
+        if verification_result is not None and verification_result is not True:
+            raise ValueError("Signed-policy verification callback rejected publication")
         # Do not publish into a swapped or newly exposed directory.
         # This remains a point-in-time check, not an atomic path snapshot.
         if _private_directory(path.parent) != directory_identity:
