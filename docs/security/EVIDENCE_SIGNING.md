@@ -119,10 +119,15 @@ serialized with a persistent advisory lock. After acquiring that lock,
 the publisher checks that its opened lock inode and the lock pathname still
 have matching ownership, permissions, size and timestamps. An observed lock
 replacement or metadata mutation fails closed before updating the anchor.
-This narrows accidental split-lock races, but an uncooperative writer can
-still replace the lock pathname after the check; directory custody remains
-an external administrator responsibility. The publisher also remembers the
-private anchor directory device/inode before acquiring the lock and rechecks
+The publisher preserves that initial lock metadata and **checks the opened
+lock descriptor and lock pathname again after the signed-policy verification**,
+immediately before attempting publication. An observed intervening lock
+replacement or in-place metadata change is rejected without publishing.
+This narrows accidental split-lock races, but an uncooperative or privileged
+writer can still replace the lock pathname after the final check; these
+point-in-time checks are not an atomic lock custody guarantee. Directory
+custody remains an external administrator responsibility. The publisher also
+remembers the private anchor directory device/inode before acquiring the lock and rechecks
 that identity and directory permissions after acquiring the lock and again
 immediately before replacement. A detected directory swap, symlink, or
 permission relaxation fails closed. Lock-file creation may change directory

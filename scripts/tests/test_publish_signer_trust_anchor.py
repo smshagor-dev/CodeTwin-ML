@@ -311,6 +311,35 @@ class TrustAnchorPublisherTests(unittest.TestCase):
                 moved.rename(self.root)
         self._assert_unchanged()
 
+    def test_rejects_lock_path_replacement_after_policy_verification(self) -> None:
+        lock_path = self.root / "anchor.json.lock"
+        previous = self.root / "previous-lock"
+
+        def replace_lock() -> None:
+            lock_path.rename(previous)
+            lock_path.write_text("new lock inode", encoding="utf-8")
+            lock_path.chmod(0o600)
+
+        with self.assertRaisesRegex(ValueError, "Anchor lock changed before publication"):
+            self._publish(_verify_before_replace=replace_lock)
+        self._assert_unchanged()
+        self.assertTrue(previous.is_file())
+        self.assertEqual(json.loads(self.anchor.read_text())["minimum_revision"], 4)
+
+    def test_rejects_lock_metadata_change_after_policy_verification(self) -> None:
+        lock_path = self.root / "anchor.json.lock"
+
+        def touch_lock() -> None:
+            metadata = lock_path.stat()
+            os.utime(
+                lock_path,
+                ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000),
+            )
+
+        with self.assertRaisesRegex(ValueError, "Anchor lock changed before publication"):
+            self._publish(_verify_before_replace=touch_lock)
+        self._assert_unchanged()
+
     def test_rejects_lock_path_replacement_while_acquiring(self) -> None:
         import fcntl
 
