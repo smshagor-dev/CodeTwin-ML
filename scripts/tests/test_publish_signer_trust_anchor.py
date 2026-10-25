@@ -185,6 +185,41 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Duplicate"):
             self._publish()
 
+    def test_rejects_identical_anchor_inode_swap_after_policy_check(self) -> None:
+        moved = self.root / "old-anchor.json"
+
+        def replace_anchor() -> None:
+            self.anchor.rename(moved)
+            self._write_anchor(self.original)
+
+        with self.assertRaisesRegex(ValueError, "Trust anchor changed before publication"):
+            self._publish(_verify_before_replace=replace_anchor)
+        self._assert_unchanged()
+        self.assertEqual(json.loads(moved.read_text()), self.original)
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
+    def test_rejects_anchor_metadata_change_during_staging(self) -> None:
+        original_fsync = os.fsync
+        changed = False
+
+        def touch_during_file_sync(fd: int) -> None:
+            nonlocal changed
+            original_fsync(fd)
+            if not changed:
+                changed = True
+                metadata = self.anchor.stat()
+                os.utime(
+                    self.anchor,
+                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000),
+                )
+
+        with patch("scripts.publish_signer_trust_anchor.os.fsync", side_effect=touch_during_file_sync):
+            with self.assertRaisesRegex(ValueError, "Trust anchor changed before publication"):
+                self._publish()
+        self.assertTrue(changed)
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
     def test_atomic_replace_uses_one_directory_descriptor(self) -> None:
         original_replace = os.replace
         observed: list[tuple[int, int]] = []
