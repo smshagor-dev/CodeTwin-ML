@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from scripts.publish_signer_trust_anchor import FORMAT, publish
+from scripts.publish_signer_trust_anchor import FORMAT, _publish_anchor
 
 
 @unittest.skipUnless(os.name == "posix", "Publisher requires POSIX file locking")
@@ -44,9 +44,12 @@ class TrustAnchorPublisherTests(unittest.TestCase):
             "replacement_revision": 5,
             "replacement_sha256": self.new_pin,
             "approved": True,
+            # These tests exercise the internal filesystem CAS primitive only;
+            # authenticated policy verification is covered by the integration tests.
+            "_verify_before_replace": lambda: None,
         }
         arguments.update(overrides)
-        return publish(self.anchor, **arguments)
+        return _publish_anchor(self.anchor, **arguments)
 
     def _assert_unchanged(self) -> None:
         self.assertEqual(json.loads(self.anchor.read_text(encoding="utf-8")), self.original)
@@ -59,6 +62,20 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(self.anchor.stat().st_mode), 0o600)
         self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
         self.assertTrue((self.root / "anchor.json.lock").is_file())
+
+    def test_internal_publisher_rejects_missing_verification_hook(self) -> None:
+        with self.assertRaisesRegex(ValueError, "verification callback is required"):
+            _publish_anchor(
+                self.anchor,
+                expected_revision=4,
+                expected_sha256=self.old_pin,
+                authority_public_key_hex=self.authority,
+                replacement_revision=5,
+                replacement_sha256=self.new_pin,
+                approved=True,
+            )
+        self._assert_unchanged()
+        self.assertFalse((self.root / "anchor.json.lock").exists())
 
     def test_busy_publisher_lock_fails_closed_without_waiting(self) -> None:
         import fcntl
@@ -156,7 +173,7 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         link = self.root / "linked"
         link.symlink_to(self.root, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "Symlink"):
-            publish(
+            _publish_anchor(
                 link / "anchor.json",
                 expected_revision=4,
                 expected_sha256=self.old_pin,
@@ -164,6 +181,7 @@ class TrustAnchorPublisherTests(unittest.TestCase):
                 replacement_revision=5,
                 replacement_sha256=self.new_pin,
                 approved=True,
+                _verify_before_replace=lambda: None,
             )
         self._assert_unchanged()
 
