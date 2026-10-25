@@ -419,5 +419,63 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             self.assertEqual(reads, 2)
 
 
+    def test_rejects_directory_permission_change_during_final_anchor_read(self) -> None:
+        from scripts.audit_signer_trust_anchor import _read_anchor_with_metadata
+
+        reads = 0
+
+        def relax_after_read(path: Path) -> tuple[dict[str, object], tuple[int, ...]]:
+            nonlocal reads
+            result = _read_anchor_with_metadata(path)
+            reads += 1
+            if reads == 3:
+                self.root.chmod(0o755)
+            return result
+
+        try:
+            with patch(
+                "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+                side_effect=relax_after_read,
+            ):
+                with self.assertRaisesRegex(ValueError, "private"):
+                    self._audit()
+            self.assertEqual(reads, 3)
+        finally:
+            self.root.chmod(0o700)
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
+    def test_rejects_directory_replacement_during_final_anchor_read(self) -> None:
+        from scripts.audit_signer_trust_anchor import _read_anchor_with_metadata
+
+        displaced = self.root.with_name(self.root.name + "-late-previous")
+        reads = 0
+
+        def replace_after_read(path: Path) -> tuple[dict[str, object], tuple[int, ...]]:
+            nonlocal reads
+            result = _read_anchor_with_metadata(path)
+            reads += 1
+            if reads == 3:
+                self.root.rename(displaced)
+                self.root.mkdir(mode=0o700)
+                self.anchor.write_bytes((displaced / "anchor.json").read_bytes())
+                self.anchor.chmod(0o600)
+            return result
+
+        try:
+            with patch(
+                "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+                side_effect=replace_after_read,
+            ):
+                with self.assertRaisesRegex(ValueError, "directory changed"):
+                    self._audit()
+            self.assertEqual(reads, 3)
+        finally:
+            if displaced.exists():
+                if self.root.exists():
+                    shutil.rmtree(self.root)
+                displaced.rename(self.root)
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
