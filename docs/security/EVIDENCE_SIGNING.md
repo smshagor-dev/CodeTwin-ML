@@ -165,6 +165,15 @@ The publisher preserves that initial lock metadata and **checks the opened
 lock descriptor and lock pathname again after the signed-policy verification**,
 immediately before attempting publication. An observed intervening lock
 replacement or in-place metadata change is rejected without publishing.
+After staging and fsyncing the temporary anchor, the authenticated CLI
+repeats the signed-policy signature, revision, key-separation and independent
+pin verification once more before renaming. An observed late input change or
+verification rejection leaves the previous anchor in place and cleans up the
+temporary file. This adds a bounded observation, not an atomic snapshot or
+privileged rollback protection; an uncooperative writer can still change
+policy files after the last verification. The internal filesystem primitive
+reuses its caller-supplied verification hook, which cannot prove the hook is
+honest or that the authority private key has protected custody.
 The publisher also rechecks the same opened lock and pathname **after**
 staging and fsyncing the temporary anchor, immediately before the rename.
 Observed lock replacement or metadata mutation during staging fails closed
