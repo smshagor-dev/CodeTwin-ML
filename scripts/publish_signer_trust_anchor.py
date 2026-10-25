@@ -13,8 +13,8 @@ import argparse
 import json
 import os
 from pathlib import Path
+import secrets
 import stat
-import tempfile
 from typing import Any, Callable
 
 if __package__:
@@ -149,26 +149,52 @@ def _lock_directory(directory: Path, anchor_name: str) -> int:
         raise
 
 
-def _atomic_replace(path: Path, anchor: dict[str, Any]) -> None:
+def _atomic_replace(
+    path: Path, anchor: dict[str, Any], expected_directory_identity: tuple[int, int]
+) -> None:
     payload = (json.dumps(anchor, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
     if len(payload) > MAX_ANCHOR_BYTES:
         raise ValueError("Replacement trust anchor exceeds size limit")
-    fd, temporary = tempfile.mkstemp(prefix=".trust-anchor-", suffix=".tmp", dir=path.parent)
+
+    # Pin all filesystem mutations to one verified directory descriptor.
+    # A pathname swap after opening must not redirect the temporary file,
+    # rename or durability sync into a different directory.
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary: str | None = None
     try:
+        opened = os.fstat(directory_fd)
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or opened.st_uid != os.geteuid()
+            or opened.st_mode & 0o077
+            or (opened.st_dev, opened.st_ino) != expected_directory_identity
+            or _private_directory(path.parent) != expected_directory_identity
+        ):
+            raise ValueError("Anchor directory changed before atomic replacement")
+
+        temporary = ".trust-anchor-" + secrets.token_hex(16) + ".tmp"
+        fd = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600, dir_fd=directory_fd,
+        )
         with os.fdopen(fd, "wb") as stream:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        # On POSIX, syncing the containing directory makes the rename durable.
-        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        if _private_directory(path.parent) != expected_directory_identity:
+            raise ValueError("Anchor directory changed before atomic replacement")
+        os.replace(
+            temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
+        )
+        # Sync the *same* directory inode used for the rename.
+        os.fsync(directory_fd)
     finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        if temporary is not None:
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass  # Successful rename already consumed the temporary name.
+        os.close(directory_fd)
 
 
 def publish(
@@ -225,7 +251,9 @@ def publish(
             "minimum_revision": replacement_revision,
             "signed_policy_sha256_hex": replacement_sha256,
         }
-        _atomic_replace(path, replacement)
+        _atomic_replace(path, replacement, directory_identity)
+        if _private_directory(path.parent) != directory_identity:
+            raise ValueError("Anchor directory changed after publication")
         if _read_anchor(path) != replacement:
             raise ValueError("Published anchor failed readback verification")
         return replacement
