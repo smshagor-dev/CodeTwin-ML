@@ -87,8 +87,11 @@ continuity, and both exact-envelope SHA-256 pins before attempting the update.
 It requires Python 3 and the pinned `cryptography==46.0.4` dependency.
 The CLI and `publish_verified` are the authenticated publication entry
 points. The internal `_publish_anchor` filesystem primitive now refuses
-publication without a verification callback; direct calls to that internal
-primitive are unsupported. A Python caller could supply a dishonest callback,
+publication without a callable verification hook, and rejects an explicit
+`False` or any non-`None`, non-`True` return value before writing. Verification
+hooks must raise on failure or return `False`; returning `None` denotes a
+completed check, **not** independently proven authenticity. Direct calls to
+that internal primitive are unsupported. A Python caller could supply a dishonest callback,
 so this guard prevents accidental omission of verification, **not** malicious
 code running with the administrator's filesystem privileges. The external
 authority private key remains outside this application.
