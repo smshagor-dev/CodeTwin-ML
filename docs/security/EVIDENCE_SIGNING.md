@@ -240,7 +240,11 @@ private POSIX anchor directory, the existing anchor record, the signed
 policy's Ed25519 authority signature and signer-key separation, and
 equality with **all three** independently trusted inputs. It re-reads
 the anchor and the signed-policy file to detect changes observed during
-the audit. The policy re-read compares exact file bytes, so a whitespace-only
+the audit. The anchor re-read compares both parsed values and inode metadata
+(including ownership, permissions, size and timestamps), rejecting observed
+same-content inode swaps or in-place metadata changes. It also rechecks the
+private directory device/inode between reads. The policy re-read compares exact
+file bytes, so a whitespace-only
 JSON rewrite or a policy symlink swap also fails closed (exit code 2), even
 when the typed-envelope digest remains the same. This is a point-in-time
 comparison, not continuous filesystem monitoring. A stale anchor, changed
