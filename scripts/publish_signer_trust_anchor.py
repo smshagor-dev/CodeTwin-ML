@@ -124,7 +124,7 @@ def _read_anchor(path: Path) -> dict[str, Any]:
     return value
 
 
-def _lock_directory(directory: Path, anchor_name: str) -> int:
+def _lock_directory(directory: Path, anchor_name: str) -> tuple[int, tuple[int, ...]]:
     # Persistent lock inode: never unlink it, which could split flock domains.
     import fcntl
 
@@ -143,10 +143,23 @@ def _lock_directory(directory: Path, anchor_name: str) -> int:
             or _anchor_metadata(locked) != _anchor_metadata(lock_path.lstat())
         ):
             raise ValueError("Anchor lock changed while acquiring")
-        return fd
+        return fd, _anchor_metadata(locked)
     except BaseException:
         os.close(fd)
         raise
+
+
+def _check_lock_unchanged(
+    fd: int, lock_path: Path, expected_metadata: tuple[int, ...]
+) -> None:
+    """Reject observed lock-file replacement or mutation after policy checks."""
+    opened = os.fstat(fd)
+    _private_regular_file(opened, "Anchor lock")
+    if (
+        _anchor_metadata(opened) != expected_metadata
+        or _anchor_metadata(lock_path.lstat()) != expected_metadata
+    ):
+        raise ValueError("Anchor lock changed before publication")
 
 
 def _atomic_replace(
@@ -223,7 +236,7 @@ def publish(
 
     path = Path(os.path.abspath(anchor_file))
     directory_identity = _private_directory(path.parent)
-    lock_fd = _lock_directory(path.parent, path.name)
+    lock_fd, lock_metadata = _lock_directory(path.parent, path.name)
     try:
         # The path may have changed while waiting for the advisory lock.
         if _private_directory(path.parent) != directory_identity:
@@ -245,6 +258,7 @@ def publish(
         # This remains a point-in-time check, not an atomic path snapshot.
         if _private_directory(path.parent) != directory_identity:
             raise ValueError("Anchor directory changed before publication")
+        _check_lock_unchanged(lock_fd, path.parent / (path.name + ".lock"), lock_metadata)
         replacement = {
             "format": FORMAT,
             "authority_public_key_hex": authority_public_key_hex,
