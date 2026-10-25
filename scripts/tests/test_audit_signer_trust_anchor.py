@@ -346,5 +346,68 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                     displaced.rename(self.root)
 
 
+    def test_rejects_anchor_value_change_after_final_policy_read(self) -> None:
+        from scripts.audit_signer_trust_anchor import _read_signed_policy_bytes
+
+        # The signed policy lives elsewhere, so its parent metadata remains
+        # unchanged when the anchor file is modified.
+        with tempfile.TemporaryDirectory() as policy_directory:
+            external_policy = Path(policy_directory) / "signed-policy.json"
+            external_policy.write_bytes(self.policy.read_bytes())
+            reads = 0
+
+            def change_after_read(path: Path) -> bytes:
+                nonlocal reads
+                raw = _read_signed_policy_bytes(path)
+                reads += 1
+                if reads == 2:
+                    self._write_anchor({**self.original, "minimum_revision": 9})
+                return raw
+
+            with patch(
+                "scripts.audit_signer_trust_anchor._read_signed_policy_bytes",
+                side_effect=change_after_read,
+            ):
+                with self.assertRaisesRegex(ValueError, "External anchor changed during audit"):
+                    audit_anchor(
+                        self.anchor, external_policy,
+                        authority_public_key_hex=self.authority_hex,
+                        expected_revision=8, expected_sha256=self.digest,
+                    )
+            self.assertEqual(reads, 2)
+
+    def test_rejects_identical_anchor_inode_swap_after_final_policy_read(self) -> None:
+        from scripts.audit_signer_trust_anchor import _read_signed_policy_bytes
+
+        with tempfile.TemporaryDirectory() as policy_directory:
+            external_policy = Path(policy_directory) / "signed-policy.json"
+            external_policy.write_bytes(self.policy.read_bytes())
+            displaced = self.root / "previous-anchor.json"
+            reads = 0
+
+            def replace_after_read(path: Path) -> bytes:
+                nonlocal reads
+                raw = _read_signed_policy_bytes(path)
+                reads += 1
+                if reads == 2:
+                    self.anchor.rename(displaced)
+                    self.anchor.write_bytes(displaced.read_bytes())
+                    self.anchor.chmod(0o600)
+                    self.assertNotEqual(self.anchor.stat().st_ino, displaced.stat().st_ino)
+                return raw
+
+            with patch(
+                "scripts.audit_signer_trust_anchor._read_signed_policy_bytes",
+                side_effect=replace_after_read,
+            ):
+                with self.assertRaisesRegex(ValueError, "External anchor changed during audit"):
+                    audit_anchor(
+                        self.anchor, external_policy,
+                        authority_public_key_hex=self.authority_hex,
+                        expected_revision=8, expected_sha256=self.digest,
+                    )
+            self.assertEqual(reads, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
