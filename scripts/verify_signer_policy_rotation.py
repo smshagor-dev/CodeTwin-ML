@@ -89,6 +89,23 @@ def _policy_parent_snapshot(path: Path) -> tuple[int, int, int, int, int]:
     )
 
 
+def _policy_path_snapshot(path: Path) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Observe a policy pathname and its parent across a full rotation check.
+
+    A valid signature and unchanged bytes do not detect a same-byte inode
+    replacement between the two bounded reads. This is only a point-in-time
+    observation, not an atomic snapshot or privileged rollback defense.
+    """
+    parent = _policy_parent_snapshot(path)
+    metadata = path.lstat()
+    fields = (
+        metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_uid,
+        metadata.st_gid, metadata.st_nlink, metadata.st_size,
+        metadata.st_mtime_ns, metadata.st_ctime_ns,
+    )
+    return parent, fields
+
+
 def _read_signed_policy_bytes(path: Path) -> bytes:
     path = Path(os.path.abspath(path))
     parent_before = _policy_parent_snapshot(path)
@@ -221,8 +238,15 @@ def verify_rotation_files(
     replacement_pin = _hex_bytes(replacement_sha256, 32, "Replacement independent pin")
     expected_revision = _positive_revision(expected_revision, "Expected revision")
     replacement_revision = _positive_revision(replacement_revision, "Replacement revision")
-    previous_bytes = _read_signed_policy_bytes(previous_policy_file)
-    replacement_bytes = _read_signed_policy_bytes(replacement_policy_file)
+    previous_path = Path(os.path.abspath(previous_policy_file))
+    replacement_path = Path(os.path.abspath(replacement_policy_file))
+    # Capture both inputs before verification; each individual bounded read
+    # already checks its own descriptor/path metadata, but identical-byte
+    # swaps between reads must also fail closed.
+    previous_snapshot = _policy_path_snapshot(previous_path)
+    replacement_snapshot = _policy_path_snapshot(replacement_path)
+    previous_bytes = _read_signed_policy_bytes(previous_path)
+    replacement_bytes = _read_signed_policy_bytes(replacement_path)
     previous = _parse_signed_policy(previous_bytes)
     replacement = _parse_signed_policy(replacement_bytes)
     previous_value, previous_digest = _validated_policy(previous, authority)
@@ -235,8 +259,14 @@ def verify_rotation_files(
         raise ValueError("Replacement policy revision must strictly increase")
     # Detect byte-level changes observed during signature verification before success.
     # This is not an atomic snapshot or a defense against privileged file replacement.
-    if _read_signed_policy_bytes(previous_policy_file) != previous_bytes:
+    if (
+        _read_signed_policy_bytes(previous_path) != previous_bytes
+        or _policy_path_snapshot(previous_path) != previous_snapshot
+    ):
         raise ValueError("Previous signed policy changed during verification")
-    if _read_signed_policy_bytes(replacement_policy_file) != replacement_bytes:
+    if (
+        _read_signed_policy_bytes(replacement_path) != replacement_bytes
+        or _policy_path_snapshot(replacement_path) != replacement_snapshot
+    ):
         raise ValueError("Replacement signed policy changed during verification")
     return replacement_value
