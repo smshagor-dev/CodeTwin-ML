@@ -231,7 +231,7 @@ def _atomic_replace(
         os.close(directory_fd)
 
 
-def publish(
+def _publish_anchor(
     anchor_file: Path,
     *,
     expected_revision: int,
@@ -242,9 +242,11 @@ def publish(
     approved: bool,
     _verify_before_replace: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    """CAS update a single public revision/digest record; never signs a policy."""
+    """Internal CAS primitive; a callback is mandatory but not an identity proof."""
     if not approved:
         raise ValueError("Explicit external administrator approval is required")
+    if _verify_before_replace is None:
+        raise ValueError("Signed-policy verification callback is required before publication")
     expected_revision = _positive_revision(expected_revision, "Expected revision")
     replacement_revision = _positive_revision(replacement_revision, "Replacement revision")
     if replacement_revision <= expected_revision:
@@ -273,8 +275,7 @@ def publish(
         # publisher lock immediately before the durable replacement. The
         # first preflight alone cannot detect a signed-policy swap between
         # external validation and acquiring the publication lock.
-        if _verify_before_replace is not None:
-            _verify_before_replace()
+        _verify_before_replace()
         # Do not publish into a swapped or newly exposed directory.
         # This remains a point-in-time check, not an atomic path snapshot.
         if _private_directory(path.parent) != directory_identity:
@@ -328,7 +329,7 @@ def publish_verified(
     # Fail before acquiring a lock on invalid policy inputs, and repeat the
     # same signature/pin validation while holding the publication lock.
     verify_current_inputs()
-    return publish(
+    return _publish_anchor(
         anchor_file,
         expected_revision=expected_revision,
         expected_sha256=expected_sha256,
