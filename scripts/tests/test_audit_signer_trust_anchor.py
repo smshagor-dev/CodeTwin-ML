@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import tempfile
 import unittest
@@ -269,6 +270,81 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "non-symlink"):
                 self._audit()
+
+
+    def test_rejects_anchor_directory_permission_change_after_final_policy_read(self) -> None:
+        from scripts.audit_signer_trust_anchor import _read_signed_policy_bytes
+
+        # Keep the policy in a separate directory: its parent check must not
+        # incidentally detect a change to the independent anchor directory.
+        with tempfile.TemporaryDirectory() as policy_directory:
+            external_policy = Path(policy_directory) / "signed-policy.json"
+            external_policy.write_bytes(self.policy.read_bytes())
+            reads = 0
+
+            def relax_after_read(path: Path) -> bytes:
+                nonlocal reads
+                raw = _read_signed_policy_bytes(path)
+                reads += 1
+                if reads == 2:
+                    self.root.chmod(0o755)
+                return raw
+
+            try:
+                with patch(
+                    "scripts.audit_signer_trust_anchor._read_signed_policy_bytes",
+                    side_effect=relax_after_read,
+                ):
+                    with self.assertRaisesRegex(ValueError, "private"):
+                        audit_anchor(
+                            self.anchor, external_policy,
+                            authority_public_key_hex=self.authority_hex,
+                            expected_revision=8, expected_sha256=self.digest,
+                        )
+                self.assertEqual(reads, 2)
+            finally:
+                self.root.chmod(0o700)
+
+    def test_rejects_anchor_directory_replacement_after_final_policy_read(self) -> None:
+        from scripts.audit_signer_trust_anchor import _read_signed_policy_bytes
+
+        with tempfile.TemporaryDirectory() as policy_directory:
+            external_policy = Path(policy_directory) / "signed-policy.json"
+            external_policy.write_bytes(self.policy.read_bytes())
+            displaced = self.root.with_name(self.root.name + "-previous")
+            reads = 0
+
+            def replace_after_read(path: Path) -> bytes:
+                nonlocal reads
+                raw = _read_signed_policy_bytes(path)
+                reads += 1
+                if reads == 2:
+                    self.root.rename(displaced)
+                    self.root.mkdir(mode=0o700)
+                    # Even a byte-identical anchor in a new directory must not
+                    # pass an audit that started in a different directory.
+                    self.anchor.write_bytes((displaced / "anchor.json").read_bytes())
+                    self.anchor.chmod(0o600)
+                return raw
+
+            try:
+                with patch(
+                    "scripts.audit_signer_trust_anchor._read_signed_policy_bytes",
+                    side_effect=replace_after_read,
+                ):
+                    with self.assertRaisesRegex(ValueError, "directory changed"):
+                        audit_anchor(
+                            self.anchor, external_policy,
+                            authority_public_key_hex=self.authority_hex,
+                            expected_revision=8, expected_sha256=self.digest,
+                        )
+                self.assertEqual(reads, 2)
+            finally:
+                if displaced.exists():
+                    if self.root.exists():
+                        shutil.rmtree(self.root)
+                    displaced.rename(self.root)
+
 
 if __name__ == "__main__":
     unittest.main()
