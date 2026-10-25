@@ -136,7 +136,11 @@ device and inode; they do not constitute an atomic directory snapshot or
 prevent a privileged writer from swapping the path after the final check.
 
 The signed policy inputs are limited to 16 KiB each and read from regular
-non-symlink files. Signed-policy inputs must also not be group- or world-writable
+non-symlink files. Both signed-policy and anchor readers use nonblocking
+opens, so an observed FIFO substitution between the pathname check and
+open cannot stall the verifier waiting for a pipe writer; the subsequent
+file-type check rejects the substituted inode. This is a bounded local
+race hardening measure, not protection against privileged replacement. Signed-policy inputs must also not be group- or world-writable
 (permissions such as 0600 or 0644 are accepted); the check is repeated on
 the opened file descriptor. The reader also checks inode metadata again
 after reading, rejecting observed changes to size, ownership, link count,

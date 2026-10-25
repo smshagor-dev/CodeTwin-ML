@@ -99,7 +99,9 @@ def _read_signed_policy_bytes(path: Path) -> bytes:
         raise ValueError("Signed policy must not be writable by group or others")
     if before.st_size > MAX_POLICY_BYTES:
         raise ValueError("Signed policy exceeds 16 KiB")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    # A FIFO swapped in after lstat must not block the verifier at open().
+    # O_NONBLOCK does not alter reads from an ordinary regular file.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as stream:
         after = os.fstat(stream.fileno())
         if (
