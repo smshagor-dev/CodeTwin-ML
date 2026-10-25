@@ -141,7 +141,10 @@ non-symlink files. Signed-policy inputs must also not be group- or world-writabl
 the opened file descriptor. The reader also checks inode metadata again
 after reading, rejecting observed changes to size, ownership, link count,
 permissions, or modification/change timestamps, even if the JSON bytes are
-restored. This is a best-effort race check, not a stable filesystem snapshot:
+restored. It now also compares the post-read pathname metadata with the
+opened descriptor, rejecting observed inode replacements and symlink swaps
+even if the replacement contains identical signed JSON bytes. This is a
+best-effort race check, not a stable filesystem snapshot:
 changes between checks or by a privileged writer may still escape detection.
 The POSIX policy reader also rejects symlinks in any directory component
 and requires the immediate parent directory to be owned by the current user

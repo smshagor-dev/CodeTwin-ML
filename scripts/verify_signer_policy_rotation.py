@@ -123,6 +123,14 @@ def _read_signed_policy_bytes(path: Path) -> bytes:
             raise ValueError("Signed policy changed while reading")
     if len(raw) > MAX_POLICY_BYTES:
         raise ValueError("Signed policy exceeds 16 KiB")
+    # The opened descriptor can remain valid after the pathname is swapped.
+    # Reject an observed replacement even when the new inode has identical bytes.
+    path_after = path.lstat()
+    if any(
+        getattr(finished, field) != getattr(path_after, field)
+        for field in metadata_fields
+    ):
+        raise ValueError("Signed policy path changed during read")
     if _policy_parent_snapshot(path) != parent_before:
         raise ValueError("Signed-policy parent directory changed while reading")
     return raw
