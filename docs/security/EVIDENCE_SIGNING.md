@@ -165,6 +165,12 @@ The publisher preserves that initial lock metadata and **checks the opened
 lock descriptor and lock pathname again after the signed-policy verification**,
 immediately before attempting publication. An observed intervening lock
 replacement or in-place metadata change is rejected without publishing.
+The publisher also rechecks the same opened lock and pathname **after**
+staging and fsyncing the temporary anchor, immediately before the rename.
+Observed lock replacement or metadata mutation during staging fails closed
+without replacing the previous anchor; the temporary file is cleaned up.
+This extra observation does not make the advisory lock atomic or stop a
+privileged writer from changing it after the final check.
 This narrows accidental split-lock races, but an uncooperative or privileged
 writer can still replace the lock pathname after the final check; these
 point-in-time checks are not an atomic lock custody guarantee. Directory
