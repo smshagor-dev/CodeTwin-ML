@@ -159,6 +159,10 @@ timestamps, so these directory identity checks deliberately compare only
 device and inode; they do not constitute an atomic directory snapshot or
 prevent a privileged writer from swapping the path after the final check.
 
+Previous and replacement signed policies must be distinct filesystem inodes;
+reusing one file or a hard-link alias fails closed before signature validation.
+This prevents ambiguous sequential verification of two generations from one
+mutable file, but it is not a filesystem snapshot or privileged rollback defense.
 The signed policy inputs are limited to 16 KiB each and read from regular
 non-symlink files. Both signed-policy and anchor readers use nonblocking
 opens, so an observed FIFO substitution between the pathname check and
