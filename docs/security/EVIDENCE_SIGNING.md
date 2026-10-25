@@ -271,7 +271,12 @@ same-content inode swaps or in-place metadata changes. It also rechecks the
 private directory device/inode between reads and once more after the final
 policy read, rejecting observed directory replacement or permission relaxation
 even when the policy is stored elsewhere and the anchor bytes are unchanged.
-These observations do not provide an atomic filesystem snapshot. The policy re-read compares exact
+After the final policy read, the audit also re-reads the anchor file and compares
+its parsed values and inode metadata with the initial read. Observed anchor
+rewrites or identical-content inode swaps during that last policy read fail
+closed. These observations do not provide an atomic filesystem snapshot:
+changes after the final check or between observations can still escape detection.
+The policy re-read compares exact
 file bytes, while the audit also compares policy inode metadata (including
 ownership, mode, size and timestamps) and parent-directory identity across
 both reads. Observed identical-byte inode swaps, in-place metadata changes,

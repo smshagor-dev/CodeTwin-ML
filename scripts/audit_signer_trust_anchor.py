@@ -100,6 +100,12 @@ def audit_anchor(
     # custody at the final audit boundary; this is not an atomic snapshot.
     if _private_directory(path.parent) != directory_identity:
         raise ValueError("External anchor directory changed during audit")
+    # The final policy read may race with an independent anchor-file writer.
+    # Compare both values and inode metadata again at the return boundary.
+    # This is a bounded observation, not a filesystem snapshot.
+    final_anchor, final_metadata = _read_anchor_with_metadata(path)
+    if final_anchor != before or final_metadata != before_metadata:
+        raise ValueError("External anchor changed during audit")
     return {
         "status": "verified_against_supplied_pins",
         "minimum_revision": revision,
