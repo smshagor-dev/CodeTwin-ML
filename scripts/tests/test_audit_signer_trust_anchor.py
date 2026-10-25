@@ -156,6 +156,38 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                 self._audit()
 
 
+    def test_rejects_identical_anchor_inode_replacement_during_audit(self) -> None:
+        from scripts.audit_signer_trust_anchor import _validated_policy
+
+        def replace(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+            result = _validated_policy(envelope, authority)
+            previous = self.root / "previous-anchor.json"
+            self.anchor.rename(previous)
+            self._write_anchor(self.original)
+            self.assertNotEqual(self.anchor.stat().st_ino, previous.stat().st_ino)
+            return result
+
+        with patch("scripts.audit_signer_trust_anchor._validated_policy", side_effect=replace):
+            with self.assertRaisesRegex(ValueError, "External anchor changed during audit"):
+                self._audit()
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
+    def test_rejects_anchor_metadata_mutation_during_audit(self) -> None:
+        from scripts.audit_signer_trust_anchor import _validated_policy
+
+        def touch(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+            result = _validated_policy(envelope, authority)
+            metadata = self.anchor.stat()
+            os.utime(
+                self.anchor,
+                ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000),
+            )
+            return result
+
+        with patch("scripts.audit_signer_trust_anchor._validated_policy", side_effect=touch):
+            with self.assertRaisesRegex(ValueError, "External anchor changed during audit"):
+                self._audit()
+
     def test_detects_policy_changed_during_signature_verification(self) -> None:
         from scripts.audit_signer_trust_anchor import _validated_policy
 
