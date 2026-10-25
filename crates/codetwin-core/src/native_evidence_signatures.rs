@@ -639,8 +639,8 @@ mod tests {
         );
 
         for field in ["specialists", "receipts", "handoffs", "delegation"] {
-            let marker = format!("\\"{field}\\":[{{");
-            let altered = original.replacen(&marker, &format!("{marker}\\"position\\":1,"), 1);
+            let marker = format!("\"{field}\":[{{");
+            let altered = original.replacen(&marker, &format!("{marker}\"position\":1,"), 1);
             assert_ne!(altered, original);
             // Ordinary Value parsing collapses the duplicate into the same
             // signed content. Strict evidence parsing must reject the raw JSON.
@@ -653,8 +653,8 @@ mod tests {
         }
 
         let deeply_nested = original.replacen(
-            "\\"status\\":\\"ok\\"",
-            "\\"status\\":\\"ok\\",\\"status\\":\\"ok\\"",
+            "\"status\":\"ok\"",
+            "\"status\":\"ok\",\"status\":\"ok\"",
             1,
         );
         assert_ne!(deeply_nested, original);
