@@ -422,6 +422,58 @@ class TrustAnchorPublisherTests(unittest.TestCase):
                 moved.rename(self.root)
         self._assert_unchanged()
 
+    def test_rejects_lock_replacement_during_staging_before_rename(self) -> None:
+        lock_path = self.root / "anchor.json.lock"
+        previous = self.root / "previous-staging-lock"
+        original_fsync = os.fsync
+        swapped = False
+
+        def swap_after_staging(fd: int) -> None:
+            nonlocal swapped
+            original_fsync(fd)
+            if not swapped:
+                swapped = True
+                lock_path.rename(previous)
+                lock_path.write_text("replacement lock", encoding="utf-8")
+                lock_path.chmod(0o600)
+
+        with patch(
+            "scripts.publish_signer_trust_anchor.os.fsync",
+            side_effect=swap_after_staging,
+        ):
+            with self.assertRaisesRegex(ValueError, "Anchor lock changed before publication"):
+                self._publish()
+        self.assertTrue(swapped)
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+        self.assertTrue(previous.is_file())
+
+    def test_rejects_lock_metadata_mutation_during_staging_before_rename(self) -> None:
+        lock_path = self.root / "anchor.json.lock"
+        original_fsync = os.fsync
+        changed = False
+
+        def touch_after_staging(fd: int) -> None:
+            nonlocal changed
+            original_fsync(fd)
+            if not changed:
+                changed = True
+                metadata = lock_path.stat()
+                os.utime(
+                    lock_path,
+                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000),
+                )
+
+        with patch(
+            "scripts.publish_signer_trust_anchor.os.fsync",
+            side_effect=touch_after_staging,
+        ):
+            with self.assertRaisesRegex(ValueError, "Anchor lock changed before publication"):
+                self._publish()
+        self.assertTrue(changed)
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
     def test_rejects_lock_path_replacement_after_policy_verification(self) -> None:
         lock_path = self.root / "anchor.json.lock"
         previous = self.root / "previous-lock"
