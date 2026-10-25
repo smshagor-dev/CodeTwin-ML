@@ -128,7 +128,9 @@ immediately before replacement. A detected directory swap, symlink, or
 permission relaxation fails closed. Lock-file creation may change directory
 timestamps, so these directory identity checks deliberately compare only
 device and inode; they do not constitute an atomic directory snapshot or
-prevent a privileged writer from swapping the path after the final check. The signed policy inputs are limited to 16 KiB each and read from regular
+prevent a privileged writer from swapping the path after the final check.
+
+The signed policy inputs are limited to 16 KiB each and read from regular
 non-symlink files. Signed-policy inputs must also not be group- or world-writable
 (permissions such as 0600 or 0644 are accepted); the check is repeated on
 the opened file descriptor. The reader also checks inode metadata again
@@ -156,8 +158,17 @@ replacing the anchor. Independent policy files are not locked, so a privileged
 or noncooperating writer can still replace them after the second check. The
 replacement is written to a
 private temporary file, flushed, atomically renamed over the old file, and
-the directory is synced. An interrupted operation can require administrator
-inspection; if durability fails *after* rename, do not blindly retry.
+the directory is synced. Publication now opens and validates the private
+directory's device/inode, then creates the temporary file, renames it, and
+syncs **through that same directory descriptor**. A pathname swap after the
+descriptor opens cannot redirect the rename into the swapped-in directory;
+the publisher also checks the directory pathname after publication and
+rejects observed changes. These checks are not atomic path custody: a
+privileged writer may still move the original directory after the final
+pre-rename check. The old directory can already contain the replacement
+even when the post-publication check reports failure. An interrupted
+operation can require administrator inspection; if durability fails *after*
+rename, do not blindly retry or assume the old revision remains.
 
 The public anchor reader checks its opened inode metadata (owner, mode,
 link count, size, and modification/change timestamps) before and after the
