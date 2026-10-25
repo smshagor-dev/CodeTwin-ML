@@ -268,7 +268,10 @@ the anchor and the signed-policy file to detect changes observed during
 the audit. The anchor re-read compares both parsed values and inode metadata
 (including ownership, permissions, size and timestamps), rejecting observed
 same-content inode swaps or in-place metadata changes. It also rechecks the
-private directory device/inode between reads. The policy re-read compares exact
+private directory device/inode between reads and once more after the final
+policy read, rejecting observed directory replacement or permission relaxation
+even when the policy is stored elsewhere and the anchor bytes are unchanged.
+These observations do not provide an atomic filesystem snapshot. The policy re-read compares exact
 file bytes, while the audit also compares policy inode metadata (including
 ownership, mode, size and timestamps) and parent-directory identity across
 both reads. Observed identical-byte inode swaps, in-place metadata changes,

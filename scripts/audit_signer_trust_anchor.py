@@ -95,6 +95,11 @@ def audit_anchor(
         or _anchor_metadata(policy_path.lstat()) != policy_metadata_before
     ):
         raise ValueError("Signed policy changed during audit")
+    # The anchor directory is separate from the policy's parent and can be
+    # replaced or made nonprivate after the last anchor read. Recheck its
+    # custody at the final audit boundary; this is not an atomic snapshot.
+    if _private_directory(path.parent) != directory_identity:
+        raise ValueError("External anchor directory changed during audit")
     return {
         "status": "verified_against_supplied_pins",
         "minimum_revision": revision,
