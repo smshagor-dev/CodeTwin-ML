@@ -21,9 +21,15 @@ fields. Previously, an extra top-level or manifest claim could be silently
 discarded by deserialization while the signature on the recognized fields
 still verified. Rejecting such fields avoids presenting unsigned additions
 as authenticated evidence. The nested specialist, receipt, handoff and
-delegation JSON values remain part of the signed payload, but a valid
-signature alone still does not establish their truth or prove an operator's
-approval. A fresh SQLite evidence comparison remains necessary.
+delegation JSON values remain part of the signed payload. Imported evidence
+now rejects duplicate JSON object keys recursively within those values, too:
+otherwise a duplicate nested claim could be collapsed by a generic JSON parser
+into the original signed value while the raw document appeared to say more.
+This validation applies when deserializing a signed evidence envelope into its
+typed Rust representation; it does not authenticate an untrusted raw JSON
+viewer or prove the truth of a specialist's report. A valid signature alone
+still does not prove operator approval. A fresh SQLite evidence comparison
+remains necessary.
 
 For signer rotation/revocation, the stricter desktop verifier now requires
 **three independent inputs**, in addition to the signed policy JSON:
