@@ -419,6 +419,48 @@ class VerifiedRotationTests(unittest.TestCase):
         finally:
             self.replacement.chmod(0o600)
 
+    def test_rejects_in_place_policy_metadata_change_while_opening(self) -> None:
+        from scripts.verify_signer_policy_rotation import _read_signed_policy_bytes
+
+        original_open = os.open
+        for target in (self.previous, self.replacement):
+            for mutation in ("mode", "mtime"):
+                with self.subTest(policy=target.name, mutation=mutation):
+                    opened = 0
+
+                    def mutate_before_open(
+                        path: object, flags: int, *args: object, **kwargs: object
+                    ) -> int:
+                        nonlocal opened
+                        if os.fspath(path) == os.fspath(target):
+                            opened += 1
+                            if mutation == "mode":
+                                # Both 0600 and 0400 are accepted policy modes;
+                                # changing between them must still fail closed.
+                                target.chmod(0o400)
+                            else:
+                                metadata = target.stat()
+                                os.utime(
+                                    target,
+                                    ns=(
+                                        metadata.st_atime_ns,
+                                        metadata.st_mtime_ns + 2_000_000_000,
+                                    ),
+                                )
+                        return original_open(path, flags, *args, **kwargs)
+
+                    try:
+                        with patch(
+                            "scripts.verify_signer_policy_rotation.os.open",
+                            side_effect=mutate_before_open,
+                        ):
+                            with self.assertRaisesRegex(ValueError, "changed while opening"):
+                                _read_signed_policy_bytes(target)
+                        self.assertEqual(opened, 1)
+                        self._unchanged()
+                    finally:
+                        target.chmod(0o600)
+
     def test_rejects_permission_change_during_policy_read(self) -> None:
         original_fstat = os.fstat
         for target in (self.previous, self.replacement):
