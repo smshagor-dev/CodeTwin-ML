@@ -15,19 +15,25 @@ import os
 from pathlib import Path
 
 if __package__:
-    from .publish_signer_trust_anchor import _private_directory, _read_anchor_with_metadata
+    from .publish_signer_trust_anchor import (
+        _anchor_metadata, _private_directory, _read_anchor_with_metadata,
+    )
     from .verify_signer_policy_rotation import (
         _hex_bytes,
         _parse_signed_policy,
+        _policy_parent_snapshot,
         _positive_revision,
         _read_signed_policy_bytes,
         _validated_policy,
     )
 else:
-    from publish_signer_trust_anchor import _private_directory, _read_anchor_with_metadata
+    from publish_signer_trust_anchor import (
+        _anchor_metadata, _private_directory, _read_anchor_with_metadata,
+    )
     from verify_signer_policy_rotation import (
         _hex_bytes,
         _parse_signed_policy,
+        _policy_parent_snapshot,
         _positive_revision,
         _read_signed_policy_bytes,
         _validated_policy,
@@ -62,7 +68,17 @@ def audit_anchor(
     ):
         raise ValueError("External anchor differs from independently trusted values")
 
-    policy_before_bytes = _read_signed_policy_bytes(signed_policy_file)
+    # Capture path and parent identity across the *entire* audit, not just
+    # within each bounded policy read. Identical-byte inode swaps must fail.
+    policy_path = Path(os.path.abspath(signed_policy_file))
+    policy_parent_before = _policy_parent_snapshot(policy_path)
+    policy_metadata_before = _anchor_metadata(policy_path.lstat())
+    policy_before_bytes = _read_signed_policy_bytes(policy_path)
+    if (
+        _policy_parent_snapshot(policy_path) != policy_parent_before
+        or _anchor_metadata(policy_path.lstat()) != policy_metadata_before
+    ):
+        raise ValueError("Signed policy changed during audit")
     policy_before = _parse_signed_policy(policy_before_bytes)
     policy_revision, policy_digest = _validated_policy(policy_before, authority)
     if policy_revision != revision or policy_digest != digest:
@@ -73,7 +89,11 @@ def audit_anchor(
     after, after_metadata = _read_anchor_with_metadata(path)
     if after != before or after_metadata != before_metadata:
         raise ValueError("External anchor changed during audit")
-    if _read_signed_policy_bytes(signed_policy_file) != policy_before_bytes:
+    if (
+        _read_signed_policy_bytes(policy_path) != policy_before_bytes
+        or _policy_parent_snapshot(policy_path) != policy_parent_before
+        or _anchor_metadata(policy_path.lstat()) != policy_metadata_before
+    ):
         raise ValueError("Signed policy changed during audit")
     return {
         "status": "verified_against_supplied_pins",
