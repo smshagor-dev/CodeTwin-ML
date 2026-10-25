@@ -192,6 +192,57 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         self._assert_unchanged()
         self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
 
+    def test_rejects_directory_permission_change_before_replace(self) -> None:
+        def expose_directory() -> None:
+            self.root.chmod(0o755)
+
+        try:
+            with self.assertRaisesRegex(ValueError, "directory must be owned"):
+                self._publish(_verify_before_replace=expose_directory)
+        finally:
+            self.root.chmod(0o700)
+        self._assert_unchanged()
+
+    def test_rejects_directory_inode_swap_before_replace(self) -> None:
+        moved = self.root.with_name(self.root.name + "-previous")
+
+        def replace_directory() -> None:
+            self.root.rename(moved)
+            self.root.mkdir(mode=0o700)
+            self._write_anchor(self.original)
+
+        try:
+            with self.assertRaisesRegex(ValueError, "directory changed before publication"):
+                self._publish(_verify_before_replace=replace_directory)
+        finally:
+            if moved.exists():
+                self.anchor.unlink()
+                self.root.rmdir()
+                moved.rename(self.root)
+        self._assert_unchanged()
+
+    def test_rejects_directory_symlink_swap_while_waiting_for_lock(self) -> None:
+        import fcntl
+
+        moved = self.root.with_name(self.root.name + "-previous")
+        original_flock = fcntl.flock
+
+        def swap_after_lock(fd: int, operation: int) -> None:
+            original_flock(fd, operation)
+            if operation == fcntl.LOCK_EX:
+                self.root.rename(moved)
+                self.root.symlink_to(moved, target_is_directory=True)
+
+        try:
+            with patch("fcntl.flock", side_effect=swap_after_lock):
+                with self.assertRaisesRegex(ValueError, "Symlink"):
+                    self._publish()
+        finally:
+            if moved.exists():
+                self.root.unlink()
+                moved.rename(self.root)
+        self._assert_unchanged()
+
     def test_rejects_lock_path_replacement_while_acquiring(self) -> None:
         import fcntl
 
