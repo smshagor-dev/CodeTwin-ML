@@ -109,6 +109,11 @@ def audit_anchor(
     final_anchor, final_metadata = _read_anchor_with_metadata(path)
     if final_anchor != before or final_metadata != before_metadata:
         raise ValueError("External anchor changed during audit")
+    # The final anchor read itself can race with a directory replacement or
+    # permission relaxation. Check the directory once more before success.
+    # This remains a bounded observation, not an atomic filesystem snapshot.
+    if _private_directory(path.parent) != directory_identity:
+        raise ValueError("External anchor directory changed during audit")
     return {
         "status": "verified_against_supplied_pins",
         "minimum_revision": revision,
