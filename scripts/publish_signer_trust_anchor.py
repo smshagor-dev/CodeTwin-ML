@@ -89,7 +89,7 @@ def _anchor_metadata(value: os.stat_result) -> tuple[int, ...]:
     )
 
 
-def _read_anchor(path: Path) -> dict[str, Any]:
+def _read_anchor_with_metadata(path: Path) -> tuple[dict[str, Any], tuple[int, ...]]:
     before = path.lstat()
     _private_regular_file(before, "Trust anchor")
     if before.st_size > MAX_ANCHOR_BYTES:
@@ -121,7 +121,11 @@ def _read_anchor(path: Path) -> dict[str, Any]:
     _hex_pin(value["authority_public_key_hex"], "Authority public key")
     _hex_pin(value["signed_policy_sha256_hex"], "Signed policy SHA-256")
     _positive_revision(value["minimum_revision"], "Stored revision")
-    return value
+    return value, _anchor_metadata(finished)
+
+
+def _read_anchor(path: Path) -> dict[str, Any]:
+    return _read_anchor_with_metadata(path)[0]
 
 
 def _lock_directory(directory: Path, anchor_name: str) -> tuple[int, tuple[int, ...]]:
@@ -163,7 +167,10 @@ def _check_lock_unchanged(
 
 
 def _atomic_replace(
-    path: Path, anchor: dict[str, Any], expected_directory_identity: tuple[int, int]
+    path: Path,
+    anchor: dict[str, Any],
+    expected_directory_identity: tuple[int, int],
+    expected_anchor_metadata: tuple[int, ...],
 ) -> None:
     payload = (json.dumps(anchor, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
     if len(payload) > MAX_ANCHOR_BYTES:
@@ -194,6 +201,13 @@ def _atomic_replace(
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
+        if _private_directory(path.parent) != expected_directory_identity:
+            raise ValueError("Anchor directory changed before atomic replacement")
+        # The lock serializes cooperating publishers only. Reject observed
+        # changes to the old anchor, even when its JSON values are identical.
+        _, current_metadata = _read_anchor_with_metadata(path)
+        if current_metadata != expected_anchor_metadata:
+            raise ValueError("Trust anchor changed before publication")
         if _private_directory(path.parent) != expected_directory_identity:
             raise ValueError("Anchor directory changed before atomic replacement")
         os.replace(
@@ -241,7 +255,7 @@ def publish(
         # The path may have changed while waiting for the advisory lock.
         if _private_directory(path.parent) != directory_identity:
             raise ValueError("Anchor directory changed while acquiring lock")
-        current = _read_anchor(path)
+        current, current_anchor_metadata = _read_anchor_with_metadata(path)
         if (
             current["minimum_revision"] != expected_revision
             or current["signed_policy_sha256_hex"] != expected_sha256
@@ -265,7 +279,7 @@ def publish(
             "minimum_revision": replacement_revision,
             "signed_policy_sha256_hex": replacement_sha256,
         }
-        _atomic_replace(path, replacement, directory_identity)
+        _atomic_replace(path, replacement, directory_identity, current_anchor_metadata)
         if _private_directory(path.parent) != directory_identity:
             raise ValueError("Anchor directory changed after publication")
         if _read_anchor(path) != replacement:
