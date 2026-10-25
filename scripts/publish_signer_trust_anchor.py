@@ -94,7 +94,9 @@ def _read_anchor_with_metadata(path: Path) -> tuple[dict[str, Any], tuple[int, .
     _private_regular_file(before, "Trust anchor")
     if before.st_size > MAX_ANCHOR_BYTES:
         raise ValueError("Trust anchor exceeds size limit")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    # Reject a FIFO swapped in after lstat without blocking in open().
+    # Regular anchor files are unaffected by O_NONBLOCK.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         opened = os.fstat(fd)
         _private_regular_file(opened, "Trust anchor")
