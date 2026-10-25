@@ -17,6 +17,7 @@ const DOMAIN: &[u8] = b"CodeTwin-ML/review-evidence/ed25519/v1\0";
 /// Self-contained metadata fingerprints, without raw scanned file contents,
 /// source snippets, model text or secrets from specialist results.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewEvidenceManifest {
     pub format: String,
     pub run_id: String,
@@ -33,6 +34,7 @@ pub struct ReviewEvidenceManifest {
 /// This bundle is not trusted just because it contains a public key.
 /// Pass a separately pinned public key to all verification functions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignedReviewEvidence {
     pub manifest: ReviewEvidenceManifest,
     pub signer_public_key_hex: String,
@@ -774,6 +776,22 @@ mod tests {
         let json = serde_json::to_string(&bundle).unwrap();
         let restored: SignedReviewEvidence = serde_json::from_str(&json).unwrap();
         verify_with_trusted_public_key(&restored, &trusted).unwrap();
+
+        // A detached signature authenticates only the typed manifest fields.
+        // Reject extra JSON claims instead of silently discarding them and
+        // reporting the altered bundle as verified.
+        let mut unsigned_envelope = serde_json::to_value(&bundle).unwrap();
+        unsigned_envelope["operator_approved"] = json!(true);
+        assert!(
+            serde_json::from_value::<SignedReviewEvidence>(unsigned_envelope).is_err(),
+            "unsigned top-level claims must not be accepted"
+        );
+        let mut unsigned_manifest = serde_json::to_value(&bundle).unwrap();
+        unsigned_manifest["manifest"]["risk_accepted"] = json!(true);
+        assert!(
+            serde_json::from_value::<SignedReviewEvidence>(unsigned_manifest).is_err(),
+            "unsigned manifest claims must not be accepted"
+        );
         let reopened = Database::open(temp.path().join("review.sqlite3")).unwrap();
         verify_bundle_against_sqlite(&reopened, &restored, &trusted).unwrap();
         assert_eq!(restored.manifest, manifest);
