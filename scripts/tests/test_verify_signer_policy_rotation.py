@@ -105,6 +105,33 @@ class VerifiedRotationTests(unittest.TestCase):
     def _unchanged(self) -> None:
         self.assertEqual(json.loads(self.anchor.read_text()), self.original)
 
+    def test_rejects_same_file_for_both_rotation_inputs(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must be distinct files"):
+            verify_rotation_files(
+                self.previous, self.previous,
+                authority_public_key_hex=self.authority_hex,
+                expected_revision=4, expected_sha256=self.old_pin,
+                replacement_revision=5, replacement_sha256=self.new_pin,
+            )
+        with self.assertRaisesRegex(ValueError, "must be distinct files"):
+            self._publish(replacement_policy_file=self.previous)
+        self._unchanged()
+
+    def test_rejects_hard_linked_rotation_inputs(self) -> None:
+        alias = self.root / "previous-alias.json"
+        os.link(self.previous, alias)
+        try:
+            with self.assertRaisesRegex(ValueError, "must be distinct files"):
+                verify_rotation_files(
+                    self.previous, alias,
+                    authority_public_key_hex=self.authority_hex,
+                    expected_revision=4, expected_sha256=self.old_pin,
+                    replacement_revision=5, replacement_sha256=self.new_pin,
+                )
+            self._unchanged()
+        finally:
+            alias.unlink()
+
     def test_valid_rotation_publishes_only_public_anchor_metadata(self) -> None:
         self.assertEqual(self._verify(), 5)
         result = self._publish()
