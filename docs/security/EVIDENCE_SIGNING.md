@@ -163,8 +163,14 @@ The signed policy inputs are limited to 16 KiB each and read from regular
 non-symlink files. Both signed-policy and anchor readers use nonblocking
 opens, so an observed FIFO substitution between the pathname check and
 open cannot stall the verifier waiting for a pipe writer; the subsequent
-file-type check rejects the substituted inode. This is a bounded local
-race hardening measure, not protection against privileged replacement. Signed-policy inputs must also not be group- or world-writable
+file-type check rejects the substituted inode. The policy reader also
+compares the full observed inode metadata from before opening to the opened
+descriptor (including mode, owner, group, link count, size and timestamps).
+A same-inode chmod or timestamp change between lstat and open fails closed,
+even if both permission modes would otherwise be acceptable. The same
+metadata fields are checked after the read and against the pathname; these
+observations do not provide an atomic snapshot or privileged rollback defense.
+This is a bounded local race hardening measure, not protection against privileged replacement. Signed-policy inputs must also not be group- or world-writable
 (permissions such as 0600 or 0644 are accepted); the check is repeated on
 the opened file descriptor. The reader also checks inode metadata again
 after reading, rejecting observed changes to size, ownership, link count,
