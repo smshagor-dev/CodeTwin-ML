@@ -110,7 +110,11 @@ unchanged digests, malformed data, symlinks, shared file
 permissions and a nonprivate anchor directory. Rotation verification re-reads
 both signed-policy inputs **byte-for-byte** after validating their signatures
 and pins and rejects any change observed during that check, including a JSON
-whitespace-only rewrite whose typed-envelope digest remains unchanged. The
+whitespace-only rewrite whose typed-envelope digest remains unchanged. It also
+compares both policy pathnames' inode metadata and immediate-parent identities
+from before the first read through the final verification read. An observed
+same-byte inode replacement or in-place metadata mutation fails closed, even
+when the Ed25519 signature and typed-envelope digest still match. The
 independent SHA-256 pin still covers the canonical typed envelope, not the raw
 file bytes. This is not an atomic snapshot:
 a noncooperating or privileged writer can still replace a file after the
