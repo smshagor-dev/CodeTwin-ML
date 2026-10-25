@@ -296,7 +296,10 @@ even when the policy is stored elsewhere and the anchor bytes are unchanged.
 After the final policy read, the audit also re-reads the anchor file and compares
 its parsed values and inode metadata with the initial read. Observed anchor
 rewrites or identical-content inode swaps during that last policy read fail
-closed. These observations do not provide an atomic filesystem snapshot:
+closed. It checks the private directory identity and permissions **again after**
+that last anchor read, rejecting an observed directory replacement or
+permission relaxation during the read itself. These observations do not
+provide an atomic filesystem snapshot:
 changes after the final check or between observations can still escape detection.
 The policy re-read compares exact
 file bytes, while the audit also compares policy inode metadata (including
