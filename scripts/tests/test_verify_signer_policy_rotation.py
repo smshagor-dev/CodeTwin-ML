@@ -106,6 +106,27 @@ class VerifiedRotationTests(unittest.TestCase):
     def _unchanged(self) -> None:
         self.assertEqual(json.loads(self.anchor.read_text()), self.original)
 
+    def test_json_depth_guard_ignores_brackets_inside_escaped_strings(self) -> None:
+        # Escaped quotes and backslashes must not turn string contents into
+        # structural nesting. A false rejection would break valid JSON parsing.
+        from scripts.verify_signer_policy_rotation import _parse_signed_policy
+
+        envelope = {
+            "policy": {"format": "[" * 100 + '\\"' + "{" * 100, "revision": 4, "signers": []},
+            "authority_public_key_hex": self.authority_hex,
+            "signature_hex": "00" * 64,
+        }
+        raw = json.dumps(envelope).encode("utf-8")
+        self.assertEqual(_parse_signed_policy(raw), envelope)
+
+    def test_json_depth_guard_rejects_nested_objects_not_only_arrays(self) -> None:
+        from scripts.verify_signer_policy_rotation import _parse_signed_policy
+
+        raw = (b'{"policy":' + b'{"nested":' * 65 + b'0' + b'}' * 65
+               + b',"authority_public_key_hex":"","signature_hex":""}')
+        with self.assertRaisesRegex(ValueError, "nesting is too deep"):
+            _parse_signed_policy(raw)
+
     def test_rejects_same_file_for_both_rotation_inputs(self) -> None:
         with self.assertRaisesRegex(ValueError, "must be distinct files"):
             verify_rotation_files(
