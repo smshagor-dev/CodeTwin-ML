@@ -211,6 +211,43 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         finally:
             detached.unlink(missing_ok=True)
 
+    def test_rejects_lock_change_during_final_staged_read(self) -> None:
+        real_read = os.read
+        calls = 0
+
+        def mutate_lock_after_read(fd: int, count: int) -> bytes:
+            nonlocal calls
+            data = real_read(fd, count)
+            calls += 1
+            (self.root / "anchor.json.lock").chmod(0o400)
+            return data
+
+        with patch.object(os, "read", side_effect=mutate_lock_after_read):
+            with self.assertRaisesRegex(ValueError, "Anchor lock changed before publication"):
+                self._publish()
+        self.assertEqual(calls, 1)
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
+    def test_rejects_old_anchor_change_during_final_staged_read(self) -> None:
+        real_read = os.read
+        calls = 0
+
+        def mutate_anchor_after_read(fd: int, count: int) -> bytes:
+            nonlocal calls
+            data = real_read(fd, count)
+            calls += 1
+            # The JSON is unchanged, but the existing anchor's mode is not.
+            self.anchor.chmod(0o400)
+            return data
+
+        with patch.object(os, "read", side_effect=mutate_anchor_after_read):
+            with self.assertRaisesRegex(ValueError, "Trust anchor changed during final staged read"):
+                self._publish()
+        self.assertEqual(calls, 1)
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
     def test_busy_publisher_lock_fails_closed_without_waiting(self) -> None:
         import fcntl
 
