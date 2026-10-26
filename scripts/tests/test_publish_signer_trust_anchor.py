@@ -130,6 +130,40 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         self._assert_unchanged()
         self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
 
+    def test_rejects_staged_path_replacement_after_final_verification(self) -> None:
+        calls = 0
+
+        def replace_stage() -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                staged = next(self.root.glob(".trust-anchor-*.tmp"))
+                staged.rename(self.root / "old-stage")
+                staged.write_bytes(b"substituted public anchor")
+                staged.chmod(0o600)
+
+        with self.assertRaisesRegex(ValueError, "Staged trust anchor changed"):
+            self._publish(_verify_before_replace=replace_stage)
+        self.assertEqual(calls, 2)
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
+    def test_rejects_staged_in_place_mutation_after_final_verification(self) -> None:
+        calls = 0
+
+        def mutate_stage() -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                staged = next(self.root.glob(".trust-anchor-*.tmp"))
+                staged.write_bytes(b"modified public anchor")
+
+        with self.assertRaisesRegex(ValueError, "Staged trust anchor (changed|content changed)"):
+            self._publish(_verify_before_replace=mutate_stage)
+        self.assertEqual(calls, 2)
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
     def test_busy_publisher_lock_fails_closed_without_waiting(self) -> None:
         import fcntl
 
