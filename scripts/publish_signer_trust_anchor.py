@@ -46,9 +46,13 @@ def _positive_revision(value: int, name: str) -> int:
     return value
 
 
-def _private_directory(directory: Path) -> tuple[int, int]:
+def _private_directory(directory: Path) -> tuple[tuple[int, ...], ...]:
     if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
         raise ValueError("Atomic anchor publishing is supported only on POSIX")
+    # Pin the entire directory ancestry, not only the private leaf inode.
+    # Ancestor timestamps are intentionally omitted: shared sticky directories
+    # can change independently of this publisher.
+    observations: list[tuple[int, ...]] = []
     for component in (directory, *directory.parents):
         metadata = component.lstat()
         if stat.S_ISLNK(metadata.st_mode):
@@ -64,10 +68,18 @@ def _private_directory(directory: Path) -> tuple[int, int]:
             if metadata.st_mode & 0o022:
                 if not (metadata.st_uid == 0 and metadata.st_mode & stat.S_ISVTX):
                     raise ValueError("Anchor ancestor directory must not be writable by group or others")
+        observations.append((
+            metadata.st_dev, metadata.st_ino, metadata.st_mode,
+            metadata.st_uid, metadata.st_gid,
+        ))
     metadata = directory.lstat()
     if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
         raise ValueError("Anchor directory must be owned by this user and private (0700)")
-    return metadata.st_dev, metadata.st_ino
+    observations[0] = (
+        metadata.st_dev, metadata.st_ino, metadata.st_mode,
+        metadata.st_uid, metadata.st_gid,
+    )
+    return tuple(observations)
 
 
 def _checkout_root() -> Path | None:
@@ -209,7 +221,7 @@ def _check_lock_unchanged(
 def _atomic_replace(
     path: Path,
     anchor: dict[str, Any],
-    expected_directory_identity: tuple[int, int],
+    expected_directory_identity: tuple[tuple[int, ...], ...],
     expected_anchor_metadata: tuple[int, ...],
     *,
     lock_fd: int,
@@ -232,7 +244,7 @@ def _atomic_replace(
             not stat.S_ISDIR(opened.st_mode)
             or opened.st_uid != os.geteuid()
             or opened.st_mode & 0o077
-            or (opened.st_dev, opened.st_ino) != expected_directory_identity
+            or (opened.st_dev, opened.st_ino) != expected_directory_identity[0][:2]
             or _private_directory(path.parent) != expected_directory_identity
         ):
             raise ValueError("Anchor directory changed before atomic replacement")
