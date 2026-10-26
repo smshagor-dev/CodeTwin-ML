@@ -256,6 +256,27 @@ class TrustAnchorPublisherTests(unittest.TestCase):
             self._publish()
         self.assertEqual(json.loads(original.read_text()), self.original)
 
+    def test_rejects_writable_anchor_ancestor_before_lock(self) -> None:
+        outer = self.root / "unsafe-ancestor"
+        inner = outer / "private"
+        inner.mkdir(parents=True, mode=0o700)
+        original = self.anchor
+        moved = inner / original.name
+        original.rename(moved)
+        self.anchor = moved
+        outer.chmod(0o777)
+        try:
+            with self.assertRaisesRegex(ValueError, "Anchor ancestor directory"):
+                self._publish()
+            self._assert_unchanged()
+            self.assertFalse((inner / "anchor.json.lock").exists())
+        finally:
+            outer.chmod(0o700)
+            moved.rename(original)
+            self.anchor = original
+            inner.rmdir()
+            outer.rmdir()
+
     def test_rejects_symlink_directory_component(self) -> None:
         link = self.root / "linked"
         link.symlink_to(self.root, target_is_directory=True)
