@@ -340,6 +340,46 @@ class TrustAnchorPublisherTests(unittest.TestCase):
             self._publish()
         self.assertEqual(json.loads(original.read_text()), self.original)
 
+    def test_rejects_anchor_ancestor_identity_change_after_staging(self) -> None:
+        outer = self.root / "changing-anchor-ancestor"
+        inner = outer / "private"
+        inner.mkdir(parents=True, mode=0o700)
+        original = self.anchor
+        moved = inner / original.name
+        original.rename(moved)
+        self.anchor = moved
+        original_lstat = Path.lstat
+        changed = False
+        calls = 0
+
+        def verify_then_switch() -> None:
+            nonlocal changed, calls
+            calls += 1
+            if calls == 2:
+                changed = True
+
+        def substituted_ancestor(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+            metadata = original_lstat(path, *args, **kwargs)
+            if path == outer and changed:
+                fields = list(metadata)
+                fields[1] += 1
+                return os.stat_result(fields)
+            return metadata
+
+        try:
+            with patch.object(Path, "lstat", new=substituted_ancestor):
+                with self.assertRaisesRegex(ValueError, "Anchor directory changed"):
+                    self._publish(_verify_before_replace=verify_then_switch)
+            self.assertEqual(calls, 2)
+            self._assert_unchanged()
+            self.assertEqual(list(inner.glob(".trust-anchor-*.tmp")), [])
+        finally:
+            (inner / "anchor.json.lock").unlink(missing_ok=True)
+            moved.rename(original)
+            self.anchor = original
+            inner.rmdir()
+            outer.rmdir()
+
     def test_rejects_writable_anchor_ancestor_before_lock(self) -> None:
         outer = self.root / "unsafe-ancestor"
         inner = outer / "private"
