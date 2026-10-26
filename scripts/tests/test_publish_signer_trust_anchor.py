@@ -46,9 +46,18 @@ class TrustAnchorPublisherTests(unittest.TestCase):
             "approved": True,
             # These tests exercise the internal filesystem CAS primitive only;
             # authenticated policy verification is covered by the integration tests.
-            "_verify_before_replace": lambda: None,
+            "_verify_before_replace": lambda: True,
         }
         arguments.update(overrides)
+        # Test-only hooks may perform a mutation and return None. Convert
+        # those legacy side-effect fixtures to an explicit success signal;
+        # production callbacks must themselves return exactly True.
+        callback = arguments["_verify_before_replace"]
+        if callable(callback):
+            def test_verifier() -> object:
+                result = callback()
+                return True if result is None else result
+            arguments["_verify_before_replace"] = test_verifier
         return _publish_anchor(self.anchor, **arguments)
 
     def _assert_unchanged(self) -> None:
@@ -115,6 +124,45 @@ class TrustAnchorPublisherTests(unittest.TestCase):
             self._publish(_verify_before_replace=False)
         self._assert_unchanged()
         self.assertFalse((self.root / "anchor.json.lock").exists())
+
+    def test_internal_publisher_rejects_silent_verification_callback(self) -> None:
+        # A no-op callback must not count as authenticated verification.
+        with self.assertRaisesRegex(ValueError, "callback rejected publication"):
+            _publish_anchor(
+                self.anchor,
+                expected_revision=4,
+                expected_sha256=self.old_pin,
+                authority_public_key_hex=self.authority,
+                replacement_revision=5,
+                replacement_sha256=self.new_pin,
+                approved=True,
+                _verify_before_replace=lambda: None,
+            )
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
+    def test_internal_publisher_rejects_silent_recheck_after_staging(self) -> None:
+        calls = 0
+
+        def verify_once() -> bool | None:
+            nonlocal calls
+            calls += 1
+            return True if calls == 1 else None
+
+        with self.assertRaisesRegex(ValueError, "callback rejected publication"):
+            _publish_anchor(
+                self.anchor,
+                expected_revision=4,
+                expected_sha256=self.old_pin,
+                authority_public_key_hex=self.authority,
+                replacement_revision=5,
+                replacement_sha256=self.new_pin,
+                approved=True,
+                _verify_before_replace=verify_once,
+            )
+        self.assertEqual(calls, 2)
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
 
     def test_internal_publisher_rejects_negative_verification_result(self) -> None:
         for result in (False, 0, "verified"):
