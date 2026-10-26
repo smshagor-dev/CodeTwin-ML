@@ -277,6 +277,36 @@ class TrustAnchorPublisherTests(unittest.TestCase):
             inner.rmdir()
             outer.rmdir()
 
+    def test_rejects_foreign_owned_anchor_ancestor_before_lock(self) -> None:
+        outer = self.root / "foreign-ancestor"
+        inner = outer / "private"
+        inner.mkdir(parents=True, mode=0o700)
+        original = self.anchor
+        moved = inner / original.name
+        original.rename(moved)
+        self.anchor = moved
+        original_lstat = Path.lstat
+
+        def foreign_owner(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+            metadata = original_lstat(path, *args, **kwargs)
+            if path == outer:
+                fields = list(metadata)
+                fields[4] = os.geteuid() + 1
+                return os.stat_result(fields)
+            return metadata
+
+        try:
+            with patch.object(Path, "lstat", new=foreign_owner):
+                with self.assertRaisesRegex(ValueError, "Anchor ancestor directory must be owned"):
+                    self._publish()
+            self._assert_unchanged()
+            self.assertFalse((inner / "anchor.json.lock").exists())
+        finally:
+            moved.rename(original)
+            self.anchor = original
+            inner.rmdir()
+            outer.rmdir()
+
     def test_rejects_symlink_directory_component(self) -> None:
         link = self.root / "linked"
         link.symlink_to(self.root, target_is_directory=True)
