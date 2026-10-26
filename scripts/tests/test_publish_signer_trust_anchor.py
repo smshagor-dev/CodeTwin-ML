@@ -164,6 +164,53 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         self._assert_unchanged()
         self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
 
+    def test_rejects_staged_metadata_change_during_final_read(self) -> None:
+        real_read = os.read
+        calls = 0
+
+        def mutate_after_read(fd: int, count: int) -> bytes:
+            nonlocal calls
+            data = real_read(fd, count)
+            calls += 1
+            staged = next(self.root.glob(".trust-anchor-*.tmp"))
+            # The payload is still byte-for-byte correct, but its mode changes
+            # after the pre-read metadata check.
+            staged.chmod(0o400)
+            return data
+
+        with patch.object(os, "read", side_effect=mutate_after_read):
+            with self.assertRaisesRegex(ValueError, "Staged trust anchor changed during final read"):
+                self._publish()
+        self.assertEqual(calls, 1)
+        self._assert_unchanged()
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
+    def test_rejects_staged_path_swap_during_final_read(self) -> None:
+        real_read = os.read
+        detached = self.root / "detached-stage"
+        calls = 0
+
+        def swap_after_read(fd: int, count: int) -> bytes:
+            nonlocal calls
+            data = real_read(fd, count)
+            calls += 1
+            staged = next(self.root.glob(".trust-anchor-*.tmp"))
+            staged.rename(detached)
+            # Even a byte-identical replacement must not be published.
+            staged.write_bytes(data)
+            staged.chmod(0o600)
+            return data
+
+        try:
+            with patch.object(os, "read", side_effect=swap_after_read):
+                with self.assertRaisesRegex(ValueError, "Staged trust anchor changed during final read"):
+                    self._publish()
+            self.assertEqual(calls, 1)
+            self._assert_unchanged()
+            self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+        finally:
+            detached.unlink(missing_ok=True)
+
     def test_busy_publisher_lock_fails_closed_without_waiting(self) -> None:
         import fcntl
 
