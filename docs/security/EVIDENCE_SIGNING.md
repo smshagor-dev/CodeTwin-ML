@@ -159,6 +159,14 @@ not enough if an unrelated account can replace an ancestor. These are
 point-in-time POSIX checks, not protection against privileged filesystem
 changes or proof of independently controlled signing keys.
 
+The publisher and read-only auditor also compare the device/inode, owner,
+group and mode of **every anchor directory ancestor** across their bounded
+operations, not only the private leaf directory. An observed ancestor identity
+swap during staged publication or signature audit now fails closed. Ancestor
+timestamps are omitted because unrelated activity in shared sticky directories
+can change them. These observations do not provide an atomic filesystem
+snapshot or prevent swaps by a privileged writer between checks.
+
 The helper refuses missing approval, invalid authority signatures, pin mismatches,
 policy-key reuse, stale compare-and-swap expectations, revision decreases,
 unchanged digests, malformed data, symlinks, shared file
