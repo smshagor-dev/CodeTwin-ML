@@ -151,8 +151,9 @@ invoking the authenticated publisher; the internal filesystem primitive is
 not a substitute for the authenticated entry point. This comparison is not a
 hardware monotonic counter or privileged rollback defense.
 
-The anchor publisher and read-only auditor reject group- or world-writable
-ancestor directories above the private anchor directory, except root-owned
+The anchor publisher and read-only auditor require each ancestor directory
+above the private anchor directory to be owned by the invoking user or root.
+They also reject group- or world-writable ancestors, except root-owned
 sticky shared directories such as /tmp. A private leaf directory alone is
 not enough if an unrelated account can replace an ancestor. These are
 point-in-time POSIX checks, not protection against privileged filesystem
@@ -252,9 +253,9 @@ best-effort race check, not a stable filesystem snapshot:
 changes between checks or by a privileged writer may still escape detection.
 The POSIX policy reader also rejects symlinks in any directory component
 and requires the immediate parent directory to be owned by the current user
-or root and not writable by group or others. It also rejects group- or
-world-writable ancestor directories, except root-owned sticky shared
-directories such as /tmp (which prevent unrelated unprivileged users from
+or root and not writable by group or others. Ancestors must also be owned
+by the invoking user or root and not be group- or world-writable, except
+root-owned sticky shared directories such as /tmp (which prevent unrelated unprivileged users from
 renaming entries they do not own). It rechecks the parent inode,
 owner, permissions and change timestamp after each bounded file read.
 Keep policy files in a separately controlled, non-writable directory; a
