@@ -189,7 +189,7 @@ timestamps are omitted because unrelated activity in shared sticky directories
 can change them. These observations do not provide an atomic filesystem
 snapshot or prevent swaps by a privileged writer between checks.
 
-The helper refuses missing approval, invalid authority signatures, pin mismatches,
+The publisher additionally rejects a staged temporary trust-anchor inode with\nmultiple hard links, including a link present before the first staged metadata\nsnapshot or added during the final policy check. A second pathname could\notherwise modify the same staged inode independently of its temporary name.\nThe check is repeated before publication and after the bounded final read.\nThis detects observed link-count changes; it does not guarantee race-free\nfilesystem custody or establish external private signing-key custody.\n\nThe helper refuses missing approval, invalid authority signatures, pin mismatches,
 policy-key reuse, stale compare-and-swap expectations, revision decreases,
 unchanged digests, malformed data, symlinks, shared file
 permissions and a nonprivate anchor directory. Signed-policy input files must
