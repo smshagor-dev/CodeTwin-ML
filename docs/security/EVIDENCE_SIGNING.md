@@ -72,6 +72,8 @@ after all checks succeed; it does not update any file, SQLite row, external
 pin, hardware key, or policy. Changing the authority key requires a separate,
 authenticated out-of-band procedure and is deliberately not handled here.
 
+The Python rotation verifier rechecks the previous signed-policy bytes, inode metadata and parent path after rechecking the replacement input. This rejects an observed late previous-policy swap (including identical-byte inode replacement) while the replacement is being verified. These bounded reads are not an atomic snapshot and cannot establish independent signing-key custody or prevent privileged rollback.
+
 After independently approving a rotation, an external administrator must
 atomically publish and protect the replacement pin and returned revision
 floor in their own trusted system. Do not calculate either trusted pin from

@@ -613,6 +613,40 @@ class VerifiedRotationTests(unittest.TestCase):
                 finally:
                     target.chmod(0o600)
 
+    def test_rejects_previous_policy_swap_during_replacement_recheck(self) -> None:
+        from scripts.verify_signer_policy_rotation import _policy_path_snapshot
+
+        replacement_snapshots = 0
+        previous_bytes = self.previous.read_bytes()
+
+        def swap_after_replacement_snapshot(path: Path) -> tuple[object, object]:
+            nonlocal replacement_snapshots
+            snapshot = _policy_path_snapshot(path)
+            if path == self.replacement:
+                replacement_snapshots += 1
+                if replacement_snapshots == 2:
+                    # Mutate only after the replacement's final path snapshot.
+                    # Swapping earlier changes the shared parent directory and
+                    # correctly triggers the replacement guard instead.
+                    archived = self.root / "archived-previous.json"
+                    self.previous.rename(archived)
+                    self.previous.write_bytes(previous_bytes)
+                    self.assertNotEqual(self.previous.stat().st_ino, archived.stat().st_ino)
+            return snapshot
+
+        with patch(
+            "scripts.verify_signer_policy_rotation._policy_path_snapshot",
+            side_effect=swap_after_replacement_snapshot,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "Previous signed policy changed during verification"
+            ):
+                self._verify()
+        self.assertEqual(replacement_snapshots, 2)
+        self.assertEqual(self.previous.read_bytes(), previous_bytes)
+        self._unchanged()
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
     def test_rejects_metadata_change_with_identical_policy_bytes(self) -> None:
         original_fstat = os.fstat
         target_inode = self.replacement.stat().st_ino
