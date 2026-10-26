@@ -54,6 +54,29 @@ class TrustAnchorPublisherTests(unittest.TestCase):
     def _assert_unchanged(self) -> None:
         self.assertEqual(json.loads(self.anchor.read_text(encoding="utf-8")), self.original)
 
+    def test_deeply_nested_anchor_fails_closed_without_publication(self) -> None:
+        from scripts.publish_signer_trust_anchor import _read_anchor_with_metadata
+
+        # A 128-level input fits the 4096-byte anchor cap, but the schema
+        # never requires such nesting. It must fail on every Python runtime.
+        raw = b"[" * 128 + b"0" + b"]" * 128
+        self.anchor.write_bytes(raw)
+        with self.assertRaisesRegex(ValueError, "nesting is too deep"):
+            _read_anchor_with_metadata(self.anchor)
+        with self.assertRaisesRegex(ValueError, "nesting is too deep"):
+            self._publish()
+        self.assertEqual(self.anchor.read_bytes(), raw)
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
+    def test_anchor_depth_guard_ignores_brackets_in_strings(self) -> None:
+        from scripts.publish_signer_trust_anchor import _read_anchor_with_metadata
+
+        value = dict(self.original)
+        value["format"] = "[" * 100 + '\\"' + "{" * 100
+        self._write_anchor(value)
+        with self.assertRaisesRegex(ValueError, "Unsupported trust-anchor format"):
+            _read_anchor_with_metadata(self.anchor)
+
     def test_publishes_revision_and_digest_as_one_private_record(self) -> None:
         result = self._publish()
         self.assertEqual(result["minimum_revision"], 5)
