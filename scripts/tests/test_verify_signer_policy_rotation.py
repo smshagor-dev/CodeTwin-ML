@@ -613,6 +613,37 @@ class VerifiedRotationTests(unittest.TestCase):
                 finally:
                     target.chmod(0o600)
 
+    def test_rejects_previous_policy_swap_during_replacement_recheck(self) -> None:
+        from scripts.verify_signer_policy_rotation import _read_signed_policy_bytes
+
+        replacement_reads = 0
+        previous_bytes = self.previous.read_bytes()
+
+        def swap_during_replacement_read(path: Path) -> bytes:
+            nonlocal replacement_reads
+            result = _read_signed_policy_bytes(path)
+            if path == self.replacement:
+                replacement_reads += 1
+                if replacement_reads == 2:
+                    archived = self.root / "archived-previous.json"
+                    self.previous.rename(archived)
+                    self.previous.write_bytes(previous_bytes)
+                    self.assertNotEqual(self.previous.stat().st_ino, archived.stat().st_ino)
+            return result
+
+        with patch(
+            "scripts.verify_signer_policy_rotation._read_signed_policy_bytes",
+            side_effect=swap_during_replacement_read,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "Previous signed policy changed during verification"
+            ):
+                self._verify()
+        self.assertEqual(replacement_reads, 2)
+        self.assertEqual(self.previous.read_bytes(), previous_bytes)
+        self._unchanged()
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
     def test_rejects_metadata_change_with_identical_policy_bytes(self) -> None:
         original_fstat = os.fstat
         target_inode = self.replacement.stat().st_ino
