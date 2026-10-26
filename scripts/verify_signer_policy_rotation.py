@@ -116,6 +116,10 @@ def _read_signed_policy_bytes(path: Path) -> bytes:
     before = path.lstat()
     if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
         raise ValueError("Signed policy must be a regular non-symlink file")
+    # A foreign account must not control a policy file in an otherwise
+    # administrator-owned input directory. Root-owned files remain supported.
+    if before.st_uid not in (os.geteuid(), 0):
+        raise ValueError("Signed policy must be owned by this user or root")
     if before.st_mode & 0o022:
         raise ValueError("Signed policy must not be writable by group or others")
     if before.st_size > MAX_POLICY_BYTES:
