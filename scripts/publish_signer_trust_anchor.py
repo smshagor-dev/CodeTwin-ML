@@ -375,11 +375,21 @@ def publish_verified(
     authority_public_key_hex: str,
     replacement_revision: int,
     replacement_sha256: str,
+    independent_revision_floor: int,
     approved: bool,
 ) -> dict[str, Any]:
-    """Require authenticated signed-policy rotation before public anchor CAS."""
+    """Require authenticated policy rotation and an out-of-band revision floor."""
     if not approved:
         raise ValueError("Explicit external administrator approval is required")
+    # The operator must obtain this floor from a separately protected record,
+    # not infer it from the mutable anchor or signed-policy inputs. This
+    # comparison cannot authenticate the provenance of the supplied number.
+    independent_revision_floor = _positive_revision(
+        independent_revision_floor, "Independent revision floor",
+    )
+    if _positive_revision(expected_revision, "Expected revision") < independent_revision_floor:
+        raise ValueError("Current anchor revision is below independently trusted revision floor")
+
     def verify_current_inputs() -> None:
         verify_rotation_files(
             previous_policy_file,
@@ -412,6 +422,8 @@ def main() -> None:
     parser.add_argument("--previous-signed-policy", required=True, type=Path)
     parser.add_argument("--replacement-signed-policy", required=True, type=Path)
     parser.add_argument("--expected-revision", required=True, type=int)
+    parser.add_argument("--independent-revision-floor", required=True, type=int,
+                        help="Revision floor from separately protected administrator records")
     parser.add_argument("--expected-sha256", required=True)
     parser.add_argument("--authority-public-key", required=True)
     parser.add_argument("--replacement-revision", required=True, type=int)
@@ -424,6 +436,7 @@ def main() -> None:
             previous_policy_file=args.previous_signed_policy,
             replacement_policy_file=args.replacement_signed_policy,
             expected_revision=args.expected_revision,
+            independent_revision_floor=args.independent_revision_floor,
             expected_sha256=args.expected_sha256,
             authority_public_key_hex=args.authority_public_key,
             replacement_revision=args.replacement_revision,
