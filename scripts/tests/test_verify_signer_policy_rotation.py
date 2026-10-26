@@ -249,6 +249,22 @@ class VerifiedRotationTests(unittest.TestCase):
             self._publish()
         self._unchanged()
 
+    def test_rejects_excessive_policy_nesting_before_publication_lock(self) -> None:
+        # Fits within 16 KiB, but exceeds the Python JSON decoder depth.
+        # Neither a traceback nor any anchor/lock modification is acceptable.
+        deeply_nested = "[" * 1200 + "0" + "]" * 1200
+        for target in (self.previous, self.replacement):
+            with self.subTest(policy=target.name):
+                original = target.read_bytes()
+                try:
+                    target.write_text(deeply_nested, encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "nesting is too deep"):
+                        self._publish()
+                    self._unchanged()
+                    self.assertFalse((self.root / "anchor.json.lock").exists())
+                finally:
+                    target.write_bytes(original)
+
     def test_rejects_unknown_fields(self) -> None:
         envelope = json.loads(self.replacement.read_text())
         envelope["unexpected"] = True
