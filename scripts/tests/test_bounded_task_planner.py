@@ -28,6 +28,10 @@ class BoundedPlannerTests(unittest.TestCase):
         with self.assertRaises(PlanRejected):
             build_plan("p", [Task("t", "network_scan", "Not permitted")])
 
+    def test_unhashable_capability_rejected(self):
+        with self.assertRaises(PlanRejected):
+            build_plan("p", [Task("t", ["source_index"], "Invalid")])
+
     def test_cycle_and_unknown_dependency_rejected(self):
         for tasks in (
             [Task("a", "static_analysis", "A", ("b",)), Task("b", "source_index", "B", ("a",))],
