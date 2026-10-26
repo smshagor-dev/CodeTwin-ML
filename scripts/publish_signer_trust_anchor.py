@@ -216,6 +216,7 @@ def _atomic_replace(
     # rename or durability sync into a different directory.
     directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     temporary: str | None = None
+    temporary_fd: int | None = None
     try:
         opened = os.fstat(directory_fd)
         if (
@@ -228,14 +229,17 @@ def _atomic_replace(
             raise ValueError("Anchor directory changed before atomic replacement")
 
         temporary = ".trust-anchor-" + secrets.token_hex(16) + ".tmp"
-        fd = os.open(
-            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        temporary_fd = os.open(
+            temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
             0o600, dir_fd=directory_fd,
         )
-        with os.fdopen(fd, "wb") as stream:
+        # Keep the staged inode open until the rename, so a pathname swap
+        # cannot silently substitute another file for the verified payload.
+        with os.fdopen(temporary_fd, "wb", closefd=False) as stream:
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
+        staged_metadata = _anchor_metadata(os.fstat(temporary_fd))
         # The signed-policy inputs can change while the temporary anchor is
         # staged. Repeat authenticated verification before the rename so an
         # observed late swap cannot publish metadata for different inputs.
@@ -255,12 +259,28 @@ def _atomic_replace(
         # check. Reject an observed lock swap or mutation before the rename,
         # while the previous anchor is still intact.
         _check_lock_unchanged(lock_fd, path.parent / (path.name + ".lock"), lock_metadata)
+        # A same-UID or privileged noncooperating writer may alter the staged
+        # file while the final signed-policy check runs. Reject observed inode,
+        # metadata or byte changes before publishing the public anchor.
+        staged_path_metadata = os.stat(
+            temporary, dir_fd=directory_fd, follow_symlinks=False,
+        )
+        if (
+            _anchor_metadata(os.fstat(temporary_fd)) != staged_metadata
+            or _anchor_metadata(staged_path_metadata) != staged_metadata
+        ):
+            raise ValueError("Staged trust anchor changed before publication")
+        os.lseek(temporary_fd, 0, os.SEEK_SET)
+        if os.read(temporary_fd, MAX_ANCHOR_BYTES + 1) != payload:
+            raise ValueError("Staged trust anchor content changed before publication")
         os.replace(
             temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
         )
         # Sync the *same* directory inode used for the rename.
         os.fsync(directory_fd)
     finally:
+        if temporary_fd is not None:
+            os.close(temporary_fd)
         if temporary is not None:
             try:
                 os.unlink(temporary, dir_fd=directory_fd)
