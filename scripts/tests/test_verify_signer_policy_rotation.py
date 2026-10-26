@@ -707,6 +707,57 @@ class VerifiedRotationTests(unittest.TestCase):
                     setattr(self, name, original)
                     directory.rmdir()
 
+    def test_rejects_writable_policy_ancestor_before_lock(self) -> None:
+        outer = self.root / "unsafe-ancestor"
+        inner = outer / "private"
+        inner.mkdir(parents=True, mode=0o700)
+        original = self.previous
+        moved = inner / original.name
+        original.rename(moved)
+        self.previous = moved
+        outer.chmod(0o777)
+        try:
+            with self.assertRaisesRegex(ValueError, "Signed-policy ancestor directory"):
+                self._publish()
+            self._unchanged()
+            self.assertFalse((self.root / "anchor.json.lock").exists())
+        finally:
+            outer.chmod(0o700)
+            moved.rename(original)
+            self.previous = original
+            inner.rmdir()
+            outer.rmdir()
+
+    def test_rejects_foreign_owned_policy_ancestor_before_lock(self) -> None:
+        outer = self.root / "foreign-ancestor"
+        inner = outer / "private"
+        inner.mkdir(parents=True, mode=0o700)
+        original = self.previous
+        moved = inner / original.name
+        original.rename(moved)
+        self.previous = moved
+        original_lstat = Path.lstat
+
+        def foreign_owner(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+            metadata = original_lstat(path, *args, **kwargs)
+            if path == outer:
+                fields = list(metadata)
+                fields[4] = os.geteuid() + 1
+                return os.stat_result(fields)
+            return metadata
+
+        try:
+            with patch.object(Path, "lstat", new=foreign_owner):
+                with self.assertRaisesRegex(ValueError, "Signed-policy ancestor directory must be owned"):
+                    self._publish()
+            self._unchanged()
+            self.assertFalse((self.root / "anchor.json.lock").exists())
+        finally:
+            moved.rename(original)
+            self.previous = original
+            inner.rmdir()
+            outer.rmdir()
+
     def test_rejects_symlinked_policy_parent(self) -> None:
         linked = self.root / "linked-policy-directory"
         linked.symlink_to(self.root, target_is_directory=True)
