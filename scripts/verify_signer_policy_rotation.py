@@ -81,9 +81,12 @@ def _policy_parent_snapshot(path: Path) -> tuple[int, int, int, int, int]:
         # policy directory. Root-owned sticky shared temp directories are
         # permitted because other unprivileged users cannot rename entries
         # they do not own; this is not a defense against root.
-        if component != parent and metadata.st_mode & 0o022:
-            if not (metadata.st_uid == 0 and metadata.st_mode & stat.S_ISVTX):
-                raise ValueError("Signed-policy ancestor directory must not be writable by group or others")
+        if component != parent:
+            if metadata.st_uid not in (os.geteuid(), 0):
+                raise ValueError("Signed-policy ancestor directory must be owned by this user or root")
+            if metadata.st_mode & 0o022:
+                if not (metadata.st_uid == 0 and metadata.st_mode & stat.S_ISVTX):
+                    raise ValueError("Signed-policy ancestor directory must not be writable by group or others")
     if parent_metadata.st_mode & 0o022:
         raise ValueError("Signed-policy parent directory must not be writable by group or others")
     if parent_metadata.st_uid not in (os.geteuid(), 0):
