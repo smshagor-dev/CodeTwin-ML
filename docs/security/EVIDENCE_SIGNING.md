@@ -480,3 +480,17 @@ tampered signatures, and a genuinely authority-signed old policy rejected
 after the independently supplied digest rotates. Verification remains
 read-only; it does not trigger network scans, security tools, or changes to
 review approval. SQLite remains the local evidence store, not a key vault.
+
+### Post-publication inode readback
+
+After the POSIX anchor publisher renames its verified staged public record, it
+compares the readback file's device and inode with the staged file's identity,
+in addition to checking its parsed contents and directory ancestry. An observed
+byte-identical pathname substitution after the rename now fails instead of
+reporting successful publication. **This is detection, not rollback:** the
+rename may already be durable when readback fails. The operator must treat a
+readback failure as an indeterminate publication outcome, independently audit
+the protected anchor and policy pins, and reconcile externally protected
+revision-floor records before retrying. Noncooperating same-UID or privileged
+writers can still race checks; this is not atomic filesystem custody or proof
+of external private signing-key protection.
