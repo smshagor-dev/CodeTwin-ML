@@ -63,41 +63,38 @@ def _json_bytes(value: dict[str, Any]) -> bytes:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def _policy_parent_snapshot(path: Path) -> tuple[int, int, int, int, int]:
-    """Reject unsafe immediate parents and symlinked directory components.
+def _policy_parent_snapshot(path: Path) -> tuple[tuple[int, ...], ...]:
+    """Observe the immediate parent and each ancestor across verification.
 
-    This is a point-in-time POSIX path check, not an atomic filesystem handle.
+    The leaf snapshot includes ctime; ancestors include stable identity and
+    security permissions, but not volatile directory timestamps (notably /tmp).
+    This is a point-in-time check, not atomic filesystem path custody.
     """
     parent = path.parent
     parent_metadata = parent.lstat()
+    observations: list[tuple[int, ...]] = []
     for component in (parent, *parent.parents):
-        metadata = component.lstat()
+        metadata = parent_metadata if component == parent else component.lstat()
         if stat.S_ISLNK(metadata.st_mode):
             raise ValueError("Symlink in signed-policy directory path is not allowed")
         if not stat.S_ISDIR(metadata.st_mode):
             raise ValueError("Signed-policy path contains a non-directory")
-        # The immediate parent is checked separately below. A writable
-        # ancestor can otherwise let another account redirect a private
-        # policy directory. Root-owned sticky shared temp directories are
-        # permitted because other unprivileged users cannot rename entries
-        # they do not own; this is not a defense against root.
         if component != parent:
             if metadata.st_uid not in (os.geteuid(), 0):
                 raise ValueError("Signed-policy ancestor directory must be owned by this user or root")
             if metadata.st_mode & 0o022:
                 if not (metadata.st_uid == 0 and metadata.st_mode & stat.S_ISVTX):
                     raise ValueError("Signed-policy ancestor directory must not be writable by group or others")
+        observations.append((
+            metadata.st_dev, metadata.st_ino, metadata.st_mode,
+            metadata.st_uid, metadata.st_gid,
+        ))
     if parent_metadata.st_mode & 0o022:
         raise ValueError("Signed-policy parent directory must not be writable by group or others")
     if parent_metadata.st_uid not in (os.geteuid(), 0):
         raise ValueError("Signed-policy parent directory must be owned by this user or root")
-    return (
-        parent_metadata.st_dev,
-        parent_metadata.st_ino,
-        parent_metadata.st_mode,
-        parent_metadata.st_uid,
-        parent_metadata.st_ctime_ns,
-    )
+    observations[0] += (parent_metadata.st_ctime_ns,)
+    return tuple(observations)
 
 
 def _policy_file_metadata(metadata: os.stat_result) -> tuple[int, ...]:

@@ -199,6 +199,47 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "External anchor changed during audit"):
                 self._audit()
 
+    def test_rejects_policy_ancestor_identity_change_during_audit(self) -> None:
+        from scripts.audit_signer_trust_anchor import _validated_policy
+
+        outer = self.root / "audit-ancestor-identity"
+        inner = outer / "private"
+        inner.mkdir(parents=True, mode=0o700)
+        moved = inner / self.policy.name
+        self.policy.rename(moved)
+        original_policy = self.policy
+        self.policy = moved
+        original_lstat = Path.lstat
+        changed = False
+
+        def switch_after_signature(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+            nonlocal changed
+            result = _validated_policy(envelope, authority)
+            changed = True
+            return result
+
+        def substituted_ancestor(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+            metadata = original_lstat(path, *args, **kwargs)
+            if path == outer and changed:
+                fields = list(metadata)
+                fields[1] += 1
+                return os.stat_result(fields)
+            return metadata
+
+        try:
+            with patch.object(Path, "lstat", new=substituted_ancestor), patch(
+                "scripts.audit_signer_trust_anchor._validated_policy",
+                side_effect=switch_after_signature,
+            ):
+                with self.assertRaisesRegex(ValueError, "Signed policy changed during audit"):
+                    self._audit()
+            self.assertFalse((self.root / "anchor.json.lock").exists())
+        finally:
+            moved.rename(original_policy)
+            self.policy = original_policy
+            inner.rmdir()
+            outer.rmdir()
+
     def test_detects_policy_changed_during_signature_verification(self) -> None:
         from scripts.audit_signer_trust_anchor import _validated_policy
 

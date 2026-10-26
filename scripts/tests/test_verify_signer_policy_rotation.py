@@ -758,6 +758,48 @@ class VerifiedRotationTests(unittest.TestCase):
             inner.rmdir()
             outer.rmdir()
 
+    def test_rejects_policy_ancestor_identity_change_during_verification(self) -> None:
+        from scripts.verify_signer_policy_rotation import _validated_policy
+
+        outer = self.root / "ancestor-identity"
+        inner = outer / "private"
+        inner.mkdir(parents=True, mode=0o700)
+        original = self.previous
+        moved = inner / original.name
+        original.rename(moved)
+        self.previous = moved
+        original_lstat = Path.lstat
+        changed = False
+
+        def switch_after_signature(envelope: dict[str, object], authority: bytes) -> tuple[int, bytes]:
+            nonlocal changed
+            result = _validated_policy(envelope, authority)
+            changed = True
+            return result
+
+        def substituted_ancestor(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+            metadata = original_lstat(path, *args, **kwargs)
+            if path == outer and changed:
+                fields = list(metadata)
+                fields[1] += 1  # Same permissions and child inode, different ancestor inode.
+                return os.stat_result(fields)
+            return metadata
+
+        try:
+            with patch.object(Path, "lstat", new=substituted_ancestor), patch(
+                "scripts.verify_signer_policy_rotation._validated_policy",
+                side_effect=switch_after_signature,
+            ):
+                with self.assertRaisesRegex(ValueError, "signed policy changed during verification"):
+                    self._publish()
+            self._unchanged()
+            self.assertFalse((self.root / "anchor.json.lock").exists())
+        finally:
+            moved.rename(original)
+            self.previous = original
+            inner.rmdir()
+            outer.rmdir()
+
     def test_rejects_symlinked_policy_parent(self) -> None:
         linked = self.root / "linked-policy-directory"
         linked.symlink_to(self.root, target_is_directory=True)
