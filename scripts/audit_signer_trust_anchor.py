@@ -119,6 +119,15 @@ def audit_anchor(
     # This remains a bounded observation, not an atomic filesystem snapshot.
     if _private_directory(path.parent) != directory_identity:
         raise ValueError("External anchor directory changed during audit")
+    # A policy swap after the earlier policy check but during the final
+    # anchor read must not silently pass the audit. This is a final bounded
+    # observation, not an atomic filesystem snapshot or custody guarantee.
+    if (
+        _read_signed_policy_bytes(policy_path) != policy_before_bytes
+        or _policy_parent_snapshot(policy_path) != policy_parent_before
+        or _anchor_metadata(policy_path.lstat()) != policy_metadata_before
+    ):
+        raise ValueError("Signed policy changed during audit")
     return {
         "status": "verified_against_supplied_pins",
         "minimum_revision": revision,
