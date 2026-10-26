@@ -485,7 +485,7 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                         self.anchor, external_policy,
                         authority_public_key_hex=self.authority_hex,
                         expected_revision=8, independent_revision_floor=8,
-                            expected_sha256=self.digest,
+                        expected_sha256=self.digest,
                     )
             self.assertEqual(reads, 2)
 
@@ -518,7 +518,7 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                         self.anchor, external_policy,
                         authority_public_key_hex=self.authority_hex,
                         expected_revision=8, independent_revision_floor=8,
-                            expected_sha256=self.digest,
+                        expected_sha256=self.digest,
                     )
             self.assertEqual(reads, 2)
 
