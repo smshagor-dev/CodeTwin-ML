@@ -213,6 +213,13 @@ anchor to remain unchanged. These are point-in-time checks, not an atomic
 filesystem snapshot: changes after the final check can still escape detection,
 and this is not protection against privileged rollback or proof of
 independent external signing-key custody.
+After that final bounded read, the publisher also rechecks the private
+directory identity, persistent lock identity and metadata, and old anchor
+identity and metadata immediately before rename. Two POSIX regressions
+simulate lock-mode and old-anchor-mode changes during the staged read and
+require fail-closed rejection with the previous anchor intact. These are
+additional point-in-time observations, not atomic filesystem custody or
+protection against a privileged writer after the last check.
 The publisher also rechecks the same opened lock and pathname **after**
 staging and fsyncing the temporary anchor, immediately before the rename.
 Observed lock replacement or metadata mutation during staging fails closed
