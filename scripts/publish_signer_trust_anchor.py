@@ -160,7 +160,31 @@ def _read_anchor_with_metadata(path: Path) -> tuple[dict[str, Any], tuple[int, .
         os.close(fd)
     if len(raw) > MAX_ANCHOR_BYTES:
         raise ValueError("Trust anchor exceeds size limit")
-    value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_pairs)
+    # Bound nesting even when the host interpreter's recursion limit is raised.
+    # Quotes and escaped characters must not contribute structural delimiters.
+    depth = 0
+    quoted = False
+    escaped = False
+    for byte in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif byte == 92:
+                escaped = True
+            elif byte == 34:
+                quoted = False
+        elif byte == 34:
+            quoted = True
+        elif byte in (91, 123):
+            depth += 1
+            if depth > 64:
+                raise ValueError("Trust anchor JSON nesting is too deep")
+        elif byte in (93, 125):
+            depth -= 1
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_pairs)
+    except RecursionError as error:
+        raise ValueError("Trust anchor JSON nesting is too deep") from error
     if not isinstance(value, dict) or value.keys() != FIELDS:
         raise ValueError("Trust anchor must have exactly the required fields")
     if value["format"] != FORMAT:
