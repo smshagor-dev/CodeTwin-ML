@@ -57,7 +57,10 @@ preflight**. Supply the previously authenticated signed policy, its externally
 held SHA-256 pin, the replacement signed policy and its independently
 authenticated SHA-256 pin, the pinned authority public key, and the current
 externally maintained positive revision floor. Each policy is limited to
-16 KiB.
+16 KiB. Excessively nested JSON within that byte limit is also rejected
+as invalid policy input rather than allowing a decoder recursion exception
+to escape the verification boundary. This is input hardening, not proof of
+private signing-key custody or authenticity of external pins.
 
 Both Ed25519 authority signatures and both exact-envelope pins must verify
 under the **same** independently pinned authority. The previous policy must
