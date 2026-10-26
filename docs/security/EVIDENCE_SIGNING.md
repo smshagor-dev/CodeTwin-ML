@@ -263,6 +263,16 @@ opened descriptor, rejecting observed inode replacements and symlink swaps
 even if the replacement contains identical signed JSON bytes. This is a
 best-effort race check, not a stable filesystem snapshot:
 changes between checks or by a privileged writer may still escape detection.
+The policy reader now records the device/inode, owner, group and mode of
+every ancestor directory as well as the immediate parent's change timestamp
+for the full verification or read-only audit. If a previously observed
+ancestor identity changes between snapshots, verification fails closed even
+when the immediate parent inode and signed-policy bytes appear unchanged.
+Ancestor timestamps are deliberately excluded to avoid false failures when
+other processes create files in shared sticky directories such as /tmp.
+These are point-in-time observations, not a filesystem snapshot, proof of
+independent key custody, or protection against a privileged path swap.
+
 The POSIX policy reader also rejects symlinks in any directory component
 and requires the immediate parent directory to be owned by the current user
 or root and not writable by group or others. Ancestors must also be owned
