@@ -96,8 +96,9 @@ publication without a callable verification hook, and now requires the
 hook to return **exactly `True`** at both verification checkpoints: under the
 publisher lock and after staging. Returning `None`, `False`, or any other
 value fails closed without replacing the prior anchor. The authenticated
-`publish_verified` entry point returns `True` only after the signed-policy
-checks complete successfully. Direct calls to the internal primitive are
+`publish_verified` entry point's internal verification hook returns
+`True` only after signed-policy checks complete successfully; the entry
+point itself returns the published public anchor record. Direct calls to the internal primitive are
 unsupported. A Python caller could supply a dishonest callback,
 so this guard prevents accidental omission of verification, **not** malicious
 code running with the administrator's filesystem privileges. The external
