@@ -174,6 +174,13 @@ privileged rollback protection; an uncooperative writer can still change
 policy files after the last verification. The internal filesystem primitive
 reuses its caller-supplied verification hook, which cannot prove the hook is
 honest or that the authority private key has protected custody.
+The publisher also retains an open descriptor for the staged temporary
+public anchor and, immediately before rename, compares the staged inode's
+metadata with the temporary pathname and re-reads the exact intended bytes.
+Observed pathname substitution or in-place modification fails closed and
+leaves the prior anchor unchanged. This is a point-in-time check, not
+protection against a same-UID or privileged writer changing the staged file
+after the last check, nor proof of independent external signing-key custody.
 The publisher also rechecks the same opened lock and pathname **after**
 staging and fsyncing the temporary anchor, immediately before the rename.
 Observed lock replacement or metadata mutation during staging fails closed
