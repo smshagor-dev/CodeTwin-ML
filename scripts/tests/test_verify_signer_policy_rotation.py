@@ -97,6 +97,7 @@ class VerifiedRotationTests(unittest.TestCase):
             "expected_sha256": self.old_pin,
             "replacement_revision": 5,
             "replacement_sha256": self.new_pin,
+            "independent_revision_floor": 4,
             "approved": True,
         }
         arguments.update(overrides)
@@ -131,6 +132,26 @@ class VerifiedRotationTests(unittest.TestCase):
             self._unchanged()
         finally:
             alias.unlink()
+
+    def test_rejects_anchor_rollback_below_independent_floor_before_lock(self) -> None:
+        # A previously signed revision may still verify cryptographically,
+        # but a separately retained higher floor must reject its publication.
+        with self.assertRaisesRegex(ValueError, "below independently trusted revision floor"):
+            self._publish(independent_revision_floor=5)
+        self._unchanged()
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
+    def test_rejects_malformed_independent_revision_floor_before_lock(self) -> None:
+        for floor in (0, -1, True, "4", 2**64):
+            with self.subTest(floor=floor):
+                with self.assertRaisesRegex(ValueError, "Independent revision floor"):
+                    self._publish(independent_revision_floor=floor)
+                self._unchanged()
+                self.assertFalse((self.root / "anchor.json.lock").exists())
+
+    def test_accepts_valid_older_independent_floor(self) -> None:
+        # A lower independently trusted floor does not block a newer anchor.
+        self.assertEqual(self._publish(independent_revision_floor=3)["minimum_revision"], 5)
 
     def test_valid_rotation_publishes_only_public_anchor_metadata(self) -> None:
         self.assertEqual(self._verify(), 5)

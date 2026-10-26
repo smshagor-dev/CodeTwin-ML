@@ -131,11 +131,25 @@ python scripts/publish_signer_trust_anchor.py \
   --replacement-signed-policy /trusted/input/replacement-policy.json \
   --authority-public-key <independently-pinned-authority-key> \
   --expected-revision 4 \
+  --independent-revision-floor 4 \
   --expected-sha256 <independently-pinned-previous-digest> \
   --replacement-revision 5 \
   --replacement-sha256 <independently-pinned-replacement-digest> \
   --approve
 ```
+
+The authenticated publisher now requires `--independent-revision-floor`, a positive
+u64 revision obtained from a separately protected administrator record. It
+rejects a current anchor revision below that floor **before acquiring a lock**,
+even if the older policy has a valid signature. The floor is supplied explicitly
+at each invocation and is never written to SQLite or the repository. The
+application cannot verify where the operator obtained the number: copying it
+from the mutable anchor defeats rollback detection. Keep the floor in an
+independently administered monotonic record and update that record after
+verified publication. This CLI argument is required for existing automation
+invoking the authenticated publisher; the internal filesystem primitive is
+not a substitute for the authenticated entry point. This comparison is not a
+hardware monotonic counter or privileged rollback defense.
 
 The helper refuses missing approval, invalid authority signatures, pin mismatches,
 policy-key reuse, stale compare-and-swap expectations, revision decreases,
