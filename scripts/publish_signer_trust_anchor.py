@@ -282,6 +282,17 @@ def _atomic_replace(
         os.lseek(temporary_fd, 0, os.SEEK_SET)
         if os.read(temporary_fd, MAX_ANCHOR_BYTES + 1) != payload:
             raise ValueError("Staged trust anchor content changed before publication")
+        # A same-UID or privileged writer can mutate the staged inode or
+        # replace its pathname while the final bounded read is in progress.
+        # Observe descriptor and pathname metadata again after the read.
+        # This is not an atomic snapshot or a privileged rollback defense.
+        if (
+            _anchor_metadata(os.fstat(temporary_fd)) != staged_metadata
+            or _anchor_metadata(os.stat(
+                temporary, dir_fd=directory_fd, follow_symlinks=False,
+            )) != staged_metadata
+        ):
+            raise ValueError("Staged trust anchor changed during final read")
         os.replace(
             temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
         )
