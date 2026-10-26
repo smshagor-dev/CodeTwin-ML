@@ -293,6 +293,18 @@ def _atomic_replace(
             )) != staged_metadata
         ):
             raise ValueError("Staged trust anchor changed during final read")
+        # The bounded final payload read is another window in which a
+        # noncooperating writer can replace the lock, old anchor or parent.
+        # Re-observe all three immediately before the rename. This narrows
+        # detected races; it cannot make filesystem custody atomic.
+        if _private_directory(path.parent) != expected_directory_identity:
+            raise ValueError("Anchor directory changed during final staged read")
+        _check_lock_unchanged(
+            lock_fd, path.parent / (path.name + ".lock"), lock_metadata,
+        )
+        _, final_anchor_metadata = _read_anchor_with_metadata(path)
+        if final_anchor_metadata != expected_anchor_metadata:
+            raise ValueError("Trust anchor changed during final staged read")
         os.replace(
             temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
         )
