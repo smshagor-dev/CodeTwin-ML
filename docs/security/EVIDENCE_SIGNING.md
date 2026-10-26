@@ -128,6 +128,8 @@ file. Its exact four fields are:
 }
 ```
 
+The read-only anchor audit rechecks signed-policy bytes, inode metadata and parent identity after its final anchor read to reject an observed late policy swap. These repeated observations are not an atomic filesystem snapshot and cannot protect against privileged rollback or prove external key custody.
+
 The public anchor JSON is capped at 4096 bytes and rejects structural nesting deeper than 64 levels before decoding, including on runtimes with raised Python recursion limits. Malformed or excessively nested anchor input fails closed; this does not establish key custody or privileged rollback resistance.
 
 The stored revision must equal the current trusted policy revision. To
