@@ -369,7 +369,9 @@ def _publish_anchor(
     _verify_before_replace: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Internal CAS primitive; a callback is mandatory but not an identity proof."""
-    if not approved:
+    # Do not accept truthy numbers, strings, or other caller-supplied objects
+    # as proof of an explicit administrator approval decision.
+    if approved is not True:
         raise ValueError("Explicit external administrator approval is required")
     if not callable(_verify_before_replace):
         raise ValueError("Callable signed-policy verification callback is required before publication")
@@ -447,7 +449,9 @@ def publish_verified(
     approved: bool,
 ) -> dict[str, Any]:
     """Require authenticated policy rotation and an out-of-band revision floor."""
-    if not approved:
+    # Do not accept truthy numbers, strings, or other caller-supplied objects
+    # as proof of an explicit administrator approval decision.
+    if approved is not True:
         raise ValueError("Explicit external administrator approval is required")
     # The operator must obtain this floor from a separately protected record,
     # not infer it from the mutable anchor or signed-policy inputs. This
