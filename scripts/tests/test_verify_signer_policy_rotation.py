@@ -106,6 +106,23 @@ class VerifiedRotationTests(unittest.TestCase):
     def _unchanged(self) -> None:
         self.assertEqual(json.loads(self.anchor.read_text()), self.original)
 
+    def test_direct_policy_parser_rejects_oversize_json(self) -> None:
+        # The parser can also be invoked without the bounded file reader.
+        from scripts.verify_signer_policy_rotation import (
+            MAX_POLICY_BYTES, _parse_signed_policy,
+        )
+
+        oversized = json.dumps({
+            "policy": {"format": "x" * MAX_POLICY_BYTES},
+            "authority_public_key_hex": self.authority_hex,
+            "signature_hex": "00" * 64,
+        }).encode("utf-8")
+        self.assertGreater(len(oversized), MAX_POLICY_BYTES)
+        with self.assertRaisesRegex(ValueError, "exceeds 16 KiB"):
+            _parse_signed_policy(oversized)
+        self._unchanged()
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
     def test_json_depth_guard_ignores_brackets_inside_escaped_strings(self) -> None:
         # Escaped quotes and backslashes must not turn string contents into
         # structural nesting. A false rejection would break valid JSON parsing.

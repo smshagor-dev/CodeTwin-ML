@@ -57,7 +57,8 @@ preflight**. Supply the previously authenticated signed policy, its externally
 held SHA-256 pin, the replacement signed policy and its independently
 authenticated SHA-256 pin, the pinned authority public key, and the current
 externally maintained positive revision floor. Each policy is limited to
-16 KiB. JSON nesting deeper than 64 levels within that byte limit is
+16 KiB, enforced by both the bounded file reader and the shared JSON parser
+(including direct parser calls). JSON nesting deeper than 64 levels within that byte limit is
 rejected before decoding, independent of the Python recursion limit, rather
 than allowing a decoder recursion exception
 to escape the verification boundary. This is input hardening, not proof of
