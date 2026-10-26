@@ -140,13 +140,14 @@ class VerifiedRotationTests(unittest.TestCase):
         self.assertEqual(json.loads(self.anchor.read_text()), result)
         self.assertNotIn("signature_hex", result)
 
-    def test_verified_publisher_checks_both_policies_again_under_lock(self) -> None:
+    def test_verified_publisher_checks_policies_before_and_after_staging(self) -> None:
         with patch(
             "scripts.publish_signer_trust_anchor.verify_rotation_files",
             wraps=verify_rotation_files,
         ) as verified:
             self._publish()
-        self.assertEqual(verified.call_count, 2)
+        # Preflight, under the publisher lock, and after temporary staging.
+        self.assertEqual(verified.call_count, 3)
 
     def test_valid_policy_swap_after_preflight_blocks_anchor_publication(self) -> None:
         # A separately signed policy can replace an input after initial

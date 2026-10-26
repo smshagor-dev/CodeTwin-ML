@@ -205,6 +205,7 @@ def _atomic_replace(
     *,
     lock_fd: int,
     lock_metadata: tuple[int, ...],
+    verification_callback: Callable[[], bool | None],
 ) -> None:
     payload = (json.dumps(anchor, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
     if len(payload) > MAX_ANCHOR_BYTES:
@@ -235,6 +236,12 @@ def _atomic_replace(
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
+        # The signed-policy inputs can change while the temporary anchor is
+        # staged. Repeat authenticated verification before the rename so an
+        # observed late swap cannot publish metadata for different inputs.
+        verification_result = verification_callback()
+        if verification_result is not None and verification_result is not True:
+            raise ValueError("Signed-policy verification callback rejected publication")
         if _private_directory(path.parent) != expected_directory_identity:
             raise ValueError("Anchor directory changed before atomic replacement")
         # The lock serializes cooperating publishers only. Reject observed
@@ -324,6 +331,7 @@ def _publish_anchor(
         _atomic_replace(
             path, replacement, directory_identity, current_anchor_metadata,
             lock_fd=lock_fd, lock_metadata=lock_metadata,
+            verification_callback=_verify_before_replace,
         )
         if _private_directory(path.parent) != directory_identity:
             raise ValueError("Anchor directory changed after publication")
