@@ -205,9 +205,14 @@ The publisher also retains an open descriptor for the staged temporary
 public anchor and, immediately before rename, compares the staged inode's
 metadata with the temporary pathname and re-reads the exact intended bytes.
 Observed pathname substitution or in-place modification fails closed and
-leaves the prior anchor unchanged. This is a point-in-time check, not
-protection against a same-UID or privileged writer changing the staged file
-after the last check, nor proof of independent external signing-key custody.
+leaves the prior anchor unchanged. The publisher now repeats staged-file
+descriptor and pathname metadata checks **after** the final bounded payload
+read, detecting observed mode/inode changes or byte-identical pathname swaps
+during that read. Two POSIX regressions cover these cases and require the old
+anchor to remain unchanged. These are point-in-time checks, not an atomic
+filesystem snapshot: changes after the final check can still escape detection,
+and this is not protection against privileged rollback or proof of
+independent external signing-key custody.
 The publisher also rechecks the same opened lock and pathname **after**
 staging and fsyncing the temporary anchor, immediately before the rename.
 Observed lock replacement or metadata mutation during staging fails closed
