@@ -75,6 +75,7 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         arguments: dict[str, object] = {
             "authority_public_key_hex": self.authority_hex,
             "expected_revision": 8,
+            "independent_revision_floor": 8,
             "expected_sha256": self.digest,
         }
         arguments.update(overrides)
@@ -85,6 +86,7 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         result = self._audit()
         self.assertEqual(result["status"], "verified_against_supplied_pins")
         self.assertEqual(result["minimum_revision"], 8)
+        self.assertEqual(result["independent_revision_floor"], 8)
         self.assertEqual(self.anchor.read_bytes(), before)
         self.assertEqual(stat.S_IMODE(self.anchor.stat().st_mode), 0o600)
         self.assertFalse((self.root / "anchor.json.lock").exists())
@@ -103,6 +105,18 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         self._write_anchor({**self.original, "minimum_revision": 7})
         with self.assertRaisesRegex(ValueError, "independently trusted"):
             self._audit()
+
+    def test_rejects_stale_but_consistent_anchor_and_policy_below_external_floor(self) -> None:
+        # The anchor, policy, signature and exact pins all agree at revision 8.
+        # A separately protected floor of 9 must reject this valid old state.
+        with self.assertRaisesRegex(ValueError, "below independent revision floor"):
+            self._audit(independent_revision_floor=9)
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
+    def test_accepts_revision_above_external_floor(self) -> None:
+        result = self._audit(independent_revision_floor=7)
+        self.assertEqual(result["independent_revision_floor"], 7)
+        self.assertEqual(result["minimum_revision"], 8)
 
     def test_rejects_wrong_independent_revision_digest_and_authority(self) -> None:
         for overrides in (
@@ -130,6 +144,10 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             {"authority_public_key_hex": "bad"},
             {"expected_revision": 0},
             {"expected_revision": True},
+            {"independent_revision_floor": 0},
+            {"independent_revision_floor": True},
+            {"independent_revision_floor": -1},
+            {"independent_revision_floor": 2**64},
         ):
             with self.subTest(overrides=overrides):
                 with self.assertRaises(ValueError):
@@ -391,7 +409,8 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                         audit_anchor(
                             self.anchor, external_policy,
                             authority_public_key_hex=self.authority_hex,
-                            expected_revision=8, expected_sha256=self.digest,
+                            expected_revision=8, independent_revision_floor=8,
+                            expected_sha256=self.digest,
                         )
                 self.assertEqual(reads, 2)
             finally:
@@ -428,7 +447,8 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                         audit_anchor(
                             self.anchor, external_policy,
                             authority_public_key_hex=self.authority_hex,
-                            expected_revision=8, expected_sha256=self.digest,
+                            expected_revision=8, independent_revision_floor=8,
+                            expected_sha256=self.digest,
                         )
                 self.assertEqual(reads, 2)
             finally:
@@ -464,7 +484,8 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                     audit_anchor(
                         self.anchor, external_policy,
                         authority_public_key_hex=self.authority_hex,
-                        expected_revision=8, expected_sha256=self.digest,
+                        expected_revision=8, independent_revision_floor=8,
+                        expected_sha256=self.digest,
                     )
             self.assertEqual(reads, 2)
 
@@ -496,7 +517,8 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                     audit_anchor(
                         self.anchor, external_policy,
                         authority_public_key_hex=self.authority_hex,
-                        expected_revision=8, expected_sha256=self.digest,
+                        expected_revision=8, independent_revision_floor=8,
+                        expected_sha256=self.digest,
                     )
             self.assertEqual(reads, 2)
 

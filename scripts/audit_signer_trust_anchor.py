@@ -48,10 +48,12 @@ def audit_anchor(
     *,
     authority_public_key_hex: str,
     expected_revision: int,
+    independent_revision_floor: int,
     expected_sha256: str,
 ) -> dict[str, str | int]:
     """Fail closed unless both the anchor and signed policy match external pins.
 
+    Requires a separately protected revision floor in addition to exact pins.
     Does not create locks, write files, sign anything or update SQLite.
     Concurrent, noncooperating filesystem replacement cannot be ruled out;
     re-read the anchor and compare inode metadata to detect observed replacement
@@ -60,6 +62,9 @@ def audit_anchor(
     authority = _hex_bytes(authority_public_key_hex, 32, "Independent authority")
     digest = _hex_bytes(expected_sha256, 32, "Independent signed-policy SHA-256")
     revision = _positive_revision(expected_revision, "Independent revision")
+    floor = _positive_revision(independent_revision_floor, "Independent revision floor")
+    if revision < floor:
+        raise ValueError("Independently pinned revision is below independent revision floor")
     path = Path(os.path.abspath(anchor_file))
     _require_external_anchor_path(path)
     directory_identity = _private_directory(path.parent)
@@ -117,6 +122,7 @@ def audit_anchor(
     return {
         "status": "verified_against_supplied_pins",
         "minimum_revision": revision,
+        "independent_revision_floor": floor,
         "signed_policy_sha256_hex": digest.hex(),
     }
 
@@ -127,6 +133,8 @@ def main() -> None:
     parser.add_argument("--signed-policy", required=True, type=Path)
     parser.add_argument("--authority-public-key", required=True)
     parser.add_argument("--expected-revision", required=True, type=int)
+    parser.add_argument("--independent-revision-floor", required=True, type=int,
+                        help="Current floor from separately protected administrator records")
     parser.add_argument("--expected-sha256", required=True)
     args = parser.parse_args()
     try:
@@ -135,6 +143,7 @@ def main() -> None:
             args.signed_policy,
             authority_public_key_hex=args.authority_public_key,
             expected_revision=args.expected_revision,
+            independent_revision_floor=args.independent_revision_floor,
             expected_sha256=args.expected_sha256,
         )
     except (OSError, ValueError, UnicodeError) as error:
