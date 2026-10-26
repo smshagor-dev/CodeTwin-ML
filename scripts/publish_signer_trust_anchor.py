@@ -251,7 +251,7 @@ def _atomic_replace(
     lock_fd: int,
     lock_metadata: tuple[int, ...],
     verification_callback: Callable[[], bool],
-) -> None:
+) -> tuple[int, int]:
     payload = (json.dumps(anchor, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
     if len(payload) > MAX_ANCHOR_BYTES:
         raise ValueError("Replacement trust anchor exceeds size limit")
@@ -346,6 +346,10 @@ def _atomic_replace(
         )
         # Sync the *same* directory inode used for the rename.
         os.fsync(directory_fd)
+        # The staged inode is the only inode this publisher has verified.
+        # Preserve its identity for post-publication readback, so an observed
+        # same-content pathname substitution cannot pass as our publication.
+        return (staged_metadata[0], staged_metadata[1])
     finally:
         if temporary_fd is not None:
             os.close(temporary_fd)
@@ -418,14 +422,17 @@ def _publish_anchor(
             "minimum_revision": replacement_revision,
             "signed_policy_sha256_hex": replacement_sha256,
         }
-        _atomic_replace(
+        published_identity = _atomic_replace(
             path, replacement, directory_identity, current_anchor_metadata,
             lock_fd=lock_fd, lock_metadata=lock_metadata,
             verification_callback=_verify_before_replace,
         )
         if _private_directory(path.parent) != directory_identity:
             raise ValueError("Anchor directory changed after publication")
-        if _read_anchor(path) != replacement:
+        readback, readback_metadata = _read_anchor_with_metadata(path)
+        if readback_metadata[:2] != published_identity:
+            raise ValueError("Published anchor identity changed during readback")
+        if readback != replacement:
             raise ValueError("Published anchor failed readback verification")
         return replacement
     finally:

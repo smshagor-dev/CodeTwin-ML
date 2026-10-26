@@ -95,6 +95,29 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
         self.assertTrue((self.root / "anchor.json.lock").is_file())
 
+    def test_rejects_identical_content_inode_swap_after_publication(self) -> None:
+        # A noncooperating writer can replace the newly published pathname
+        # with byte-identical JSON after rename. A value-only readback would
+        # silently accept that different inode as the published record.
+        real_replace = os.replace
+        detached = self.root / "detached-published-anchor.json"
+
+        def swap_after_publish(src: object, dst: object, **kwargs: object) -> None:
+            real_replace(src, dst, **kwargs)
+            self.anchor.rename(detached)
+            self.anchor.write_bytes(detached.read_bytes())
+            self.anchor.chmod(0o600)
+
+        try:
+            with patch("scripts.publish_signer_trust_anchor.os.replace",
+                       side_effect=swap_after_publish):
+                with self.assertRaisesRegex(ValueError, "Published anchor identity changed"):
+                    self._publish()
+            self.assertEqual(self.anchor.read_bytes(), detached.read_bytes())
+            self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+        finally:
+            detached.unlink(missing_ok=True)
+
     def test_refuses_anchor_inside_source_checkout_before_lock_creation(self) -> None:
         with patch(
             "scripts.publish_signer_trust_anchor._checkout_root",
