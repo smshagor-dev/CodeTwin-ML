@@ -433,6 +433,26 @@ class VerifiedRotationTests(unittest.TestCase):
                 self.assertEqual(target.read_bytes(), original_bytes)
                 self._unchanged()
 
+    def test_rejects_foreign_owned_signed_policy_before_lock(self) -> None:
+        # Simulate an otherwise valid signed policy owned by a different
+        # unprivileged account, without requiring chown privileges in CI.
+        original_lstat = Path.lstat
+        for target in (self.previous, self.replacement):
+            with self.subTest(policy=target.name):
+                def foreign_owned_lstat(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+                    metadata = original_lstat(path, *args, **kwargs)
+                    if path == target:
+                        fields = list(metadata)
+                        fields[4] = os.geteuid() + 1  # st_uid; neither root nor caller
+                        return os.stat_result(fields)
+                    return metadata
+
+                with patch.object(Path, "lstat", new=foreign_owned_lstat):
+                    with self.assertRaisesRegex(ValueError, "must be owned by this user or root"):
+                        self._publish()
+                self._unchanged()
+                self.assertFalse((self.root / "anchor.json.lock").exists())
+
     def test_rejects_group_or_world_writable_policy_inputs(self) -> None:
         for policy in (self.previous, self.replacement):
             with self.subTest(policy=policy.name):

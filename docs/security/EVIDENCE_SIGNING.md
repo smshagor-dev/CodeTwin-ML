@@ -154,7 +154,12 @@ hardware monotonic counter or privileged rollback defense.
 The helper refuses missing approval, invalid authority signatures, pin mismatches,
 policy-key reuse, stale compare-and-swap expectations, revision decreases,
 unchanged digests, malformed data, symlinks, shared file
-permissions and a nonprivate anchor directory. Rotation verification re-reads
+permissions and a nonprivate anchor directory. Signed-policy input files must
+also be owned by the invoking administrator or root; a policy file owned by a
+different unprivileged account is rejected before the publisher lock is created,
+even when its Ed25519 signature is valid. This is local filesystem custody
+hardening, not evidence of independent private-key custody or privileged
+rollback resistance. Rotation verification re-reads
 both signed-policy inputs **byte-for-byte** after validating their signatures
 and pins and rejects any change observed during that check, including a JSON
 whitespace-only rewrite whose typed-envelope digest remains unchanged. It also
