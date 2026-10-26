@@ -167,6 +167,8 @@ def _read_signed_policy_bytes(path: Path) -> bytes:
 
 
 def _parse_signed_policy(raw: bytes) -> dict[str, Any]:
+    if len(raw) > MAX_POLICY_BYTES:
+        raise ValueError("Signed policy exceeds 16 KiB")
     # The signed envelope has a shallow fixed schema. Bound structural nesting
     # independently of the host Python recursion limit (which can be raised
     # by a test runner or embedding application). Ignore brackets in strings,
