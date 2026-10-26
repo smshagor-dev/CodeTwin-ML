@@ -167,8 +167,16 @@ def _read_signed_policy_bytes(path: Path) -> bytes:
 
 
 def _parse_signed_policy(raw: bytes) -> dict[str, Any]:
+    # A policy is a shallow, fixed-shape object. Even a sub-16-KiB input can
+    # exhaust the JSON decoder recursion limit with nested arrays/objects.
+    # Reject it as an invalid policy rather than letting an uncaught exception
+    # interrupt a read-only audit or authenticated publication preflight.
+    try:
+        parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_fields)
+    except RecursionError as error:
+        raise ValueError("Signed policy JSON nesting is too deep") from error
     return _exact_fields(
-        json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_fields),
+        parsed,
         {"policy", "authority_public_key_hex", "signature_hex"},
         "Signed policy envelope",
     )
