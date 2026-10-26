@@ -314,4 +314,13 @@ def verify_rotation_files(
         or _policy_path_snapshot(replacement_path) != replacement_snapshot
     ):
         raise ValueError("Replacement signed policy changed during verification")
+    # A noncooperating writer can replace the previous input while the
+    # replacement is being rechecked. Observe the first input again before
+    # returning success, including same-byte inode and parent-path swaps.
+    # This remains a bounded observation, not an atomic filesystem snapshot.
+    if (
+        _read_signed_policy_bytes(previous_path) != previous_bytes
+        or _policy_path_snapshot(previous_path) != previous_snapshot
+    ):
+        raise ValueError("Previous signed policy changed during verification")
     return replacement_value
