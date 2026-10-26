@@ -55,6 +55,12 @@ def _private_directory(directory: Path) -> tuple[int, int]:
             raise ValueError("Symlink in anchor directory path is not allowed")
         if not stat.S_ISDIR(metadata.st_mode):
             raise ValueError("Anchor directory path contains a non-directory")
+        # A private leaf is insufficient when an untrusted ancestor permits
+        # another account to rename or replace it. Preserve compatibility
+        # with root-owned sticky shared temp directories (for example /tmp).
+        if component != directory and metadata.st_mode & 0o022:
+            if not (metadata.st_uid == 0 and metadata.st_mode & stat.S_ISVTX):
+                raise ValueError("Anchor ancestor directory must not be writable by group or others")
     metadata = directory.lstat()
     if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
         raise ValueError("Anchor directory must be owned by this user and private (0700)")
