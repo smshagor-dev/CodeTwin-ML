@@ -360,8 +360,20 @@ python scripts/audit_signer_trust_anchor.py \
   --signed-policy /trusted/input/current-policy.json \
   --authority-public-key <independently-pinned-authority-key> \
   --expected-revision 5 \
+  --independent-revision-floor 5 \
   --expected-sha256 <independently-pinned-current-digest>
 ```
+
+The read-only auditor now requires a separately protected positive u64
+revision floor, just like the authenticated publisher. If the independently
+pinned current revision is below that floor, the audit fails before reading
+any files, even when the anchor, signed policy, signature and stale exact pins
+all agree. A floor below the pinned revision is allowed; the exact revision
+and digest must still match. The floor must come from an authenticated,
+independently maintained administrator record, never the anchor being audited.
+This is a comparison against supplied values, not proof of their provenance,
+a protected monotonic counter, or privileged rollback resistance. Existing
+audit CLI callers must now supply `--independent-revision-floor`.
 
 This audit is read-only: it creates no lock file, does not modify the
 anchor or SQLite, and does not invoke any security scans. It checks the
