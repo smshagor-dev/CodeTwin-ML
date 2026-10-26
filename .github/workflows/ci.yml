@@ -17,7 +17,9 @@ concurrency:
 jobs:
   rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Linux Tauri dependency installation can exhaust the previous 30-minute limit
+    # before Rust checks begin; keep a finite budget for the full verification job.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Tauri Linux dependencies
