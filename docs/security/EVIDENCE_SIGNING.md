@@ -125,6 +125,8 @@ file. Its exact four fields are:
 }
 ```
 
+The public anchor JSON is capped at 4096 bytes and rejects structural nesting deeper than 64 levels before decoding, including on runtimes with raised Python recursion limits. Malformed or excessively nested anchor input fails closed; this does not establish key custody or privileged rollback resistance.
+
 The stored revision must equal the current trusted policy revision. To
 publish a previously checked replacement, use the **independently
 authenticated** values, not hashes copied from an unverified import:
