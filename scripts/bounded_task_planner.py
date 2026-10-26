@@ -61,7 +61,7 @@ def build_plan(
             raise PlanRejected("Invalid task identifier")
         if task.task_id in by_id:
             raise PlanRejected("Duplicate task identifier")
-        if task.capability not in ALLOWED_CAPABILITIES:
+        if not isinstance(task.capability, str) or task.capability not in ALLOWED_CAPABILITIES:
             raise PlanRejected("Unknown capability")
         if not isinstance(task.description, str) or not task.description.strip() or len(task.description) > MAX_DESCRIPTION_LENGTH:
             raise PlanRejected("Invalid task description")
