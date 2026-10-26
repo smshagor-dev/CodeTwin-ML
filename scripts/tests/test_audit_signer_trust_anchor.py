@@ -185,6 +185,31 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                 self._audit()
 
 
+    def test_rejects_policy_replacement_during_final_anchor_read(self) -> None:
+        from scripts.audit_signer_trust_anchor import _read_anchor_with_metadata
+
+        calls = 0
+
+        def swap_after_anchor_read(path: Path) -> tuple[dict[str, object], tuple[int, ...]]:
+            nonlocal calls
+            result = _read_anchor_with_metadata(path)
+            calls += 1
+            if calls == 3:
+                previous = self.root / "previous-policy.json"
+                self.policy.rename(previous)
+                self.policy.write_bytes(previous.read_bytes())
+                self.assertNotEqual(self.policy.stat().st_ino, previous.stat().st_ino)
+            return result
+
+        with patch(
+            "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+            side_effect=swap_after_anchor_read,
+        ):
+            with self.assertRaisesRegex(ValueError, "Signed policy changed during audit"):
+                self._audit()
+        self.assertEqual(calls, 3)
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
     def test_rejects_identical_anchor_inode_replacement_during_audit(self) -> None:
         from scripts.audit_signer_trust_anchor import _validated_policy
 
