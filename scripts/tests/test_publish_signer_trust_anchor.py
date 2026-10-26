@@ -359,6 +359,39 @@ class TrustAnchorPublisherTests(unittest.TestCase):
             self._publish()
         self.assertEqual(json.loads(self.anchor.read_text())["minimum_revision"], 5)
 
+    def test_rejects_truthy_nonboolean_approval_before_lock_or_verification(self) -> None:
+        for invalid_approval in (1, "yes", [True], {"approved": True}):
+            with self.subTest(approved=invalid_approval):
+                with self.assertRaisesRegex(ValueError, "Explicit external administrator approval"):
+                    self._publish(
+                        approved=invalid_approval,
+                        _verify_before_replace=lambda: self.fail("verification must not run"),
+                    )
+                self._assert_unchanged()
+                self.assertFalse((self.root / "anchor.json.lock").exists())
+                self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
+    def test_public_publisher_rejects_truthy_nonboolean_approval(self) -> None:
+        from scripts.publish_signer_trust_anchor import publish_verified
+
+        for invalid_approval in (1, "yes", [True], {"approved": True}):
+            with self.subTest(approved=invalid_approval):
+                with self.assertRaisesRegex(ValueError, "Explicit external administrator approval"):
+                    publish_verified(
+                        self.anchor,
+                        previous_policy_file=self.root / "previous.json",
+                        replacement_policy_file=self.root / "replacement.json",
+                        expected_revision=4,
+                        expected_sha256=self.old_pin,
+                        authority_public_key_hex=self.authority,
+                        replacement_revision=5,
+                        replacement_sha256=self.new_pin,
+                        independent_revision_floor=4,
+                        approved=invalid_approval,
+                    )
+                self._assert_unchanged()
+                self.assertFalse((self.root / "anchor.json.lock").exists())
+
     def test_rejects_missing_approval_without_writing(self) -> None:
         with self.assertRaisesRegex(ValueError, "approval"):
             self._publish(approved=False)

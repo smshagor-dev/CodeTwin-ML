@@ -110,6 +110,14 @@ The administrator must still obtain **both pins** and the authority key
 through independent authenticated channels *before* running it. `--approve` signals deliberate operator intent, not a
 cryptographic or human-identity approval certificate.
 
+The Python publication entry points (`publish_verified` and the internal
+`_publish_anchor`) require `approved is True` exactly. Truthy values such as
+`1`, `"yes"`, lists, or mappings are rejected before policy verification,
+lock acquisition, or filesystem writes. This is strict input validation,
+not independent proof of operator identity or authorization. The CLI
+`--approve` flag produces a boolean, but external callers must also enforce
+their own authenticated administrator approval process.
+
 Bootstrap `anchor.json` separately from previously authenticated values
 in an administrator-owned directory **outside the checkout and SQLite data**,
 with directory mode 0700 and file mode 0600. The publisher and read-only
