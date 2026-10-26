@@ -250,7 +250,7 @@ def _atomic_replace(
     *,
     lock_fd: int,
     lock_metadata: tuple[int, ...],
-    verification_callback: Callable[[], bool | None],
+    verification_callback: Callable[[], bool],
 ) -> None:
     payload = (json.dumps(anchor, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
     if len(payload) > MAX_ANCHOR_BYTES:
@@ -289,7 +289,7 @@ def _atomic_replace(
         # staged. Repeat authenticated verification before the rename so an
         # observed late swap cannot publish metadata for different inputs.
         verification_result = verification_callback()
-        if verification_result is not None and verification_result is not True:
+        if verification_result is not True:
             raise ValueError("Signed-policy verification callback rejected publication")
         if _private_directory(path.parent) != expected_directory_identity:
             raise ValueError("Anchor directory changed before atomic replacement")
@@ -366,7 +366,7 @@ def _publish_anchor(
     replacement_revision: int,
     replacement_sha256: str,
     approved: bool,
-    _verify_before_replace: Callable[[], bool | None] | None = None,
+    _verify_before_replace: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Internal CAS primitive; a callback is mandatory but not an identity proof."""
     if not approved:
@@ -403,7 +403,7 @@ def _publish_anchor(
         # first preflight alone cannot detect a signed-policy swap between
         # external validation and acquiring the publication lock.
         verification_result = _verify_before_replace()
-        if verification_result is not None and verification_result is not True:
+        if verification_result is not True:
             raise ValueError("Signed-policy verification callback rejected publication")
         # Do not publish into a swapped or newly exposed directory.
         # This remains a point-in-time check, not an atomic path snapshot.
@@ -458,7 +458,7 @@ def publish_verified(
     if _positive_revision(expected_revision, "Expected revision") < independent_revision_floor:
         raise ValueError("Current anchor revision is below independently trusted revision floor")
 
-    def verify_current_inputs() -> None:
+    def verify_current_inputs() -> bool:
         verify_rotation_files(
             previous_policy_file,
             replacement_policy_file,
@@ -468,6 +468,7 @@ def publish_verified(
             replacement_revision=replacement_revision,
             replacement_sha256=replacement_sha256,
         )
+        return True
 
     # Fail before acquiring a lock on invalid policy inputs, and repeat the
     # same signature/pin validation while holding the publication lock.
