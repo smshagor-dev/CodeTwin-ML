@@ -553,11 +553,15 @@ repository.
 ## CI guard against accidentally tracked private keys
 
 The Python CI job runs `python scripts/check_tracked_private_keys.py` on
-Git-tracked regular files. It rejects recognizable ASCII armor headers for
-private keys (including PKCS#8, OpenSSH, RSA, EC, DSA and PGP private-key
-blocks), without printing the contents. The check reads in bounded chunks
-and fails closed when Git cannot enumerate the checkout or a tracked regular
-file is unavailable. Run it locally before opening a pull request:
+both **staged Git index blobs** and working-tree copies of index-declared
+regular files. A private-key header staged with `git add` remains detectable
+even if the working-tree file is subsequently overwritten with harmless text.
+It rejects recognizable ASCII armor headers for private keys (including
+PKCS#8, OpenSSH, RSA, EC, DSA and PGP private-key blocks), without printing
+the contents. Both representations are streamed in bounded chunks. Missing or
+unreadable Git index blobs, failed Git enumeration and unavailable tracked
+regular files fail closed. Index reads use local `git cat-file` and do not
+contact remote repositories. Run it locally before opening a pull request:
 
 ```bash
 python scripts/check_tracked_private_keys.py
