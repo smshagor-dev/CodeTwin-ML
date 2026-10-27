@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Reject recognizable private-key armor headers in Git-tracked regular files.
 
-This CI guard prevents some accidental key commits; it cannot prove external
-key custody or detect raw seeds, encrypted blobs, or untracked files.
+This CI guard scans Git index blobs and working-tree regular files. It cannot
+prove external key custody or detect raw seeds, encrypted blobs, or Git history.
 """
 
 from __future__ import annotations
@@ -69,6 +69,33 @@ def has_private_key_armor(
         raise ValueError("Tracked file path changed during scan")
     return found
 
+
+def has_private_key_armor_in_index(root: Path, object_id: bytes) -> bool:
+    """Stream the actual staged Git blob, not just its working-tree copy.
+
+    Git may contain a staged secret even after the worktree was overwritten.
+    A missing or unreadable index blob is an error, never a clean result.
+    """
+    with subprocess.Popen(
+        ["git", "cat-file", "blob", object_id.decode("ascii")],
+        cwd=root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    ) as process:
+        if process.stdout is None:
+            raise OSError("Could not open Git blob stream")
+        previous = b""
+        found = False
+        while chunk := process.stdout.read(CHUNK_SIZE):
+            data = previous + chunk
+            if PRIVATE_KEY_ARMOR.search(data):
+                found = True
+            previous = data[-OVERLAP:]
+        if process.wait() != 0:
+            raise ValueError("Cannot read tracked Git index blob")
+    return found
+
+
 def scan_tracked_files(root: Path) -> list[str]:
     """Scan index-declared regular files; reject unsafe working-tree substitutions."""
     root = root.resolve()
@@ -122,7 +149,11 @@ def scan_tracked_files(root: Path) -> list[str]:
             raise ValueError(f"Tracked regular file type changed: {relative!r}")
         if not path.resolve().is_relative_to(root):
             raise ValueError(f"Tracked file escapes checkout: {relative!r}")
-        if has_private_key_armor(path, expected=file_info):
+        # Check both representations. A staged blob can differ from the
+        # working tree; neither representation is trusted as a substitute.
+        staged_secret = has_private_key_armor_in_index(root, object_id)
+        working_secret = has_private_key_armor(path, expected=file_info)
+        if staged_secret or working_secret:
             findings.append(relative)
     return findings
 
