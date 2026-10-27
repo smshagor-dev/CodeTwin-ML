@@ -178,7 +178,7 @@ class TrackedPrivateKeyGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symlink type changed"):
             scan_tracked_files(self.root)
 
-    def test_gitlink_directory_is_skipped_by_index_mode(self) -> None:
+    def test_gitlink_directory_fails_closed_instead_of_skipping_contents(self) -> None:
         gitlink = self.root / "nested"
         gitlink.mkdir()
         subprocess.run(
@@ -187,7 +187,32 @@ class TrackedPrivateKeyGuardTests(unittest.TestCase):
             cwd=self.root, check=True, capture_output=True,
         )
         (gitlink / "untracked.key").write_bytes(_private_header())
-        self.assertEqual(scan_tracked_files(self.root), [])
+        with self.assertRaisesRegex(ValueError, "Tracked gitlink cannot be scanned"):
+            scan_tracked_files(self.root)
+
+    def test_empty_gitlink_directory_also_fails_closed(self) -> None:
+        gitlink = self.root / "empty-submodule"
+        gitlink.mkdir()
+        subprocess.run(
+            ["git", "update-index", "--add", "--cacheinfo",
+             "160000," + "2" * 40 + ",empty-submodule"],
+            cwd=self.root, check=True, capture_output=True,
+        )
+        with self.assertRaisesRegex(ValueError, "Tracked gitlink cannot be scanned"):
+            scan_tracked_files(self.root)
+
+    def test_gitlink_replaced_by_regular_file_fails_closed(self) -> None:
+        gitlink = self.root / "nested"
+        gitlink.mkdir()
+        subprocess.run(
+            ["git", "update-index", "--add", "--cacheinfo",
+             "160000," + "1" * 40 + ",nested"],
+            cwd=self.root, check=True, capture_output=True,
+        )
+        gitlink.rmdir()
+        gitlink.write_bytes(b"ordinary text")
+        with self.assertRaisesRegex(ValueError, "Tracked gitlink type changed"):
+            scan_tracked_files(self.root)
 
     def test_symlink_swap_before_descriptor_open_fails_closed(self) -> None:
         path = self._track("tracked.txt", b"ordinary text")
