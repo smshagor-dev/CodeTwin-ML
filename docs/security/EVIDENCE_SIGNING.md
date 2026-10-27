@@ -489,6 +489,23 @@ after the independently supplied digest rotates. Verification remains
 read-only; it does not trigger network scans, security tools, or changes to
 review approval. SQLite remains the local evidence store, not a key vault.
 
+### Failed-publication staged-file cleanup
+
+When a publication fails before the rename, the POSIX publisher now checks
+the staged pathname's device/inode against its still-open staging descriptor
+before unlinking it. If a noncooperating writer has substituted another file
+or symlink at the temporary pathname, cleanup leaves that unrelated entry
+untouched rather than deleting it. The administrator should inspect and
+remove any suspicious leftover staged pathname through an independently
+trusted directory view; a failed publication does not authorize deletion of
+unknown files. Regression tests cover both regular-file and symlink
+substitution. Run `python -m unittest scripts.tests.test_publish_signer_trust_anchor`.
+
+This is a best-effort, point-in-time cleanup guard, **not** a race-free
+filesystem transaction. Same-UID or privileged writers may still swap
+pathnames after metadata checks. Neither this check nor SQLite provides
+external signing-key custody or rollback protection.
+
 ### Post-publication inode readback
 
 The bounded trust-anchor reader rechecks pathname metadata after JSON decoding
