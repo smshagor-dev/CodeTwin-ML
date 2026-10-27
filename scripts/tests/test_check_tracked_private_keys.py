@@ -120,6 +120,27 @@ class TrackedPrivateKeyGuardTests(unittest.TestCase):
         )
         self.assertEqual(scan_tracked_files(self.root), [])
 
+    def test_staged_symlink_target_with_private_key_armor_is_detected(self) -> None:
+        # A symlink's link text is stored as a Git blob. Never dereference it.
+        link = self.root / "key-link"
+        link.symlink_to(os.fsdecode(_private_header()))
+        subprocess.run(
+            ["git", "add", "--", link.name],
+            cwd=self.root, check=True, capture_output=True,
+        )
+        self.assertEqual(scan_tracked_files(self.root), ["key-link"])
+
+    def test_staged_symlink_key_remains_detected_after_target_change(self) -> None:
+        link = self.root / "key-link"
+        link.symlink_to(os.fsdecode(_private_header(b"OPENSSH ")))
+        subprocess.run(
+            ["git", "add", "--", link.name],
+            cwd=self.root, check=True, capture_output=True,
+        )
+        link.unlink()
+        link.symlink_to("ordinary-target")
+        self.assertEqual(scan_tracked_files(self.root), ["key-link"])
+
     def test_missing_tracked_file_fails_closed(self) -> None:
         path = self._track("missing.txt", b"ordinary text")
         path.unlink()

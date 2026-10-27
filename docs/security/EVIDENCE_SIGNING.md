@@ -553,9 +553,12 @@ repository.
 ## CI guard against accidentally tracked private keys
 
 The Python CI job runs `python scripts/check_tracked_private_keys.py` on
-both **staged Git index blobs** and working-tree copies of index-declared
-regular files. A private-key header staged with `git add` remains detectable
-even if the working-tree file is subsequently overwritten with harmless text.
+**staged Git index blobs** for index-declared regular files and symlinks,
+plus working-tree copies of regular files. Symlink targets are never
+dereferenced; only their committed link text is inspected. Gitlinks are
+excluded because their index entries are commits, not blobs. A private-key
+header staged with `git add` remains detectable even if the working-tree file
+is subsequently overwritten with harmless text.
 It rejects recognizable ASCII armor headers for private keys (including
 PKCS#8, OpenSSH, RSA, EC, DSA and PGP private-key blocks), without printing
 the contents. Both representations are streamed in bounded chunks. Missing or
