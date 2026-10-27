@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import time
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -59,6 +60,16 @@ else:
 
 FLOOR_CHECKPOINT_FORMAT = "codetwin-revision-floor-checkpoint-v1"
 FLOOR_CHECKPOINT_DOMAIN = b"CodeTwin-ML/revision-floor/ed25519/v1" + bytes([0])
+FLOOR_CHECKPOINT_FORMAT_V2 = "codetwin-revision-floor-checkpoint-v2"
+FLOOR_CHECKPOINT_DOMAIN_V2 = b"CodeTwin-ML/revision-floor/ed25519/v2" + bytes([0])
+MAX_CHECKPOINT_LIFETIME_SECONDS = 7 * 24 * 60 * 60
+MAX_CLOCK_SKEW_SECONDS = 300
+
+
+def _checkpoint_timestamp(value: object, name: str) -> int:
+    if type(value) is not int or not 0 < value <= (1 << 63) - 1:
+        raise ValueError(f"{name} must be a positive signed 64-bit Unix timestamp")
+    return value
 
 
 def _checkpoint_unchanged(
@@ -86,7 +97,8 @@ def _verify_floor_checkpoint(
     policy_authority: bytes,
     independent_floor: int,
     signed_policy_digest: bytes,
-) -> tuple[bytes, tuple[tuple[int, ...], tuple[int, ...]]]:
+    require_fresh: bool = False,
+) -> tuple[bytes, tuple[tuple[int, ...], tuple[int, ...]], int | None]:
     """Check an externally pinned, independently signed public floor record.
 
     An old but valid record can still be replayed if its external pins are
@@ -112,12 +124,28 @@ def _verify_floor_checkpoint(
         {"record", "authority_public_key_hex", "signature_hex"},
         "Floor checkpoint envelope",
     )
-    record = _exact_fields(
-        envelope["record"],
-        {"format", "minimum_revision", "signed_policy_sha256_hex"},
-        "Floor checkpoint record",
-    )
-    if record["format"] != FLOOR_CHECKPOINT_FORMAT:
+    raw_record = envelope["record"]
+    if not isinstance(raw_record, dict):
+        raise ValueError("Floor checkpoint record must be an object")
+    version = raw_record.get("format")
+    if version == FLOOR_CHECKPOINT_FORMAT_V2:
+        record = _exact_fields(
+            raw_record,
+            {"format", "minimum_revision", "signed_policy_sha256_hex",
+             "issued_at_unix", "expires_at_unix"},
+            "Floor checkpoint record",
+        )
+        domain = FLOOR_CHECKPOINT_DOMAIN_V2
+    elif version == FLOOR_CHECKPOINT_FORMAT and not require_fresh:
+        record = _exact_fields(
+            raw_record,
+            {"format", "minimum_revision", "signed_policy_sha256_hex"},
+            "Floor checkpoint record",
+        )
+        domain = FLOOR_CHECKPOINT_DOMAIN
+    elif version == FLOOR_CHECKPOINT_FORMAT:
+        raise ValueError("Fresh floor checkpoint requires signed v2 timestamps")
+    else:
         raise ValueError("Unsupported floor checkpoint format")
     floor = _positive_revision(record["minimum_revision"], "Checkpoint revision floor")
     policy_digest = _hex_bytes(
@@ -133,15 +161,29 @@ def _verify_floor_checkpoint(
         "minimum_revision": floor,
         "signed_policy_sha256_hex": policy_digest.hex(),
     }
+    expires_at: int | None = None
+    if version == FLOOR_CHECKPOINT_FORMAT_V2:
+        issued_at = _checkpoint_timestamp(record["issued_at_unix"], "Checkpoint issued_at_unix")
+        expires_at = _checkpoint_timestamp(record["expires_at_unix"], "Checkpoint expires_at_unix")
+        if expires_at <= issued_at or expires_at - issued_at > MAX_CHECKPOINT_LIFETIME_SECONDS:
+            raise ValueError("Floor checkpoint lifetime is invalid or exceeds seven days")
+        signed_record["issued_at_unix"] = issued_at
+        signed_record["expires_at_unix"] = expires_at
     try:
         Ed25519PublicKey.from_public_bytes(checkpoint_key).verify(
-            signature, FLOOR_CHECKPOINT_DOMAIN + _json_bytes(signed_record),
+            signature, domain + _json_bytes(signed_record),
         )
     except InvalidSignature as error:
         raise ValueError("Floor checkpoint signature verification failed") from error
+    if expires_at is not None:
+        now = int(time.time())
+        if issued_at > now + MAX_CLOCK_SKEW_SECONDS:
+            raise ValueError("Floor checkpoint issued in the future")
+        if now >= expires_at:
+            raise ValueError("Floor checkpoint has expired")
     if not _checkpoint_unchanged(path, raw, before):
         raise ValueError("Floor checkpoint changed during verification")
-    return raw, before
+    return raw, before, expires_at
 
 
 def audit_anchor(
@@ -156,6 +198,7 @@ def audit_anchor(
     checkpoint_authority_public_key_hex: str | None = None,
     checkpoint_sha256: str | None = None,
     require_floor_checkpoint: bool = False,
+    require_fresh_checkpoint: bool = False,
     historical_evidence_signer_keys_hex: tuple[str, ...] = (),
     historical_policy_authority_keys_hex: tuple[str, ...] = (),
     revoked_checkpoint_authority_keys_hex: tuple[str, ...] = (),
@@ -217,7 +260,9 @@ def audit_anchor(
         raise ValueError("Revoked checkpoint authority inventory requires complete floor checkpoint inputs")
     # Strict deployments must not silently fall back to a pin-only audit when
     # checkpoint arguments are omitted by an operator or automation.
-    if require_floor_checkpoint and not all(value is not None for value in checkpoint_inputs):
+    if (require_floor_checkpoint or require_fresh_checkpoint) and not all(
+        value is not None for value in checkpoint_inputs
+    ):
         raise ValueError("Required floor checkpoint and both independent pins are missing")
     if any(value is not None for value in checkpoint_inputs) and not all(
         value is not None for value in checkpoint_inputs
@@ -225,6 +270,7 @@ def audit_anchor(
         raise ValueError("All three independent floor checkpoint inputs are required")
     checkpoint_bytes: bytes | None = None
     checkpoint_snapshot: tuple[tuple[int, ...], tuple[int, ...]] | None = None
+    checkpoint_expires_at: int | None = None
     checkpoint_path: Path | None = None
     if floor_checkpoint_file is not None:
         assert checkpoint_authority_public_key_hex is not None
@@ -237,13 +283,14 @@ def audit_anchor(
         if checkpoint_key in revoked_checkpoint_keys:
             raise ValueError("Checkpoint authority has been independently listed as revoked")
         checkpoint_path = Path(os.path.abspath(floor_checkpoint_file))
-        checkpoint_bytes, checkpoint_snapshot = _verify_floor_checkpoint(
+        checkpoint_bytes, checkpoint_snapshot, checkpoint_expires_at = _verify_floor_checkpoint(
             checkpoint_path,
             checkpoint_authority_hex=checkpoint_authority_public_key_hex,
             checkpoint_sha256=checkpoint_sha256,
             policy_authority=authority,
             independent_floor=floor,
             signed_policy_digest=digest,
+            require_fresh=require_fresh_checkpoint,
         )
     path = Path(os.path.abspath(anchor_file))
     _require_external_anchor_path(path)
@@ -343,12 +390,15 @@ def audit_anchor(
             raise ValueError("External anchor directory changed during audit")
         # These observations are bounded; no sequence of reads can establish
         # an atomic snapshot or prevent a privileged rollback after return.
+    if checkpoint_expires_at is not None and int(time.time()) >= checkpoint_expires_at:
+        raise ValueError("Floor checkpoint expired during audit")
     return {
         "status": "verified_against_supplied_pins",
         "minimum_revision": revision,
         "independent_revision_floor": floor,
         "signed_policy_sha256_hex": digest.hex(),
         "floor_checkpoint_verified": checkpoint_path is not None,
+        "floor_checkpoint_fresh": checkpoint_expires_at is not None,
     }
 
 
@@ -369,6 +419,8 @@ def main() -> None:
                         help="SHA-256 of exact checkpoint envelope from independent records")
     parser.add_argument("--require-floor-checkpoint", action="store_true",
                         help="Fail closed unless a signed checkpoint and both pins are supplied")
+    parser.add_argument("--require-fresh-checkpoint", action="store_true",
+                        help="Require a signed v2 checkpoint with a currently valid expiry")
     parser.add_argument("--historical-evidence-signer-key", action="append", default=[],
                         help="Independent historical evidence signer public key (64 hex); repeatable, max 256")
     parser.add_argument("--historical-policy-authority-key", action="append", default=[],
@@ -388,6 +440,7 @@ def main() -> None:
             checkpoint_authority_public_key_hex=args.checkpoint_authority_public_key,
             checkpoint_sha256=args.checkpoint_sha256,
             require_floor_checkpoint=args.require_floor_checkpoint,
+            require_fresh_checkpoint=args.require_fresh_checkpoint,
             historical_evidence_signer_keys_hex=tuple(args.historical_evidence_signer_key),
             historical_policy_authority_keys_hex=tuple(args.historical_policy_authority_key),
             revoked_checkpoint_authority_keys_hex=tuple(args.revoked_checkpoint_authority_key),
