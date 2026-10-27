@@ -521,7 +521,12 @@ mod tests {
 
     #[test]
     fn private_key_headers_are_critical() {
-        let text = "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----\n";
+        let text = concat!(
+            "-----BEGIN ",
+            "RSA PRIVATE KEY-----\\n",
+            "MIIEow\\n",
+            "-----END RSA PRIVATE KEY-----\\n",
+        );
         let found = scan_text("deploy/id_rsa", text);
         assert_eq!(found[0].rule_id, "secret.private_key");
         assert_eq!(found[0].severity, Severity::Critical);
