@@ -184,7 +184,8 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             "scripts.audit_signer_trust_anchor._validated_policy",
             side_effect=replace_after_policy_validation,
         ):
-            with self.assertRaisesRegex(ValueError, "checkpoint changed during audit"):
+            # A shared parent ctime can reject the swap before the final checkpoint check.
+            with self.assertRaisesRegex(ValueError, "changed during audit"):
                 self._audit(**inputs)
 
     def test_valid_audit_is_read_only_and_does_not_create_lock(self) -> None:
