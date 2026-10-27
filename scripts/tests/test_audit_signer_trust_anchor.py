@@ -15,7 +15,9 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from scripts.audit_signer_trust_anchor import audit_anchor
+from scripts.audit_signer_trust_anchor import (
+    FLOOR_CHECKPOINT_DOMAIN, FLOOR_CHECKPOINT_FORMAT, audit_anchor,
+)
 from scripts.publish_signer_trust_anchor import FORMAT
 from scripts.verify_signer_policy_rotation import DOMAIN
 
@@ -80,6 +82,111 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         }
         arguments.update(overrides)
         return audit_anchor(self.anchor, self.policy, **arguments)
+
+    def _signed_floor_checkpoint(
+        self, *, floor: int = 8, policy_digest: str | None = None,
+    ) -> dict[str, object]:
+        # Ephemeral test-only key: never written to the repository or SQLite.
+        key = Ed25519PrivateKey.generate()
+        key_hex = key.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw,
+        ).hex()
+        record = {
+            "format": FLOOR_CHECKPOINT_FORMAT,
+            "minimum_revision": floor,
+            "signed_policy_sha256_hex": policy_digest or self.digest,
+        }
+        payload = json.dumps(record, separators=(",", ":")).encode("utf-8")
+        envelope = {
+            "record": record,
+            "authority_public_key_hex": key_hex,
+            "signature_hex": key.sign(FLOOR_CHECKPOINT_DOMAIN + payload).hex(),
+        }
+        checkpoint = self.root / "floor-checkpoint.json"
+        raw = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
+        checkpoint.write_bytes(raw)
+        checkpoint.chmod(0o600)
+        return {
+            "floor_checkpoint_file": checkpoint,
+            "checkpoint_authority_public_key_hex": key_hex,
+            "checkpoint_sha256": hashlib.sha256(raw).hexdigest(),
+        }
+
+    def test_independently_signed_floor_checkpoint_validates_without_writes(self) -> None:
+        inputs = self._signed_floor_checkpoint()
+        before = Path(inputs["floor_checkpoint_file"]).read_bytes()
+        result = self._audit(**inputs)
+        self.assertTrue(result["floor_checkpoint_verified"])
+        self.assertEqual(Path(inputs["floor_checkpoint_file"]).read_bytes(), before)
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
+    def test_signed_checkpoint_rejects_tampering_even_with_new_digest_pin(self) -> None:
+        inputs = self._signed_floor_checkpoint()
+        checkpoint = Path(inputs["floor_checkpoint_file"])
+        envelope = json.loads(checkpoint.read_text(encoding="utf-8"))
+        envelope["record"]["minimum_revision"] = 9
+        raw = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
+        checkpoint.write_bytes(raw)
+        inputs["checkpoint_sha256"] = hashlib.sha256(raw).hexdigest()
+        with self.assertRaisesRegex(ValueError, "floor or policy digest"):
+            self._audit(**inputs)
+
+    def test_signed_checkpoint_rejects_invalid_signature(self) -> None:
+        inputs = self._signed_floor_checkpoint()
+        checkpoint = Path(inputs["floor_checkpoint_file"])
+        envelope = json.loads(checkpoint.read_text(encoding="utf-8"))
+        envelope["signature_hex"] = "00" * 64
+        raw = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
+        checkpoint.write_bytes(raw)
+        inputs["checkpoint_sha256"] = hashlib.sha256(raw).hexdigest()
+        with self.assertRaisesRegex(ValueError, "signature verification failed"):
+            self._audit(**inputs)
+
+    def test_signed_checkpoint_rejects_wrong_digest_and_authority(self) -> None:
+        inputs = self._signed_floor_checkpoint()
+        with self.assertRaisesRegex(ValueError, "independently pinned digest"):
+            self._audit(**{**inputs, "checkpoint_sha256": "00" * 32})
+        with self.assertRaisesRegex(ValueError, "must differ"):
+            self._audit(**{
+                **inputs, "checkpoint_authority_public_key_hex": self.authority_hex,
+            })
+
+    def test_signed_checkpoint_rejects_stale_floor_and_partial_inputs(self) -> None:
+        inputs = self._signed_floor_checkpoint(floor=7)
+        with self.assertRaisesRegex(ValueError, "floor or policy digest"):
+            self._audit(**inputs)
+        with self.assertRaisesRegex(ValueError, "All three"):
+            self._audit(floor_checkpoint_file=inputs["floor_checkpoint_file"])
+
+    def test_signed_checkpoint_rejects_symlink_and_late_inode_swap(self) -> None:
+        inputs = self._signed_floor_checkpoint()
+        checkpoint = Path(inputs["floor_checkpoint_file"])
+        original = self.root / "original-checkpoint.json"
+        checkpoint.rename(original)
+        checkpoint.symlink_to(original)
+        with self.assertRaises(ValueError):
+            self._audit(**inputs)
+        checkpoint.unlink()
+        original.rename(checkpoint)
+
+        from scripts.audit_signer_trust_anchor import _validated_policy
+
+        def replace_after_policy_validation(
+            envelope: dict[str, object], authority: bytes,
+        ) -> tuple[int, bytes]:
+            result = _validated_policy(envelope, authority)
+            checkpoint.rename(original)
+            checkpoint.write_bytes(original.read_bytes())
+            checkpoint.chmod(0o600)
+            return result
+
+        with patch(
+            "scripts.audit_signer_trust_anchor._validated_policy",
+            side_effect=replace_after_policy_validation,
+        ):
+            # A shared parent ctime can reject the swap before the final checkpoint check.
+            with self.assertRaisesRegex(ValueError, "changed during audit"):
+                self._audit(**inputs)
 
     def test_valid_audit_is_read_only_and_does_not_create_lock(self) -> None:
         before = self.anchor.read_bytes()
