@@ -16,7 +16,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from scripts.audit_signer_trust_anchor import (
-    FLOOR_CHECKPOINT_DOMAIN, FLOOR_CHECKPOINT_FORMAT, audit_anchor,
+    FLOOR_CHECKPOINT_DOMAIN, FLOOR_CHECKPOINT_FORMAT,
+    FLOOR_CHECKPOINT_DOMAIN_V2, FLOOR_CHECKPOINT_FORMAT_V2, audit_anchor,
 )
 from scripts.publish_signer_trust_anchor import FORMAT
 from scripts.verify_signer_policy_rotation import DOMAIN
@@ -90,6 +91,7 @@ class ExternalAnchorAuditTests(unittest.TestCase):
     def _signed_floor_checkpoint(
         self, *, floor: int = 8, policy_digest: str | None = None,
         key: Ed25519PrivateKey | None = None,
+        issued_at_unix: int | None = None, expires_at_unix: int | None = None,
     ) -> dict[str, object]:
         # Ephemeral test-only key: never written to the repository or SQLite.
         key = key if key is not None else Ed25519PrivateKey.generate()
@@ -101,11 +103,20 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             "minimum_revision": floor,
             "signed_policy_sha256_hex": policy_digest or self.digest,
         }
+        v2 = issued_at_unix is not None or expires_at_unix is not None
+        if v2:
+            if issued_at_unix is None or expires_at_unix is None:
+                raise ValueError("Both signed checkpoint timestamps are required")
+            record["format"] = FLOOR_CHECKPOINT_FORMAT_V2
+            record["issued_at_unix"] = issued_at_unix
+            record["expires_at_unix"] = expires_at_unix
         payload = json.dumps(record, separators=(",", ":")).encode("utf-8")
         envelope = {
             "record": record,
             "authority_public_key_hex": key_hex,
-            "signature_hex": key.sign(FLOOR_CHECKPOINT_DOMAIN + payload).hex(),
+            "signature_hex": key.sign(
+                (FLOOR_CHECKPOINT_DOMAIN_V2 if v2 else FLOOR_CHECKPOINT_DOMAIN) + payload
+            ).hex(),
         }
         checkpoint = self.root / "floor-checkpoint.json"
         raw = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
@@ -116,6 +127,69 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             "checkpoint_authority_public_key_hex": key_hex,
             "checkpoint_sha256": hashlib.sha256(raw).hexdigest(),
         }
+
+    def test_fresh_checkpoint_requires_complete_inputs_and_v2(self) -> None:
+        with patch(
+            "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+            side_effect=AssertionError("unexpected anchor read"),
+        ):
+            with self.assertRaisesRegex(ValueError, "Required floor checkpoint"):
+                self._audit(require_fresh_checkpoint=True)
+        with self.assertRaisesRegex(ValueError, "requires signed v2"):
+            self._audit(require_fresh_checkpoint=True, **self._signed_floor_checkpoint())
+
+    def test_signed_v2_checkpoint_accepts_valid_bounded_lifetime(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        with patch("scripts.audit_signer_trust_anchor.time.time", return_value=now):
+            result = self._audit(require_fresh_checkpoint=True, **inputs)
+        self.assertTrue(result["floor_checkpoint_verified"])
+        self.assertTrue(result["floor_checkpoint_fresh"])
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
+    def test_signed_v2_checkpoint_rejects_stale_future_and_invalid_lifetime(self) -> None:
+        now = 1_800_000_000
+        for issued, expires, message in (
+            (now - 3600, now, "expired"),
+            (now + 301, now + 3600, "future"),
+            (now - 1, now + 604801, "lifetime"),
+            (now + 1, now, "lifetime"),
+        ):
+            with self.subTest(issued=issued, expires=expires):
+                inputs = self._signed_floor_checkpoint(
+                    issued_at_unix=issued, expires_at_unix=expires,
+                )
+                with patch("scripts.audit_signer_trust_anchor.time.time", return_value=now):
+                    with self.assertRaisesRegex(ValueError, message):
+                        self._audit(require_fresh_checkpoint=True, **inputs)
+
+    def test_signed_v2_checkpoint_timestamp_tamper_fails_signature(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        checkpoint = Path(inputs["floor_checkpoint_file"])
+        envelope = json.loads(checkpoint.read_text(encoding="utf-8"))
+        envelope["record"]["expires_at_unix"] += 1
+        raw = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
+        checkpoint.write_bytes(raw)
+        inputs["checkpoint_sha256"] = hashlib.sha256(raw).hexdigest()
+        with self.assertRaisesRegex(ValueError, "signature verification failed"):
+            self._audit(require_fresh_checkpoint=True, **inputs)
+
+    def test_signed_v2_checkpoint_expiring_during_audit_fails_closed(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 1800,
+        )
+        with patch(
+            "scripts.audit_signer_trust_anchor.time.time",
+            side_effect=(now, now + 1800),
+        ):
+            with self.assertRaisesRegex(ValueError, "expired during audit"):
+                self._audit(require_fresh_checkpoint=True, **inputs)
 
     def test_required_checkpoint_rejects_omitted_inputs_before_anchor_read(self) -> None:
         with patch(
