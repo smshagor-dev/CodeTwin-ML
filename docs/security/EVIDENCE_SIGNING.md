@@ -568,8 +568,13 @@ This is an **accidental-disclosure guard**, not a private-key vault, secret
 scanner for arbitrary formats, or proof of cryptographic authenticity. It
 cannot detect raw Ed25519 seeds, obfuscated or encrypted secret material,
 untracked files, Git history, or files inside uninitialized submodules.
-Tracked symlinks are not followed to avoid reading files outside the
-checkout. Keep authority and evidence signing keys in separately administered
+The guard reads Git index modes (not just working-tree file types): an
+index-declared regular file replaced by a directory or symlink fails closed,
+while genuine index-declared symlinks are not followed. Index-declared Gitlink
+submodule directories are skipped; an unavailable or type-changed Gitlink
+fails closed. Unmerged or malformed index entries also fail closed. These are
+working-tree observations, not atomic protection against concurrent writers.
+CI findings escape control characters in filenames to avoid log injection. Keep authority and evidence signing keys in separately administered
 hardware or an OS-protected signing service; do not store them in Git, SQLite,
 or CI variables unless an independently reviewed signing workflow explicitly
 requires it. If a private key was ever committed, deleting the file is not
