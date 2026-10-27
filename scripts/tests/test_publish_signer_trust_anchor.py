@@ -398,21 +398,33 @@ class TrustAnchorPublisherTests(unittest.TestCase):
 
     def test_rejects_staged_path_replacement_after_final_verification(self) -> None:
         calls = 0
+        staged_path: Path | None = None
+        foreign_payload = b"substituted public anchor"
+        detached = self.root / "old-stage"
 
         def replace_stage() -> None:
-            nonlocal calls
+            nonlocal calls, staged_path
             calls += 1
             if calls == 2:
-                staged = next(self.root.glob(".trust-anchor-*.tmp"))
-                staged.rename(self.root / "old-stage")
-                staged.write_bytes(b"substituted public anchor")
-                staged.chmod(0o600)
+                (staged_path,) = list(self.root.glob(".trust-anchor-*.tmp"))
+                staged_path.rename(detached)
+                staged_path.write_bytes(foreign_payload)
+                staged_path.chmod(0o600)
 
-        with self.assertRaisesRegex(ValueError, "Staged trust anchor changed"):
-            self._publish(_verify_before_replace=replace_stage)
-        self.assertEqual(calls, 2)
-        self._assert_unchanged()
-        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+        try:
+            with self.assertRaisesRegex(ValueError, "Staged trust anchor changed"):
+                self._publish(_verify_before_replace=replace_stage)
+            self.assertEqual(calls, 2)
+            self._assert_unchanged()
+            # Cleanup must preserve an unrelated file swapped into the
+            # staging pathname, not unlink it to satisfy a stale assertion.
+            self.assertIsNotNone(staged_path)
+            self.assertEqual(staged_path.read_bytes(), foreign_payload)
+            self.assertTrue(detached.exists())
+        finally:
+            if staged_path is not None:
+                staged_path.unlink(missing_ok=True)
+            detached.unlink(missing_ok=True)
 
     def test_rejects_staged_in_place_mutation_after_final_verification(self) -> None:
         calls = 0
@@ -454,17 +466,20 @@ class TrustAnchorPublisherTests(unittest.TestCase):
     def test_rejects_staged_path_swap_during_final_read(self) -> None:
         real_read = os.read
         detached = self.root / "detached-stage"
+        staged_path: Path | None = None
         calls = 0
+        foreign_payload: bytes | None = None
 
         def swap_after_read(fd: int, count: int) -> bytes:
-            nonlocal calls
+            nonlocal calls, staged_path, foreign_payload
             data = real_read(fd, count)
             calls += 1
-            staged = next(self.root.glob(".trust-anchor-*.tmp"))
-            staged.rename(detached)
+            (staged_path,) = list(self.root.glob(".trust-anchor-*.tmp"))
+            staged_path.rename(detached)
             # Even a byte-identical replacement must not be published.
-            staged.write_bytes(data)
-            staged.chmod(0o600)
+            foreign_payload = data
+            staged_path.write_bytes(data)
+            staged_path.chmod(0o600)
             return data
 
         try:
@@ -473,8 +488,14 @@ class TrustAnchorPublisherTests(unittest.TestCase):
                     self._publish()
             self.assertEqual(calls, 1)
             self._assert_unchanged()
-            self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+            # The foreign replacement remains for administrator inspection.
+            self.assertIsNotNone(staged_path)
+            self.assertIsNotNone(foreign_payload)
+            self.assertEqual(staged_path.read_bytes(), foreign_payload)
+            self.assertTrue(detached.exists())
         finally:
+            if staged_path is not None:
+                staged_path.unlink(missing_ok=True)
             detached.unlink(missing_ok=True)
 
     def test_rejects_lock_change_during_final_staged_read(self) -> None:
