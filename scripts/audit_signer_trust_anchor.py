@@ -98,6 +98,7 @@ def _verify_floor_checkpoint(
     independent_floor: int,
     signed_policy_digest: bytes,
     require_fresh: bool = False,
+    minimum_issued_at_unix: int | None = None,
 ) -> tuple[bytes, tuple[tuple[int, ...], tuple[int, ...]], int | None]:
     """Check an externally pinned, independently signed public floor record.
 
@@ -136,7 +137,7 @@ def _verify_floor_checkpoint(
             "Floor checkpoint record",
         )
         domain = FLOOR_CHECKPOINT_DOMAIN_V2
-    elif version == FLOOR_CHECKPOINT_FORMAT and not require_fresh:
+    elif version == FLOOR_CHECKPOINT_FORMAT and not (require_fresh or minimum_issued_at_unix is not None):
         record = _exact_fields(
             raw_record,
             {"format", "minimum_revision", "signed_policy_sha256_hex"},
@@ -144,7 +145,7 @@ def _verify_floor_checkpoint(
         )
         domain = FLOOR_CHECKPOINT_DOMAIN
     elif version == FLOOR_CHECKPOINT_FORMAT:
-        raise ValueError("Fresh floor checkpoint requires signed v2 timestamps")
+        raise ValueError("Fresh or issuance-pinned floor checkpoint requires signed v2 timestamps")
     else:
         raise ValueError("Unsupported floor checkpoint format")
     floor = _positive_revision(record["minimum_revision"], "Checkpoint revision floor")
@@ -176,6 +177,10 @@ def _verify_floor_checkpoint(
     except InvalidSignature as error:
         raise ValueError("Floor checkpoint signature verification failed") from error
     if expires_at is not None:
+        # A separately protected issuance floor rejects older valid v2
+        # records even when their signatures and expiry remain valid.
+        if minimum_issued_at_unix is not None and issued_at < minimum_issued_at_unix:
+            raise ValueError("Floor checkpoint predates independently pinned issuance floor")
         now = int(time.time())
         if issued_at > now + MAX_CLOCK_SKEW_SECONDS:
             raise ValueError("Floor checkpoint issued in the future")
@@ -199,6 +204,7 @@ def audit_anchor(
     checkpoint_sha256: str | None = None,
     require_floor_checkpoint: bool = False,
     require_fresh_checkpoint: bool = False,
+    minimum_checkpoint_issued_at_unix: int | None = None,
     historical_evidence_signer_keys_hex: tuple[str, ...] = (),
     historical_policy_authority_keys_hex: tuple[str, ...] = (),
     revoked_checkpoint_authority_keys_hex: tuple[str, ...] = (),
@@ -252,6 +258,12 @@ def audit_anchor(
     checkpoint_inputs = (
         floor_checkpoint_file, checkpoint_authority_public_key_hex, checkpoint_sha256,
     )
+    if minimum_checkpoint_issued_at_unix is not None:
+        _checkpoint_timestamp(
+            minimum_checkpoint_issued_at_unix, "Independent minimum checkpoint issued_at_unix",
+        )
+        if not all(value is not None for value in checkpoint_inputs):
+            raise ValueError("Independent checkpoint issuance floor requires complete checkpoint inputs")
     if historical_keys and not all(value is not None for value in checkpoint_inputs):
         raise ValueError("Historical evidence signer inventory requires complete floor checkpoint inputs")
     if historical_authorities and not all(value is not None for value in checkpoint_inputs):
@@ -291,6 +303,7 @@ def audit_anchor(
             independent_floor=floor,
             signed_policy_digest=digest,
             require_fresh=require_fresh_checkpoint,
+            minimum_issued_at_unix=minimum_checkpoint_issued_at_unix,
         )
     path = Path(os.path.abspath(anchor_file))
     _require_external_anchor_path(path)
@@ -421,6 +434,8 @@ def main() -> None:
                         help="Fail closed unless a signed checkpoint and both pins are supplied")
     parser.add_argument("--require-fresh-checkpoint", action="store_true",
                         help="Require a signed v2 checkpoint with a currently valid expiry")
+    parser.add_argument("--minimum-checkpoint-issued-at-unix", type=int,
+                        help="Independently protected minimum signed v2 issuance timestamp")
     parser.add_argument("--historical-evidence-signer-key", action="append", default=[],
                         help="Independent historical evidence signer public key (64 hex); repeatable, max 256")
     parser.add_argument("--historical-policy-authority-key", action="append", default=[],
@@ -441,6 +456,7 @@ def main() -> None:
             checkpoint_sha256=args.checkpoint_sha256,
             require_floor_checkpoint=args.require_floor_checkpoint,
             require_fresh_checkpoint=args.require_fresh_checkpoint,
+            minimum_checkpoint_issued_at_unix=args.minimum_checkpoint_issued_at_unix,
             historical_evidence_signer_keys_hex=tuple(args.historical_evidence_signer_key),
             historical_policy_authority_keys_hex=tuple(args.historical_policy_authority_key),
             revoked_checkpoint_authority_keys_hex=tuple(args.revoked_checkpoint_authority_key),
