@@ -41,18 +41,22 @@ else:
         _require_external_anchor_path,
     )
     from verify_signer_policy_rotation import (
+        _exact_fields,
         _hex_bytes,
+        _json_bytes,
         _parse_signed_policy,
         _policy_parent_snapshot,
+        _policy_path_snapshot,
         _positive_revision,
         _read_signed_policy_bytes,
+        _unique_fields,
         _validated_policy,
     )
 
 
 
 FLOOR_CHECKPOINT_FORMAT = "codetwin-revision-floor-checkpoint-v1"
-FLOOR_CHECKPOINT_DOMAIN = b"CodeTwin-ML/revision-floor/ed25519/v1\\0"
+FLOOR_CHECKPOINT_DOMAIN = b"CodeTwin-ML/revision-floor/ed25519/v1" + bytes([0])
 
 
 def _verify_floor_checkpoint(
@@ -79,8 +83,12 @@ def _verify_floor_checkpoint(
     raw = _read_signed_policy_bytes(path)
     if hashlib.sha256(raw).digest() != pinned_digest:
         raise ValueError("Floor checkpoint differs from independently pinned digest")
+    try:
+        decoded = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_fields)
+    except RecursionError as error:
+        raise ValueError("Floor checkpoint JSON nesting is too deep") from error
     envelope = _exact_fields(
-        json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_fields),
+        decoded,
         {"record", "authority_public_key_hex", "signature_hex"},
         "Floor checkpoint envelope",
     )
