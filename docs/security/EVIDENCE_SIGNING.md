@@ -622,9 +622,10 @@ repository.
 The Python CI job runs `python scripts/check_tracked_private_keys.py` on
 **staged Git index blobs** for index-declared regular files and symlinks,
 plus working-tree copies of regular files. Symlink targets are never
-dereferenced; only their committed link text is inspected. Gitlinks are
-excluded because their index entries are commits, not blobs. A private-key
-header staged with `git add` remains detectable even if the working-tree file
+dereferenced; only their committed link text is inspected. Gitlinks
+(submodules) fail closed because their index entries identify commits, not
+inspectable blobs. A private-key header staged with `git add` remains
+detectable even if the working-tree file
 is subsequently overwritten with harmless text.
 It rejects recognizable ASCII armor headers for private keys (including
 PKCS#8, OpenSSH, RSA, EC, DSA and PGP private-key blocks), without printing
@@ -644,13 +645,16 @@ python -m unittest scripts.tests.test_check_tracked_private_keys
 This is an **accidental-disclosure guard**, not a private-key vault, secret
 scanner for arbitrary formats, or proof of cryptographic authenticity. It
 cannot detect raw Ed25519 seeds, obfuscated or encrypted secret material,
-untracked files, Git history, or files inside uninitialized submodules.
+untracked files, Git history, or private keys inside submodules.
 The guard reads Git index modes (not just working-tree file types): an
 index-declared regular file replaced by a directory or symlink fails closed,
-while genuine index-declared symlinks are not followed. Index-declared Gitlink
-submodule directories are skipped; an unavailable or type-changed Gitlink
-fails closed. Unmerged or malformed index entries also fail closed. These are
-working-tree observations, not atomic protection against concurrent writers.
+while genuine index-declared symlinks are not followed. Every index-declared
+Gitlink fails closed, even when its directory exists, because the parent index
+cannot attest to private-key contents in a nested repository. Audit submodule
+contents separately under an explicit approved process before adopting them;
+this guard does not recurse into submodules or fetch from remote repositories.
+Unmerged or malformed index entries also fail closed. These are working-tree
+observations, not atomic protection against concurrent writers.
 On POSIX systems the guard now opens tracked regular files with
 `O_NOFOLLOW | O_NONBLOCK`, checks the opened descriptor against the
 pre-open pathname metadata, and compares inode identity, permissions, owner,

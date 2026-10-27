@@ -157,10 +157,11 @@ def scan_tracked_files(root: Path) -> list[str]:
                 findings.append(relative)
             continue
         if mode == b"160000":
-            # A Gitlink is a separate repository, not a regular tracked file.
+            # A Gitlink records a commit, not a blob. We cannot inspect its
+            # nested repository using this index scan, so never report clean.
             if not stat.S_ISDIR(file_mode):
                 raise ValueError(f"Tracked gitlink type changed: {relative!r}")
-            continue
+            raise ValueError(f"Tracked gitlink cannot be scanned for private-key material: {relative!r}")
         # A regular tracked file replaced by a directory or symlink must not
         # silently bypass the guard (the old is_dir() branch allowed this).
         if not stat.S_ISREG(file_mode):
