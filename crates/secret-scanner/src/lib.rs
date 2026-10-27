@@ -523,9 +523,9 @@ mod tests {
     fn private_key_headers_are_critical() {
         let text = concat!(
             "-----BEGIN ",
-            "RSA PRIVATE KEY-----\\n",
-            "MIIEow\\n",
-            "-----END RSA PRIVATE KEY-----\\n",
+            "RSA PRIVATE KEY-----\n",
+            "MIIEow\n",
+            "-----END RSA PRIVATE KEY-----\n",
         );
         let found = scan_text("deploy/id_rsa", text);
         assert_eq!(found[0].rule_id, "secret.private_key");
