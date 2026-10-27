@@ -464,7 +464,7 @@ The audit does not update the floor or create any signing keys.
 For key-role separation across **earlier** signer-policy revisions, the
 administrator may additionally provide independently maintained historical
 evidence-signer **public** keys using repeatable
-`--historical-evidence-signer-key <64-lowercase-hex-public-key>` arguments
+`--historical-evidence-signer-key <64-hex-character-public-key>` arguments
 (maximum 256 distinct keys). The audit rejects a checkpoint authority that
 matches any supplied historical key, even when that signer was removed from
 the current policy. Invalid or duplicate keys fail closed, as does supplying
