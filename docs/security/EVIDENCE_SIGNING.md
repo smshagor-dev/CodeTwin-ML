@@ -394,6 +394,47 @@ python scripts/audit_signer_trust_anchor.py \
   --expected-sha256 <independently-pinned-current-digest>
 ```
 
+### Optional independently signed revision-floor checkpoint
+
+The read-only audit can additionally verify a **public, externally signed**
+revision-floor checkpoint. This is an opt-in second authority, not a replacement
+for the independently supplied floor, exact signed-policy digest, or trusted
+signer-policy authority. Supply all three additional arguments together:
+
+```bash
+python scripts/audit_signer_trust_anchor.py \\
+  --anchor-file /trusted/private/anchor.json \\
+  --signed-policy /trusted/input/current-policy.json \\
+  --authority-public-key <independently-pinned-policy-authority> \\
+  --expected-revision 5 --independent-revision-floor 5 \\
+  --expected-sha256 <independently-pinned-policy-envelope-sha256> \\
+  --floor-checkpoint-file /trusted/input/floor-checkpoint.json \\
+  --checkpoint-authority-public-key <independently-pinned-separate-floor-authority> \\
+  --checkpoint-sha256 <independently-pinned-exact-checkpoint-sha256>
+```
+
+The checkpoint is a JSON envelope with exactly `record`,
+`authority_public_key_hex`, and `signature_hex`. The record has exactly
+`format` (`codetwin-revision-floor-checkpoint-v1`),
+`minimum_revision` (positive u64), and `signed_policy_sha256_hex`.
+An independently managed Ed25519 checkpoint authority signs the bytes
+`CodeTwin-ML/revision-floor/ed25519/v1` followed by a NUL byte and compact
+UTF-8 JSON of the record in the field order listed above. The checkpoint
+authority **must differ** from the signer-policy authority. Its public key,
+the checkpoint's exact-byte SHA-256, the independently retained floor and the
+policy-envelope digest must all match. The checkpoint file is read-only,
+size-bounded (16 KiB), checked for unsafe filesystem substitutions, and
+rechecked at the audit return boundary.
+
+The checkpoint signing key stays in an independently controlled signer or
+hardware-backed service. Never store its private material in this repository,
+SQLite or the checkpoint JSON. A valid signature and matching supplied pins
+do **not** establish the authenticity of the operator's independent channel,
+key custody, a protected monotonic floor, or resistance to replay of an old
+valid checkpoint when an attacker can also roll back its external pins.
+The operator must advance and protect those independent pins after rotation.
+The audit does not update the floor or create any signing keys.
+
 The read-only auditor now requires a separately protected positive u64
 revision floor, just like the authenticated publisher. If the independently
 pinned current revision is below that floor, the audit fails before reading
