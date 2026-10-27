@@ -84,6 +84,25 @@ class TrackedPrivateKeyGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Cannot read tracked Git index blob"):
             scan_tracked_files(self.root)
 
+    def test_oversized_staged_blob_fails_closed(self) -> None:
+        path = self._track("large-staged.txt", b"x" * 32)
+        path.write_bytes(b"clean worktree")
+        with mock.patch("scripts.check_tracked_private_keys.MAX_SCAN_BYTES", 16):
+            with self.assertRaisesRegex(ValueError, "Git index blob exceeds"):
+                scan_tracked_files(self.root)
+
+    def test_oversized_worktree_fails_closed(self) -> None:
+        path = self._track("large-worktree.txt", b"clean")
+        path.write_bytes(b"x" * 32)
+        with mock.patch("scripts.check_tracked_private_keys.MAX_SCAN_BYTES", 16):
+            with self.assertRaisesRegex(ValueError, "Tracked file exceeds"):
+                scan_tracked_files(self.root)
+
+    def test_exact_size_limit_is_accepted(self) -> None:
+        self._track("exact.txt", b"x" * 16)
+        with mock.patch("scripts.check_tracked_private_keys.MAX_SCAN_BYTES", 16):
+            self.assertEqual(scan_tracked_files(self.root), [])
+
     def test_public_keys_and_untracked_files_are_not_reported(self) -> None:
         self._track("public.pem", b"-----BEGIN PUBLIC KEY-----\n")
         (self.root / "untracked.pem").write_bytes(_private_header())

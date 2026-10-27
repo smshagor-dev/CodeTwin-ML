@@ -19,6 +19,8 @@ PRIVATE_KEY_ARMOR = re.compile(
 )
 CHUNK_SIZE = 64 * 1024
 OVERLAP = 128
+# Reject oversized inputs rather than silently omitting potentially secret bytes.
+MAX_SCAN_BYTES = 64 * 1024 * 1024
 
 
 def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
@@ -54,9 +56,15 @@ def has_private_key_armor(
             or _file_identity(opened) != _file_identity(before)
         ):
             raise ValueError("Tracked file changed while opening")
+        if opened.st_size > MAX_SCAN_BYTES:
+            raise ValueError("Tracked file exceeds private-key scan size limit")
         previous = b""
         found = False
+        scanned = 0
         while chunk := source.read(CHUNK_SIZE):
+            scanned += len(chunk)
+            if scanned > MAX_SCAN_BYTES:
+                raise ValueError("Tracked file exceeds private-key scan size limit")
             data = previous + chunk
             if PRIVATE_KEY_ARMOR.search(data):
                 found = True
@@ -86,7 +94,14 @@ def has_private_key_armor_in_index(root: Path, object_id: bytes) -> bool:
             raise OSError("Could not open Git blob stream")
         previous = b""
         found = False
-        while chunk := process.stdout.read(CHUNK_SIZE):
+        scanned = 0
+        while chunk := process.stdout.read(
+            min(CHUNK_SIZE, MAX_SCAN_BYTES - scanned + 1)
+        ):
+            scanned += len(chunk)
+            if scanned > MAX_SCAN_BYTES:
+                process.kill()
+                raise ValueError("Tracked Git index blob exceeds private-key scan size limit")
             data = previous + chunk
             if PRIVATE_KEY_ARMOR.search(data):
                 found = True
