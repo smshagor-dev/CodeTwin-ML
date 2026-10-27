@@ -135,6 +135,7 @@ def audit_anchor(
     floor_checkpoint_file: Path | None = None,
     checkpoint_authority_public_key_hex: str | None = None,
     checkpoint_sha256: str | None = None,
+    require_floor_checkpoint: bool = False,
 ) -> dict[str, str | int]:
     """Fail closed unless both the anchor and signed policy match external pins.
 
@@ -153,6 +154,10 @@ def audit_anchor(
     checkpoint_inputs = (
         floor_checkpoint_file, checkpoint_authority_public_key_hex, checkpoint_sha256,
     )
+    # Strict deployments must not silently fall back to a pin-only audit when
+    # checkpoint arguments are omitted by an operator or automation.
+    if require_floor_checkpoint and not all(value is not None for value in checkpoint_inputs):
+        raise ValueError("Required floor checkpoint and both independent pins are missing")
     if any(value is not None for value in checkpoint_inputs) and not all(
         value is not None for value in checkpoint_inputs
     ):
@@ -266,6 +271,8 @@ def main() -> None:
                         help="Independent Ed25519 checkpoint authority (distinct from policy authority)")
     parser.add_argument("--checkpoint-sha256",
                         help="SHA-256 of exact checkpoint envelope from independent records")
+    parser.add_argument("--require-floor-checkpoint", action="store_true",
+                        help="Fail closed unless a signed checkpoint and both pins are supplied")
     args = parser.parse_args()
     try:
         result = audit_anchor(
@@ -278,6 +285,7 @@ def main() -> None:
             floor_checkpoint_file=args.floor_checkpoint_file,
             checkpoint_authority_public_key_hex=args.checkpoint_authority_public_key,
             checkpoint_sha256=args.checkpoint_sha256,
+            require_floor_checkpoint=args.require_floor_checkpoint,
         )
     except (OSError, ValueError, UnicodeError) as error:
         parser.exit(2, f"External anchor audit failed: {error}\n")
