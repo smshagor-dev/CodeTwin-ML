@@ -111,6 +111,28 @@ def has_private_key_armor_in_index(root: Path, object_id: bytes) -> bool:
     return found
 
 
+def _verify_symlink_matches_index(
+    root: Path, path: Path, object_id: bytes, expected: os.stat_result,
+) -> None:
+    """Reject a tracked link whose current target differs from its staged blob.
+
+    Hash the link text only, without following the target or writing a Git
+    object. A second lstat catches observed replacement during hashing.
+    """
+    before = path.lstat()
+    if not stat.S_ISLNK(before.st_mode) or _file_identity(before) != _file_identity(expected):
+        raise ValueError("Tracked symlink changed before target verification")
+    target = os.fsencode(os.readlink(path))
+    digest = subprocess.run(
+        ["git", "hash-object", "--stdin"],
+        cwd=root, input=target, capture_output=True, check=True,
+    ).stdout.strip()
+    if digest != object_id:
+        raise ValueError("Tracked symlink target differs from Git index")
+    if _file_identity(path.lstat()) != _file_identity(before):
+        raise ValueError("Tracked symlink changed during target verification")
+
+
 def scan_tracked_files(root: Path) -> list[str]:
     """Scan index-declared regular files; reject unsafe working-tree substitutions."""
     root = root.resolve()
@@ -153,7 +175,9 @@ def scan_tracked_files(root: Path) -> list[str]:
             # committed content and can contain recognizable private-key armor.
             if not stat.S_ISLNK(file_mode):
                 raise ValueError(f"Tracked symlink type changed: {relative!r}")
-            if has_private_key_armor_in_index(root, object_id):
+            staged_secret = has_private_key_armor_in_index(root, object_id)
+            _verify_symlink_matches_index(root, path, object_id, file_info)
+            if staged_secret:
                 findings.append(relative)
             continue
         if mode == b"160000":
