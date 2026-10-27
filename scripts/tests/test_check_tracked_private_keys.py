@@ -130,7 +130,7 @@ class TrackedPrivateKeyGuardTests(unittest.TestCase):
         )
         self.assertEqual(scan_tracked_files(self.root), ["key-link"])
 
-    def test_staged_symlink_key_remains_detected_after_target_change(self) -> None:
+    def test_staged_symlink_key_target_change_fails_closed(self) -> None:
         link = self.root / "key-link"
         link.symlink_to(os.fsdecode(_private_header(b"OPENSSH ")))
         subprocess.run(
@@ -139,7 +139,44 @@ class TrackedPrivateKeyGuardTests(unittest.TestCase):
         )
         link.unlink()
         link.symlink_to("ordinary-target")
-        self.assertEqual(scan_tracked_files(self.root), ["key-link"])
+        with self.assertRaisesRegex(ValueError, "differs from Git index"):
+            scan_tracked_files(self.root)
+
+    def test_clean_staged_symlink_target_drift_fails_closed(self) -> None:
+        link = self.root / "ordinary-link"
+        link.symlink_to("original-target")
+        subprocess.run(
+            ["git", "add", "--", link.name],
+            cwd=self.root, check=True, capture_output=True,
+        )
+        self.assertEqual(scan_tracked_files(self.root), [])
+        link.unlink()
+        link.symlink_to("replacement-target")
+        with self.assertRaisesRegex(ValueError, "differs from Git index"):
+            scan_tracked_files(self.root)
+
+    def test_symlink_swap_during_index_target_hash_fails_closed(self) -> None:
+        link = self.root / "ordinary-link"
+        link.symlink_to("original-target")
+        subprocess.run(
+            ["git", "add", "--", link.name],
+            cwd=self.root, check=True, capture_output=True,
+        )
+        real_run = subprocess.run
+
+        def swap_after_hash(args, **kwargs):
+            result = real_run(args, **kwargs)
+            if args[:2] == ["git", "hash-object"]:
+                link.unlink()
+                link.symlink_to("replacement-target")
+            return result
+
+        with mock.patch(
+            "scripts.check_tracked_private_keys.subprocess.run",
+            side_effect=swap_after_hash,
+        ):
+            with self.assertRaisesRegex(ValueError, "changed during target verification"):
+                scan_tracked_files(self.root)
 
     def test_missing_tracked_file_fails_closed(self) -> None:
         path = self._track("missing.txt", b"ordinary text")
