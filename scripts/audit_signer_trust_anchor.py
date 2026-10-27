@@ -261,6 +261,25 @@ def audit_anchor(
         assert checkpoint_bytes is not None and checkpoint_snapshot is not None
         if not _checkpoint_unchanged(checkpoint_path, checkpoint_bytes, checkpoint_snapshot):
             raise ValueError("Floor checkpoint changed during audit")
+        # The final checkpoint read is not a transaction with the anchor and
+        # policy reads above. A noncooperating writer could replace either
+        # input while that last checkpoint read is in progress. Re-observe
+        # both before reporting success in checkpoint mode.
+        if _private_directory(path.parent) != directory_identity:
+            raise ValueError("External anchor directory changed during audit")
+        checked_anchor, checked_metadata = _read_anchor_with_metadata(path)
+        if checked_anchor != before or checked_metadata != before_metadata:
+            raise ValueError("External anchor changed during audit")
+        if (
+            _read_signed_policy_bytes(policy_path) != policy_before_bytes
+            or _policy_parent_snapshot(policy_path) != policy_parent_before
+            or _anchor_metadata(policy_path.lstat()) != policy_metadata_before
+        ):
+            raise ValueError("Signed policy changed during audit")
+        if _private_directory(path.parent) != directory_identity:
+            raise ValueError("External anchor directory changed during audit")
+        # These observations are bounded; no sequence of reads can establish
+        # an atomic snapshot or prevent a privileged rollback after return.
     return {
         "status": "verified_against_supplied_pins",
         "minimum_revision": revision,
