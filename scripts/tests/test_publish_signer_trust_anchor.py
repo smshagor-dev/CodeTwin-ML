@@ -267,6 +267,40 @@ class TrustAnchorPublisherTests(unittest.TestCase):
                     shutil.rmtree(self.root)
                 detached.rename(self.root)
 
+    def test_rejects_same_inode_mode_change_after_publication(self) -> None:
+        # A readback with identical JSON and inode must not accept an
+        # observed metadata mutation after the staged inode was renamed.
+        real_replace = os.replace
+
+        def mutate_mode_after_rename(src: object, dst: object, **kwargs: object) -> None:
+            real_replace(src, dst, **kwargs)
+            self.anchor.chmod(0o400)  # Still private; value-only checks pass.
+
+        with patch("scripts.publish_signer_trust_anchor.os.replace",
+                   side_effect=mutate_mode_after_rename):
+            with self.assertRaisesRegex(ValueError, "Published anchor identity changed"):
+                self._publish()
+        self.assertEqual(json.loads(self.anchor.read_text())["minimum_revision"], 5)
+        self.assertEqual(stat.S_IMODE(self.anchor.stat().st_mode), 0o400)
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
+    def test_rejects_same_inode_mtime_change_after_publication(self) -> None:
+        real_replace = os.replace
+
+        def mutate_mtime_after_rename(src: object, dst: object, **kwargs: object) -> None:
+            real_replace(src, dst, **kwargs)
+            metadata = self.anchor.stat()
+            os.utime(self.anchor, ns=(
+                metadata.st_atime_ns, metadata.st_mtime_ns + 1_000_000_000,
+            ))
+
+        with patch("scripts.publish_signer_trust_anchor.os.replace",
+                   side_effect=mutate_mtime_after_rename):
+            with self.assertRaisesRegex(ValueError, "Published anchor identity changed"):
+                self._publish()
+        self.assertEqual(json.loads(self.anchor.read_text())["minimum_revision"], 5)
+        self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+
     def test_rejects_identical_content_inode_swap_after_publication(self) -> None:
         # A noncooperating writer can replace the newly published pathname
         # with byte-identical JSON after rename. A value-only readback would

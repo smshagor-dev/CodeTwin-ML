@@ -530,3 +530,22 @@ the protected anchor and policy pins, and reconcile externally protected
 revision-floor records before retrying. Noncooperating same-UID or privileged
 writers can still race checks; this is not atomic filesystem custody or proof
 of external private signing-key protection.
+
+### Stable metadata readback after anchor publication
+
+After renaming the staged public anchor, the publisher now compares the
+readback file's device, inode, mode, owner, group, hard-link count, size, and
+modification time with the staged descriptor's verified values. Creation/change
+time (ctime) is deliberately excluded because rename may legitimately update
+it. This detects observed same-inode chmod or mtime changes even when the
+readback JSON and inode are unchanged. Two POSIX regression tests simulate
+these post-rename mutations.
+
+**Important:** A readback mismatch occurs after the rename and durability
+sync; the new anchor may already be published. Treat the outcome as
+indeterminate, audit the anchor and independently protected revision floor,
+and reconcile external records before retrying. These metadata comparisons
+are point-in-time observations, not atomic filesystem custody, privileged
+rollback resistance, proof of administrator approval, or proof of external
+private signing-key protection. Never store private keys in SQLite or the
+repository.
