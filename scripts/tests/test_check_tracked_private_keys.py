@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest import mock
+import os
 import subprocess
 import tempfile
 import unittest
@@ -117,6 +119,64 @@ class TrackedPrivateKeyGuardTests(unittest.TestCase):
         )
         (gitlink / "untracked.key").write_bytes(_private_header())
         self.assertEqual(scan_tracked_files(self.root), [])
+
+    def test_symlink_swap_before_descriptor_open_fails_closed(self) -> None:
+        path = self._track("tracked.txt", b"ordinary text")
+        outside = self.root.parent / (self.root.name + "-outside.key")
+        outside.write_bytes(_private_header())
+        self.addCleanup(outside.unlink)
+        real_open = os.open
+
+        def swap_on_open(filename, flags, *args, **kwargs):
+            path.unlink()
+            path.symlink_to(outside)
+            return real_open(filename, flags, *args, **kwargs)
+
+        with mock.patch(
+            "scripts.check_tracked_private_keys.os.open", side_effect=swap_on_open
+        ):
+            with self.assertRaises(OSError):
+                has_private_key_armor(path)
+
+    def test_same_inode_metadata_change_during_scan_fails_closed(self) -> None:
+        path = self._track("tracked.txt", b"ordinary text")
+        original = path.stat()
+
+        class MutatingPattern:
+            def search(self, data):
+                os.utime(
+                    path,
+                    ns=(original.st_atime_ns, original.st_mtime_ns + 2_000_000_000),
+                )
+                return None
+
+        with mock.patch(
+            "scripts.check_tracked_private_keys.PRIVATE_KEY_ARMOR",
+            new=MutatingPattern(),
+        ):
+            with self.assertRaisesRegex(ValueError, "changed while reading"):
+                has_private_key_armor(path)
+
+    def test_same_bytes_inode_swap_after_read_fails_closed(self) -> None:
+        path = self._track("tracked.txt", b"ordinary text")
+        replacement = self.root / "replacement.txt"
+        replacement.write_bytes(b"ordinary text")
+
+        class ReplacingPattern:
+            def search(self, data):
+                replacement.replace(path)
+                return None
+
+        with mock.patch(
+            "scripts.check_tracked_private_keys.PRIVATE_KEY_ARMOR",
+            new=ReplacingPattern(),
+        ):
+            # Replacing the path may also change the open inode's link count
+            # or ctime, so either fail-closed boundary is acceptable.
+            with self.assertRaisesRegex(
+                ValueError, "changed while reading|path changed during scan"
+            ):
+                has_private_key_armor(path)
 
     def test_non_git_directory_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
