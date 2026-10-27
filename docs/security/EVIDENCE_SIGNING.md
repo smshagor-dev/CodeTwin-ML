@@ -439,16 +439,16 @@ record and update it only after verifying a newer checkpoint. Never read it
 from the checkpoint being audited or from mutable SQLite state. For example:
 
 ```bash
-python scripts/audit_signer_trust_anchor.py \\
-  --anchor-file /trusted/private/anchor.json \\
-  --signed-policy /trusted/input/current-policy.json \\
-  --authority-public-key <independent-policy-authority> \\
-  --expected-revision 5 --independent-revision-floor 5 \\
-  --expected-sha256 <independent-policy-envelope-sha256> \\
-  --floor-checkpoint-file /trusted/input/floor-checkpoint-v2.json \\
-  --checkpoint-authority-public-key <independent-checkpoint-authority> \\
-  --checkpoint-sha256 <independent-checkpoint-envelope-sha256> \\
-  --require-fresh-checkpoint \\
+python scripts/audit_signer_trust_anchor.py \
+  --anchor-file /trusted/private/anchor.json \
+  --signed-policy /trusted/input/current-policy.json \
+  --authority-public-key <independent-policy-authority> \
+  --expected-revision 5 --independent-revision-floor 5 \
+  --expected-sha256 <independent-policy-envelope-sha256> \
+  --floor-checkpoint-file /trusted/input/floor-checkpoint-v2.json \
+  --checkpoint-authority-public-key <independent-checkpoint-authority> \
+  --checkpoint-sha256 <independent-checkpoint-envelope-sha256> \
+  --require-fresh-checkpoint \
   --minimum-checkpoint-issued-at-unix <independently-protected-timestamp>
 ```
 
