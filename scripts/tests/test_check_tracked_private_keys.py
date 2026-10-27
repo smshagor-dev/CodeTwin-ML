@@ -141,22 +141,18 @@ class TrackedPrivateKeyGuardTests(unittest.TestCase):
     def test_same_inode_metadata_change_during_scan_fails_closed(self) -> None:
         path = self._track("tracked.txt", b"ordinary text")
         original = path.stat()
-        real_fstat = os.fstat
-        calls = 0
 
-        def mutate_on_fstat(fd):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
+        class MutatingPattern:
+            def search(self, data):
                 os.utime(
                     path,
                     ns=(original.st_atime_ns, original.st_mtime_ns + 2_000_000_000),
                 )
-            return real_fstat(fd)
+                return None
 
         with mock.patch(
-            "scripts.check_tracked_private_keys.os.fstat",
-            side_effect=mutate_on_fstat,
+            "scripts.check_tracked_private_keys.PRIVATE_KEY_ARMOR",
+            new=MutatingPattern(),
         ):
             with self.assertRaisesRegex(ValueError, "changed while reading"):
                 has_private_key_armor(path)
@@ -165,20 +161,15 @@ class TrackedPrivateKeyGuardTests(unittest.TestCase):
         path = self._track("tracked.txt", b"ordinary text")
         replacement = self.root / "replacement.txt"
         replacement.write_bytes(b"ordinary text")
-        real_fstat = os.fstat
-        calls = 0
 
-        def replace_on_fstat(fd):
-            nonlocal calls
-            calls += 1
-            metadata = real_fstat(fd)
-            if calls == 2:
+        class ReplacingPattern:
+            def search(self, data):
                 replacement.replace(path)
-            return metadata
+                return None
 
         with mock.patch(
-            "scripts.check_tracked_private_keys.os.fstat",
-            side_effect=replace_on_fstat,
+            "scripts.check_tracked_private_keys.PRIVATE_KEY_ARMOR",
+            new=ReplacingPattern(),
         ):
             with self.assertRaisesRegex(ValueError, "path changed during scan"):
                 has_private_key_armor(path)
