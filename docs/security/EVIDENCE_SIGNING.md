@@ -491,6 +491,12 @@ review approval. SQLite remains the local evidence store, not a key vault.
 
 ### Post-publication inode readback
 
+The bounded trust-anchor reader rechecks pathname metadata after JSON decoding
+and schema validation, not just during descriptor reads. An observed inode swap
+or metadata mutation during decoding fails closed even when JSON bytes are
+identical. These are point-in-time checks and do not prevent privileged or
+same-UID races, nor prove external custody of the public anchor or private key.
+
 After the POSIX anchor publisher renames its verified staged public record, it
 compares the readback file's device and inode with the staged file's identity,
 in addition to checking its parsed contents and directory ancestry. After
