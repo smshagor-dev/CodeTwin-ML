@@ -218,6 +218,18 @@ def audit_anchor(
         raise ValueError("Signed policy changed during audit")
     policy_before = _parse_signed_policy(policy_before_bytes)
     policy_revision, policy_digest = _validated_policy(policy_before, authority)
+    # A checkpoint authority reused as an evidence-signing key is not an
+    # independent signing role, even when that signer is now revoked. Check
+    # against the authenticated policy, never an unverified input envelope.
+    if checkpoint_authority_public_key_hex is not None:
+        checkpoint_key = _hex_bytes(
+            checkpoint_authority_public_key_hex, 32, "Checkpoint authority",
+        )
+        if any(
+            _hex_bytes(entry["public_key_hex"], 32, "Evidence signer key") == checkpoint_key
+            for entry in policy_before["policy"]["signers"]
+        ):
+            raise ValueError("Checkpoint authority must differ from every evidence signer")
     if policy_revision != revision or policy_digest != digest:
         raise ValueError("Signed policy differs from independently trusted revision or digest")
 
