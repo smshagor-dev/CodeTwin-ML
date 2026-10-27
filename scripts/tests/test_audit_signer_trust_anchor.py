@@ -238,6 +238,45 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     self._audit(historical_evidence_signer_keys_hex=keys, **inputs)
 
+    def test_checkpoint_rejects_historical_policy_authority_after_rotation(self) -> None:
+        # The current policy uses self.authority_key; a previously trusted
+        # authority is absent from that policy and cannot be inferred from it.
+        old_authority = Ed25519PrivateKey.generate()
+        pins = self._signed_floor_checkpoint(key=old_authority)
+        old_hex = pins["checkpoint_authority_public_key_hex"]
+        with self.assertRaisesRegex(ValueError, "historical policy authorities"):
+            self._audit(
+                require_floor_checkpoint=True,
+                historical_policy_authority_keys_hex=(old_hex,),
+                **pins,
+            )
+        # An unrelated historical authority does not block a valid checkpoint.
+        result = self._audit(
+            require_floor_checkpoint=True,
+            historical_policy_authority_keys_hex=(self.authority_hex,),
+            **pins,
+        )
+        self.assertTrue(result["floor_checkpoint_verified"])
+
+    def test_historical_policy_authority_inventory_requires_checkpoint(self) -> None:
+        with patch(
+            "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+            side_effect=AssertionError("unexpected anchor read"),
+        ):
+            with self.assertRaisesRegex(ValueError, "Historical policy authority inventory requires complete"):
+                self._audit(historical_policy_authority_keys_hex=(self.authority_hex,))
+
+    def test_historical_policy_authority_inventory_rejects_bad_duplicate_and_oversized(self) -> None:
+        pins = self._signed_floor_checkpoint()
+        for keys, message in (
+            (("bad",), "Historical policy authority key"),
+            ((self.authority_hex, self.authority_hex), "Duplicate historical policy authority"),
+            ((self.authority_hex,) * 257, "at most 256"),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    self._audit(historical_policy_authority_keys_hex=keys, **pins)
+
     def test_signed_checkpoint_rejects_reused_evidence_signer_key(self) -> None:
         # An independently signed floor record must not share a private key
         # with an evidence signer, even when the evidence signer is revoked.
