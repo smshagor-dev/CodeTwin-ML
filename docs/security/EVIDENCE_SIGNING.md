@@ -549,3 +549,29 @@ are point-in-time observations, not atomic filesystem custody, privileged
 rollback resistance, proof of administrator approval, or proof of external
 private signing-key protection. Never store private keys in SQLite or the
 repository.
+
+## CI guard against accidentally tracked private keys
+
+The Python CI job runs `python scripts/check_tracked_private_keys.py` on
+Git-tracked regular files. It rejects recognizable ASCII armor headers for
+private keys (including PKCS#8, OpenSSH, RSA, EC, DSA and PGP private-key
+blocks), without printing the contents. The check reads in bounded chunks
+and fails closed when Git cannot enumerate the checkout or a tracked regular
+file is unavailable. Run it locally before opening a pull request:
+
+```bash
+python scripts/check_tracked_private_keys.py
+python -m unittest scripts.tests.test_check_tracked_private_keys
+```
+
+This is an **accidental-disclosure guard**, not a private-key vault, secret
+scanner for arbitrary formats, or proof of cryptographic authenticity. It
+cannot detect raw Ed25519 seeds, obfuscated or encrypted secret material,
+untracked files, Git history, or files inside uninitialized submodules.
+Tracked symlinks are not followed to avoid reading files outside the
+checkout. Keep authority and evidence signing keys in separately administered
+hardware or an OS-protected signing service; do not store them in Git, SQLite,
+or CI variables unless an independently reviewed signing workflow explicitly
+requires it. If a private key was ever committed, deleting the file is not
+sufficient: revoke/rotate the exposed key and investigate Git history and
+artifacts. A clean CI scan does not attest to external key custody.
