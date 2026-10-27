@@ -192,6 +192,11 @@ def _read_anchor_with_metadata(path: Path) -> tuple[dict[str, Any], tuple[int, .
     _hex_pin(value["authority_public_key_hex"], "Authority public key")
     _hex_pin(value["signed_policy_sha256_hex"], "Signed policy SHA-256")
     _positive_revision(value["minimum_revision"], "Stored revision")
+    # JSON decoding and field validation happen after the descriptor closes.
+    # Reject an observed pathname replacement or metadata mutation in that
+    # window, even if the replacement contains byte-identical JSON.
+    if _anchor_metadata(path.lstat()) != _anchor_metadata(finished):
+        raise ValueError("Trust anchor changed during decoding")
     return value, _anchor_metadata(finished)
 
 
