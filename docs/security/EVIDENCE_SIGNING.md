@@ -461,6 +461,20 @@ valid checkpoint when an attacker can also roll back its external pins.
 The operator must advance and protect those independent pins after rotation.
 The audit does not update the floor or create any signing keys.
 
+For key-role separation across **earlier** signer-policy revisions, the
+administrator may additionally provide independently maintained historical
+evidence-signer **public** keys using repeatable
+`--historical-evidence-signer-key <64-hex-character-public-key>` arguments
+(maximum 256 distinct keys). The audit rejects a checkpoint authority that
+matches any supplied historical key, even when that signer was removed from
+the current policy. Invalid or duplicate keys fail closed, as does supplying
+a historical inventory without a complete checkpoint and its independent
+pins. These public keys must be obtained from authenticated administrator
+records, not from the checkpoint being audited. This optional comparison
+**cannot prove the inventory is complete or that private signing keys have
+independent custody**; missing historical keys remain outside its detection
+scope. Never supply or store private key material.
+
 The read-only auditor now requires a separately protected positive u64
 revision floor, just like the authenticated publisher. If the independently
 pinned current revision is below that floor, the audit fails before reading

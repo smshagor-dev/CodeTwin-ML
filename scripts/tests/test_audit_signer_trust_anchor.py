@@ -199,6 +199,45 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                 **inputs, "checkpoint_authority_public_key_hex": self.authority_hex,
             })
 
+    def test_checkpoint_rejects_historical_signer_not_in_current_policy(self) -> None:
+        # A removed signer is absent from the current authenticated policy.
+        # Its public key must still be forbidden when independently listed.
+        historical = Ed25519PrivateKey.generate()
+        inputs = self._signed_floor_checkpoint(key=historical)
+        historical_hex = inputs["checkpoint_authority_public_key_hex"]
+        with self.assertRaisesRegex(ValueError, "historical evidence signers"):
+            self._audit(
+                require_floor_checkpoint=True,
+                historical_evidence_signer_keys_hex=(historical_hex,),
+                **inputs,
+            )
+        # A distinct independently listed key does not block the checkpoint.
+        result = self._audit(
+            require_floor_checkpoint=True,
+            historical_evidence_signer_keys_hex=(self.signer_hex,),
+            **inputs,
+        )
+        self.assertTrue(result["floor_checkpoint_verified"])
+
+    def test_historical_signer_inventory_rejects_missing_checkpoint(self) -> None:
+        with patch(
+            "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+            side_effect=AssertionError("unexpected anchor read"),
+        ):
+            with self.assertRaisesRegex(ValueError, "requires complete floor checkpoint"):
+                self._audit(historical_evidence_signer_keys_hex=(self.signer_hex,))
+
+    def test_historical_signer_inventory_rejects_bad_or_duplicate_keys(self) -> None:
+        inputs = self._signed_floor_checkpoint()
+        for keys, message in (
+            (("bad",), "Historical evidence signer key"),
+            ((self.signer_hex, self.signer_hex), "Duplicate historical"),
+            ((self.signer_hex,) * 257, "at most 256"),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    self._audit(historical_evidence_signer_keys_hex=keys, **inputs)
+
     def test_signed_checkpoint_rejects_reused_evidence_signer_key(self) -> None:
         # An independently signed floor record must not share a private key
         # with an evidence signer, even when the evidence signer is revoked.
