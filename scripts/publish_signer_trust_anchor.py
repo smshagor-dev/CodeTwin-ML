@@ -365,14 +365,26 @@ def _atomic_replace(
         # same-content pathname substitution cannot pass as our publication.
         return (staged_metadata[0], staged_metadata[1])
     finally:
-        if temporary_fd is not None:
-            os.close(temporary_fd)
-        if temporary is not None:
-            try:
-                os.unlink(temporary, dir_fd=directory_fd)
-            except FileNotFoundError:
-                pass  # Successful rename already consumed the temporary name.
-        os.close(directory_fd)
+        # A failed publication must not delete an unrelated file or symlink
+        # swapped into the unpredictable staging name by a noncooperating
+        # writer. Cleanup only the inode opened by this publisher. This is
+        # a point-in-time guard, not an atomic defense against same-UID races.
+        try:
+            if temporary is not None and temporary_fd is not None:
+                try:
+                    named = os.stat(
+                        temporary, dir_fd=directory_fd, follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    pass  # Successful rename already consumed the staging name.
+                else:
+                    opened = os.fstat(temporary_fd)
+                    if (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino):
+                        os.unlink(temporary, dir_fd=directory_fd)
+        finally:
+            if temporary_fd is not None:
+                os.close(temporary_fd)
+            os.close(directory_fd)
 
 
 def _publish_anchor(
