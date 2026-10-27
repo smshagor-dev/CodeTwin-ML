@@ -128,6 +128,68 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             "checkpoint_sha256": hashlib.sha256(raw).hexdigest(),
         }
 
+    def test_independent_checkpoint_issuance_floor_rejects_valid_older_v2(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 180, expires_at_unix=now + 3600,
+        )
+        # This checkpoint is correctly signed and unexpired; only the
+        # independently protected issuance floor should reject its replay.
+        with patch("scripts.audit_signer_trust_anchor.time.time", return_value=now):
+            with patch(
+                "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+                side_effect=AssertionError("unexpected anchor read"),
+            ):
+                with self.assertRaisesRegex(ValueError, "predates independently pinned issuance floor"):
+                    self._audit(
+                        minimum_checkpoint_issued_at_unix=now - 60,
+                        **inputs,
+                    )
+
+    def test_independent_checkpoint_issuance_floor_accepts_equal_or_newer_v2(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        with patch("scripts.audit_signer_trust_anchor.time.time", return_value=now):
+            for minimum in (now - 120, now - 60):
+                with self.subTest(minimum=minimum):
+                    result = self._audit(
+                        minimum_checkpoint_issued_at_unix=minimum,
+                        require_fresh_checkpoint=True,
+                        **inputs,
+                    )
+                    self.assertTrue(result["floor_checkpoint_verified"])
+                    self.assertTrue(result["floor_checkpoint_fresh"])
+
+    def test_independent_checkpoint_issuance_floor_requires_v2_and_complete_pins(self) -> None:
+        now = 1_800_000_000
+        with patch(
+            "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+            side_effect=AssertionError("unexpected anchor read"),
+        ):
+            with self.assertRaisesRegex(ValueError, "requires complete checkpoint inputs"):
+                self._audit(minimum_checkpoint_issued_at_unix=now)
+            with self.assertRaisesRegex(ValueError, "requires signed v2 timestamps"):
+                self._audit(
+                    minimum_checkpoint_issued_at_unix=now,
+                    **self._signed_floor_checkpoint(),
+                )
+
+    def test_independent_checkpoint_issuance_floor_rejects_invalid_values(self) -> None:
+        inputs = self._signed_floor_checkpoint()
+        for value in (0, -1, 1 << 63, True, 1.5, "1800000000"):
+            with self.subTest(value=value):
+                with patch(
+                    "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+                    side_effect=AssertionError("unexpected anchor read"),
+                ):
+                    with self.assertRaisesRegex(ValueError, "positive signed 64-bit"):
+                        self._audit(
+                            minimum_checkpoint_issued_at_unix=value,
+                            **inputs,
+                        )
+
     def test_fresh_checkpoint_requires_complete_inputs_and_v2(self) -> None:
         with patch(
             "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",

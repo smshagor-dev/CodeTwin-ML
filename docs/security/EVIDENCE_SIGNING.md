@@ -428,6 +428,36 @@ seven days, issuance no more than five minutes in the future, and expiry
 strictly after the local audit time. Expiry is rechecked before success.
 V1 remains supported unless the strict freshness flag is configured.
 
+For deployments maintaining a **separately protected issuance watermark**, add
+`--minimum-checkpoint-issued-at-unix <trusted-unix-seconds>` to the audit.
+This requires all three checkpoint inputs and a signed v2 record, even without
+`--require-fresh-checkpoint`. The audit fails closed if the authenticated
+`issued_at_unix` is older than the supplied watermark; equality is accepted.
+A missing, nonpositive, noninteger or out-of-range watermark is rejected.
+Keep the watermark in an independently controlled, authenticated administrator
+record and update it only after verifying a newer checkpoint. Never read it
+from the checkpoint being audited or from mutable SQLite state. For example:
+
+```bash
+python scripts/audit_signer_trust_anchor.py \
+  --anchor-file /trusted/private/anchor.json \
+  --signed-policy /trusted/input/current-policy.json \
+  --authority-public-key <independent-policy-authority> \
+  --expected-revision 5 --independent-revision-floor 5 \
+  --expected-sha256 <independent-policy-envelope-sha256> \
+  --floor-checkpoint-file /trusted/input/floor-checkpoint-v2.json \
+  --checkpoint-authority-public-key <independent-checkpoint-authority> \
+  --checkpoint-sha256 <independent-checkpoint-envelope-sha256> \
+  --require-fresh-checkpoint \
+  --minimum-checkpoint-issued-at-unix <independently-protected-timestamp>
+```
+
+**Limit:** The audit compares a caller-supplied lower bound; it does not
+persist, advance, authenticate or protect that bound. If the independent
+watermark and exact digest pins can both be rolled back, a previously valid
+checkpoint can still pass. An issuance timestamp is not a trusted timestamp
+service, a hardware monotonic counter or proof of private signing-key custody.
+
 **Limits:** The audit trusts the local wall clock; a rolled-back or
 compromised clock, replayed external pins, or attacker-controlled invocation
 can defeat the freshness policy. Expiry is not a protected monotonic counter,
