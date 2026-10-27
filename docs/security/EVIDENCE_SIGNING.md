@@ -436,8 +436,15 @@ size-bounded (16 KiB), checked for unsafe filesystem substitutions, and
 rechecked at the audit return boundary. Both the verification-time and
 final audit checkpoint re-reads now check path identity **before and after**
 reading, so observed same-byte file substitutions immediately after a read
-fail closed. These are bounded filesystem observations, not atomic snapshots;
-changes outside the checks may still escape detection.
+fail closed. After the final checkpoint re-read, the audit also
+rechecks the anchor directory, public anchor identity and values, and the
+signed-policy bytes and inode metadata. This rejects observed identical-byte
+anchor or policy substitutions that occur during the final checkpoint read;
+two regression tests inject these replacements. These are bounded filesystem
+observations, not an atomic snapshot or proof of private signing-key custody.
+Changes outside the checks, including privileged rollback after return, may
+still escape detection. The independent revision floor and exact pins must
+remain protected and current outside CodeTwin.
 
 The checkpoint signing key stays in an independently controlled signer or
 hardware-backed service. Never store its private material in this repository,
