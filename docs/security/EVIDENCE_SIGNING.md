@@ -429,7 +429,11 @@ The checkpoint is a JSON envelope with exactly `record`,
 An independently managed Ed25519 checkpoint authority signs the bytes
 `CodeTwin-ML/revision-floor/ed25519/v1` followed by a NUL byte and compact
 UTF-8 JSON of the record in the field order listed above. The checkpoint
-authority **must differ** from the signer-policy authority. Its public key,
+authority **must differ** from the signer-policy authority and from every
+public evidence-signing key in the authenticated signer policy, including
+revoked signers. Reusing an evidence signer as the checkpoint authority fails
+the audit; this is key-role separation, **not** proof of independent private-key
+custody or a hardware-backed monotonic floor. Its public key,
 the checkpoint's exact-byte SHA-256, the independently retained floor and the
 policy-envelope digest must all match. The checkpoint file is read-only,
 size-bounded (16 KiB), checked for unsafe filesystem substitutions, and
