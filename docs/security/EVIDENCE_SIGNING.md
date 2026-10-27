@@ -402,14 +402,14 @@ for the independently supplied floor, exact signed-policy digest, or trusted
 signer-policy authority. Supply all three additional arguments together:
 
 ```bash
-python scripts/audit_signer_trust_anchor.py \\
-  --anchor-file /trusted/private/anchor.json \\
-  --signed-policy /trusted/input/current-policy.json \\
-  --authority-public-key <independently-pinned-policy-authority> \\
-  --expected-revision 5 --independent-revision-floor 5 \\
-  --expected-sha256 <independently-pinned-policy-envelope-sha256> \\
-  --floor-checkpoint-file /trusted/input/floor-checkpoint.json \\
-  --checkpoint-authority-public-key <independently-pinned-separate-floor-authority> \\
+python scripts/audit_signer_trust_anchor.py \
+  --anchor-file /trusted/private/anchor.json \
+  --signed-policy /trusted/input/current-policy.json \
+  --authority-public-key <independently-pinned-policy-authority> \
+  --expected-revision 5 --independent-revision-floor 5 \
+  --expected-sha256 <independently-pinned-policy-envelope-sha256> \
+  --floor-checkpoint-file /trusted/input/floor-checkpoint.json \
+  --checkpoint-authority-public-key <independently-pinned-separate-floor-authority> \
   --checkpoint-sha256 <independently-pinned-exact-checkpoint-sha256>
 ```
 
