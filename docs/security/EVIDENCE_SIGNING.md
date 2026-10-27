@@ -663,9 +663,14 @@ repository.
 The Python CI job runs `python scripts/check_tracked_private_keys.py` on
 **staged Git index blobs** for index-declared regular files and symlinks,
 plus working-tree copies of regular files. Symlink targets are never
-dereferenced; only their committed link text is inspected. Gitlinks
-(submodules) fail closed because their index entries identify commits, not
-inspectable blobs. A private-key header staged with `git add` remains
+dereferenced; only their committed link text is inspected. The guard also
+hashes each working-tree symlink's link text (without following the target or
+writing a Git object) and requires it to match the staged Git blob. A
+modified or replaced link fails closed until the operator reviews and stages
+the intended target. A final inode/metadata check detects observed swaps
+during this comparison, but cannot establish an atomic filesystem snapshot.
+Gitlinks (submodules) fail closed because their index entries identify
+commits, not inspectable blobs. A private-key header staged with `git add` remains
 detectable even if the working-tree file
 is subsequently overwritten with harmless text.
 It rejects recognizable ASCII armor headers for private keys (including
