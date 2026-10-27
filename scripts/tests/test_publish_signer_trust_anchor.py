@@ -734,6 +734,53 @@ class TrustAnchorPublisherTests(unittest.TestCase):
                 _read_anchor(self.anchor)
         self.assertEqual(json.loads(moved.read_text(encoding="utf-8")), self.original)
 
+    def test_rejects_byte_identical_anchor_swap_during_json_decoding(self) -> None:
+        from scripts.publish_signer_trust_anchor import _read_anchor
+
+        original_loads = json.loads
+        moved = self.root / "anchor-before-decoding.json"
+        swapped = False
+
+        def swap_after_decode(*args: object, **kwargs: object) -> object:
+            nonlocal swapped
+            result = original_loads(*args, **kwargs)
+            if not swapped:
+                swapped = True
+                self.anchor.rename(moved)
+                self._write_anchor(self.original)
+            return result
+
+        with patch("scripts.publish_signer_trust_anchor.json.loads", side_effect=swap_after_decode):
+            with self.assertRaisesRegex(ValueError, "changed during decoding"):
+                _read_anchor(self.anchor)
+        self.assertTrue(swapped)
+        self.assertEqual(original_loads(moved.read_text()), self.original)
+        self._assert_unchanged()
+
+    def test_rejects_anchor_metadata_mutation_during_json_decoding(self) -> None:
+        from scripts.publish_signer_trust_anchor import _read_anchor
+
+        original_loads = json.loads
+        changed = False
+
+        def touch_after_decode(*args: object, **kwargs: object) -> object:
+            nonlocal changed
+            result = original_loads(*args, **kwargs)
+            if not changed:
+                changed = True
+                metadata = self.anchor.stat()
+                os.utime(
+                    self.anchor,
+                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 2_000_000_000),
+                )
+            return result
+
+        with patch("scripts.publish_signer_trust_anchor.json.loads", side_effect=touch_after_decode):
+            with self.assertRaisesRegex(ValueError, "changed during decoding"):
+                _read_anchor(self.anchor)
+        self.assertTrue(changed)
+        self._assert_unchanged()
+
     def test_rejects_duplicate_json_fields(self) -> None:
         raw = self.anchor.read_text()
         self.anchor.write_text(raw.replace('"format":', '"format":"spoofed","format":'))
