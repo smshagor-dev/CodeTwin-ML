@@ -159,6 +159,26 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "floor or policy digest"):
             self._audit(**inputs)
 
+    def test_signed_checkpoint_rejects_excessive_json_nesting_before_anchor_read(self) -> None:
+        inputs = self._signed_floor_checkpoint()
+        checkpoint = Path(inputs["floor_checkpoint_file"])
+        # The exact-byte digest is updated to isolate the depth guard.
+        raw = b'{"record":' + b"[" * 65 + b"0" + b"]" * 65 + b"}"
+        checkpoint.write_bytes(raw)
+        inputs["checkpoint_sha256"] = hashlib.sha256(raw).hexdigest()
+        with patch(
+            "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+            side_effect=AssertionError("unexpected anchor read"),
+        ):
+            with self.assertRaisesRegex(ValueError, "Floor checkpoint JSON nesting is too deep"):
+                self._audit(**inputs)
+
+    def test_checkpoint_depth_guard_ignores_escaped_quoted_brackets(self) -> None:
+        from scripts.verify_signer_policy_rotation import _reject_excessive_json_nesting
+
+        raw = json.dumps({"text": ('[\\\\\"{' * 80)}).encode("utf-8")
+        _reject_excessive_json_nesting(raw, "Floor checkpoint")
+
     def test_signed_checkpoint_rejects_invalid_signature(self) -> None:
         inputs = self._signed_floor_checkpoint()
         checkpoint = Path(inputs["floor_checkpoint_file"])
