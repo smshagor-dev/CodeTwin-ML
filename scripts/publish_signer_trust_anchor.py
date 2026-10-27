@@ -471,7 +471,7 @@ def _publish_anchor(
             lock_fd, path.parent / (path.name + ".lock"), lock_metadata,
         )
         if readback_metadata[:8] != published_identity:
-            raise ValueError("Published anchor identity or metadata changed during readback")
+            raise ValueError("Published anchor identity changed during readback (metadata mismatch)")
         if readback != replacement:
             raise ValueError("Published anchor failed readback verification")
         return replacement
