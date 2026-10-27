@@ -560,8 +560,11 @@ It rejects recognizable ASCII armor headers for private keys (including
 PKCS#8, OpenSSH, RSA, EC, DSA and PGP private-key blocks), without printing
 the contents. Both representations are streamed in bounded chunks. Missing or
 unreadable Git index blobs, failed Git enumeration and unavailable tracked
-regular files fail closed. Index reads use local `git cat-file` and do not
-contact remote repositories. Run it locally before opening a pull request:
+regular files fail closed. A 64 MiB per-file limit applies independently to
+staged blobs and working-tree regular files; oversized inputs fail closed
+rather than being silently skipped. The cap bounds bytes read per file, not
+whole-job runtime or subprocess execution time. Index reads use local
+`git cat-file` and do not contact remote repositories. Run it locally before opening a pull request:
 
 ```bash
 python scripts/check_tracked_private_keys.py
