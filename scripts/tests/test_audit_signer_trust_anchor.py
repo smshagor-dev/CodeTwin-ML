@@ -211,6 +211,69 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "changed during audit"):
                 self._audit(**inputs)
 
+    def test_checkpoint_replacement_after_verification_read_fails_closed(self) -> None:
+        from scripts.audit_signer_trust_anchor import (
+            _read_signed_policy_bytes, _verify_floor_checkpoint,
+        )
+
+        inputs = self._signed_floor_checkpoint()
+        checkpoint = Path(inputs["floor_checkpoint_file"])
+        displaced = self.root / "displaced-checkpoint.json"
+        checkpoint_reads = 0
+
+        def swap_after_read(path: Path) -> bytes:
+            nonlocal checkpoint_reads
+            raw = _read_signed_policy_bytes(path)
+            if Path(path) == checkpoint:
+                checkpoint_reads += 1
+                if checkpoint_reads == 2:
+                    checkpoint.rename(displaced)
+                    checkpoint.write_bytes(raw)
+                    checkpoint.chmod(0o600)
+            return raw
+
+        with patch(
+            "scripts.audit_signer_trust_anchor._read_signed_policy_bytes",
+            side_effect=swap_after_read,
+        ):
+            with self.assertRaisesRegex(ValueError, "changed during verification"):
+                _verify_floor_checkpoint(
+                    checkpoint,
+                    checkpoint_authority_hex=inputs["checkpoint_authority_public_key_hex"],
+                    checkpoint_sha256=inputs["checkpoint_sha256"],
+                    policy_authority=bytes.fromhex(self.authority_hex),
+                    independent_floor=8,
+                    signed_policy_digest=bytes.fromhex(self.digest),
+                )
+        self.assertEqual(checkpoint_reads, 2)
+
+    def test_checkpoint_replacement_after_final_audit_read_fails_closed(self) -> None:
+        from scripts.audit_signer_trust_anchor import _read_signed_policy_bytes
+
+        inputs = self._signed_floor_checkpoint()
+        checkpoint = Path(inputs["floor_checkpoint_file"])
+        displaced = self.root / "displaced-checkpoint.json"
+        checkpoint_reads = 0
+
+        def swap_after_read(path: Path) -> bytes:
+            nonlocal checkpoint_reads
+            raw = _read_signed_policy_bytes(path)
+            if Path(path) == checkpoint:
+                checkpoint_reads += 1
+                if checkpoint_reads == 3:
+                    checkpoint.rename(displaced)
+                    checkpoint.write_bytes(raw)
+                    checkpoint.chmod(0o600)
+            return raw
+
+        with patch(
+            "scripts.audit_signer_trust_anchor._read_signed_policy_bytes",
+            side_effect=swap_after_read,
+        ):
+            with self.assertRaisesRegex(ValueError, "changed during audit"):
+                self._audit(require_floor_checkpoint=True, **inputs)
+        self.assertEqual(checkpoint_reads, 3)
+
     def test_valid_audit_is_read_only_and_does_not_create_lock(self) -> None:
         before = self.anchor.read_bytes()
         result = self._audit()
