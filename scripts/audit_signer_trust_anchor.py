@@ -158,6 +158,7 @@ def audit_anchor(
     require_floor_checkpoint: bool = False,
     historical_evidence_signer_keys_hex: tuple[str, ...] = (),
     historical_policy_authority_keys_hex: tuple[str, ...] = (),
+    revoked_checkpoint_authority_keys_hex: tuple[str, ...] = (),
 ) -> dict[str, str | int]:
     """Fail closed unless both the anchor and signed policy match external pins.
 
@@ -195,6 +196,16 @@ def audit_anchor(
     )
     if len(set(historical_authorities)) != len(historical_authorities):
         raise ValueError("Duplicate historical policy authority key")
+    # Revocation decisions must be sourced from independent administrator
+    # records, not the checkpoint envelope or a mutable local trust database.
+    if not isinstance(revoked_checkpoint_authority_keys_hex, (tuple, list)) or len(revoked_checkpoint_authority_keys_hex) > 256:
+        raise ValueError("Revoked checkpoint authority inventory must contain at most 256 keys")
+    revoked_checkpoint_keys = tuple(
+        _hex_bytes(value, 32, "Revoked checkpoint authority key")
+        for value in revoked_checkpoint_authority_keys_hex
+    )
+    if len(set(revoked_checkpoint_keys)) != len(revoked_checkpoint_keys):
+        raise ValueError("Duplicate revoked checkpoint authority key")
     checkpoint_inputs = (
         floor_checkpoint_file, checkpoint_authority_public_key_hex, checkpoint_sha256,
     )
@@ -202,6 +213,8 @@ def audit_anchor(
         raise ValueError("Historical evidence signer inventory requires complete floor checkpoint inputs")
     if historical_authorities and not all(value is not None for value in checkpoint_inputs):
         raise ValueError("Historical policy authority inventory requires complete floor checkpoint inputs")
+    if revoked_checkpoint_keys and not all(value is not None for value in checkpoint_inputs):
+        raise ValueError("Revoked checkpoint authority inventory requires complete floor checkpoint inputs")
     # Strict deployments must not silently fall back to a pin-only audit when
     # checkpoint arguments are omitted by an operator or automation.
     if require_floor_checkpoint and not all(value is not None for value in checkpoint_inputs):
@@ -221,6 +234,8 @@ def audit_anchor(
             raise ValueError("Checkpoint authority must differ from historical evidence signers")
         if checkpoint_key in historical_authorities:
             raise ValueError("Checkpoint authority must differ from historical policy authorities")
+        if checkpoint_key in revoked_checkpoint_keys:
+            raise ValueError("Checkpoint authority has been independently listed as revoked")
         checkpoint_path = Path(os.path.abspath(floor_checkpoint_file))
         checkpoint_bytes, checkpoint_snapshot = _verify_floor_checkpoint(
             checkpoint_path,
@@ -358,6 +373,8 @@ def main() -> None:
                         help="Independent historical evidence signer public key (64 hex); repeatable, max 256")
     parser.add_argument("--historical-policy-authority-key", action="append", default=[],
                         help="Independent historical signer-policy authority public key (64 hex); repeatable, max 256")
+    parser.add_argument("--revoked-checkpoint-authority-key", action="append", default=[],
+                        help="Independently revoked checkpoint authority public key (64 hex); repeatable, max 256")
     args = parser.parse_args()
     try:
         result = audit_anchor(
@@ -373,6 +390,7 @@ def main() -> None:
             require_floor_checkpoint=args.require_floor_checkpoint,
             historical_evidence_signer_keys_hex=tuple(args.historical_evidence_signer_key),
             historical_policy_authority_keys_hex=tuple(args.historical_policy_authority_key),
+            revoked_checkpoint_authority_keys_hex=tuple(args.revoked_checkpoint_authority_key),
         )
     except (OSError, ValueError, UnicodeError) as error:
         parser.exit(2, f"External anchor audit failed: {error}\n")

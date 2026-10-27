@@ -277,6 +277,48 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     self._audit(historical_policy_authority_keys_hex=keys, **pins)
 
+    def test_revoked_checkpoint_authority_rejects_valid_signed_checkpoint(self) -> None:
+        revoked_key = Ed25519PrivateKey.generate()
+        pins = self._signed_floor_checkpoint(key=revoked_key)
+        revoked_hex = pins["checkpoint_authority_public_key_hex"]
+        with patch(
+            "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+            side_effect=AssertionError("unexpected anchor read"),
+        ):
+            with self.assertRaisesRegex(ValueError, "independently listed as revoked"):
+                self._audit(
+                    require_floor_checkpoint=True,
+                    revoked_checkpoint_authority_keys_hex=(revoked_hex,),
+                    **pins,
+                )
+        # An independently revoked *other* authority must not invalidate
+        # a checkpoint signed by a distinct, currently permitted key.
+        result = self._audit(
+            require_floor_checkpoint=True,
+            revoked_checkpoint_authority_keys_hex=(self.authority_hex,),
+            **pins,
+        )
+        self.assertTrue(result["floor_checkpoint_verified"])
+
+    def test_revoked_checkpoint_inventory_requires_complete_checkpoint(self) -> None:
+        with patch(
+            "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+            side_effect=AssertionError("unexpected anchor read"),
+        ):
+            with self.assertRaisesRegex(ValueError, "Revoked checkpoint authority inventory requires complete"):
+                self._audit(revoked_checkpoint_authority_keys_hex=(self.authority_hex,))
+
+    def test_revoked_checkpoint_inventory_rejects_malformed_duplicate_and_oversized(self) -> None:
+        pins = self._signed_floor_checkpoint()
+        for keys, message in (
+            (("bad",), "Revoked checkpoint authority key"),
+            ((self.authority_hex, self.authority_hex), "Duplicate revoked checkpoint authority"),
+            ((self.authority_hex,) * 257, "at most 256"),
+        ):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    self._audit(revoked_checkpoint_authority_keys_hex=keys, **pins)
+
     def test_signed_checkpoint_rejects_reused_evidence_signer_key(self) -> None:
         # An independently signed floor record must not share a private key
         # with an evidence signer, even when the evidence signer is revoked.

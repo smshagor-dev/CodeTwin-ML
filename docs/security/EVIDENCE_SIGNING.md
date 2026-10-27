@@ -489,6 +489,19 @@ completeness of the historical inventory, private-key custody, authenticated
 pin delivery, or rollback resistance when the external records can be
 replayed. No private signing keys are needed or stored.
 
+Operators may separately supply revoked **checkpoint-authority public keys**
+using repeatable `--revoked-checkpoint-authority-key <64-hex-character-public-key>`
+arguments (maximum 256 distinct keys). The read-only audit fails closed when
+the checkpoint signer is on that externally supplied revocation list, even if
+its Ed25519 signature and exact-byte pins are otherwise valid. Malformed,
+duplicate, oversized or incomplete-checkpoint inputs fail closed. The
+revocation inventory must be maintained and delivered over an authenticated,
+independently protected administrator channel, never inferred from the
+checkpoint or stored as private key material in Git or SQLite. This optional
+check cannot prove revocation-list completeness or freshness; a replayed old
+inventory and pins can still hide a revoked checkpoint signer. Operators must
+protect and advance the external revocation records after key compromise.
+
 The read-only auditor now requires a separately protected positive u64
 revision floor, just like the authenticated publisher. If the independently
 pinned current revision is below that floor, the audit fails before reading
