@@ -149,9 +149,12 @@ def scan_tracked_files(root: Path) -> list[str]:
         except FileNotFoundError as error:
             raise ValueError(f"Tracked file is unavailable: {relative!r}") from error
         if mode == b"120000":
-            # Only an index-declared symlink may be skipped; do not follow it.
+            # Never follow a tracked symlink, but its Git index blob is still
+            # committed content and can contain recognizable private-key armor.
             if not stat.S_ISLNK(file_mode):
                 raise ValueError(f"Tracked symlink type changed: {relative!r}")
+            if has_private_key_armor_in_index(root, object_id):
+                findings.append(relative)
             continue
         if mode == b"160000":
             # A Gitlink is a separate repository, not a regular tracked file.
