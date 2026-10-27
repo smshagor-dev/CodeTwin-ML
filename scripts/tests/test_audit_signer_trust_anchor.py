@@ -799,5 +799,57 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         self.assertFalse((self.root / "anchor.json.lock").exists())
 
 
+    def test_rejects_anchor_swap_during_final_checkpoint_recheck(self) -> None:
+        from scripts.audit_signer_trust_anchor import _checkpoint_unchanged
+
+        pins = self._signed_floor_checkpoint()
+        displaced = self.root / "anchor-before-final-checkpoint.json"
+        checks = 0
+
+        def swap_after_final_check(*args: object) -> bool:
+            nonlocal checks
+            result = _checkpoint_unchanged(*args)
+            checks += 1
+            if checks == 2:
+                self.anchor.rename(displaced)
+                self.anchor.write_bytes(displaced.read_bytes())
+                self.anchor.chmod(0o600)
+                self.assertNotEqual(self.anchor.stat().st_ino, displaced.stat().st_ino)
+            return result
+
+        with patch(
+            "scripts.audit_signer_trust_anchor._checkpoint_unchanged",
+            side_effect=swap_after_final_check,
+        ):
+            with self.assertRaisesRegex(ValueError, "External anchor changed during audit"):
+                self._audit(**pins)
+        self.assertEqual(checks, 2)
+
+    def test_rejects_policy_swap_during_final_checkpoint_recheck(self) -> None:
+        from scripts.audit_signer_trust_anchor import _checkpoint_unchanged
+
+        pins = self._signed_floor_checkpoint()
+        displaced = self.root / "policy-before-final-checkpoint.json"
+        checks = 0
+
+        def swap_after_final_check(*args: object) -> bool:
+            nonlocal checks
+            result = _checkpoint_unchanged(*args)
+            checks += 1
+            if checks == 2:
+                self.policy.rename(displaced)
+                self.policy.write_bytes(displaced.read_bytes())
+                self.assertNotEqual(self.policy.stat().st_ino, displaced.stat().st_ino)
+            return result
+
+        with patch(
+            "scripts.audit_signer_trust_anchor._checkpoint_unchanged",
+            side_effect=swap_after_final_check,
+        ):
+            with self.assertRaisesRegex(ValueError, "Signed policy changed during audit"):
+                self._audit(**pins)
+        self.assertEqual(checks, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
