@@ -31,12 +31,16 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         self.root.chmod(0o700)
         authority = Ed25519PrivateKey.generate()
         signer = Ed25519PrivateKey.generate()
+        # Test-only ephemeral keys remain in process memory, never on disk.
+        self.authority_key = authority
+        self.signer_key = signer
         self.authority_hex = authority.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw
         ).hex()
         signer_hex = signer.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw
         ).hex()
+        self.signer_hex = signer_hex
         policy = {
             "format": "codetwin-signer-trust-v1",
             "revision": 8,
@@ -85,9 +89,10 @@ class ExternalAnchorAuditTests(unittest.TestCase):
 
     def _signed_floor_checkpoint(
         self, *, floor: int = 8, policy_digest: str | None = None,
+        key: Ed25519PrivateKey | None = None,
     ) -> dict[str, object]:
         # Ephemeral test-only key: never written to the repository or SQLite.
-        key = Ed25519PrivateKey.generate()
+        key = key if key is not None else Ed25519PrivateKey.generate()
         key_hex = key.public_key().public_bytes(
             serialization.Encoding.Raw, serialization.PublicFormat.Raw,
         ).hex()
@@ -173,6 +178,34 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             self._audit(**{
                 **inputs, "checkpoint_authority_public_key_hex": self.authority_hex,
             })
+
+    def test_signed_checkpoint_rejects_reused_evidence_signer_key(self) -> None:
+        # An independently signed floor record must not share a private key
+        # with an evidence signer, even when the evidence signer is revoked.
+        for status in ("trusted", "revoked"):
+            with self.subTest(status=status):
+                policy = {
+                    "format": "codetwin-signer-trust-v1",
+                    "revision": 8,
+                    "signers": [{"public_key_hex": self.signer_hex, "status": status}],
+                }
+                self.envelope["policy"] = policy
+                self.envelope["signature_hex"] = self.authority_key.sign(
+                    DOMAIN + json.dumps(
+                        policy, ensure_ascii=False, separators=(",", ":")
+                    ).encode("utf-8")
+                ).hex()
+                self.policy.write_text(json.dumps(self.envelope), encoding="utf-8")
+                self.digest = self._digest(self.envelope)
+                self._write_anchor({
+                    **self.original, "signed_policy_sha256_hex": self.digest,
+                })
+                pins = self._signed_floor_checkpoint(key=self.signer_key)
+                with self.assertRaisesRegex(
+                    ValueError, "Checkpoint authority must differ from every evidence signer",
+                ):
+                    self._audit(**pins)
+        self.assertFalse((self.root / "anchor.json.lock").exists())
 
     def test_signed_checkpoint_rejects_stale_floor_and_partial_inputs(self) -> None:
         inputs = self._signed_floor_checkpoint(floor=7)
