@@ -59,6 +59,23 @@ FLOOR_CHECKPOINT_FORMAT = "codetwin-revision-floor-checkpoint-v1"
 FLOOR_CHECKPOINT_DOMAIN = b"CodeTwin-ML/revision-floor/ed25519/v1" + bytes([0])
 
 
+def _checkpoint_unchanged(
+    path: Path,
+    expected_bytes: bytes,
+    expected_snapshot: tuple[tuple[int, ...], tuple[int, ...]],
+) -> bool:
+    """Bound both sides of a checkpoint re-read with path identity checks.
+
+    This detects observed substitutions after the read, not an atomic snapshot
+    or a defense against replacements outside the observation window.
+    """
+    if _policy_path_snapshot(path) != expected_snapshot:
+        return False
+    if _read_signed_policy_bytes(path) != expected_bytes:
+        return False
+    return _policy_path_snapshot(path) == expected_snapshot
+
+
 def _verify_floor_checkpoint(
     path: Path,
     *,
@@ -119,7 +136,7 @@ def _verify_floor_checkpoint(
         )
     except InvalidSignature as error:
         raise ValueError("Floor checkpoint signature verification failed") from error
-    if _policy_path_snapshot(path) != before or _read_signed_policy_bytes(path) != raw:
+    if not _checkpoint_unchanged(path, raw, before):
         raise ValueError("Floor checkpoint changed during verification")
     return raw, before
 
@@ -242,10 +259,7 @@ def audit_anchor(
         raise ValueError("Signed policy changed during audit")
     if checkpoint_path is not None:
         assert checkpoint_bytes is not None and checkpoint_snapshot is not None
-        if (
-            _policy_path_snapshot(checkpoint_path) != checkpoint_snapshot
-            or _read_signed_policy_bytes(checkpoint_path) != checkpoint_bytes
-        ):
+        if not _checkpoint_unchanged(checkpoint_path, checkpoint_bytes, checkpoint_snapshot):
             raise ValueError("Floor checkpoint changed during audit")
     return {
         "status": "verified_against_supplied_pins",
