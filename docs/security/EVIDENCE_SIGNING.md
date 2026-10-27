@@ -574,6 +574,15 @@ while genuine index-declared symlinks are not followed. Index-declared Gitlink
 submodule directories are skipped; an unavailable or type-changed Gitlink
 fails closed. Unmerged or malformed index entries also fail closed. These are
 working-tree observations, not atomic protection against concurrent writers.
+On POSIX systems the guard now opens tracked regular files with
+`O_NOFOLLOW | O_NONBLOCK`, checks the opened descriptor against the
+pre-open pathname metadata, and compares inode identity, permissions, owner,
+link count, size, and timestamps again after reading and at the pathname.
+Observed symlink swaps, FIFO substitutions, same-inode metadata mutations,
+and identical-byte inode replacements fail closed. Platforms without
+`O_NOFOLLOW` fail the guard rather than silently falling back to a
+symlink-following open. These bounded checks do not establish an atomic
+snapshot or prevent changes after the last check.
 CI findings escape control characters in filenames to avoid log injection. Keep authority and evidence signing keys in separately administered
 hardware or an OS-protected signing service; do not store them in Git, SQLite,
 or CI variables unless an independently reviewed signing workflow explicitly
