@@ -414,6 +414,27 @@ python scripts/audit_signer_trust_anchor.py \
   --require-floor-checkpoint
 ```
 
+For deployments needing time-bounded freshness, issue a **v2** checkpoint
+with two additional signed integer fields, `issued_at_unix` and
+`expires_at_unix` (Unix seconds), and use `--require-fresh-checkpoint`.
+This flag requires all three independent checkpoint inputs and rejects v1
+records. V2 uses format `codetwin-revision-floor-checkpoint-v2` and the
+domain `CodeTwin-ML/revision-floor/ed25519/v2` plus a NUL byte. The
+canonical compact JSON field order is `format`, `minimum_revision`,
+`signed_policy_sha256_hex`, `issued_at_unix`, `expires_at_unix`.
+Both timestamps are covered by the Ed25519 signature. V2 requires positive
+64-bit Unix timestamps, expiry strictly after issuance, a lifetime of at most
+seven days, issuance no more than five minutes in the future, and expiry
+strictly after the local audit time. Expiry is rechecked before success.
+V1 remains supported unless the strict freshness flag is configured.
+
+**Limits:** The audit trusts the local wall clock; a rolled-back or
+compromised clock, replayed external pins, or attacker-controlled invocation
+can defeat the freshness policy. Expiry is not a protected monotonic counter,
+an independent timestamp authority, or proof of external signing-key custody.
+Generate v2 signatures only in an independently controlled signing service;
+never put private keys in the repository, SQLite, or audit inputs.
+
 For deployments that require the second authority, use
 `--require-floor-checkpoint` on **every** audit invocation. The audit then
 fails before reading the anchor when the checkpoint path, authority public
