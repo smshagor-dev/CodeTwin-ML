@@ -475,6 +475,20 @@ records, not from the checkpoint being audited. This optional comparison
 independent custody**; missing historical keys remain outside its detection
 scope. Never supply or store private key material.
 
+A separately maintained historical **signer-policy authority** public-key
+inventory can also be supplied using repeatable
+`--historical-policy-authority-key <64-hex-character-public-key>` arguments
+(maximum 256 distinct keys). The checkpoint authority is rejected if it
+matches any supplied earlier signer-policy authority, even when that authority
+is no longer the current policy signer. Missing, duplicate, malformed, or
+oversized inputs fail closed; using this inventory requires the complete signed
+checkpoint and both independently supplied pins. Source these public keys
+from authenticated external administrator records, never the current policy
+or checkpoint being audited. This optional check does not establish the
+completeness of the historical inventory, private-key custody, authenticated
+pin delivery, or rollback resistance when the external records can be
+replayed. No private signing keys are needed or stored.
+
 The read-only auditor now requires a separately protected positive u64
 revision floor, just like the authenticated publisher. If the independently
 pinned current revision is below that floor, the audit fails before reading
