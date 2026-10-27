@@ -285,6 +285,9 @@ def _atomic_replace(
             stream.flush()
             os.fsync(stream.fileno())
         staged_metadata = _anchor_metadata(os.fstat(temporary_fd))
+        # A second hard link exposes the staged inode through another path.
+        # Refuse publication even if that link existed before our snapshot.
+        _private_regular_file(os.fstat(temporary_fd), "Staged trust anchor")
         # The signed-policy inputs can change while the temporary anchor is
         # staged. Repeat authenticated verification before the rename so an
         # observed late swap cannot publish metadata for different inputs.
@@ -310,6 +313,8 @@ def _atomic_replace(
         staged_path_metadata = os.stat(
             temporary, dir_fd=directory_fd, follow_symlinks=False,
         )
+        _private_regular_file(os.fstat(temporary_fd), "Staged trust anchor")
+        _private_regular_file(staged_path_metadata, "Staged trust anchor")
         if (
             _anchor_metadata(os.fstat(temporary_fd)) != staged_metadata
             or _anchor_metadata(staged_path_metadata) != staged_metadata
@@ -322,11 +327,15 @@ def _atomic_replace(
         # replace its pathname while the final bounded read is in progress.
         # Observe descriptor and pathname metadata again after the read.
         # This is not an atomic snapshot or a privileged rollback defense.
+        final_staged_fd = os.fstat(temporary_fd)
+        final_staged_path = os.stat(
+            temporary, dir_fd=directory_fd, follow_symlinks=False,
+        )
+        _private_regular_file(final_staged_fd, "Staged trust anchor")
+        _private_regular_file(final_staged_path, "Staged trust anchor")
         if (
-            _anchor_metadata(os.fstat(temporary_fd)) != staged_metadata
-            or _anchor_metadata(os.stat(
-                temporary, dir_fd=directory_fd, follow_symlinks=False,
-            )) != staged_metadata
+            _anchor_metadata(final_staged_fd) != staged_metadata
+            or _anchor_metadata(final_staged_path) != staged_metadata
         ):
             raise ValueError("Staged trust anchor changed during final read")
         # The bounded final payload read is another window in which a

@@ -95,6 +95,54 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
         self.assertTrue((self.root / "anchor.json.lock").is_file())
 
+    def test_rejects_staged_hard_link_created_before_metadata_snapshot(self) -> None:
+        # Another pathname to the staged inode must not be accepted even
+        # when the link already exists at the first metadata observation.
+        real_fsync = os.fsync
+        linked = self.root / "linked-staged.json"
+        created = False
+
+        def link_after_staged_sync(fd: int) -> None:
+            nonlocal created
+            real_fsync(fd)
+            staged = list(self.root.glob(".trust-anchor-*.tmp"))
+            if staged and not created:
+                os.link(staged[0], linked)
+                created = True
+
+        try:
+            with patch("scripts.publish_signer_trust_anchor.os.fsync",
+                       side_effect=link_after_staged_sync):
+                with self.assertRaisesRegex(ValueError, "Staged trust anchor must be a private regular file"):
+                    self._publish()
+            self.assertTrue(created)
+            self._assert_unchanged()
+            self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+        finally:
+            linked.unlink(missing_ok=True)
+
+    def test_rejects_staged_hard_link_added_during_final_verification(self) -> None:
+        linked = self.root / "linked-staged.json"
+        calls = 0
+
+        def link_on_second_verification() -> bool:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                staged = list(self.root.glob(".trust-anchor-*.tmp"))
+                self.assertEqual(len(staged), 1)
+                os.link(staged[0], linked)
+            return True
+
+        try:
+            with self.assertRaisesRegex(ValueError, "Staged trust anchor must be a private regular file"):
+                self._publish(_verify_before_replace=link_on_second_verification)
+            self.assertEqual(calls, 2)
+            self._assert_unchanged()
+            self.assertEqual(list(self.root.glob(".trust-anchor-*.tmp")), [])
+        finally:
+            linked.unlink(missing_ok=True)
+
     def test_rejects_identical_content_inode_swap_after_publication(self) -> None:
         # A noncooperating writer can replace the newly published pathname
         # with byte-identical JSON after rename. A value-only readback would

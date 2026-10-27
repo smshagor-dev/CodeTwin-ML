@@ -189,6 +189,14 @@ timestamps are omitted because unrelated activity in shared sticky directories
 can change them. These observations do not provide an atomic filesystem
 snapshot or prevent swaps by a privileged writer between checks.
 
+The publisher additionally rejects a staged temporary trust-anchor inode with
+multiple hard links, including a link present before the first staged metadata
+snapshot or added during the final policy check. A second pathname could
+otherwise modify the same staged inode independently of its temporary name.
+The check is repeated before publication and after the bounded final read.
+This detects observed link-count changes; it does not guarantee race-free
+filesystem custody or establish external private signing-key custody.
+
 The helper refuses missing approval, invalid authority signatures, pin mismatches,
 policy-key reuse, stale compare-and-swap expectations, revision decreases,
 unchanged digests, malformed data, symlinks, shared file
