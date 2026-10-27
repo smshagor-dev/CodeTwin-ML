@@ -143,6 +143,64 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         finally:
             linked.unlink(missing_ok=True)
 
+    def test_cleanup_preserves_foreign_file_swapped_into_staging_name(self) -> None:
+        detached = self.root / "detached-staged-anchor.bin"
+        foreign_payload = b"unrelated file must survive failed publication"
+        staged_path: Path | None = None
+        calls = 0
+
+        def replace_on_second_verification() -> bool:
+            nonlocal calls, staged_path
+            calls += 1
+            if calls == 2:
+                (staged_path,) = list(self.root.glob(".trust-anchor-*.tmp"))
+                staged_path.rename(detached)
+                staged_path.write_bytes(foreign_payload)
+                staged_path.chmod(0o600)
+            return True
+
+        try:
+            with self.assertRaisesRegex(ValueError, "Staged trust anchor changed"):
+                self._publish(_verify_before_replace=replace_on_second_verification)
+            self.assertEqual(calls, 2)
+            self.assertIsNotNone(staged_path)
+            self.assertEqual(staged_path.read_bytes(), foreign_payload)
+            self._assert_unchanged()
+        finally:
+            if staged_path is not None:
+                staged_path.unlink(missing_ok=True)
+            detached.unlink(missing_ok=True)
+
+    def test_cleanup_preserves_foreign_symlink_swapped_into_staging_name(self) -> None:
+        detached = self.root / "detached-staged-anchor.bin"
+        sentinel = self.root / "unrelated-sentinel.txt"
+        sentinel.write_text("must survive", encoding="utf-8")
+        staged_path: Path | None = None
+        calls = 0
+
+        def replace_with_symlink_on_second_verification() -> bool:
+            nonlocal calls, staged_path
+            calls += 1
+            if calls == 2:
+                (staged_path,) = list(self.root.glob(".trust-anchor-*.tmp"))
+                staged_path.rename(detached)
+                staged_path.symlink_to(sentinel)
+            return True
+
+        try:
+            with self.assertRaisesRegex(ValueError, "Staged trust anchor"):
+                self._publish(_verify_before_replace=replace_with_symlink_on_second_verification)
+            self.assertEqual(calls, 2)
+            self.assertIsNotNone(staged_path)
+            self.assertTrue(staged_path.is_symlink())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "must survive")
+            self._assert_unchanged()
+        finally:
+            if staged_path is not None:
+                staged_path.unlink(missing_ok=True)
+            detached.unlink(missing_ok=True)
+            sentinel.unlink(missing_ok=True)
+
     def test_rejects_lock_swap_during_published_anchor_readback(self) -> None:
         from scripts.publish_signer_trust_anchor import _read_anchor_with_metadata
 
