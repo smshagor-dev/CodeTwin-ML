@@ -156,6 +156,7 @@ def audit_anchor(
     checkpoint_authority_public_key_hex: str | None = None,
     checkpoint_sha256: str | None = None,
     require_floor_checkpoint: bool = False,
+    historical_evidence_signer_keys_hex: tuple[str, ...] = (),
 ) -> dict[str, str | int]:
     """Fail closed unless both the anchor and signed policy match external pins.
 
@@ -171,9 +172,22 @@ def audit_anchor(
     floor = _positive_revision(independent_revision_floor, "Independent revision floor")
     if revision < floor:
         raise ValueError("Independently pinned revision is below independent revision floor")
+    # The current signed policy cannot attest to keys removed from earlier
+    # revisions. An independently maintained historical inventory can forbid
+    # reuse of those public keys as the checkpoint authority.
+    if not isinstance(historical_evidence_signer_keys_hex, (tuple, list)) or len(historical_evidence_signer_keys_hex) > 256:
+        raise ValueError("Historical evidence signer inventory must contain at most 256 keys")
+    historical_keys = tuple(
+        _hex_bytes(value, 32, "Historical evidence signer key")
+        for value in historical_evidence_signer_keys_hex
+    )
+    if len(set(historical_keys)) != len(historical_keys):
+        raise ValueError("Duplicate historical evidence signer key")
     checkpoint_inputs = (
         floor_checkpoint_file, checkpoint_authority_public_key_hex, checkpoint_sha256,
     )
+    if historical_keys and not all(value is not None for value in checkpoint_inputs):
+        raise ValueError("Historical evidence signer inventory requires complete floor checkpoint inputs")
     # Strict deployments must not silently fall back to a pin-only audit when
     # checkpoint arguments are omitted by an operator or automation.
     if require_floor_checkpoint and not all(value is not None for value in checkpoint_inputs):
@@ -188,6 +202,9 @@ def audit_anchor(
     if floor_checkpoint_file is not None:
         assert checkpoint_authority_public_key_hex is not None
         assert checkpoint_sha256 is not None
+        checkpoint_key = _hex_bytes(checkpoint_authority_public_key_hex, 32, "Checkpoint authority")
+        if checkpoint_key in historical_keys:
+            raise ValueError("Checkpoint authority must differ from historical evidence signers")
         checkpoint_path = Path(os.path.abspath(floor_checkpoint_file))
         checkpoint_bytes, checkpoint_snapshot = _verify_floor_checkpoint(
             checkpoint_path,
@@ -321,6 +338,8 @@ def main() -> None:
                         help="SHA-256 of exact checkpoint envelope from independent records")
     parser.add_argument("--require-floor-checkpoint", action="store_true",
                         help="Fail closed unless a signed checkpoint and both pins are supplied")
+    parser.add_argument("--historical-evidence-signer-key", action="append", default=[],
+                        help="Independent historical evidence signer public key (64 hex); repeatable, max 256")
     args = parser.parse_args()
     try:
         result = audit_anchor(
@@ -334,6 +353,7 @@ def main() -> None:
             checkpoint_authority_public_key_hex=args.checkpoint_authority_public_key,
             checkpoint_sha256=args.checkpoint_sha256,
             require_floor_checkpoint=args.require_floor_checkpoint,
+            historical_evidence_signer_keys_hex=tuple(args.historical_evidence_signer_key),
         )
     except (OSError, ValueError, UnicodeError) as error:
         parser.exit(2, f"External anchor audit failed: {error}\n")
