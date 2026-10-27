@@ -480,9 +480,9 @@ inventory can also be supplied using repeatable
 `--historical-policy-authority-key <64-hex-character-public-key>` arguments
 (maximum 256 distinct keys). The checkpoint authority is rejected if it
 matches any supplied earlier signer-policy authority, even when that authority
-is no longer the current policy signer. Missing, duplicate, malformed, or
-oversized inputs fail closed; using this inventory requires the complete signed
-checkpoint and both independently supplied pins. Source these public keys
+is no longer the current policy signer. Duplicate, malformed, or
+oversized inventory entries fail closed; supplying an inventory without a
+complete signed checkpoint and both independent pins also fails closed. Source these public keys
 from authenticated external administrator records, never the current policy
 or checkpoint being audited. This optional check does not establish the
 completeness of the historical inventory, private-key custody, authenticated
