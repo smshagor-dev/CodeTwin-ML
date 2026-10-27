@@ -380,7 +380,10 @@ def _atomic_replace(
                 else:
                     opened = os.fstat(temporary_fd)
                     if (named.st_dev, named.st_ino) == (opened.st_dev, opened.st_ino):
-                        os.unlink(temporary, dir_fd=directory_fd)
+                        try:
+                            os.unlink(temporary, dir_fd=directory_fd)
+                        except FileNotFoundError:
+                            pass  # A concurrent removal is not a cleanup failure.
         finally:
             if temporary_fd is not None:
                 os.close(temporary_fd)
