@@ -171,7 +171,11 @@ class TrackedPrivateKeyGuardTests(unittest.TestCase):
             "scripts.check_tracked_private_keys.PRIVATE_KEY_ARMOR",
             new=ReplacingPattern(),
         ):
-            with self.assertRaisesRegex(ValueError, "path changed during scan"):
+            # Replacing the path may also change the open inode's link count
+            # or ctime, so either fail-closed boundary is acceptable.
+            with self.assertRaisesRegex(
+                ValueError, "changed while reading|path changed during scan"
+            ):
                 has_private_key_armor(path)
 
     def test_non_git_directory_fails_closed(self) -> None:
