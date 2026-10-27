@@ -433,7 +433,11 @@ authority **must differ** from the signer-policy authority. Its public key,
 the checkpoint's exact-byte SHA-256, the independently retained floor and the
 policy-envelope digest must all match. The checkpoint file is read-only,
 size-bounded (16 KiB), checked for unsafe filesystem substitutions, and
-rechecked at the audit return boundary.
+rechecked at the audit return boundary. Both the verification-time and
+final audit checkpoint re-reads now check path identity **before and after**
+reading, so observed same-byte file substitutions immediately after a read
+fail closed. These are bounded filesystem observations, not atomic snapshots;
+changes outside the checks may still escape detection.
 
 The checkpoint signing key stays in an independently controlled signer or
 hardware-backed service. Never store its private material in this repository,
