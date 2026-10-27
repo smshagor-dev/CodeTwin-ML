@@ -21,17 +21,53 @@ CHUNK_SIZE = 64 * 1024
 OVERLAP = 128
 
 
-def has_private_key_armor(path: Path) -> bool:
-    """Scan a regular file in bounded memory without printing its contents."""
-    previous = b""
-    with path.open("rb") as source:
+def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    """Capture file identity and mutation-sensitive metadata for bounded checks."""
+    return (
+        metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_uid,
+        metadata.st_gid, metadata.st_nlink, metadata.st_size,
+        metadata.st_mtime_ns, metadata.st_ctime_ns,
+    )
+
+
+def has_private_key_armor(
+    path: Path, *, expected: os.stat_result | None = None,
+) -> bool:
+    """Scan through a verified regular-file descriptor without following symlinks.
+
+    Recheck the descriptor and pathname after reading. This narrows local
+    replacement races; it is not an atomic filesystem snapshot.
+    """
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError("Tracked regular file type changed before scan")
+    if expected is not None and _file_identity(before) != _file_identity(expected):
+        raise ValueError("Tracked file changed before scan")
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise OSError("O_NOFOLLOW is required for the tracked-file scan")
+    # O_NONBLOCK prevents a substituted FIFO from blocking at open().
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as source:
+        opened = os.fstat(source.fileno())
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or _file_identity(opened) != _file_identity(before)
+        ):
+            raise ValueError("Tracked file changed while opening")
+        previous = b""
+        found = False
         while chunk := source.read(CHUNK_SIZE):
             data = previous + chunk
             if PRIVATE_KEY_ARMOR.search(data):
-                return True
+                found = True
+                break
             previous = data[-OVERLAP:]
-    return False
-
+        finished = os.fstat(source.fileno())
+        if _file_identity(finished) != _file_identity(opened):
+            raise ValueError("Tracked file changed while reading")
+    if _file_identity(path.lstat()) != _file_identity(finished):
+        raise ValueError("Tracked file path changed during scan")
+    return found
 
 def scan_tracked_files(root: Path) -> list[str]:
     """Scan index-declared regular files; reject unsafe working-tree substitutions."""
@@ -66,7 +102,8 @@ def scan_tracked_files(root: Path) -> list[str]:
         if path.parent.resolve() != path.parent:
             raise ValueError(f"Tracked parent is a symlink: {relative!r}")
         try:
-            file_mode = path.lstat().st_mode
+            file_info = path.lstat()
+            file_mode = file_info.st_mode
         except FileNotFoundError as error:
             raise ValueError(f"Tracked file is unavailable: {relative!r}") from error
         if mode == b"120000":
@@ -85,7 +122,7 @@ def scan_tracked_files(root: Path) -> list[str]:
             raise ValueError(f"Tracked regular file type changed: {relative!r}")
         if not path.resolve().is_relative_to(root):
             raise ValueError(f"Tracked file escapes checkout: {relative!r}")
-        if has_private_key_armor(path):
+        if has_private_key_armor(path, expected=file_info):
             findings.append(relative)
     return findings
 
