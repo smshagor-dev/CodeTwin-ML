@@ -55,6 +55,35 @@ class TrackedPrivateKeyGuardTests(unittest.TestCase):
         )
         self.assertTrue(has_private_key_armor(path))
 
+    def test_detects_staged_key_even_if_worktree_is_clean(self) -> None:
+        path = self._track("staged.pem", _private_header() + b"\\n")
+        path.write_bytes(b"harmless working-tree replacement")
+        self.assertEqual(scan_tracked_files(self.root), ["staged.pem"])
+
+    def test_detects_unstaged_worktree_key_even_if_index_is_clean(self) -> None:
+        path = self._track("working.pem", b"harmless indexed text")
+        path.write_bytes(_private_header() + b"\\n")
+        self.assertEqual(scan_tracked_files(self.root), ["working.pem"])
+
+    def test_detects_staged_key_across_git_blob_chunk_boundary(self) -> None:
+        path = self._track(
+            "boundary.pem", b"x" * (CHUNK_SIZE - 9) + _private_header(b"RSA ")
+        )
+        path.write_bytes(b"harmless working-tree replacement")
+        self.assertEqual(scan_tracked_files(self.root), ["boundary.pem"])
+
+    def test_missing_staged_blob_fails_closed(self) -> None:
+        self._track("missing-blob.txt", b"harmless working-tree text")
+        subprocess.run(
+            [
+                "git", "update-index", "--add", "--cacheinfo",
+                "100644," + "f" * 40 + ",missing-blob.txt",
+            ],
+            cwd=self.root, check=True, capture_output=True,
+        )
+        with self.assertRaisesRegex(ValueError, "Cannot read tracked Git index blob"):
+            scan_tracked_files(self.root)
+
     def test_public_keys_and_untracked_files_are_not_reported(self) -> None:
         self._track("public.pem", b"-----BEGIN PUBLIC KEY-----\n")
         (self.root / "untracked.pem").write_bytes(_private_header())
