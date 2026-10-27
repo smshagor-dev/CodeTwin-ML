@@ -76,6 +76,48 @@ class TrackedPrivateKeyGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unavailable"):
             scan_tracked_files(self.root)
 
+    def test_regular_file_replaced_by_directory_fails_closed(self) -> None:
+        path = self._track("tracked.txt", b"ordinary text")
+        path.unlink()
+        path.mkdir()
+        with self.assertRaisesRegex(ValueError, "regular file type changed"):
+            scan_tracked_files(self.root)
+
+    def test_regular_file_replaced_by_symlink_fails_closed(self) -> None:
+        path = self._track("tracked.txt", b"ordinary text")
+        outside = self.root.parent / (self.root.name + "-outside.key")
+        outside.write_bytes(_private_header())
+        self.addCleanup(outside.unlink)
+        path.unlink()
+        path.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, "regular file type changed"):
+            scan_tracked_files(self.root)
+
+    def test_tracked_symlink_replaced_by_regular_file_fails_closed(self) -> None:
+        target = self.root / "target.txt"
+        target.write_text("ordinary text", encoding="utf-8")
+        link = self.root / "link.txt"
+        link.symlink_to(target)
+        subprocess.run(
+            ["git", "add", "--", "link.txt"],
+            cwd=self.root, check=True, capture_output=True,
+        )
+        link.unlink()
+        link.write_bytes(_private_header())
+        with self.assertRaisesRegex(ValueError, "symlink type changed"):
+            scan_tracked_files(self.root)
+
+    def test_gitlink_directory_is_skipped_by_index_mode(self) -> None:
+        gitlink = self.root / "nested"
+        gitlink.mkdir()
+        subprocess.run(
+            ["git", "update-index", "--add", "--cacheinfo",
+             "160000," + "1" * 40 + ",nested"],
+            cwd=self.root, check=True, capture_output=True,
+        )
+        (gitlink / "untracked.key").write_bytes(_private_header())
+        self.assertEqual(scan_tracked_files(self.root), [])
+
     def test_non_git_directory_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(subprocess.CalledProcessError):
