@@ -493,9 +493,14 @@ review approval. SQLite remains the local evidence store, not a key vault.
 
 After the POSIX anchor publisher renames its verified staged public record, it
 compares the readback file's device and inode with the staged file's identity,
-in addition to checking its parsed contents and directory ancestry. An observed
-byte-identical pathname substitution after the rename now fails instead of
-reporting successful publication. **This is detection, not rollback:** the
+in addition to checking its parsed contents and directory ancestry. After
+the bounded readback completes, the publisher rechecks the entire anchor
+directory ancestry and the persistent publisher-lock inode/path metadata.
+An observed late directory or lock substitution during readback fails closed,
+even if the readback bytes match. These are point-in-time checks; they do not
+prevent privileged or same-UID races or authenticate external custody.
+An observed byte-identical pathname substitution after the rename now fails
+instead of reporting successful publication. **This is detection, not rollback:** the
 rename may already be durable when readback fails. The operator must treat a
 readback failure as an indeterminate publication outcome, independently audit
 the protected anchor and policy pins, and reconcile externally protected

@@ -143,6 +143,72 @@ class TrustAnchorPublisherTests(unittest.TestCase):
         finally:
             linked.unlink(missing_ok=True)
 
+    def test_rejects_lock_swap_during_published_anchor_readback(self) -> None:
+        from scripts.publish_signer_trust_anchor import _read_anchor_with_metadata
+
+        real_read = _read_anchor_with_metadata
+        lock_path = self.root / "anchor.json.lock"
+        detached = self.root / "detached-readback.lock"
+        changed = False
+
+        def swap_lock_after_readback(path: Path) -> object:
+            nonlocal changed
+            result = real_read(path)
+            if result[0]["minimum_revision"] == 5 and not changed:
+                lock_path.rename(detached)
+                lock_path.write_bytes(b"")
+                lock_path.chmod(0o600)
+                changed = True
+            return result
+
+        try:
+            with patch(
+                "scripts.publish_signer_trust_anchor._read_anchor_with_metadata",
+                side_effect=swap_lock_after_readback,
+            ):
+                with self.assertRaisesRegex(ValueError, "Anchor lock changed"):
+                    self._publish()
+            self.assertTrue(changed)
+            # The rename was already durable. A failed readback is NOT a
+            # rollback and must be reconciled by the external administrator.
+            self.assertEqual(json.loads(self.anchor.read_text())["minimum_revision"], 5)
+        finally:
+            detached.unlink(missing_ok=True)
+
+    def test_rejects_directory_swap_during_published_anchor_readback(self) -> None:
+        import shutil
+        from scripts.publish_signer_trust_anchor import _read_anchor_with_metadata
+
+        real_read = _read_anchor_with_metadata
+        detached = self.root.with_name(self.root.name + "-readback-detached")
+        changed = False
+
+        def swap_directory_after_readback(path: Path) -> object:
+            nonlocal changed
+            result = real_read(path)
+            if result[0]["minimum_revision"] == 5 and not changed:
+                self.root.rename(detached)
+                self.root.mkdir(mode=0o700)
+                self.anchor.write_bytes((detached / "anchor.json").read_bytes())
+                self.anchor.chmod(0o600)
+                changed = True
+            return result
+
+        try:
+            with patch(
+                "scripts.publish_signer_trust_anchor._read_anchor_with_metadata",
+                side_effect=swap_directory_after_readback,
+            ):
+                with self.assertRaisesRegex(ValueError, "Anchor directory changed during publication readback"):
+                    self._publish()
+            self.assertTrue(changed)
+            self.assertEqual(json.loads((detached / "anchor.json").read_text())["minimum_revision"], 5)
+        finally:
+            if detached.exists():
+                if self.root.exists():
+                    shutil.rmtree(self.root)
+                detached.rename(self.root)
+
     def test_rejects_identical_content_inode_swap_after_publication(self) -> None:
         # A noncooperating writer can replace the newly published pathname
         # with byte-identical JSON after rename. A value-only readback would

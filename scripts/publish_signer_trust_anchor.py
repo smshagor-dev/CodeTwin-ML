@@ -439,6 +439,16 @@ def _publish_anchor(
         if _private_directory(path.parent) != directory_identity:
             raise ValueError("Anchor directory changed after publication")
         readback, readback_metadata = _read_anchor_with_metadata(path)
+        # The readback itself is a filesystem observation window. Recheck
+        # directory ancestry and the persistent lock after it completes so
+        # an observed late substitution cannot be reported as a successful
+        # publication. Failure here is post-rename: it does NOT roll back
+        # the already published anchor.
+        if _private_directory(path.parent) != directory_identity:
+            raise ValueError("Anchor directory changed during publication readback")
+        _check_lock_unchanged(
+            lock_fd, path.parent / (path.name + ".lock"), lock_metadata,
+        )
         if readback_metadata[:2] != published_identity:
             raise ValueError("Published anchor identity changed during readback")
         if readback != replacement:
