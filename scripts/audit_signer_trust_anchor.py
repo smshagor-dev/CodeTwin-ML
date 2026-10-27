@@ -31,6 +31,7 @@ if __package__:
         _policy_path_snapshot,
         _policy_parent_snapshot,
         _positive_revision,
+        _reject_excessive_json_nesting,
         _read_signed_policy_bytes,
         _unique_fields,
         _validated_policy,
@@ -48,6 +49,7 @@ else:
         _policy_parent_snapshot,
         _policy_path_snapshot,
         _positive_revision,
+        _reject_excessive_json_nesting,
         _read_signed_policy_bytes,
         _unique_fields,
         _validated_policy,
@@ -100,6 +102,7 @@ def _verify_floor_checkpoint(
     raw = _read_signed_policy_bytes(path)
     if hashlib.sha256(raw).digest() != pinned_digest:
         raise ValueError("Floor checkpoint differs from independently pinned digest")
+    _reject_excessive_json_nesting(raw, "Floor checkpoint")
     try:
         decoded = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_fields)
     except RecursionError as error:
