@@ -410,8 +410,17 @@ python scripts/audit_signer_trust_anchor.py \
   --expected-sha256 <independently-pinned-policy-envelope-sha256> \
   --floor-checkpoint-file /trusted/input/floor-checkpoint.json \
   --checkpoint-authority-public-key <independently-pinned-separate-floor-authority> \
-  --checkpoint-sha256 <independently-pinned-exact-checkpoint-sha256>
+  --checkpoint-sha256 <independently-pinned-exact-checkpoint-sha256> \
+  --require-floor-checkpoint
 ```
+
+For deployments that require the second authority, use
+`--require-floor-checkpoint` on **every** audit invocation. The audit then
+fails before reading the anchor when the checkpoint path, authority public
+key, or exact digest pin is omitted. Without this flag the checkpoint remains
+optional for backward compatibility, so operators must enforce the flag in
+their deployment configuration. This prevents accidental omission, not an
+attacker with permission to alter the invocation or independently pinned values.
 
 The checkpoint is a JSON envelope with exactly `record`,
 `authority_public_key_hex`, and `signature_hex`. The record has exactly

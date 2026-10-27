@@ -112,6 +112,29 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             "checkpoint_sha256": hashlib.sha256(raw).hexdigest(),
         }
 
+    def test_required_checkpoint_rejects_omitted_inputs_before_anchor_read(self) -> None:
+        with patch(
+            "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+            side_effect=AssertionError("unexpected anchor read"),
+        ):
+            with self.assertRaisesRegex(ValueError, "Required floor checkpoint"):
+                self._audit(require_floor_checkpoint=True)
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
+    def test_required_checkpoint_rejects_partial_inputs(self) -> None:
+        inputs = self._signed_floor_checkpoint()
+        with self.assertRaisesRegex(ValueError, "Required floor checkpoint"):
+            self._audit(
+                require_floor_checkpoint=True,
+                floor_checkpoint_file=inputs["floor_checkpoint_file"],
+            )
+
+    def test_required_checkpoint_verifies_complete_signed_inputs(self) -> None:
+        inputs = self._signed_floor_checkpoint()
+        result = self._audit(require_floor_checkpoint=True, **inputs)
+        self.assertTrue(result["floor_checkpoint_verified"])
+        self.assertFalse((self.root / "anchor.json.lock").exists())
+
     def test_independently_signed_floor_checkpoint_validates_without_writes(self) -> None:
         inputs = self._signed_floor_checkpoint()
         before = Path(inputs["floor_checkpoint_file"]).read_bytes()
