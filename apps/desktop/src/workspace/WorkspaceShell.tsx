@@ -55,6 +55,9 @@ const moreNav: NavItem[] = [
 
 const navigation = [...primaryNav, ...secondaryNav, ...moreNav];
 const SIDEBAR_KEY = "codetwin.shell.sidebarCollapsed";
+const SIDEBAR_WIDTH_KEY = "codetwin.shell.sidebarWidth";
+const SIDEBAR_DEFAULT = 244;
+const clampSidebar = (px: number) => Math.round(Math.min(380, Math.max(180, px)));
 
 function navHref(item: NavItem): string {
   return routeHref(item.route) + (item.tab ? `?tab=${item.tab}` : "");
@@ -275,6 +278,28 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
     setCollapsedState(value);
     try { window.localStorage.setItem(SIDEBAR_KEY, value ? "1" : "0"); } catch { /* storage unavailable */ }
   };
+  // Operator-resizable sidebar width (drag the right edge), persisted.
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    try { return clampSidebar(Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY)) || SIDEBAR_DEFAULT); } catch { return SIDEBAR_DEFAULT; }
+  });
+  const dragging = useRef(false);
+  function startResize(event: React.PointerEvent) {
+    if (collapsed) return;
+    event.preventDefault();
+    dragging.current = true;
+    const move = (e: PointerEvent) => {
+      if (!dragging.current) return;
+      setSidebarWidth(clampSidebar(e.clientX));
+    };
+    const up = () => {
+      dragging.current = false;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setSidebarWidth((w) => { try { window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w)); } catch { /* storage unavailable */ } return w; });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
   // Re-render when only the `?tab=` part of the hash changes so nav state stays accurate.
   const [, setHashVersion] = useState(0);
   const activeMore = moreNav.find((item) => isActive(item, route));
@@ -292,7 +317,7 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
   }
 
   return (
-    <div className={"ws-app" + (collapsed ? " ws-collapsed" : "")}>
+    <div className={"ws-app" + (collapsed ? " ws-collapsed" : "")} style={{ ["--ws-sidebar-w" as string]: `${sidebarWidth}px` }}>
       <aside className="ws-sidebar">
         <a href={routeHref("dashboard")} className="ws-brand" aria-label="CodeTwin dashboard">
           <Icon name="code" size={27}/>
@@ -301,6 +326,7 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
         <button type="button" className="ws-collapse" aria-pressed={collapsed} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={() => setCollapsed(!collapsed)}>
           <Icon name="chevron" size={14}/>
         </button>
+        {!collapsed && <div className="ws-sidebar-resize" role="separator" aria-label="Resize sidebar" title="Drag to resize" onPointerDown={startResize}/>}
         <nav aria-label="Main navigation">
           <NavLinks items={primaryNav} route={route}/>
           <p className="ws-nav-label">Account</p>

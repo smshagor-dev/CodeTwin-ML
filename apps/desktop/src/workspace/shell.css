@@ -82,3 +82,25 @@ html[data-theme="dark"] .ws-sidebar { background: #0f1012; }
 }
 .ws-sidebar-more > summary.active { color: var(--ws-primary); }
 .ws-sidebar-more > summary > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- Resizable sidebar, section gaps, full-width content ---- */
+/* Doubled :is() raises specificity above workspace.css's 244px grid. */
+.ws-app:not(.ws-collapsed) { grid-template-columns: var(--ws-sidebar-w, 244px) minmax(0, 1fr); }
+.ws-sidebar { position: relative; }
+.ws-sidebar-resize {
+  position: absolute; top: 0; right: -3px; width: 7px; height: 100%; z-index: 40; cursor: col-resize;
+  touch-action: none;
+}
+.ws-sidebar-resize::after {
+  content: ""; position: absolute; top: 0; right: 3px; width: 1px; height: 100%; background: transparent; transition: background .12s;
+}
+.ws-sidebar-resize:hover::after, .ws-sidebar-resize:active::after { background: var(--ws-primary); }
+
+/* A little breathing room between nav groups. */
+.ws-sidebar nav { display: flex; flex-direction: column; gap: 3px; }
+.ws-sidebar .ws-nav-label { margin-top: 16px; margin-bottom: 4px; }
+.ws-sidebar .ws-nav-label:first-child { margin-top: 2px; }
+.ws-sidebar-more, .ws-sidebar-tools { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, .07); }
+
+/* Content fills the main column at any width; keep comfortable gutters. */
+.ws-main .ws-content { max-width: none; width: 100%; margin: 0; }
