@@ -313,6 +313,12 @@ def audit_anchor(
             or max_checkpoint_age_seconds is not None
         ) else None
     )
+    # Monotonic elapsed time supplements (but cannot authenticate) the wall
+    # clock. Sampling both clocks lets the final check detect a wall-clock
+    # slowdown/rollback masked by a still-forward final wall-clock reading.
+    audit_started_monotonic = (
+        time.monotonic() if audit_started_at_unix is not None else None
+    )
     if (minimum_audit_time_unix is not None
             and audit_started_at_unix is not None
             and audit_started_at_unix < minimum_audit_time_unix):
@@ -459,6 +465,18 @@ def audit_anchor(
     if (audit_started_at_unix is not None and final_now is not None
             and final_now < audit_started_at_unix):
         raise ValueError("Local audit clock moved backwards during audit")
+    # Whole-second wall-clock readings may differ from fractional monotonic
+    # elapsed time by up to one second. Beyond that, reject even when the
+    # final wall-clock reading is not earlier than the initial reading.
+    # A compromised clock source or unobserved time manipulation remains
+    # outside the guarantee of this point-in-time consistency check.
+    if checkpoint_expires_at is not None:
+        assert audit_started_monotonic is not None and audit_started_at_unix is not None
+        monotonic_elapsed = time.monotonic() - audit_started_monotonic
+        if not 0 <= monotonic_elapsed < float("inf"):
+            raise ValueError("Local monotonic audit clock was invalid")
+        if final_now + 1 < audit_started_at_unix + monotonic_elapsed:
+            raise ValueError("Local audit wall clock lagged monotonic elapsed time")
     if max_checkpoint_age_seconds is not None and (
         checkpoint_issued_at is None or final_now is None or
         final_now - checkpoint_issued_at > max_checkpoint_age_seconds
