@@ -284,6 +284,18 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         self.assertTrue(result["floor_checkpoint_verified"])
         self.assertTrue(result["floor_checkpoint_fresh"])
 
+    def test_max_checkpoint_age_rejects_observed_clock_rollback(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        # The final reading makes the checkpoint look younger, even though
+        # both readings are within the permitted age and expiry window.
+        with patch("scripts.audit_signer_trust_anchor.time.time",
+                   side_effect=[now, now, now - 30]):
+            with self.assertRaisesRegex(ValueError, "clock moved backwards during audit"):
+                self._audit(max_checkpoint_age_seconds=120, **inputs)
+
     def test_max_checkpoint_age_requires_signed_v2_and_bounded_value(self) -> None:
         with self.assertRaisesRegex(ValueError, "requires complete checkpoint inputs"):
             self._audit(max_checkpoint_age_seconds=60)
@@ -302,7 +314,7 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         )
         # Initial age is valid; it exceeds the caller's limit before success.
         with patch("scripts.audit_signer_trust_anchor.time.time",
-                   side_effect=[now, now + 50]):
+                   side_effect=[now, now, now + 50]):
             with self.assertRaisesRegex(ValueError, "exceeded maximum age during audit"):
                 self._audit(max_checkpoint_age_seconds=100, **inputs)
 
