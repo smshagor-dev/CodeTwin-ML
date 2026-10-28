@@ -302,7 +302,11 @@ def audit_anchor(
         raise ValueError("All three independent floor checkpoint inputs are required")
     # Reject a clock observed below the separately authenticated lower bound
     # before opening any anchor or checkpoint file. This is not a trusted clock.
-    if minimum_audit_time_unix is not None and int(time.time()) < minimum_audit_time_unix:
+    audit_started_at_unix = (
+        int(time.time()) if minimum_audit_time_unix is not None else None
+    )
+    if (audit_started_at_unix is not None
+            and audit_started_at_unix < minimum_audit_time_unix):
         raise ValueError("Local audit clock is below independently pinned minimum")
     checkpoint_bytes: bytes | None = None
     checkpoint_snapshot: tuple[tuple[int, ...], tuple[int, ...]] | None = None
@@ -440,6 +444,11 @@ def audit_anchor(
         raise ValueError("Floor checkpoint expired during audit")
     if minimum_audit_time_unix is not None and final_now < minimum_audit_time_unix:
         raise ValueError("Local audit clock fell below independently pinned minimum during audit")
+    # A rollback can stay above the administrator's minimum. Compare the
+    # final observed wall clock with the audit's own initial observation as
+    # an additional fail-closed check; neither reading is trusted time.
+    if audit_started_at_unix is not None and final_now < audit_started_at_unix:
+        raise ValueError("Local audit clock moved backwards during audit")
     if max_checkpoint_age_seconds is not None and (
         checkpoint_issued_at is None or final_now is None or
         final_now - checkpoint_issued_at > max_checkpoint_age_seconds
