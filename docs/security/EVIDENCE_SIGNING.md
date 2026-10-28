@@ -458,6 +458,25 @@ watermark and exact digest pins can both be rolled back, a previously valid
 checkpoint can still pass. An issuance timestamp is not a trusted timestamp
 service, a hardware monotonic counter or proof of private signing-key custody.
 
+For operators with an **independently authenticated lower bound on audit
+wall-clock time**, supply `--minimum-audit-time-unix <trusted-unix-seconds>`.
+This requires all three checkpoint inputs and a signed v2 checkpoint, even
+without `--require-fresh-checkpoint`. The read-only audit rejects a local
+clock below that bound before reading any input files and rechecks the clock
+at the final success boundary. An equal timestamp is allowed. Invalid,
+nonpositive, or out-of-range values fail closed. The bound must be obtained
+from an independently protected administrator record; never derive it from
+the audited checkpoint, the local clock itself, Git, or SQLite. For example,
+append `--minimum-audit-time-unix <independent-clock-watermark>` to the v2
+audit command above. Update and protect the watermark outside this audit.
+
+**Limit:** A caller-supplied lower bound can detect *observed* clock rollback
+relative to that bound; it cannot establish trusted time, guarantee a
+monotonic clock, or detect rollback that remains above the bound. If the
+bound, digest pins and checkpoint can be replayed together, the audit can
+still accept stale inputs. The tool neither authenticates nor advances the
+bound and does not prove external private signing-key custody.
+
 **Limits:** The audit trusts the local wall clock; a rolled-back or
 compromised clock, replayed external pins, or attacker-controlled invocation
 can defeat the freshness policy. Expiry is not a protected monotonic counter,
