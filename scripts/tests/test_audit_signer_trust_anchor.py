@@ -238,6 +238,51 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "clock fell below independently pinned minimum"):
                 self._audit(minimum_audit_time_unix=now - 100, **inputs)
 
+    def test_max_checkpoint_age_rejects_old_but_unexpired_v2(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 3600, expires_at_unix=now + 3600,
+        )
+        with patch("scripts.audit_signer_trust_anchor.time.time", return_value=now):
+            with patch(
+                "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+                side_effect=AssertionError("unexpected anchor read"),
+            ):
+                with self.assertRaisesRegex(ValueError, "exceeds maximum age"):
+                    self._audit(max_checkpoint_age_seconds=1800, **inputs)
+
+    def test_max_checkpoint_age_accepts_equal_age_boundary(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        with patch("scripts.audit_signer_trust_anchor.time.time", return_value=now):
+            result = self._audit(max_checkpoint_age_seconds=60, **inputs)
+        self.assertTrue(result["floor_checkpoint_verified"])
+        self.assertTrue(result["floor_checkpoint_fresh"])
+
+    def test_max_checkpoint_age_requires_signed_v2_and_bounded_value(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires complete checkpoint inputs"):
+            self._audit(max_checkpoint_age_seconds=60)
+        with self.assertRaisesRegex(ValueError, "requires signed v2 timestamps"):
+            self._audit(max_checkpoint_age_seconds=60, **self._signed_floor_checkpoint())
+        inputs = self._signed_floor_checkpoint()
+        for value in (0, -1, 604801, True, 1.5, "60"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "positive integer at most seven days"):
+                    self._audit(max_checkpoint_age_seconds=value, **inputs)
+
+    def test_max_checkpoint_age_rejects_expiry_during_audit(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        # Initial age is valid; it exceeds the caller's limit before success.
+        with patch("scripts.audit_signer_trust_anchor.time.time",
+                   side_effect=[now, now + 50]):
+            with self.assertRaisesRegex(ValueError, "exceeded maximum age during audit"):
+                self._audit(max_checkpoint_age_seconds=100, **inputs)
+
     def test_fresh_checkpoint_requires_complete_inputs_and_v2(self) -> None:
         with patch(
             "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
