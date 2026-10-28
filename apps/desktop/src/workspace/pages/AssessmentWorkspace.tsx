@@ -148,36 +148,35 @@ export function AssessmentWorkspace() {
 
   return (
     <div className={"aw" + (panelOpen ? " aw-with-panel" : "")}>
-      <header className="aw-toolbar">
-        <nav className="aw-crumbs" aria-label="Breadcrumb">
-          <span>Workspace</span><span aria-hidden="true">/</span>
-          <select aria-label="Project" value={projectId} onChange={(e) => setActiveProjectId(e.target.value)}>
-            {projects.map((p) => <option key={p.id} value={p.id}>{p.display_name}</option>)}
-          </select>
-          <span aria-hidden="true">/</span>
-          <select aria-label="Assessment" value={runId ?? ""} onChange={(e) => { setRunId(e.target.value || null); setComposing(false); }}>
-            {!runs.length && <option value="">No assessments yet</option>}
-            {runs.map((r) => <option key={r.id} value={r.id}>{r.goal.slice(0, 60)}</option>)}
-          </select>
-        </nav>
-        <input
-          className="aw-command"
-          type="search"
-          placeholder="Search the stream: agent, tool, finding, CWE, file…"
-          aria-label="Search execution stream"
-          value={filter.query}
-          onChange={(e) => setFilter({ ...filter, query: e.target.value })}
-        />
+      <header className="aw-header">
+        <div className="aw-heading">
+          <div className="aw-selectors">
+            <label className="aw-select-field"><span>Target</span>
+              <select aria-label="Project" value={projectId} onChange={(e) => setActiveProjectId(e.target.value)}>
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.display_name}</option>)}
+              </select>
+            </label>
+            <label className="aw-select-field aw-select-wide"><span>Assessment</span>
+              <select aria-label="Assessment" value={runId ?? ""} onChange={(e) => { setRunId(e.target.value || null); setComposing(false); }}>
+                {!runs.length && <option value="">No assessments yet</option>}
+                {runs.map((r) => <option key={r.id} value={r.id}>{r.goal.slice(0, 80)}</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="aw-meta">
+            {run && <span className={"aw-state aw-state-" + run.state} role="status"><i aria-hidden="true"/>{run.state.replaceAll("_", " ")}</span>}
+            {elapsed != null && <span className="aw-mono aw-timer" aria-label="Elapsed time">{formatDuration(elapsed)}</span>}
+            {run?.outcome && <span className={"aw-outcome aw-outcome-" + run.outcome}>outcome: {run.outcome}</span>}
+            <span className="aw-model" title="Model / provider used by cloud-enabled tasks">{model}</span>
+          </div>
+        </div>
         <div className="aw-run-controls">
-          {run && <span className={"aw-state aw-state-" + run.state} role="status">{run.state.replaceAll("_", " ")}</span>}
-          {elapsed != null && <span className="aw-mono aw-timer" aria-label="Elapsed time">{formatDuration(elapsed)}</span>}
           {run?.state === "queued" && <button type="button" className="aw-btn aw-btn-primary" onClick={() => void control(() => workflowApi.start(run.id))}>Start</button>}
           {(run?.state === "running" || run?.state === "queued") && <button type="button" className="aw-btn" onClick={() => void control(() => workflowApi.pause(run.id))}>Pause</button>}
           {(run?.state === "paused" || run?.state === "blocked") && <button type="button" className="aw-btn" onClick={() => void control(() => workflowApi.resume(run.id))}>Resume</button>}
           {run && !TERMINAL_RUN_STATES.includes(run.state) && <button type="button" className="aw-btn aw-btn-danger" onClick={() => void control(() => workflowApi.cancel(run.id))}>Stop</button>}
-          <button type="button" className="aw-btn" onClick={() => setComposing((c) => !c)}>{composing ? "Close" : "New assessment"}</button>
-          <span className="aw-model" title="Model / provider used by cloud-enabled tasks">{model}</span>
-          <button type="button" className="aw-btn aw-icon" aria-pressed={panelOpen} aria-label="Toggle context panel" onClick={() => { setPanelOpen(!panelOpen); writePref(PANEL_KEY, !panelOpen); }}>▤</button>
+          <button type="button" className={"aw-btn" + (composing ? "" : " aw-btn-primary")} onClick={() => setComposing((c) => !c)}>{composing ? "Cancel" : "+ New assessment"}</button>
+          <button type="button" className="aw-btn aw-icon" aria-pressed={panelOpen} aria-label={panelOpen ? "Hide context panel" : "Show context panel"} title={panelOpen ? "Hide context panel" : "Show context panel"} onClick={() => { setPanelOpen(!panelOpen); writePref(PANEL_KEY, !panelOpen); }}>{panelOpen ? "⇥" : "⇤"}</button>
         </div>
       </header>
 
@@ -240,22 +239,32 @@ const SUMMARY_CARDS: Array<{ key: keyof AssessmentSummary; label: string; severi
 function SummaryBar({ summary, filter, setFilter }: { summary: AssessmentSummary; filter: StreamFilter; setFilter: (f: StreamFilter) => void }) {
   return (
     <div className="aw-summary" role="group" aria-label="Finding summary filters">
-      {SUMMARY_CARDS.map((c) => {
-        const active = (c.severity && filter.severity === c.severity) || (c.verification && filter.verification === c.verification)
-          || (c.key === "total" && filter.kinds === "findings" && !filter.severity && !filter.verification);
-        return (
-          <button key={c.key} type="button" aria-pressed={!!active} className={"aw-chip" + (c.severity ? " aw-sev-" + c.severity : c.verification ? " aw-ver-" + c.verification : "") + (active ? " active" : "")}
-            onClick={() => {
-              if (active) return setFilter({ ...filter, severity: null, verification: null, kinds: "all" });
-              if (c.severity) setFilter({ ...filter, severity: c.severity, verification: null, kinds: "all" });
-              else if (c.verification) setFilter({ ...filter, verification: c.verification, severity: null, kinds: "all" });
-              else setFilter({ ...filter, kinds: "findings", severity: null, verification: null });
-            }}>
-            <strong className="aw-mono">{summary[c.key]}</strong><span>{c.label}</span>
-          </button>
-        );
-      })}
-      <span className="aw-checks aw-mono" title="Workflow checks completed">{summary.checks_completed}/{summary.checks_total} checks</span>
+      {[SUMMARY_CARDS.slice(0, 6), SUMMARY_CARDS.slice(6)].map((group, gi) => (
+        <div key={gi} className="aw-summary-group">
+          <span className="aw-group-label">{gi === 0 ? "Severity" : "Verification"}</span>
+          <div className="aw-summary-chips">
+            {group.map((c) => {
+              const active = (c.severity && filter.severity === c.severity) || (c.verification && filter.verification === c.verification)
+                || (c.key === "total" && filter.kinds === "findings" && !filter.severity && !filter.verification);
+              return (
+                <button key={c.key} type="button" aria-pressed={!!active} className={"aw-chip" + (c.severity ? " aw-sev-" + c.severity : c.verification ? " aw-ver-" + c.verification : " aw-total") + (active ? " active" : "")}
+                  onClick={() => {
+                    if (active) return setFilter({ ...filter, severity: null, verification: null, kinds: "all" });
+                    if (c.severity) setFilter({ ...filter, severity: c.severity, verification: null, kinds: "all" });
+                    else if (c.verification) setFilter({ ...filter, verification: c.verification, severity: null, kinds: "all" });
+                    else setFilter({ ...filter, kinds: "findings", severity: null, verification: null });
+                  }}>
+                  <strong className="aw-mono">{summary[c.key]}</strong><span>{c.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      <div className="aw-summary-group aw-checks" title="Workflow checks completed">
+        <span className="aw-group-label">Checks</span>
+        <strong className="aw-mono">{summary.checks_completed}/{summary.checks_total}</strong>
+      </div>
     </div>
   );
 }
@@ -275,34 +284,57 @@ function LiveStream({ items, filter, setFilter, detail, projectId, onChanged, on
   const newSinceFreeze = frozen ? Math.max(0, maxSeq(items) - maxSeq(frozen)) : 0;
   const filtering = filter.query !== "" || filter.kinds !== "all" || !!filter.agent || !!filter.severity || !!filter.verification;
 
+  const programmatic = useRef(false);
   useEffect(() => {
     const el = scroller.current;
-    if (el && follow) el.scrollTop = el.scrollHeight;
+    if (!el || !follow) return;
+    // Lazily rendered rows can change scrollHeight after layout; pin twice.
+    const pin = () => { programmatic.current = true; el.scrollTop = el.scrollHeight; };
+    pin();
+    const frame = requestAnimationFrame(() => { pin(); requestAnimationFrame(pin); });
+    return () => cancelAnimationFrame(frame);
   }, [shown, follow]);
 
   return (
     <>
       <div className="aw-filters">
+        <input
+          className="aw-search"
+          type="search"
+          placeholder="Search events, agents, tools, findings, CWE, files…"
+          aria-label="Search execution stream"
+          value={filter.query}
+          onChange={(e) => setFilter({ ...filter, query: e.target.value })}
+        />
         <div className="aw-seg" role="group" aria-label="Event kinds">
           {(["all", "findings", "errors", "tools", "agents"] as const).map((k) => (
             <button key={k} type="button" aria-pressed={filter.kinds === k} className={filter.kinds === k ? "active" : ""} onClick={() => setFilter({ ...filter, kinds: k })}>{k}</button>
           ))}
         </div>
-        <select aria-label="Filter by agent" value={filter.agent ?? ""} onChange={(e) => setFilter({ ...filter, agent: e.target.value || null })}>
+        <select className="aw-agent-select" aria-label="Filter by agent" value={filter.agent ?? ""} onChange={(e) => setFilter({ ...filter, agent: e.target.value || null })}>
           <option value="">All agents</option>
           {agents.map((a) => <option key={a} value={a}>{a.replaceAll("_", " ")}</option>)}
         </select>
-        {filtering && <button type="button" className="aw-btn aw-btn-ghost" onClick={() => setFilter(EMPTY_FILTER)}>Clear filters</button>}
+        {filtering && <button type="button" className="aw-btn aw-btn-ghost" onClick={() => setFilter(EMPTY_FILTER)}>Clear</button>}
         <span className="aw-spacer"/>
         <button type="button" className="aw-btn aw-btn-ghost" aria-pressed={!!frozen} onClick={() => setFrozen(frozen ? null : items)}>
-          {frozen ? `Resume display${newSinceFreeze ? ` (+${newSinceFreeze})` : ""}` : "Pause display"}
+          {frozen ? `Resume view${newSinceFreeze ? ` (+${newSinceFreeze})` : ""}` : "Freeze view"}
         </button>
-        <button type="button" className="aw-btn aw-btn-ghost" onClick={() => void navigator.clipboard.writeText(filtered.map(toLogLine).join("\n"))}>Copy</button>
-        <button type="button" className="aw-btn aw-btn-ghost" onClick={() => download(`assessment-${detail?.run.id ?? "log"}.log`, source.map(toLogLine).join("\n"), "text/plain")}>Download log</button>
-        <button type="button" className="aw-btn aw-btn-ghost" onClick={() => download(`assessment-${detail?.run.id ?? "log"}.json`, JSON.stringify(source, null, 2), "application/json")}>JSON</button>
+        <details className="aw-menu">
+          <summary className="aw-btn aw-btn-ghost">Export</summary>
+          <div className="aw-menu-list">
+            <button type="button" onClick={() => void navigator.clipboard.writeText(filtered.map(toLogLine).join("\n"))}>Copy visible lines</button>
+            <button type="button" onClick={() => download(`assessment-${detail?.run.id ?? "log"}.log`, source.map(toLogLine).join("\n"), "text/plain")}>Download .log</button>
+            <button type="button" onClick={() => download(`assessment-${detail?.run.id ?? "log"}.json`, JSON.stringify(source, null, 2), "application/json")}>Download JSON</button>
+          </div>
+        </details>
       </div>
       <div className="aw-stream" ref={scroller} role="log" aria-live="polite" aria-relevant="additions"
-        onScroll={(e) => { const el = e.currentTarget; setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 40); }}>
+        onScroll={(e) => {
+          if (programmatic.current) { programmatic.current = false; return; }
+          const el = e.currentTarget;
+          setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+        }}>
         {filtered.length > shown.length && (
           <button type="button" className="aw-earlier" onClick={() => setLimit((l) => l + RENDER_STEP)}>Show {Math.min(RENDER_STEP, filtered.length - shown.length)} earlier of {filtered.length - shown.length} hidden</button>
         )}
@@ -321,9 +353,11 @@ const EventRow = memo(function EventRow({ event }: { event: StreamEvent }) {
   return (
     <div className={"aw-line aw-stage-" + event.stage.toLowerCase()}>
       <button type="button" className="aw-line-main" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <span className="aw-ts">[{formatClock(event.ts_ms)}]</span>
-        <span className="aw-tag">[{event.stage}]</span>
-        {event.agent && <span className="aw-agent">{event.agent}</span>}
+        <span className="aw-line-meta">
+          <span className="aw-ts">{formatClock(event.ts_ms)}</span>
+          <span className="aw-tag">{event.stage}</span>
+          {event.agent && <span className="aw-agent">{event.agent.replaceAll("_", " ")}</span>}
+        </span>
         <span className="aw-msg">{event.message}</span>
         {event.duration_ms != null && <span className="aw-dur">{formatDuration(event.duration_ms)}</span>}
       </button>
@@ -366,7 +400,7 @@ const FindingCardView = memo(function FindingCardView({ card, projectId, onChang
   return (
     <article className={`aw-finding aw-sev-${card.severity}`} aria-label={`${card.severity} finding: ${card.title}`}>
       <button type="button" className="aw-finding-head" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <span className="aw-ts">[{formatClock(card.ts_ms)}]</span>
+        <span className="aw-ts">{formatClock(card.ts_ms)}</span>
         <span className={"aw-badge aw-badge-sev-" + card.severity}>{card.severity}</span>
         <span className={"aw-badge aw-badge-ver-" + card.verification}>{VERIFICATION_LABEL[card.verification]}</span>
         <strong className="aw-finding-title">{card.title}</strong>

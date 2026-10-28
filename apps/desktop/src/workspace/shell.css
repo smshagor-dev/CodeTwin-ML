@@ -1,39 +1,44 @@
-/* Shell redesign: CodeTwin dark palette, collapsible sidebar, account and
+/* Shell redesign: neutral dark-gray palette (doubled :is() raises specificity
+   above clean-workspace.css, which loads later), collapsible sidebar, account and
    "More" navigation groups. Loaded after workspace.css/clean-workspace.css. */
-html[data-theme="dark"] .ws-app {
-  --ws-bg: #0b1020;
-  --ws-surface: #151e30;
-  --ws-surface-soft: #1b263a;
-  --ws-border: #283449;
-  --ws-border-strong: #33415a;
-  --ws-text: #e2e8f0;
-  --ws-muted: #94a3b8;
-  --ws-faint: #7c8aa0;
-  --ws-primary: #06b6d4;
-  --ws-primary-hover: #22d3ee;
+html[data-theme="dark"] :is(.ws-app, .ws-advanced-shell):is(.ws-app, .ws-advanced-shell) {
+  --ws-bg: #121316;
+  --ws-surface: #18191d;
+  --ws-surface-soft: #1f2025;
+  --ws-border: #2b2d33;
+  --ws-border-strong: #3a3d44;
+  --ws-text: #e7e8eb;
+  --ws-muted: #9b9fa8;
+  --ws-faint: #6c7079;
+  --ws-primary: #22b8cf;
+  --ws-primary-hover: #3cc6db;
   --ws-success: #22c55e;
   --ws-danger: #ef4444;
   --ws-warning: #eab308;
+  --ws-on-primary: #061418;
+  --ws-shadow: none;
 }
 @media (prefers-color-scheme: dark) {
-  html[data-theme="system"] .ws-app {
-    --ws-bg: #0b1020;
-    --ws-surface: #151e30;
-    --ws-surface-soft: #1b263a;
-    --ws-border: #283449;
-    --ws-border-strong: #33415a;
-    --ws-text: #e2e8f0;
-    --ws-muted: #94a3b8;
-    --ws-faint: #7c8aa0;
-    --ws-primary: #06b6d4;
-    --ws-primary-hover: #22d3ee;
+  html[data-theme="system"] :is(.ws-app, .ws-advanced-shell):is(.ws-app, .ws-advanced-shell) {
+    --ws-bg: #121316;
+    --ws-surface: #18191d;
+    --ws-surface-soft: #1f2025;
+    --ws-border: #2b2d33;
+    --ws-border-strong: #3a3d44;
+    --ws-text: #e7e8eb;
+    --ws-muted: #9b9fa8;
+    --ws-faint: #6c7079;
+    --ws-primary: #22b8cf;
+    --ws-primary-hover: #3cc6db;
     --ws-success: #22c55e;
     --ws-danger: #ef4444;
     --ws-warning: #eab308;
+    --ws-on-primary: #061418;
+    --ws-shadow: none;
   }
 }
-html[data-theme="dark"] .ws-sidebar { background: #0d1422; }
-@media (prefers-color-scheme: dark) { html[data-theme="system"] .ws-sidebar { background: #0d1422; } }
+html[data-theme="dark"] .ws-sidebar { background: #0f1012; }
+@media (prefers-color-scheme: dark) { html[data-theme="system"] .ws-sidebar { background: #0f1012; } }
 
 .ws-app { transition: grid-template-columns .15s ease; }
 .ws-sidebar { position: relative; }
