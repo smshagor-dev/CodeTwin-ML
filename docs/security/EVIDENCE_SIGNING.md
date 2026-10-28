@@ -477,6 +477,22 @@ bound, digest pins and checkpoint can be replayed together, the audit can
 still accept stale inputs. The tool neither authenticates nor advances the
 bound and does not prove external private signing-key custody.
 
+For a shorter **operator-enforced replay window**, add
+`--max-checkpoint-age-seconds 3600` (example: one hour). The value must be
+an integer from 1 through 604800 seconds (seven days); invalid values fail
+closed. This requires all three independent checkpoint inputs and a signed
+v2 checkpoint even if `--require-fresh-checkpoint` was omitted. After
+signature verification, the audit compares the signed `issued_at_unix`
+with the local wall clock and rejects a checkpoint older than the supplied
+limit. Equality is accepted. The age is checked again at the final success
+boundary so a checkpoint that ages out during inspection fails closed.
+
+**Limit:** The maximum age is an operator-supplied policy bound, not a
+trusted timestamp or independent key-custody attestation. A rolled-back
+local clock or replay of the invocation, external digest pins and
+checkpoint together can still defeat freshness. Keep private signing keys
+outside the repository and SQLite, and independently protect all pins.
+
 **Limits:** The audit trusts the local wall clock; a rolled-back or
 compromised clock, replayed external pins, or attacker-controlled invocation
 can defeat the freshness policy. Expiry is not a protected monotonic counter,
