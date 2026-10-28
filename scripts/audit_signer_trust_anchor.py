@@ -305,7 +305,8 @@ def audit_anchor(
     audit_started_at_unix = (
         int(time.time()) if minimum_audit_time_unix is not None else None
     )
-    if (audit_started_at_unix is not None
+    if (minimum_audit_time_unix is not None
+            and audit_started_at_unix is not None
             and audit_started_at_unix < minimum_audit_time_unix):
         raise ValueError("Local audit clock is below independently pinned minimum")
     checkpoint_bytes: bytes | None = None
@@ -447,7 +448,8 @@ def audit_anchor(
     # A rollback can stay above the administrator's minimum. Compare the
     # final observed wall clock with the audit's own initial observation as
     # an additional fail-closed check; neither reading is trusted time.
-    if audit_started_at_unix is not None and final_now < audit_started_at_unix:
+    if (audit_started_at_unix is not None and final_now is not None
+            and final_now < audit_started_at_unix):
         raise ValueError("Local audit clock moved backwards during audit")
     if max_checkpoint_age_seconds is not None and (
         checkpoint_issued_at is None or final_now is None or
