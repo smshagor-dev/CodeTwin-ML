@@ -269,7 +269,10 @@ function SummaryBar({ summary, filter, setFilter }: { summary: AssessmentSummary
   );
 }
 
-const REPLAY_SPEEDS = [1, 2, 4, 8];
+const REPLAY_SPEEDS = [0.5, 1, 2, 4, 8];
+// Base per-line delay in ms; divided by the chosen speed. At 1x each line
+// appears about every quarter second so it reads like live `ping` output.
+const REPLAY_BASE_MS = 260;
 
 function LiveStream({ items, filter, setFilter, detail, projectId, target, onChanged, onError }: {
   items: StreamItem[]; filter: StreamFilter; setFilter: (f: StreamFilter) => void; detail: RunDetail | null;
@@ -281,11 +284,11 @@ function LiveStream({ items, filter, setFilter, detail, projectId, target, onCha
   const [limit, setLimit] = useState(RENDER_STEP);
   // Replay re-plays the real recorded items one by one; it never invents output.
   const [replay, setReplay] = useState<number | null>(null);
-  const [speed, setSpeed] = useState(2);
+  const [speed, setSpeed] = useState(1);
   const live = !!detail && ["running", "queued", "validating"].includes(detail.run.state);
   useEffect(() => {
     if (replay === null || replay >= items.length) return;
-    const t = window.setTimeout(() => setReplay((r) => (r === null ? r : r + 1)), Math.max(12, 90 / speed));
+    const t = window.setTimeout(() => setReplay((r) => (r === null ? r : r + 1)), Math.max(30, REPLAY_BASE_MS / speed));
     return () => window.clearTimeout(t);
   }, [replay, speed, items.length]);
   // Rows newer than what was on screen at load animate in like terminal output.
