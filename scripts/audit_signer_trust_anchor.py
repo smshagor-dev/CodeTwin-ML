@@ -205,6 +205,7 @@ def audit_anchor(
     require_floor_checkpoint: bool = False,
     require_fresh_checkpoint: bool = False,
     minimum_checkpoint_issued_at_unix: int | None = None,
+    minimum_audit_time_unix: int | None = None,
     historical_evidence_signer_keys_hex: tuple[str, ...] = (),
     historical_policy_authority_keys_hex: tuple[str, ...] = (),
     revoked_checkpoint_authority_keys_hex: tuple[str, ...] = (),
@@ -264,6 +265,10 @@ def audit_anchor(
         )
         if not all(value is not None for value in checkpoint_inputs):
             raise ValueError("Independent checkpoint issuance floor requires complete checkpoint inputs")
+    if minimum_audit_time_unix is not None:
+        _checkpoint_timestamp(minimum_audit_time_unix, "Independent minimum audit time")
+        if not all(value is not None for value in checkpoint_inputs):
+            raise ValueError("Independent audit clock floor requires complete checkpoint inputs")
     if historical_keys and not all(value is not None for value in checkpoint_inputs):
         raise ValueError("Historical evidence signer inventory requires complete floor checkpoint inputs")
     if historical_authorities and not all(value is not None for value in checkpoint_inputs):
@@ -280,6 +285,10 @@ def audit_anchor(
         value is not None for value in checkpoint_inputs
     ):
         raise ValueError("All three independent floor checkpoint inputs are required")
+    # Reject a clock observed below the separately authenticated lower bound
+    # before opening any anchor or checkpoint file. This is not a trusted clock.
+    if minimum_audit_time_unix is not None and int(time.time()) < minimum_audit_time_unix:
+        raise ValueError("Local audit clock is below independently pinned minimum")
     checkpoint_bytes: bytes | None = None
     checkpoint_snapshot: tuple[tuple[int, ...], tuple[int, ...]] | None = None
     checkpoint_expires_at: int | None = None
@@ -302,7 +311,7 @@ def audit_anchor(
             policy_authority=authority,
             independent_floor=floor,
             signed_policy_digest=digest,
-            require_fresh=require_fresh_checkpoint,
+            require_fresh=require_fresh_checkpoint or minimum_audit_time_unix is not None,
             minimum_issued_at_unix=minimum_checkpoint_issued_at_unix,
         )
     path = Path(os.path.abspath(anchor_file))
@@ -403,8 +412,15 @@ def audit_anchor(
             raise ValueError("External anchor directory changed during audit")
         # These observations are bounded; no sequence of reads can establish
         # an atomic snapshot or prevent a privileged rollback after return.
-    if checkpoint_expires_at is not None and int(time.time()) >= checkpoint_expires_at:
+    # Recheck the same lower bound at the return boundary: the local clock
+    # can move backwards while the signed files are being inspected.
+    final_now = int(time.time()) if (
+        checkpoint_expires_at is not None or minimum_audit_time_unix is not None
+    ) else None
+    if checkpoint_expires_at is not None and final_now >= checkpoint_expires_at:
         raise ValueError("Floor checkpoint expired during audit")
+    if minimum_audit_time_unix is not None and final_now < minimum_audit_time_unix:
+        raise ValueError("Local audit clock fell below independently pinned minimum during audit")
     return {
         "status": "verified_against_supplied_pins",
         "minimum_revision": revision,
@@ -436,6 +452,8 @@ def main() -> None:
                         help="Require a signed v2 checkpoint with a currently valid expiry")
     parser.add_argument("--minimum-checkpoint-issued-at-unix", type=int,
                         help="Independently protected minimum signed v2 issuance timestamp")
+    parser.add_argument("--minimum-audit-time-unix", type=int,
+                        help="Independently protected lower bound for local audit clock; requires signed v2 checkpoint")
     parser.add_argument("--historical-evidence-signer-key", action="append", default=[],
                         help="Independent historical evidence signer public key (64 hex); repeatable, max 256")
     parser.add_argument("--historical-policy-authority-key", action="append", default=[],
@@ -457,6 +475,7 @@ def main() -> None:
             require_floor_checkpoint=args.require_floor_checkpoint,
             require_fresh_checkpoint=args.require_fresh_checkpoint,
             minimum_checkpoint_issued_at_unix=args.minimum_checkpoint_issued_at_unix,
+            minimum_audit_time_unix=args.minimum_audit_time_unix,
             historical_evidence_signer_keys_hex=tuple(args.historical_evidence_signer_key),
             historical_policy_authority_keys_hex=tuple(args.historical_policy_authority_key),
             revoked_checkpoint_authority_keys_hex=tuple(args.revoked_checkpoint_authority_key),
