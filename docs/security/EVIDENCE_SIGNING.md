@@ -470,9 +470,13 @@ the audited checkpoint, the local clock itself, Git, or SQLite. For example,
 append `--minimum-audit-time-unix <independent-clock-watermark>` to the v2
 audit command above. Update and protect the watermark outside this audit.
 
-**Limit:** A caller-supplied lower bound can detect *observed* clock rollback
-relative to that bound; it cannot establish trusted time, guarantee a
-monotonic clock, or detect rollback that remains above the bound. If the
+**Limit:** With an independent audit-time lower bound supplied, the auditor
+also compares its first and final wall-clock observations and fails closed
+if the final clock is earlier, even when both readings are above the
+administrator's lower bound. Equal or forward-moving observations are
+allowed. This only detects rollback *observed between those two reads*;
+it cannot establish trusted time, guarantee a monotonic clock, or detect
+rollback before the initial read or between unobserved intervals. If the
 bound, digest pins and checkpoint can be replayed together, the audit can
 still accept stale inputs. The tool neither authenticates nor advances the
 bound and does not prove external private signing-key custody.
