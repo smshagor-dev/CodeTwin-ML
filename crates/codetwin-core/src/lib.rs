@@ -6,6 +6,7 @@ pub use git_commit::{
 };
 pub mod agent_tools;
 pub mod assessment_jobs;
+pub mod assessment_stream;
 pub mod cloud_settings;
 pub mod knowledge_memory;
 pub mod native_action_log;

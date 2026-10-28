@@ -13,7 +13,7 @@ describe("desktop integration surface", () => {
     expect(typeof Dashboard).toBe("function");
     expect(typeof DesktopRoot).toBe("function");
     expect(typeof WorkspaceShell).toBe("function");
-    expect(workspaceRoutes).toHaveLength(14);
+    expect(workspaceRoutes).toHaveLength(15);
   });
 
   it("keeps failed evidence reads explicit instead of silently converting them to zero", () => {
@@ -36,11 +36,17 @@ describe("desktop integration surface", () => {
   it("keeps every required primary route in the production shell", () => {
     const shellPath = fileURLToPath(new URL("./workspace/WorkspaceShell.tsx", import.meta.url));
     const source = readFileSync(shellPath, "utf8");
+    // Redesigned primary/secondary navigation plus every pre-existing area.
     for (const label of [
-      "Overview", "Projects", "Websites", "Agents", "Code Analysis", "Security",
-      "Testing", "Deployments", "Integrations", "Settings", "Documentation", "Support",
+      "Workspace", "Reports", "Targets", "Agents", "Knowledge", "Tools", "Project Settings",
+      "Usage", "Organization", "Settings", "Help Center",
+      "Overview", "Websites", "Code Analysis", "Security", "Testing", "Deployments", "Integrations", "Support",
     ]) {
       expect(source).toContain('label: "' + label + '"');
+    }
+    // No workspace route may become unreachable from the shell navigation.
+    for (const route of workspaceRoutes) {
+      expect(source).toContain('route: "' + route + '"');
     }
     expect(source).toContain("Global search");
     expect(source).toContain("Toggle light or dark theme");

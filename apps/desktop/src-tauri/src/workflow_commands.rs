@@ -3,9 +3,10 @@
 //! learns whether one is stored. All decisions are recorded as the local
 //! operator; workers and models have no access to these commands.
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use codetwin_core::assessment_stream::{AssessmentStream, AssessmentSummary, StreamPage};
 use codetwin_core::cloud_settings::{
     CloudSettings, ConsentRecord, ProviderRequestRecord, ProviderSettings,
 };
@@ -237,8 +238,42 @@ pub fn start_workflow_run(run_id: String, app: tauri::AppHandle) -> Result<(), S
             return Err(e);
         }
     };
+    // Push channel: while the run executes, a watcher reads the durable event
+    // log after its cursor and emits typed stream items. The UI deduplicates
+    // by key and replays from its own cursor after reconnecting.
+    let done = Arc::new(AtomicBool::new(false));
+    if let Ok(path) = db_path(&app) {
+        let (app, run_id, done) = (app.clone(), run_id.clone(), done.clone());
+        std::thread::spawn(move || {
+            let mut cursor = 0i64;
+            loop {
+                let finished = done.load(Ordering::SeqCst);
+                if let Ok(database) = Database::open(&path) {
+                    let stream = AssessmentStream::new(&database);
+                    while let Ok(page) = stream.page(&run_id, cursor, 200) {
+                        if page.items.is_empty() {
+                            break;
+                        }
+                        cursor = page.next_cursor;
+                        let _ = app.emit(
+                            "assessment://items",
+                            serde_json::json!({ "run_id": run_id, "page": page }),
+                        );
+                        if !page.has_more {
+                            break;
+                        }
+                    }
+                }
+                if finished {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(400));
+            }
+        });
+    }
     std::thread::spawn(move || {
         let result = platform.execute(&run_id, Some(&token));
+        done.store(true, Ordering::SeqCst);
         running().lock().map(|mut m| m.remove(&run_id)).ok();
         let _ = app.emit(
             "workflow://settled",
@@ -565,4 +600,50 @@ pub async fn send_cloud_question(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// --------------------------------------------------------- assessment stream
+
+/// Resumable page of the unified assessment stream after `cursor`.
+#[tauri::command]
+pub fn assessment_stream_page(
+    run_id: String,
+    cursor: i64,
+    limit: Option<usize>,
+    app: tauri::AppHandle,
+) -> Result<StreamPage, String> {
+    AssessmentStream::new(&db(&app)?).page(&run_id, cursor, limit.unwrap_or(250))
+}
+
+#[tauri::command]
+pub fn assessment_summary(
+    run_id: String,
+    app: tauri::AppHandle,
+) -> Result<AssessmentSummary, String> {
+    AssessmentStream::new(&db(&app)?).summary(&run_id)
+}
+
+/// Operator verification of an AppSec finding. The run id and file hash the
+/// operator saw must still match, or the review is rejected as stale.
+#[tauri::command]
+pub fn review_assessment_finding(
+    project_id: String,
+    finding_id: String,
+    scan_run_id: String,
+    file_sha256: Option<String>,
+    verdict: String,
+    note: String,
+    app: tauri::AppHandle,
+) -> Result<codetwin_core::SecurityFindingReview, String> {
+    let note = format!("{note} (by {})", operator());
+    codetwin_core::SecurityReviewService::new(&db(&app)?)
+        .review(
+            &project_id,
+            &finding_id,
+            &scan_run_id,
+            file_sha256.as_deref(),
+            &verdict,
+            &note,
+        )
+        .map_err(|e| e.to_string())
 }

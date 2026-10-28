@@ -1,0 +1,77 @@
+/* Shell redesign: CodeTwin dark palette, collapsible sidebar, account and
+   "More" navigation groups. Loaded after workspace.css/clean-workspace.css. */
+html[data-theme="dark"] .ws-app {
+  --ws-bg: #0b1020;
+  --ws-surface: #151e30;
+  --ws-surface-soft: #1b263a;
+  --ws-border: #283449;
+  --ws-border-strong: #33415a;
+  --ws-text: #e2e8f0;
+  --ws-muted: #94a3b8;
+  --ws-faint: #7c8aa0;
+  --ws-primary: #06b6d4;
+  --ws-primary-hover: #22d3ee;
+  --ws-success: #22c55e;
+  --ws-danger: #ef4444;
+  --ws-warning: #eab308;
+}
+@media (prefers-color-scheme: dark) {
+  html[data-theme="system"] .ws-app {
+    --ws-bg: #0b1020;
+    --ws-surface: #151e30;
+    --ws-surface-soft: #1b263a;
+    --ws-border: #283449;
+    --ws-border-strong: #33415a;
+    --ws-text: #e2e8f0;
+    --ws-muted: #94a3b8;
+    --ws-faint: #7c8aa0;
+    --ws-primary: #06b6d4;
+    --ws-primary-hover: #22d3ee;
+    --ws-success: #22c55e;
+    --ws-danger: #ef4444;
+    --ws-warning: #eab308;
+  }
+}
+html[data-theme="dark"] .ws-sidebar { background: #0d1422; }
+@media (prefers-color-scheme: dark) { html[data-theme="system"] .ws-sidebar { background: #0d1422; } }
+
+.ws-app { transition: grid-template-columns .15s ease; }
+.ws-sidebar { position: relative; }
+.ws-collapse {
+  position: absolute; top: 18px; right: -11px; z-index: 3; width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--ws-surface); color: var(--ws-muted);
+  border: 1px solid var(--ws-border); cursor: pointer; padding: 0;
+}
+.ws-collapse svg { transform: rotate(90deg); }
+.ws-collapse:focus-visible, .ws-sidebar a:focus-visible, .ws-sidebar summary:focus-visible { outline: 2px solid var(--ws-primary); outline-offset: 2px; }
+.ws-nav-disabled { display: flex; align-items: center; gap: 10px; padding: 8px 12px; opacity: .45; cursor: not-allowed; }
+.ws-sidebar-more > summary { display: flex; align-items: center; gap: 10px; padding: 8px 12px; cursor: pointer; color: var(--ws-muted); list-style: none; }
+.ws-sidebar-more > summary::-webkit-details-marker { display: none; }
+.ws-sidebar-more > summary > svg:last-child { margin-left: auto; }
+.ws-sidebar-more[open] > summary > svg:last-child { transform: rotate(180deg); }
+
+/* Collapsed: icon rail with tooltips from each link's title. */
+.ws-app.ws-collapsed { grid-template-columns: 64px minmax(0, 1fr); }
+.ws-collapsed .ws-collapse svg { transform: rotate(-90deg); }
+.ws-collapsed .ws-sidebar nav a > span,
+.ws-collapsed .ws-sidebar summary > span,
+.ws-collapsed .ws-sidebar summary > svg:last-child,
+.ws-collapsed .ws-nav-disabled > span,
+.ws-collapsed .ws-nav-label,
+.ws-collapsed .ws-brand span,
+.ws-collapsed .ws-sidebar-profile > span:not(.ws-avatar),
+.ws-collapsed .ws-sidebar-profile > svg,
+.ws-collapsed .ws-sidebar-tools > a,
+.ws-collapsed .ws-sidebar-more > .ws-nav-item { display: none; }
+.ws-collapsed .ws-sidebar-more[open] > .ws-nav-item { display: block; }
+.ws-collapsed .ws-sidebar nav a, .ws-collapsed .ws-sidebar summary, .ws-collapsed .ws-nav-disabled { justify-content: center; padding-left: 0; padding-right: 0; }
+
+/* The workspace route gets the full content width. */
+.ws-content:has(> .aw) { padding-top: 12px; }
+
+@media (max-width: 900px) {
+  .ws-collapse { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-app { transition: none; }
+}

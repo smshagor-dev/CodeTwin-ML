@@ -17,26 +17,82 @@ import { IntegrationsPage } from "./pages/IntegrationsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AgentsPage, DeploymentsPage, DocumentationPage, SupportPage } from "./pages/InfoPages";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
+import { AssessmentWorkspace } from "./pages/AssessmentWorkspace";
+import "./shell.css";
 
-const navigation: Array<{ route: WorkspaceRoute; label: string; icon: IconName }> = [
+type NavItem = { route: WorkspaceRoute; label: string; icon: IconName; tab?: string; disabled?: string };
+
+/** Primary navigation: the terminal-first workspace and its supporting areas. */
+const primaryNav: NavItem[] = [
+  { route: "workspace", label: "Workspace", icon: "activity" },
+  { route: "workflows", label: "Reports", icon: "docs", tab: "runs" },
+  { route: "projects", label: "Targets", icon: "projects" },
+  { route: "agents", label: "Agents", icon: "agents" },
+  { route: "workflows", label: "Knowledge", icon: "file", tab: "memory" },
+  { route: "tools", label: "Tools", icon: "integrations" },
+  { route: "workflows", label: "Project Settings", icon: "settings", tab: "cloud" },
+];
+
+const secondaryNav: NavItem[] = [
+  { route: "workflows", label: "Usage", icon: "activity", tab: "capabilities" },
+  { route: "settings", label: "Organization", icon: "user", disabled: "Single local operator — organizations are not implemented" },
+  { route: "settings", label: "Settings", icon: "settings" },
+  { route: "documentation", label: "Help Center", icon: "support" },
+];
+
+/** Existing areas stay reachable; nothing was removed by the redesign. */
+const moreNav: NavItem[] = [
   { route: "dashboard", label: "Overview", icon: "dashboard" },
-  { route: "projects", label: "Projects", icon: "projects" },
   { route: "websites", label: "Websites", icon: "websites" },
   { route: "code-analysis", label: "Code Analysis", icon: "code" },
   { route: "security", label: "Security", icon: "security" },
-  { route: "tools", label: "Tool Library", icon: "integrations" },
   { route: "testing", label: "Testing", icon: "testing" },
   { route: "integrations", label: "Integrations", icon: "integrations" },
-  { route: "settings", label: "Settings", icon: "settings" },
-  { route: "documentation", label: "Documentation", icon: "docs" },
-  { route: "support", label: "Support", icon: "support" },
-  { route: "agents", label: "Agents", icon: "agents" },
   { route: "deployments", label: "Deployments", icon: "deploy" },
-  { route: "workflows", label: "Workflows", icon: "agents" },
+  { route: "workflows", label: "Workflows", icon: "agents", tab: "approvals" },
+  { route: "support", label: "Support", icon: "support" },
 ];
+
+const navigation = [...primaryNav, ...secondaryNav, ...moreNav];
+const SIDEBAR_KEY = "codetwin.shell.sidebarCollapsed";
+
+function navHref(item: NavItem): string {
+  return routeHref(item.route) + (item.tab ? `?tab=${item.tab}` : "");
+}
+
+function isActive(item: NavItem, route: WorkspaceRoute): boolean {
+  if (item.route !== route || item.disabled) return false;
+  if (!item.tab) return true;
+  const tab = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("tab") ?? "runs";
+  return tab === item.tab;
+}
+
+function routeLabel(route: WorkspaceRoute): string {
+  return navigation.find((item) => isActive(item, route))?.label
+    ?? navigation.find((item) => item.route === route)?.label ?? route;
+}
+
+function NavLinks({ items, route }: { items: NavItem[]; route: WorkspaceRoute }) {
+  return (
+    <>
+      {items.map((item) => item.disabled ? (
+        <span key={item.label} className="ws-nav-item ws-nav-disabled" aria-disabled="true" title={item.disabled}>
+          <Icon name={item.icon}/><span>{item.label}</span>
+        </span>
+      ) : (
+        <div key={item.label} className="ws-nav-item">
+          <a href={navHref(item)} aria-label={item.label} title={item.label} aria-current={isActive(item, route) ? "page" : undefined} className={isActive(item, route) ? "active" : ""}>
+            <Icon name={item.icon}/><span>{item.label}</span>
+          </a>
+        </div>
+      ))}
+    </>
+  );
+}
 
 export function workspaceRoutePage(route: WorkspaceRoute) {
   switch (route) {
+    case "workspace": return <AssessmentWorkspace/>;
     case "dashboard": return <DashboardPage/>;
     case "projects": return <ProjectsPage/>;
     case "websites": return <WebsitesPage/>;
@@ -212,6 +268,20 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
   const { preferences, savePreferences, activity, operation, toast, setToast, setActiveProjectId, loading } = useWorkspace();
   const alertCount = useMemo(() => activity.filter((item) => ["failed", "offline", "degraded"].includes(item.status)).length, [activity]);
   const initials = preferences.display_name.trim().split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "U";
+  const [collapsed, setCollapsedState] = useState(() => {
+    try { return window.localStorage.getItem(SIDEBAR_KEY) === "1"; } catch { return false; }
+  });
+  const setCollapsed = (value: boolean) => {
+    setCollapsedState(value);
+    try { window.localStorage.setItem(SIDEBAR_KEY, value ? "1" : "0"); } catch { /* storage unavailable */ }
+  };
+  // Re-render when only the `?tab=` part of the hash changes so nav state stays accurate.
+  const [, setHashVersion] = useState(0);
+  useEffect(() => {
+    const onHash = () => setHashVersion((v) => v + 1);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   async function toggleTheme() {
     const current = preferences.theme === "system"
@@ -221,21 +291,23 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
   }
 
   return (
-    <div className="ws-app">
+    <div className={"ws-app" + (collapsed ? " ws-collapsed" : "")}>
       <aside className="ws-sidebar">
         <a href={routeHref("dashboard")} className="ws-brand" aria-label="CodeTwin dashboard">
           <Icon name="code" size={27}/>
           <span><strong>CodeTwin</strong></span>
         </a>
+        <button type="button" className="ws-collapse" aria-pressed={collapsed} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={() => setCollapsed(!collapsed)}>
+          <Icon name="chevron" size={14}/>
+        </button>
         <nav aria-label="Main navigation">
-          {navigation.map((item, index) => (
-            <div key={item.route} className="ws-nav-item">
-              {[0, 3, 6, 10].includes(index) && <p className="ws-nav-label">{index === 0 ? "Workspace" : index === 3 ? "Analysis" : index === 6 ? "Preferences" : "Additional"}</p>}
-            <a key={item.route} href={routeHref(item.route)} aria-label={item.label} title={item.label} aria-current={route === item.route ? "page" : undefined} className={route === item.route ? "active" : ""} data-section={index === 10 ? "secondary" : undefined}>
-              <Icon name={item.icon}/><span>{item.label}</span>
-            </a>
-            </div>
-          ))}
+          <NavLinks items={primaryNav} route={route}/>
+          <p className="ws-nav-label">Account</p>
+          <NavLinks items={secondaryNav} route={route}/>
+          <details className="ws-sidebar-more" open={moreNav.some((item) => isActive(item, route))}>
+            <summary aria-label="More areas" title="More areas"><Icon name="more"/><span>More</span><Icon name="chevron" size={14}/></summary>
+            <NavLinks items={moreNav} route={route}/>
+          </details>
           <details className="ws-sidebar-tools">
             <summary aria-label="Advanced tools" title="Advanced tools"><Icon name="code"/><span>Advanced tools</span><Icon name="chevron" size={14}/></summary>
             <a href={routeHref("engineering")}>Engineering</a>
@@ -257,7 +329,7 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
 
       <section className="ws-main">
         <header className="ws-topbar">
-          <div className="ws-breadcrumb"><span>Workspace</span><span>/</span><strong>{route === "dashboard" ? "Overview" : navigation.find(item => item.route === route)?.label}</strong></div>
+          <div className="ws-breadcrumb"><span>Workspace</span><span>/</span><strong>{routeLabel(route)}</strong></div>
           <GlobalSearch/>
           <div className="ws-top-actions">
             <details className="ws-top-menu">

@@ -245,3 +245,115 @@ fn evidence_verification_detects_drift() {
         .unwrap();
     assert_eq!(other["missing"], 1, "evidence is project-scoped");
 }
+
+#[test]
+fn assessment_stream_merges_events_and_real_finding_cards() {
+    use codetwin_core::assessment_stream::{AssessmentStream, StreamItem};
+    use codetwin_core::SecurityReviewService;
+    use std::collections::BTreeSet;
+
+    let f = fixture();
+    let p = platform(&f);
+    let (run, approvals) = p
+        .create_investigation(
+            &f.project_id,
+            "Review eval usage",
+            "operator",
+            &InvestigationOptions::default(),
+            None,
+        )
+        .unwrap();
+    p.decide(
+        &approvals[0].id,
+        true,
+        "operator",
+        &approvals[0].scope_digest,
+        None,
+    )
+    .unwrap();
+    p.execute(&run.id, None).unwrap();
+
+    let db = Database::open(&f.db_path).unwrap();
+    let stream = AssessmentStream::new(&db);
+    // Page through with a small limit; keys must be unique and seq-ordered.
+    let (mut cursor, mut keys, mut items) = (0, BTreeSet::new(), Vec::new());
+    loop {
+        let page = stream.page(&run.id, cursor, 7).unwrap();
+        for item in page.items {
+            let key = match &item {
+                StreamItem::Event(e) => e.key.clone(),
+                StreamItem::Finding(c) => c.key.clone(),
+            };
+            assert!(keys.insert(key), "no duplicate stream items across pages");
+            items.push(item);
+        }
+        if !page.has_more {
+            break;
+        }
+        cursor = page.next_cursor;
+    }
+    let seqs: Vec<i64> = items
+        .iter()
+        .filter_map(|i| match i {
+            StreamItem::Event(e) => Some(e.seq),
+            _ => None,
+        })
+        .collect();
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]));
+    let cards: Vec<_> = items
+        .iter()
+        .filter_map(|i| match i {
+            StreamItem::Finding(c) => Some(c.as_ref()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !cards.is_empty(),
+        "AppSec findings from the fixture appear as inline cards"
+    );
+    for card in &cards {
+        assert_eq!(
+            card.verification, "potential",
+            "static detection is not confirmed"
+        );
+        assert!(card
+            .location
+            .as_deref()
+            .is_some_and(|l| l.starts_with("app.ts")));
+        assert!(!card.remediation.is_empty() && !card.limitations.is_empty());
+    }
+    let text = serde_json::to_string(&items).unwrap();
+    assert!(
+        !text.contains("sk_live_super_secret_value"),
+        "no secret values in the stream"
+    );
+    assert!(items
+        .iter()
+        .any(|i| matches!(i, StreamItem::Event(e) if e.stage == "POTENTIAL")));
+
+    let summary = stream.summary(&run.id).unwrap();
+    let unique: BTreeSet<&str> = cards.iter().map(|c| c.finding_id.as_str()).collect();
+    assert_eq!(summary.total, unique.len());
+    assert_eq!(summary.potential, summary.total);
+    assert_eq!(
+        summary.critical + summary.high + summary.medium + summary.low + summary.info,
+        summary.total
+    );
+    assert_eq!(summary.checks_completed, summary.checks_total);
+
+    // An operator review changes verification, not severity.
+    let card = cards.iter().find(|c| c.reviewable).unwrap();
+    SecurityReviewService::new(&db)
+        .review(
+            &f.project_id,
+            &card.finding_id,
+            card.scan_run_id.as_deref().unwrap(),
+            card.file_sha256.as_deref(),
+            "confirmed",
+            "Reproduced in review",
+        )
+        .unwrap();
+    let after = stream.summary(&run.id).unwrap();
+    assert_eq!(after.confirmed, 1);
+    assert_eq!(after.total, summary.total);
+}

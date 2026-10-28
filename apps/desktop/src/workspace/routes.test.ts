@@ -5,6 +5,7 @@ import { advancedRoutes, parseRoute, routeHref, workspaceRoutes } from "./routes
 describe("workspace routing", () => {
   it("exposes every required dashboard route", () => {
     expect(workspaceRoutes).toEqual([
+      "workspace",
       "dashboard",
       "projects",
       "websites",
@@ -25,6 +26,8 @@ describe("workspace routing", () => {
   it("parses supported hash routes and falls back safely", () => {
     expect(parseRoute("#/projects")).toBe("projects");
     expect(parseRoute("#/workflows")).toBe("workflows");
+    expect(parseRoute("#/workspace")).toBe("workspace");
+    expect(parseRoute("#/workflows?tab=memory")).toBe("workflows");
     expect(parseRoute("#/code-analysis?project=1")).toBe("code-analysis");
     expect(parseRoute("#/database")).toBe("database");
     expect(parseRoute("#/unknown")).toBe("dashboard");

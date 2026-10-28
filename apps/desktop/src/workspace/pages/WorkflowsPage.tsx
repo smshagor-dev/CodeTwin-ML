@@ -31,8 +31,19 @@ function useErrorToast() {
 export function WorkflowsPage() {
   const { projects, activeProjectId } = useWorkspace();
   const [projectId, setProjectId] = useState<string | null>(activeProjectId);
-  const [tab, setTab] = useState<Tab>("runs");
+  const [tab, setTab] = useState<Tab>(() => {
+    const requested = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("tab");
+    return TABS.some((t) => t.id === requested) ? (requested as Tab) : "runs";
+  });
   useEffect(() => { if (!projectId && activeProjectId) setProjectId(activeProjectId); }, [activeProjectId, projectId]);
+  useEffect(() => {
+    const onHash = () => {
+      const requested = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("tab");
+      if (TABS.some((t) => t.id === requested)) setTab(requested as Tab);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   return (
     <section className="ws-page ws-workflows">

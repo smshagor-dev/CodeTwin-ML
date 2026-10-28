@@ -1,4 +1,5 @@
 export const workspaceRoutes = [
+  "workspace",
   "dashboard",
   "projects",
   "websites",
