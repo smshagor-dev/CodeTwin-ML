@@ -238,6 +238,29 @@ class ExternalAnchorAuditTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "clock fell below independently pinned minimum"):
                 self._audit(minimum_audit_time_unix=now - 100, **inputs)
 
+    def test_independent_audit_clock_floor_rejects_rollback_above_floor(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        # The final clock remains above the independent minimum, but is
+        # earlier than the clock observed at the start of this audit.
+        with patch("scripts.audit_signer_trust_anchor.time.time",
+                   side_effect=[now, now, now - 50]):
+            with self.assertRaisesRegex(ValueError, "clock moved backwards during audit"):
+                self._audit(minimum_audit_time_unix=now - 100, **inputs)
+
+    def test_independent_audit_clock_floor_accepts_forward_clock(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        with patch("scripts.audit_signer_trust_anchor.time.time",
+                   side_effect=[now, now, now + 1]):
+            result = self._audit(minimum_audit_time_unix=now - 100, **inputs)
+        self.assertTrue(result["floor_checkpoint_verified"])
+        self.assertTrue(result["floor_checkpoint_fresh"])
+
     def test_max_checkpoint_age_rejects_old_but_unexpired_v2(self) -> None:
         now = 1_800_000_000
         inputs = self._signed_floor_checkpoint(
