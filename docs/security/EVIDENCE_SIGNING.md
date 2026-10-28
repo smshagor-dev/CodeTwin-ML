@@ -426,7 +426,13 @@ Both timestamps are covered by the Ed25519 signature. V2 requires positive
 64-bit Unix timestamps, expiry strictly after issuance, a lifetime of at most
 seven days, issuance no more than five minutes in the future, and expiry
 strictly after the local audit time. Expiry is rechecked before success.
-V1 remains supported unless the strict freshness flag is configured.
+Every supplied signed v2 checkpoint now also compares the first and final
+local wall-clock readings and fails closed on an observed backwards jump,
+even when no optional time-floor or maximum-age flags are configured.
+This is a bounded observation, not trusted time: rollback before the first
+reading, temporary unobserved changes, or replay of the checkpoint and all
+external pins together can still defeat freshness. V1 remains supported
+unless the strict freshness flag is configured.
 
 For deployments maintaining a **separately protected issuance watermark**, add
 `--minimum-checkpoint-issued-at-unix <trusted-unix-seconds>` to the audit.

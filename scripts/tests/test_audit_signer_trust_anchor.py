@@ -339,6 +339,31 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         self.assertTrue(result["floor_checkpoint_fresh"])
         self.assertFalse((self.root / "anchor.json.lock").exists())
 
+    def test_signed_v2_checkpoint_rejects_rollback_without_optional_time_pins(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        # Both times are within the signed validity interval, but the final
+        # local wall-clock reading is earlier than the audit's initial reading.
+        for strict in (False, True):
+            with self.subTest(require_fresh_checkpoint=strict):
+                with patch("scripts.audit_signer_trust_anchor.time.time",
+                           side_effect=[now, now, now - 30]):
+                    with self.assertRaisesRegex(ValueError, "clock moved backwards during audit"):
+                        self._audit(require_fresh_checkpoint=strict, **inputs)
+
+    def test_signed_v2_checkpoint_accepts_forward_clock_without_optional_time_pins(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        with patch("scripts.audit_signer_trust_anchor.time.time",
+                   side_effect=[now, now, now + 1]):
+            result = self._audit(**inputs)
+        self.assertTrue(result["floor_checkpoint_verified"])
+        self.assertTrue(result["floor_checkpoint_fresh"])
+
     def test_signed_v2_checkpoint_rejects_stale_future_and_invalid_lifetime(self) -> None:
         now = 1_800_000_000
         for issued, expires, message in (
@@ -376,7 +401,7 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         )
         with patch(
             "scripts.audit_signer_trust_anchor.time.time",
-            side_effect=(now, now + 1800),
+            side_effect=(now, now, now + 1800),
         ):
             with self.assertRaisesRegex(ValueError, "expired during audit"):
                 self._audit(require_fresh_checkpoint=True, **inputs)
