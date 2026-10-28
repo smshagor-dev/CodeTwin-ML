@@ -364,6 +364,46 @@ class ExternalAnchorAuditTests(unittest.TestCase):
         self.assertTrue(result["floor_checkpoint_verified"])
         self.assertTrue(result["floor_checkpoint_fresh"])
 
+    def test_signed_v2_checkpoint_rejects_forward_wall_clock_lag(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        # The wall clock advances by two seconds, hiding an eight-second
+        # rollback relative to the ten seconds observed by monotonic time.
+        with patch("scripts.audit_signer_trust_anchor.time.time",
+                   side_effect=[now, now, now + 2]):
+            with patch("scripts.audit_signer_trust_anchor.time.monotonic",
+                       side_effect=[100.0, 110.0]):
+                with self.assertRaisesRegex(ValueError, "lagged monotonic elapsed time"):
+                    self._audit(**inputs)
+
+    def test_signed_v2_checkpoint_accepts_consistent_monotonic_progress(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        with patch("scripts.audit_signer_trust_anchor.time.time",
+                   side_effect=[now, now, now + 5]):
+            with patch("scripts.audit_signer_trust_anchor.time.monotonic",
+                       side_effect=[100.0, 105.0]):
+                result = self._audit(**inputs)
+        self.assertTrue(result["floor_checkpoint_verified"])
+
+    def test_signed_v2_checkpoint_rejects_invalid_monotonic_progress(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        for final_monotonic in (99.0, float("nan"), float("inf")):
+            with self.subTest(final_monotonic=final_monotonic):
+                with patch("scripts.audit_signer_trust_anchor.time.time",
+                           side_effect=[now, now, now + 2]):
+                    with patch("scripts.audit_signer_trust_anchor.time.monotonic",
+                               side_effect=[100.0, final_monotonic]):
+                        with self.assertRaisesRegex(ValueError, "monotonic audit clock was invalid"):
+                            self._audit(**inputs)
+
     def test_signed_v2_checkpoint_rejects_stale_future_and_invalid_lifetime(self) -> None:
         now = 1_800_000_000
         for issued, expires, message in (

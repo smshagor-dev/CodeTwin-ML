@@ -434,6 +434,19 @@ reading, temporary unobserved changes, or replay of the checkpoint and all
 external pins together can still defeat freshness. V1 remains supported
 unless the strict freshness flag is configured.
 
+For signed v2 checkpoints, the auditor also measures elapsed time with the
+local monotonic clock and rejects a final wall-clock reading that advances
+more than one second less than that elapsed duration. This detects some
+clock rollbacks that still leave the final wall clock later than the first
+reading. The one-second tolerance accounts for integer Unix-second
+rounding. A backwards, non-finite, or otherwise invalid monotonic elapsed
+reading fails closed. The check is read-only and uses no private key,
+database, or network operation. It does **not** establish trusted time:
+an attacker controlling both clocks, an unobserved rollback before the
+first sample, system suspend behavior, or replay of all independently
+supplied pins can still defeat freshness. Use an independently protected
+time source and signing-key custody where those guarantees are required.
+
 For deployments maintaining a **separately protected issuance watermark**, add
 `--minimum-checkpoint-issued-at-unix <trusted-unix-seconds>` to the audit.
 This requires all three checkpoint inputs and a signed v2 record, even without
