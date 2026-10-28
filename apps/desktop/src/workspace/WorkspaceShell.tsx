@@ -16,6 +16,7 @@ import { TestingPage } from "./pages/TestingPage";
 import { IntegrationsPage } from "./pages/IntegrationsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AgentsPage, DeploymentsPage, DocumentationPage, SupportPage } from "./pages/InfoPages";
+import { WorkflowsPage } from "./pages/WorkflowsPage";
 
 const navigation: Array<{ route: WorkspaceRoute; label: string; icon: IconName }> = [
   { route: "dashboard", label: "Overview", icon: "dashboard" },
@@ -31,6 +32,7 @@ const navigation: Array<{ route: WorkspaceRoute; label: string; icon: IconName }
   { route: "support", label: "Support", icon: "support" },
   { route: "agents", label: "Agents", icon: "agents" },
   { route: "deployments", label: "Deployments", icon: "deploy" },
+  { route: "workflows", label: "Workflows", icon: "agents" },
 ];
 
 export function workspaceRoutePage(route: WorkspaceRoute) {
@@ -48,6 +50,7 @@ export function workspaceRoutePage(route: WorkspaceRoute) {
     case "settings": return <SettingsPage/>;
     case "documentation": return <DocumentationPage/>;
     case "support": return <SupportPage/>;
+    case "workflows": return <WorkflowsPage/>;
   }
 }
 

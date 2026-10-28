@@ -18,11 +18,13 @@ describe("workspace routing", () => {
       "settings",
       "documentation",
       "support",
+      "workflows",
     ]);
   });
 
   it("parses supported hash routes and falls back safely", () => {
     expect(parseRoute("#/projects")).toBe("projects");
+    expect(parseRoute("#/workflows")).toBe("workflows");
     expect(parseRoute("#/code-analysis?project=1")).toBe("code-analysis");
     expect(parseRoute("#/database")).toBe("database");
     expect(parseRoute("#/unknown")).toBe("dashboard");

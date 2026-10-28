@@ -1,0 +1,38 @@
+/* Workflows page. Colours come from the workspace theme tokens so light,
+   dark and system themes apply automatically. */
+.ws-workflows .wf-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 16px; border-bottom: 1px solid var(--ws-border); }
+.ws-workflows .wf-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; color: var(--ws-muted); cursor: pointer; font: inherit; }
+.ws-workflows .wf-tabs button.active { color: inherit; border-bottom-color: currentColor; font-weight: 600; }
+.ws-workflows .wf-tabs button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.wf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+.wf-col, .wf-col-wide, .wf-run { display: grid; gap: 16px; min-width: 0; }
+.wf-col-wide { grid-column: 1 / -1; }
+@media (min-width: 1100px) { .wf-grid > .wf-col-wide:nth-child(2) { grid-column: span 2; } }
+.wf-run-list, .wf-tools, .wf-approvals, .wf-memory, .wf-timeline { list-style: none; margin: 0; padding: 0 0 12px; display: grid; gap: 8px; }
+.wf-run-list button { width: 100%; display: grid; gap: 4px; text-align: left; padding: 8px 10px; background: none; border: 1px solid var(--ws-border); border-radius: 6px; cursor: pointer; color: inherit; font: inherit; }
+.wf-run-list button.active { background: var(--ws-surface-soft); }
+.wf-run-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-goal { font-weight: 500; margin: 12px 0 4px; overflow-wrap: anywhere; }
+.wf-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 8px 0 12px; }
+.wf-meta dt { font-size: 11px; color: var(--ws-muted); }
+.wf-meta dd { margin: 0; }
+.wf-badges { display: inline-flex; gap: 6px; }
+.wf-dag { display: flex; gap: 12px; overflow-x: auto; padding: 12px 0; }
+.wf-dag-level { display: grid; gap: 8px; align-content: start; min-width: 220px; max-width: 280px; }
+.wf-level-label { font-size: 11px; color: var(--ws-muted); text-transform: uppercase; letter-spacing: .04em; }
+.wf-task { border: 1px solid var(--ws-border); border-radius: 6px; padding: 8px 10px; display: grid; gap: 4px; }
+.wf-task header { display: flex; justify-content: space-between; gap: 6px; align-items: start; }
+.wf-task p { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.wf-task-running, .wf-task-validating { border-color: #bd7d00; }
+.wf-task-failed, .wf-task-blocked { border-style: dashed; }
+.wf-role, .wf-reason { color: var(--ws-muted); }
+.wf-timeline { max-height: 360px; overflow-y: auto; font-size: 12px; }
+.wf-timeline li, .wf-tools li { overflow-wrap: anywhere; }
+.wf-approvals li, .wf-memory li { border: 1px solid var(--ws-border); border-radius: 6px; padding: 8px 10px; display: grid; gap: 6px; }
+.wf-approvals p, .wf-memory p { margin: 4px 0; }
+.wf-subhead { font-size: 12px; margin: 8px 0 4px; }
+.wf-report { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; background: var(--ws-surface-soft); padding: 12px; border-radius: 6px; font-size: 12px; }
+.wf-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin: 12px 0; }
+.wf-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 12px; }
+.wf-table th, .wf-table td { text-align: left; padding: 6px; border-bottom: 1px solid var(--ws-border); vertical-align: top; }
+.ws-workflows code { overflow-wrap: anywhere; }

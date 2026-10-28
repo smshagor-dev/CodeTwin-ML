@@ -13,7 +13,7 @@ describe("desktop integration surface", () => {
     expect(typeof Dashboard).toBe("function");
     expect(typeof DesktopRoot).toBe("function");
     expect(typeof WorkspaceShell).toBe("function");
-    expect(workspaceRoutes).toHaveLength(13);
+    expect(workspaceRoutes).toHaveLength(14);
   });
 
   it("keeps failed evidence reads explicit instead of silently converting them to zero", () => {

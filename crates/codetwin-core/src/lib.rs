@@ -4,7 +4,10 @@ pub use git_commit::{
     apply_selected_commit, prepare_selected_commit, GitCommitPreview, GitCommitReceipt,
     GitCommitRequest,
 };
+pub mod agent_tools;
 pub mod assessment_jobs;
+pub mod cloud_settings;
+pub mod knowledge_memory;
 pub mod native_action_log;
 pub mod native_agent_delegation;
 pub mod native_agent_handoffs;
@@ -24,7 +27,9 @@ pub mod network_assessment;
 pub mod network_dns;
 pub mod network_inspection;
 pub mod network_inspection_store;
+pub mod specialist_workers;
 pub mod tool_catalog;
+pub mod workflow_platform;
 pub use tool_catalog::{CatalogRunSummary, CatalogTool, ToolCatalogService};
 pub mod git_review;
 pub use git_review::{

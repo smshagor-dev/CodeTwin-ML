@@ -7,14 +7,17 @@ members = [
   "crates/dataset-benchmark",
   "crates/dependency-audit",
   "crates/lsp-enrichment",
+  "crates/model-gateway",
   "crates/project-discovery",
   "crates/qa-analyzer",
   "crates/qa-execution",
   "crates/reference-indexer",
+  "crates/research-retrieval",
   "crates/runtime-analyzer",
   "crates/secret-scanner",
   "crates/security-analyzer",
   "crates/source-indexer",
+  "crates/task-orchestrator",
   "crates/web-security-testing",
 ]
 

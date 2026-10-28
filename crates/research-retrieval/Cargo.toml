@@ -1,0 +1,15 @@
+[package]
+name = "research-retrieval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SSRF-resistant, bounded retrieval of operator-approved research sources"
+
+[dependencies]
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+url.workspace = true

@@ -15,6 +15,7 @@ mod security_fix_commands;
 mod supply_chain_commands;
 mod web_policy_commands;
 mod web_security_commands;
+mod workflow_commands;
 mod workspace_commands;
 
 use std::{
@@ -149,6 +150,17 @@ use web_security_commands::{
     get_web_security_scan, list_source_routes, list_web_security_endpoints,
     list_web_security_evidence, list_web_security_findings, list_web_security_scans,
     list_web_source_endpoint_links, start_web_security_scan, update_web_security_finding_status,
+};
+use workflow_commands::{
+    cancel_workflow_run, clear_cloud_provider_token, cloud_provider_diagnostics,
+    cloud_provider_status, cloud_request_log, create_workflow_investigation,
+    decide_workflow_approval, grant_project_cloud_consent, list_workflow_runs, memory_approve,
+    memory_clear, memory_delete, memory_list, memory_run_graph, memory_search,
+    override_workflow_task, pause_workflow_run, pending_workflow_approvals, preview_cloud_question,
+    project_cloud_consent, resume_workflow_run, revoke_project_cloud_consent,
+    save_cloud_provider_settings, send_cloud_question, set_cloud_provider_token,
+    start_workflow_run, workflow_capability_matrix, workflow_events, workflow_report,
+    workflow_roles, workflow_run_detail,
 };
 use workspace_commands::{
     add_website, check_website, get_app_preferences, list_projects, list_websites, recent_activity,
@@ -1064,6 +1076,9 @@ fn main() {
             GuidedSecurityStore::new(&database)
                 .recover_interrupted_sessions()
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
+            // Reconcile interrupted workflow runs: stale leases are released,
+            // uncertain side effects blocked and running runs paused.
+            workflow_commands::recover_workflows(&database_path).map_err(std::io::Error::other)?;
             app.manage(AppState {
                 database: Mutex::new(database),
                 database_path,
@@ -1338,6 +1353,37 @@ fn main() {
             update_web_security_finding_status,
             generate_web_security_report,
             export_web_security_report,
+            workflow_roles,
+            workflow_capability_matrix,
+            create_workflow_investigation,
+            list_workflow_runs,
+            workflow_run_detail,
+            workflow_events,
+            pending_workflow_approvals,
+            decide_workflow_approval,
+            start_workflow_run,
+            cancel_workflow_run,
+            pause_workflow_run,
+            resume_workflow_run,
+            override_workflow_task,
+            workflow_report,
+            memory_search,
+            memory_list,
+            memory_approve,
+            memory_delete,
+            memory_clear,
+            memory_run_graph,
+            cloud_provider_status,
+            save_cloud_provider_settings,
+            set_cloud_provider_token,
+            clear_cloud_provider_token,
+            cloud_provider_diagnostics,
+            project_cloud_consent,
+            grant_project_cloud_consent,
+            revoke_project_cloud_consent,
+            cloud_request_log,
+            preview_cloud_question,
+            send_cloud_question,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");

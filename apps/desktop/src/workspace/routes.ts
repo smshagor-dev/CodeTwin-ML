@@ -12,6 +12,7 @@ export const workspaceRoutes = [
   "settings",
   "documentation",
   "support",
+  "workflows",
 ] as const;
 
 export const advancedRoutes = [

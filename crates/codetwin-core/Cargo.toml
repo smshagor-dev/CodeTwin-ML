@@ -8,11 +8,13 @@ license.workspace = true
 database-analyzer = { path = "../database-analyzer" }
 dependency-audit = { path = "../dependency-audit" }
 lsp-enrichment = { path = "../lsp-enrichment" }
+model-gateway = { path = "../model-gateway" }
 qa-analyzer = { path = "../qa-analyzer" }
 qa-execution = { path = "../qa-execution" }
 rusqlite.workspace = true
 ring = "0.17.14"
 reqwest.workspace = true
+research-retrieval = { path = "../research-retrieval" }
 runtime-analyzer = { path = "../runtime-analyzer" }
 security-analyzer = { path = "../security-analyzer" }
 secret-scanner = { path = "../secret-scanner" }
@@ -21,6 +23,7 @@ serde_json.workspace = true
 sha2.workspace = true
 reference-indexer = { path = "../reference-indexer" }
 source-indexer = { path = "../source-indexer" }
+task-orchestrator = { path = "../task-orchestrator" }
 thiserror.workspace = true
 url.workspace = true
 walkdir.workspace = true

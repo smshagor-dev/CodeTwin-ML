@@ -50,11 +50,22 @@ const MIGRATION_0045: &str = include_str!("../migrations/0045_native_flow_follow
 const MIGRATION_0046: &str = include_str!("../migrations/0046_native_flow_queue.sql");
 const MIGRATION_0027: &str = include_str!("../migrations/0027_security_finding_reviews.sql");
 const MIGRATION_0026: &str = include_str!("../migrations/0026_secret_history_scanning.sql");
+const MIGRATION_0047: &str = include_str!("../migrations/0047_workflow_orchestration.sql");
+const MIGRATION_0048: &str = include_str!("../migrations/0048_model_gateway.sql");
+const MIGRATION_0049: &str = include_str!("../migrations/0049_knowledge_memory.sql");
+const MIGRATION_0050: &str = include_str!("../migrations/0050_research_sources.sql");
+
+/// Highest schema version this build applies.
+pub const LATEST_SCHEMA_VERSION: i64 = 50;
+/// Pre-migration backups retained next to the database file.
+const MIGRATION_BACKUPS_KEPT: usize = 3;
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("database backup failed: {0}")]
+    Backup(String),
 }
 
 /// Indexing reuses a few dozen statements per file; with rusqlite's default of 16
@@ -67,14 +78,100 @@ pub struct Database {
 
 impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
+        let path = path.as_ref();
+        let existed = path.metadata().is_ok_and(|m| m.len() > 0);
         let connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let database = Self { connection };
+        if existed {
+            database.backup_before_migration(path)?;
+        }
         database.migrate()?;
         Ok(database)
+    }
+
+    /// Current applied schema version, or `None` for an empty/non-CodeTwin file.
+    pub fn schema_version(&self) -> Result<Option<i64>, DatabaseError> {
+        let has_table: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_table {
+            return Ok(None);
+        }
+        Ok(self
+            .connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })?)
+    }
+
+    /// Write a consistent copy of the database (`VACUUM INTO`). Used for
+    /// pre-migration backups and exportable diagnostics.
+    pub fn backup_to(&self, destination: &Path) -> Result<(), DatabaseError> {
+        if destination.exists() {
+            return Err(DatabaseError::Backup(
+                "backup destination already exists".into(),
+            ));
+        }
+        let target = destination
+            .to_str()
+            .ok_or_else(|| DatabaseError::Backup("backup path is not valid UTF-8".into()))?;
+        self.connection.execute("VACUUM INTO ?1", [target])?;
+        Ok(())
+    }
+
+    /// Before applying pending migrations to an existing database, keep a
+    /// restorable copy. The upgrade does not proceed if the backup fails.
+    fn backup_before_migration(
+        &self,
+        path: &Path,
+    ) -> Result<Option<std::path::PathBuf>, DatabaseError> {
+        let Some(current) = self.schema_version()? else {
+            return Ok(None);
+        };
+        if current >= LATEST_SCHEMA_VERSION {
+            return Ok(None);
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| DatabaseError::Backup("database path has no file name".into()))?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let backup = path.with_file_name(format!(
+            "{name}.pre-v{current}-v{LATEST_SCHEMA_VERSION}-{stamp}.bak"
+        ));
+        self.backup_to(&backup)?;
+        let prefix = format!("{name}.pre-v");
+        if let Some(dir) = path.parent() {
+            let mut backups: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(dir)
+                .map_err(|e| DatabaseError::Backup(e.to_string()))?
+                .filter_map(Result::ok)
+                .filter_map(|e| {
+                    let file = e.file_name().into_string().ok()?;
+                    (file.starts_with(&prefix) && file.ends_with(".bak")).then(|| (file, e.path()))
+                })
+                .collect();
+            // Names end in a nanosecond timestamp; sort oldest first by it.
+            backups.sort_by_key(|(file, _)| {
+                file.trim_end_matches(".bak")
+                    .rsplit('-')
+                    .next()
+                    .and_then(|t| t.parse::<u128>().ok())
+                    .unwrap_or(0)
+            });
+            while backups.len() > MIGRATION_BACKUPS_KEPT {
+                let (_, oldest) = backups.remove(0);
+                let _ = std::fs::remove_file(oldest);
+            }
+        }
+        Ok(Some(backup))
     }
 
     /// Open an already migrated file-backed SQLite database for a short-lived
@@ -162,6 +259,10 @@ impl Database {
         self.apply_migration(44, MIGRATION_0044)?;
         self.apply_migration(45, MIGRATION_0045)?;
         self.apply_migration(46, MIGRATION_0046)?;
+        self.apply_migration(47, MIGRATION_0047)?;
+        self.apply_migration(48, MIGRATION_0048)?;
+        self.apply_migration(49, MIGRATION_0049)?;
+        self.apply_migration(50, MIGRATION_0050)?;
         Ok(())
     }
 
@@ -190,7 +291,49 @@ impl Database {
 mod tests {
     use tempfile::NamedTempFile;
 
-    use super::Database;
+    use super::{Database, LATEST_SCHEMA_VERSION};
+
+    fn backups(dir: &std::path::Path, prefix: &str) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with(prefix))
+            .map(|e| e.path())
+            .collect()
+    }
+
+    #[test]
+    fn upgrades_take_a_restorable_backup_and_prune_old_ones() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("codetwin.sqlite3");
+        for _ in 0..5 {
+            {
+                let db = Database::open(&path).expect("open");
+                // Simulate an older schema so the next open must upgrade.
+                db.connection()
+                    .execute_batch(
+                        "DROP TABLE research_citations; DROP TABLE research_sources;
+                         DELETE FROM schema_migrations WHERE version = 50;",
+                    )
+                    .expect("downgrade");
+            }
+            let db = Database::open(&path).expect("upgrade");
+            assert_eq!(db.schema_version().unwrap(), Some(LATEST_SCHEMA_VERSION));
+        }
+        let kept = backups(dir.path(), "codetwin.sqlite3.pre-v49-v50-");
+        assert_eq!(kept.len(), 3, "older backups are pruned");
+        let restored = Database::open(&kept[0]).expect("backup opens and migrates");
+        assert_eq!(
+            restored.schema_version().unwrap(),
+            Some(LATEST_SCHEMA_VERSION)
+        );
+        drop(restored);
+        // A database already at the latest version takes no backup.
+        let fresh = dir.path().join("fresh.sqlite3");
+        Database::open(&fresh).expect("fresh");
+        Database::open(&fresh).expect("reopen");
+        assert!(backups(dir.path(), "fresh.sqlite3.pre-v").is_empty());
+    }
 
     #[test]
     fn creates_expected_foundation_and_analysis_tables() {
@@ -220,10 +363,10 @@ mod tests {
                 row.get(0)
             })
             .expect("query migrations");
-        assert_eq!(count, 46);
+        assert_eq!(count, LATEST_SCHEMA_VERSION);
         for version in [
             10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-            31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+            31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
         ] {
             let applied: i64 = db
                 .connection()
