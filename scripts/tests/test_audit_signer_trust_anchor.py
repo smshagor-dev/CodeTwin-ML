@@ -190,6 +190,54 @@ class ExternalAnchorAuditTests(unittest.TestCase):
                             **inputs,
                         )
 
+    def test_independent_audit_clock_floor_rejects_rollback_before_file_reads(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        with patch("scripts.audit_signer_trust_anchor.time.time", return_value=now - 200):
+            with patch(
+                "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
+                side_effect=AssertionError("unexpected anchor read"),
+            ):
+                with self.assertRaisesRegex(ValueError, "clock is below independently pinned minimum"):
+                    self._audit(minimum_audit_time_unix=now - 100, **inputs)
+
+    def test_independent_audit_clock_floor_accepts_boundary_with_signed_v2(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        with patch("scripts.audit_signer_trust_anchor.time.time", return_value=now):
+            result = self._audit(minimum_audit_time_unix=now, **inputs)
+        self.assertTrue(result["floor_checkpoint_verified"])
+        self.assertTrue(result["floor_checkpoint_fresh"])
+
+    def test_independent_audit_clock_floor_rejects_missing_v2_and_invalid_values(self) -> None:
+        now = 1_800_000_000
+        with self.assertRaisesRegex(ValueError, "requires complete checkpoint inputs"):
+            self._audit(minimum_audit_time_unix=now)
+        with patch("scripts.audit_signer_trust_anchor.time.time", return_value=now):
+            with self.assertRaisesRegex(ValueError, "requires signed v2 timestamps"):
+                self._audit(minimum_audit_time_unix=now, **self._signed_floor_checkpoint())
+        inputs = self._signed_floor_checkpoint()
+        for value in (0, -1, 1 << 63, True, 1.5, "1800000000"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "positive signed 64-bit"):
+                    self._audit(minimum_audit_time_unix=value, **inputs)
+
+    def test_independent_audit_clock_floor_rejects_mid_audit_rollback(self) -> None:
+        now = 1_800_000_000
+        inputs = self._signed_floor_checkpoint(
+            issued_at_unix=now - 60, expires_at_unix=now + 3600,
+        )
+        # Initial clock and signature freshness checks pass; the clock
+        # rolls back before the final success boundary.
+        with patch("scripts.audit_signer_trust_anchor.time.time",
+                   side_effect=[now, now, now - 200]):
+            with self.assertRaisesRegex(ValueError, "clock fell below independently pinned minimum"):
+                self._audit(minimum_audit_time_unix=now - 100, **inputs)
+
     def test_fresh_checkpoint_requires_complete_inputs_and_v2(self) -> None:
         with patch(
             "scripts.audit_signer_trust_anchor._read_anchor_with_metadata",
