@@ -187,7 +187,7 @@ export function AssessmentWorkspace() {
       <div className="aw-body">
         <section className="aw-stream-col" aria-label="Live execution stream">
           {run ? (
-            <LiveStream items={items} filter={filter} setFilter={setFilter} detail={detail} projectId={projectId}
+            <LiveStream items={items} filter={filter} setFilter={setFilter} detail={detail} projectId={projectId} target={project?.display_name ?? "project"}
               onChanged={() => { if (runId) { cursor.current = 0; void refresh(runId); } }} onError={onError}/>
           ) : (
             <div className="aw-placeholder">No assessment selected. Start one with <strong>New assessment</strong>.</div>
@@ -269,15 +269,34 @@ function SummaryBar({ summary, filter, setFilter }: { summary: AssessmentSummary
   );
 }
 
-function LiveStream({ items, filter, setFilter, detail, projectId, onChanged, onError }: {
+const REPLAY_SPEEDS = [1, 2, 4, 8];
+
+function LiveStream({ items, filter, setFilter, detail, projectId, target, onChanged, onError }: {
   items: StreamItem[]; filter: StreamFilter; setFilter: (f: StreamFilter) => void; detail: RunDetail | null;
-  projectId: string; onChanged: () => void; onError: (e: unknown) => void;
+  projectId: string; target: string; onChanged: () => void; onError: (e: unknown) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
   const [frozen, setFrozen] = useState<StreamItem[] | null>(null);
   const [limit, setLimit] = useState(RENDER_STEP);
-  const source = frozen ?? items;
+  // Replay re-plays the real recorded items one by one; it never invents output.
+  const [replay, setReplay] = useState<number | null>(null);
+  const [speed, setSpeed] = useState(2);
+  const live = !!detail && ["running", "queued", "validating"].includes(detail.run.state);
+  useEffect(() => {
+    if (replay === null || replay >= items.length) return;
+    const t = window.setTimeout(() => setReplay((r) => (r === null ? r : r + 1)), Math.max(12, 90 / speed));
+    return () => window.clearTimeout(t);
+  }, [replay, speed, items.length]);
+  // Rows newer than what was on screen at load animate in like terminal output.
+  const baseline = useRef<number | null>(null);
+  useEffect(() => {
+    if (baseline.current !== null || !items.length) return;
+    const t = window.setTimeout(() => { baseline.current = maxSeq(items); }, 1200);
+    return () => window.clearTimeout(t);
+  }, [items]);
+  const isFresh = (seq: number) => replay !== null || (baseline.current !== null && seq > baseline.current);
+  const source = replay !== null ? items.slice(0, replay) : frozen ?? items;
   const filtered = useMemo(() => source.filter((i) => matches(i, filter)), [source, filter]);
   const shown = filtered.length > limit ? filtered.slice(filtered.length - limit) : filtered;
   const agents = useMemo(() => [...new Set(items.map((i) => i.agent).filter(Boolean) as string[])].sort(), [items]);
@@ -329,6 +348,28 @@ function LiveStream({ items, filter, setFilter, detail, projectId, onChanged, on
           </div>
         </details>
       </div>
+      <div className="aw-term">
+      <div className="aw-term-bar">
+        <span className="aw-dots" aria-hidden="true"><i/><i/><i/></span>
+        <span className="aw-term-title">codetwin@{target}: ~/assessments/{detail?.run.id.slice(4, 12) ?? ""}</span>
+        <span className="aw-spacer"/>
+        {replay !== null
+          ? <span className="aw-term-badge aw-term-replay">REPLAY {Math.min(replay, items.length)}/{items.length}</span>
+          : live ? <span className="aw-term-badge aw-term-live"><i aria-hidden="true"/>LIVE</span>
+          : <span className="aw-term-badge">{detail?.run.state === "awaiting_approval" ? "WAITING" : "DONE"}</span>}
+        <span className="aw-term-count">{items.length} events</span>
+        {replay === null ? (
+          <button type="button" className="aw-term-btn" disabled={!items.length || live} title={live ? "Replay is available after the run settles" : "Replay the recorded events line by line"}
+            onClick={() => { setFrozen(null); setFollow(true); setReplay(0); }}>Replay</button>
+        ) : (
+          <>
+            <select className="aw-term-speed" aria-label="Replay speed" value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
+              {REPLAY_SPEEDS.map((x) => <option key={x} value={x}>{x}x</option>)}
+            </select>
+            <button type="button" className="aw-term-btn" onClick={() => setReplay(null)}>Stop replay</button>
+          </>
+        )}
+      </div>
       <div className="aw-stream" ref={scroller} role="log" aria-live="polite" aria-relevant="additions"
         onScroll={(e) => {
           if (programmatic.current) { programmatic.current = false; return; }
@@ -338,20 +379,28 @@ function LiveStream({ items, filter, setFilter, detail, projectId, onChanged, on
         {filtered.length > shown.length && (
           <button type="button" className="aw-earlier" onClick={() => setLimit((l) => l + RENDER_STEP)}>Show {Math.min(RENDER_STEP, filtered.length - shown.length)} earlier of {filtered.length - shown.length} hidden</button>
         )}
+        <div className="aw-prompt"><span className="aw-ps1">$</span> codetwin assess --target "{target}" --goal "{detail?.run.goal.slice(0, 120) ?? ""}"</div>
         {shown.length === 0 && <div className="aw-placeholder">{items.length ? "No events match the current filters." : "Waiting for events. Approve the plan and start the assessment."}</div>}
         {shown.map((item) => item.type === "event"
-          ? <EventRow key={item.key} event={item}/>
+          ? <EventRow key={item.key} event={item} fresh={isFresh(item.seq)}/>
           : <FindingCardView key={item.key} card={item} projectId={projectId} onChanged={onChanged} onError={onError}/>)}
+        {(live || (replay !== null && replay < items.length)) && (
+          <div className="aw-cursor-line"><span className="aw-ps1">&gt;</span> {replay !== null ? "replaying recorded events" : "agents working"}<span className="aw-blink" aria-hidden="true">_</span></div>
+        )}
+        {!live && detail?.run.outcome && (replay === null || replay >= items.length) && (
+          <div className="aw-exit">[process exited] state={detail.run.state} outcome={detail.run.outcome} events={items.length}</div>
+        )}
+      </div>
       </div>
       {!follow && <button type="button" className="aw-jump" onClick={() => setFollow(true)}>Jump to latest ↓</button>}
     </>
   );
 }
 
-const EventRow = memo(function EventRow({ event }: { event: StreamEvent }) {
+const EventRow = memo(function EventRow({ event, fresh }: { event: StreamEvent; fresh: boolean }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className={"aw-line aw-stage-" + event.stage.toLowerCase()}>
+    <div className={"aw-line aw-stage-" + event.stage.toLowerCase() + (fresh ? " aw-fresh" : "")}>
       <button type="button" className="aw-line-main" aria-expanded={open} onClick={() => setOpen(!open)}>
         <span className="aw-line-meta">
           <span className="aw-ts">{formatClock(event.ts_ms)}</span>

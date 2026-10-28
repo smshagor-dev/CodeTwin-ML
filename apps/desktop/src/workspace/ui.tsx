@@ -203,7 +203,18 @@ export function formatDate(value: string | null | undefined): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-export function shortPath(value: string, max = 68): string {
+const EXTENDED_UNC = "\\\\?\\UNC\\";
+const EXTENDED = "\\\\?\\";
+
+/** Hide Windows extended-length prefixes (`\\?\C:\…`, `\\?\UNC\…`) in UI text. */
+export function displayPath(value: string): string {
+  if (value.startsWith(EXTENDED_UNC)) return "\\\\" + value.slice(EXTENDED_UNC.length);
+  if (value.startsWith(EXTENDED)) return value.slice(EXTENDED.length);
+  return value;
+}
+
+export function shortPath(raw: string, max = 68): string {
+  const value = displayPath(raw);
   if (value.length <= max) return value;
   const keep = Math.max(12, Math.floor((max - 1) / 2));
   return value.slice(0, keep) + "…" + value.slice(-keep);

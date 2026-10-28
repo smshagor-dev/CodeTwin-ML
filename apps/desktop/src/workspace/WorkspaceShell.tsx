@@ -277,6 +277,7 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
   };
   // Re-render when only the `?tab=` part of the hash changes so nav state stays accurate.
   const [, setHashVersion] = useState(0);
+  const activeMore = moreNav.find((item) => isActive(item, route));
   useEffect(() => {
     const onHash = () => setHashVersion((v) => v + 1);
     window.addEventListener("hashchange", onHash);
@@ -304,8 +305,8 @@ export function WorkspaceShell({ route }: { route: WorkspaceRoute }) {
           <NavLinks items={primaryNav} route={route}/>
           <p className="ws-nav-label">Account</p>
           <NavLinks items={secondaryNav} route={route}/>
-          <details className="ws-sidebar-more" open={moreNav.some((item) => isActive(item, route))}>
-            <summary aria-label="More areas" title="More areas"><Icon name="more"/><span>More</span><Icon name="chevron" size={14}/></summary>
+          <details className="ws-sidebar-more">
+            <summary aria-label="More areas" title="More areas" className={activeMore ? "active" : ""}><Icon name="more"/><span>{activeMore ? `More · ${activeMore.label}` : "More"}</span><Icon name="chevron" size={14}/></summary>
             <NavLinks items={moreNav} route={route}/>
           </details>
           <details className="ws-sidebar-tools">

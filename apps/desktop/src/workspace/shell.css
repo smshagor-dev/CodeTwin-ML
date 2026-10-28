@@ -80,3 +80,5 @@ html[data-theme="dark"] .ws-sidebar { background: #0f1012; }
 @media (prefers-reduced-motion: reduce) {
   .ws-app { transition: none; }
 }
+.ws-sidebar-more > summary.active { color: var(--ws-primary); }
+.ws-sidebar-more > summary > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

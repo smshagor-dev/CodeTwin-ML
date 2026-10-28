@@ -3,7 +3,7 @@ import { workspaceApi } from "../api";
 import { Icon } from "../Icon";
 import { navigate } from "../routes";
 import type { QaDiscoveryRunRecord, SecurityFindingRecord, SecurityRunRecord, SourceFileRecord } from "../types";
-import { PageHeader, Panel, ProjectSelect, StatusBadge, formatDate } from "../ui";
+import { PageHeader, Panel, ProjectSelect, StatusBadge, displayPath, formatDate } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
 
 type Evidence = {
@@ -73,7 +73,7 @@ export function DashboardPage() {
       <section className="ws-overview-project" aria-label="Project summary">
         {activeProject ? <>
           <div className="ws-overview-project-heading">
-            <div><h2>{activeProject.display_name}</h2><p className="ws-mono" title={activeProject.root_path}>{activeProject.root_path}</p></div>
+            <div><h2>{activeProject.display_name}</h2><p className="ws-mono" title={displayPath(activeProject.root_path)}>{displayPath(activeProject.root_path)}</p></div>
             <span>Indexed {formatDate(activeProject.last_indexed_at)}</span>
           </div>
           <dl className="ws-overview-metrics">

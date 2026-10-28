@@ -66,3 +66,9 @@ This is not a full windowed virtual list; very large expanded cards are still re
 - **No dynamic validation.** *Confirmed* means an operator recorded a confirmed review, not that the issue was dynamically exploited.
 - **Resource usage.** CPU and memory usage are not measured; the context panel says so.
 - **Unsupported actions.** Risk acceptance, assignment and report inclusion toggles are not supported by the local stores.
+
+## Terminal view and replay
+
+The stream is shown as a terminal window. It has a title bar (`codetwin@<target>: ~/assessments/<id>`), a LIVE/DONE/WAITING badge, an event count, a `$ codetwin assess …` prompt line, and a blinking cursor while agents work. Events that arrive after the page loads type in line by line. When a run settles, a `[process exited] state=… outcome=…` line appears.
+
+**Replay** plays a settled assessment back line by line at 1×, 2×, 4× or 8× speed, like a recording. It only re-plays the events stored in SQLite and never generates or embellishes output. It is disabled while a run is live. Animations are turned off when the operating system requests reduced motion.
