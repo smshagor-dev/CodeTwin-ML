@@ -302,8 +302,13 @@ def audit_anchor(
         raise ValueError("All three independent floor checkpoint inputs are required")
     # Reject a clock observed below the separately authenticated lower bound
     # before opening any anchor or checkpoint file. This is not a trusted clock.
+    # Age-bounded checkpoints also rely on the local wall clock. Observe
+    # it before inspecting files so a rollback during the audit cannot make
+    # an aging checkpoint appear younger at the final boundary.
     audit_started_at_unix = (
-        int(time.time()) if minimum_audit_time_unix is not None else None
+        int(time.time()) if (
+            minimum_audit_time_unix is not None or max_checkpoint_age_seconds is not None
+        ) else None
     )
     if (minimum_audit_time_unix is not None
             and audit_started_at_unix is not None
