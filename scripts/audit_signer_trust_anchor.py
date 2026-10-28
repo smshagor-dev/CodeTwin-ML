@@ -99,7 +99,8 @@ def _verify_floor_checkpoint(
     signed_policy_digest: bytes,
     require_fresh: bool = False,
     minimum_issued_at_unix: int | None = None,
-) -> tuple[bytes, tuple[tuple[int, ...], tuple[int, ...]], int | None]:
+    maximum_age_seconds: int | None = None,
+) -> tuple[bytes, tuple[tuple[int, ...], tuple[int, ...]], int | None, int | None]:
     """Check an externally pinned, independently signed public floor record.
 
     An old but valid record can still be replayed if its external pins are
@@ -137,7 +138,9 @@ def _verify_floor_checkpoint(
             "Floor checkpoint record",
         )
         domain = FLOOR_CHECKPOINT_DOMAIN_V2
-    elif version == FLOOR_CHECKPOINT_FORMAT and not (require_fresh or minimum_issued_at_unix is not None):
+    elif version == FLOOR_CHECKPOINT_FORMAT and not (
+        require_fresh or minimum_issued_at_unix is not None or maximum_age_seconds is not None
+    ):
         record = _exact_fields(
             raw_record,
             {"format", "minimum_revision", "signed_policy_sha256_hex"},
@@ -145,7 +148,7 @@ def _verify_floor_checkpoint(
         )
         domain = FLOOR_CHECKPOINT_DOMAIN
     elif version == FLOOR_CHECKPOINT_FORMAT:
-        raise ValueError("Fresh or issuance-pinned floor checkpoint requires signed v2 timestamps")
+        raise ValueError("Fresh, issuance-pinned or age-bounded floor checkpoint requires signed v2 timestamps")
     else:
         raise ValueError("Unsupported floor checkpoint format")
     floor = _positive_revision(record["minimum_revision"], "Checkpoint revision floor")
@@ -162,6 +165,7 @@ def _verify_floor_checkpoint(
         "minimum_revision": floor,
         "signed_policy_sha256_hex": policy_digest.hex(),
     }
+    issued_at: int | None = None
     expires_at: int | None = None
     if version == FLOOR_CHECKPOINT_FORMAT_V2:
         issued_at = _checkpoint_timestamp(record["issued_at_unix"], "Checkpoint issued_at_unix")
@@ -186,9 +190,13 @@ def _verify_floor_checkpoint(
             raise ValueError("Floor checkpoint issued in the future")
         if now >= expires_at:
             raise ValueError("Floor checkpoint has expired")
+        # An operator-chosen, bounded age cap narrows replay of still-valid
+        # v2 checkpoints. It relies on the local clock, not trusted time.
+        if maximum_age_seconds is not None and now - issued_at > maximum_age_seconds:
+            raise ValueError("Floor checkpoint exceeds maximum age")
     if not _checkpoint_unchanged(path, raw, before):
         raise ValueError("Floor checkpoint changed during verification")
-    return raw, before, expires_at
+    return raw, before, issued_at, expires_at
 
 
 def audit_anchor(
@@ -206,6 +214,7 @@ def audit_anchor(
     require_fresh_checkpoint: bool = False,
     minimum_checkpoint_issued_at_unix: int | None = None,
     minimum_audit_time_unix: int | None = None,
+    max_checkpoint_age_seconds: int | None = None,
     historical_evidence_signer_keys_hex: tuple[str, ...] = (),
     historical_policy_authority_keys_hex: tuple[str, ...] = (),
     revoked_checkpoint_authority_keys_hex: tuple[str, ...] = (),
@@ -269,6 +278,12 @@ def audit_anchor(
         _checkpoint_timestamp(minimum_audit_time_unix, "Independent minimum audit time")
         if not all(value is not None for value in checkpoint_inputs):
             raise ValueError("Independent audit clock floor requires complete checkpoint inputs")
+    if max_checkpoint_age_seconds is not None:
+        if (type(max_checkpoint_age_seconds) is not int or
+                not 0 < max_checkpoint_age_seconds <= MAX_CHECKPOINT_LIFETIME_SECONDS):
+            raise ValueError("Maximum checkpoint age must be a positive integer at most seven days")
+        if not all(value is not None for value in checkpoint_inputs):
+            raise ValueError("Maximum checkpoint age requires complete checkpoint inputs")
     if historical_keys and not all(value is not None for value in checkpoint_inputs):
         raise ValueError("Historical evidence signer inventory requires complete floor checkpoint inputs")
     if historical_authorities and not all(value is not None for value in checkpoint_inputs):
@@ -291,6 +306,7 @@ def audit_anchor(
         raise ValueError("Local audit clock is below independently pinned minimum")
     checkpoint_bytes: bytes | None = None
     checkpoint_snapshot: tuple[tuple[int, ...], tuple[int, ...]] | None = None
+    checkpoint_issued_at: int | None = None
     checkpoint_expires_at: int | None = None
     checkpoint_path: Path | None = None
     if floor_checkpoint_file is not None:
@@ -304,15 +320,17 @@ def audit_anchor(
         if checkpoint_key in revoked_checkpoint_keys:
             raise ValueError("Checkpoint authority has been independently listed as revoked")
         checkpoint_path = Path(os.path.abspath(floor_checkpoint_file))
-        checkpoint_bytes, checkpoint_snapshot, checkpoint_expires_at = _verify_floor_checkpoint(
+        checkpoint_bytes, checkpoint_snapshot, checkpoint_issued_at, checkpoint_expires_at = _verify_floor_checkpoint(
             checkpoint_path,
             checkpoint_authority_hex=checkpoint_authority_public_key_hex,
             checkpoint_sha256=checkpoint_sha256,
             policy_authority=authority,
             independent_floor=floor,
             signed_policy_digest=digest,
-            require_fresh=require_fresh_checkpoint or minimum_audit_time_unix is not None,
+            require_fresh=(require_fresh_checkpoint or minimum_audit_time_unix is not None
+                           or max_checkpoint_age_seconds is not None),
             minimum_issued_at_unix=minimum_checkpoint_issued_at_unix,
+            maximum_age_seconds=max_checkpoint_age_seconds,
         )
     path = Path(os.path.abspath(anchor_file))
     _require_external_anchor_path(path)
@@ -416,11 +434,17 @@ def audit_anchor(
     # can move backwards while the signed files are being inspected.
     final_now = int(time.time()) if (
         checkpoint_expires_at is not None or minimum_audit_time_unix is not None
+        or max_checkpoint_age_seconds is not None
     ) else None
     if checkpoint_expires_at is not None and final_now >= checkpoint_expires_at:
         raise ValueError("Floor checkpoint expired during audit")
     if minimum_audit_time_unix is not None and final_now < minimum_audit_time_unix:
         raise ValueError("Local audit clock fell below independently pinned minimum during audit")
+    if max_checkpoint_age_seconds is not None and (
+        checkpoint_issued_at is None or final_now is None or
+        final_now - checkpoint_issued_at > max_checkpoint_age_seconds
+    ):
+        raise ValueError("Floor checkpoint exceeded maximum age during audit")
     return {
         "status": "verified_against_supplied_pins",
         "minimum_revision": revision,
@@ -454,6 +478,8 @@ def main() -> None:
                         help="Independently protected minimum signed v2 issuance timestamp")
     parser.add_argument("--minimum-audit-time-unix", type=int,
                         help="Independently protected lower bound for local audit clock; requires signed v2 checkpoint")
+    parser.add_argument("--max-checkpoint-age-seconds", type=int,
+                        help="Reject signed v2 checkpoints older than this many seconds (1..604800)")
     parser.add_argument("--historical-evidence-signer-key", action="append", default=[],
                         help="Independent historical evidence signer public key (64 hex); repeatable, max 256")
     parser.add_argument("--historical-policy-authority-key", action="append", default=[],
@@ -476,6 +502,7 @@ def main() -> None:
             require_fresh_checkpoint=args.require_fresh_checkpoint,
             minimum_checkpoint_issued_at_unix=args.minimum_checkpoint_issued_at_unix,
             minimum_audit_time_unix=args.minimum_audit_time_unix,
+            max_checkpoint_age_seconds=args.max_checkpoint_age_seconds,
             historical_evidence_signer_keys_hex=tuple(args.historical_evidence_signer_key),
             historical_policy_authority_keys_hex=tuple(args.historical_policy_authority_key),
             revoked_checkpoint_authority_keys_hex=tuple(args.revoked_checkpoint_authority_key),
