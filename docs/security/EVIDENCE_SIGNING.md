@@ -490,12 +490,17 @@ signature verification, the audit compares the signed `issued_at_unix`
 with the local wall clock and rejects a checkpoint older than the supplied
 limit. Equality is accepted. The age is checked again at the final success
 boundary so a checkpoint that ages out during inspection fails closed.
+The audit also compares the first and final local wall-clock observations
+when this age limit is configured. An observed backward jump fails closed,
+even if the checkpoint would still appear younger than the age limit.
 
 **Limit:** The maximum age is an operator-supplied policy bound, not a
-trusted timestamp or independent key-custody attestation. A rolled-back
-local clock or replay of the invocation, external digest pins and
-checkpoint together can still defeat freshness. Keep private signing keys
-outside the repository and SQLite, and independently protect all pins.
+trusted timestamp or independent key-custody attestation. This comparison
+only detects rollback between its two observations: a rolled-back clock
+before the audit, an unobserved temporary clock change, or replay of the
+invocation, external digest pins and checkpoint together can still defeat
+freshness. Keep private signing keys outside the repository and SQLite,
+and independently protect all pins.
 
 **Limits:** The audit trusts the local wall clock; a rolled-back or
 compromised clock, replayed external pins, or attacker-controlled invocation
