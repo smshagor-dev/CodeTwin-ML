@@ -6,6 +6,7 @@
 //!   for the connection, so DNS rebinding cannot redirect it to a private one.
 //! * Redirects are followed manually (at most 3), each target re-validated.
 //! * Size, time and content-type limits; PDFs and binaries are refused.
+//! * robots.txt is honoured for every page hop (see [`robots`]).
 //! * Retrieved text is untrusted data. It is returned with a content hash and
 //!   an instruction-likeness signal, never interpreted as instructions.
 use std::io::Read;
@@ -18,7 +19,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
 
+pub mod robots;
 pub mod search;
+pub mod sources;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize)]
 pub enum RetrievalError {
@@ -38,6 +41,8 @@ pub enum RetrievalError {
     Status(u16),
     #[error("network error: {0}")]
     Network(String),
+    #[error("disallowed by the site's robots.txt")]
+    RobotsDisallowed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,8 +54,15 @@ pub struct FetchPolicy {
     /// When non-empty, only these hosts (exact or `*.suffix`) are allowed.
     pub host_allowlist: Vec<String>,
     pub host_denylist: Vec<String>,
+    /// Consult the origin's robots.txt before each page hop (default on).
+    #[serde(default = "default_true")]
+    pub respect_robots: bool,
     #[serde(skip)]
     allow_loopback_http: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for FetchPolicy {
@@ -62,18 +74,21 @@ impl Default for FetchPolicy {
             allowed_ports: vec![443],
             host_allowlist: Vec::new(),
             host_denylist: Vec::new(),
+            respect_robots: true,
             allow_loopback_http: false,
         }
     }
 }
 
 impl FetchPolicy {
-    /// Test-only policy that permits plain HTTP to loopback fixtures.
+    /// Test-only policy that permits plain HTTP to loopback fixtures. robots.txt
+    /// is off so single-response fixtures stay deterministic; robots tests opt in.
     #[doc(hidden)]
     pub fn loopback_fixture_for_tests() -> Self {
         Self {
             allow_loopback_http: true,
             allowed_ports: Vec::new(),
+            respect_robots: false,
             ..Self::default()
         }
     }
@@ -298,6 +313,9 @@ pub(crate) fn fetch_raw(
     let mut redirects = Vec::new();
     loop {
         let (url, addr) = validate(&current, policy)?;
+        if policy.respect_robots {
+            robots::check(&url, policy)?;
+        }
         let host = url.host_str().unwrap_or_default().to_owned();
         let client = reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -620,6 +638,37 @@ mod tests {
             fetch(&format!("{base}/c"), &tiny),
             Err(RetrievalError::TooLarge(_))
         ));
+    }
+
+    #[test]
+    fn robots_txt_is_honoured_on_the_wire() {
+        let robots = "User-agent: *\nDisallow: /private/\n";
+        let base = serve(vec![
+            http("200 OK", "text/plain", "", robots),
+            http("200 OK", "text/plain", "", "public body"),
+        ]);
+        let policy = FetchPolicy {
+            respect_robots: true,
+            ..FetchPolicy::loopback_fixture_for_tests()
+        };
+        assert_eq!(
+            fetch(&format!("{base}/private/x"), &policy),
+            Err(RetrievalError::RobotsDisallowed)
+        );
+        // robots.txt is cached per origin: the next request goes straight to the page.
+        assert_eq!(fetch(&format!("{base}/open"), &policy).unwrap().text, "public body");
+
+        // A 5xx robots.txt fails closed; a 404 allows everything.
+        let base = serve(vec![http("503 Service Unavailable", "text/plain", "", "")]);
+        assert_eq!(
+            fetch(&format!("{base}/x"), &policy),
+            Err(RetrievalError::RobotsDisallowed)
+        );
+        let base = serve(vec![
+            http("404 Not Found", "text/plain", "", ""),
+            http("200 OK", "text/plain", "", "ok"),
+        ]);
+        assert_eq!(fetch(&format!("{base}/x"), &policy).unwrap().text, "ok");
     }
 
     #[test]

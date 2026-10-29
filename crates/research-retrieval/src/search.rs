@@ -172,8 +172,11 @@ pub fn search(
     }
     let url = request_url(config, query)?;
     // Search APIs do not redirect; refusing redirects keeps the key on one host.
+    // A configured search API is an API contract, not a crawl, so robots.txt
+    // does not apply to it; result pages fetched later are still checked.
     let policy = FetchPolicy {
         max_redirects: 0,
+        respect_robots: false,
         max_bytes: policy.max_bytes.min(1024 * 1024),
         ..policy.clone()
     };

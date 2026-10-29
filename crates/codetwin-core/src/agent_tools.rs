@@ -480,10 +480,50 @@ impl CoreToolRuntime {
                                 .map_err(|e| e.to_string())?;
                             citations.push(json!({"citation_id": cid, "claim": claim, "quote": quote, "support": support}));
                         }
+                        // Duplicate detection against this project's recent sources:
+                        // the same bytes, or near-identical text at another URL.
+                        let duplicate_of: Option<String> = {
+                            let mut stmt = db
+                                .connection()
+                                .prepare(
+                                    "SELECT id, content_sha256, excerpt FROM research_sources
+                                     WHERE project_id=?1 AND id<>?2 AND excerpt IS NOT NULL
+                                     ORDER BY fetched_ms DESC LIMIT 200",
+                                )
+                                .map_err(|e| e.to_string())?;
+                            let fingerprint = research_retrieval::sources::simhash(&doc.text);
+                            let rows = stmt
+                                .query_map(params![project_id, id], |r| {
+                                    Ok((
+                                        r.get::<_, String>(0)?,
+                                        r.get::<_, Option<String>>(1)?,
+                                        r.get::<_, String>(2)?,
+                                    ))
+                                })
+                                .map_err(|e| e.to_string())?;
+                            let mut found = None;
+                            for row in rows {
+                                let (other, sha, excerpt) = row.map_err(|e| e.to_string())?;
+                                if sha.as_deref() == Some(doc.sha256.as_str())
+                                    || (fingerprint != 0
+                                        && research_retrieval::sources::near_duplicate(
+                                            fingerprint,
+                                            research_retrieval::sources::simhash(&excerpt),
+                                        ))
+                                {
+                                    found = Some(other);
+                                    break;
+                                }
+                            }
+                            found
+                        };
+                        let freshness =
+                            research_retrieval::sources::freshness(doc.last_modified.as_deref(), now);
                         Ok(
                             json!({"source_id": id, "final_url": doc.final_url, "title": doc.title, "sha256": doc.sha256,
                             "excerpt": doc.text.chars().take(2_000).collect::<String>(), "untrusted": true,
                             "instruction_like_phrases": doc.instruction_like_phrases, "last_modified": doc.last_modified,
+                            "freshness": freshness, "duplicate_of": duplicate_of,
                             "citations": citations}),
                         )
                     }
