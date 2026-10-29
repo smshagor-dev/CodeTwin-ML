@@ -2,6 +2,7 @@ mod benchmark_commands;
 mod database_commands;
 mod go_security_commands;
 mod guided_security_commands;
+mod intelligence_commands;
 mod ml_commands;
 mod native_agent_commands;
 mod native_agent_reasoning_commands;
@@ -1419,6 +1420,19 @@ fn main() {
             platform_commands::create_api_token,
             platform_commands::list_api_tokens,
             platform_commands::revoke_api_token,
+            intelligence_commands::security_correlation_report,
+            intelligence_commands::security_correlation_snapshot,
+            intelligence_commands::verify_security_snapshot,
+            intelligence_commands::list_security_suppressions,
+            intelligence_commands::create_security_suppression,
+            intelligence_commands::revoke_security_suppression,
+            intelligence_commands::memory_item_history,
+            intelligence_commands::knowledge_conflicts,
+            intelligence_commands::resolve_knowledge_conflict,
+            intelligence_commands::knowledge_graph_as_of,
+            intelligence_commands::embed_project_memory,
+            intelligence_commands::compare_workflow_runs,
+            intelligence_commands::diagnose_workflow_stall,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");

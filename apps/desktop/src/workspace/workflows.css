@@ -52,3 +52,4 @@
 .wf-conversation p, .wf-comments p { margin: 4px 0; }
 .wf-replies { margin-left: 16px; margin-top: 6px; }
 .wf-tools blockquote { margin: 4px 0 4px 12px; padding-left: 8px; border-left: 2px solid var(--ws-border); color: var(--ws-muted); }
+.wf-pre { margin: 0; padding: 8px; border: 1px solid var(--ws-border); border-radius: 6px; max-height: 220px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }

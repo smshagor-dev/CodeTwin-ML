@@ -10,14 +10,18 @@ import {
   type PlanInfo, type RetrievalResult, type RunDetail, type WorkerRole, type WorkflowEvent, type WorkflowRun,
 } from "../workflowApi";
 import { InsightsTab, ModelsTab, RunExtras, TeamTab } from "./PlatformPanels";
+import { KnowledgeTab, RunAnalysisTab, SecurityIntelTab } from "./IntelligencePanels";
 import "../workflows.css";
 
-type Tab = "runs" | "approvals" | "insights" | "memory" | "cloud" | "models" | "team" | "capabilities";
+type Tab = "runs" | "analysis" | "approvals" | "security" | "insights" | "memory" | "knowledge" | "cloud" | "models" | "team" | "capabilities";
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "runs", label: "Runs" },
+  { id: "analysis", label: "Compare & diagnose" },
   { id: "approvals", label: "Approval inbox" },
+  { id: "security", label: "Security intelligence" },
   { id: "insights", label: "Insights" },
   { id: "memory", label: "Memory" },
+  { id: "knowledge", label: "Knowledge & conflicts" },
   { id: "cloud", label: "Cloud & consent" },
   { id: "models", label: "Models & search" },
   { id: "team", label: "Team & API" },
@@ -71,6 +75,9 @@ export function WorkflowsPage() {
           {tab === "runs" && projectId && <RunsTab projectId={projectId}/>}
           {tab === "approvals" && <ApprovalsTab/>}
           {tab === "memory" && projectId && <MemoryTab projectId={projectId}/>}
+          {tab === "security" && projectId && <SecurityIntelTab projectId={projectId}/>}
+          {tab === "analysis" && projectId && <RunAnalysisTab projectId={projectId}/>}
+          {tab === "knowledge" && projectId && <KnowledgeTab projectId={projectId}/>}
           {tab === "cloud" && projectId && <CloudTab projectId={projectId}/>}
           {tab === "capabilities" && projectId && <CapabilitiesTab projectId={projectId}/>}
           {tab === "insights" && projectId && <InsightsTab projectId={projectId}/>}
@@ -378,7 +385,7 @@ function MemoryTab({ projectId }: { projectId: string }) {
         {result && <button type="button" className="ws-button ws-button-secondary" onClick={() => setResult(null)}>Clear search</button>}
         <button type="button" className="ws-button ws-button-secondary" onClick={() => void act(() => workflowApi.memoryClear(projectId, layer || null))}>Delete {layer || "all"} memory</button>
       </div>
-      {result && <p className="ws-form-help">{result.candidates} candidate(s); {result.omitted} omitted by the retrieval budget. Vectors: {result.vector_model} (lexical, not neural).</p>}
+      {result && <p className="ws-form-help">{result.candidates} candidate(s); {result.omitted} omitted by the retrieval budget. Vectors: {result.vector_model} ({result.vector_model.startsWith("neural:") ? "neural" : "lexical, not neural"}).</p>}
       {shown.length === 0 ? <p className="ws-form-help">No memory items.</p> : (
         <ul className="wf-memory">{shown.map((m) => (
           <li key={m.id}>
