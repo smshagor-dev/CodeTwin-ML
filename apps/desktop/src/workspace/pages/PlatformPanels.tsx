@@ -410,6 +410,21 @@ export function RunExtras({ projectId, detail, plan, settled }: { projectId: str
             : <p>Deterministic template plan — {plan.source.reason}.</p>}
           {plan.rationale && <p className="ws-form-help">Model rationale (unverified): {plan.rationale}</p>}
           {plan.rejected.length > 0 && <ul className="wf-tools">{plan.rejected.map((r) => <li key={r}><StatusBadge status="blocked"/> {r}</li>)}</ul>}
+          {(plan.attempts ?? []).length > 0 && (
+            <div className="wf-table-wrap"><table className="wf-table" aria-label="Planner model calls">
+              <thead><tr><th scope="col">#</th><th scope="col">Mode</th><th scope="col">Output budget</th><th scope="col">Finish</th><th scope="col">Completion tokens</th><th scope="col">Outcome</th></tr></thead>
+              <tbody>{plan.attempts.map((a) => (
+                <tr key={a.attempt}>
+                  <td>{a.attempt}</td>
+                  <td>{a.mode === "tool" ? "structured call" : "JSON text"}</td>
+                  <td>{a.max_tokens.toLocaleString()}</td>
+                  <td>{a.finish_reason ?? "—"}</td>
+                  <td>{a.completion_tokens?.toLocaleString() ?? "—"}</td>
+                  <td>{a.outcome}</td>
+                </tr>
+              ))}</tbody>
+            </table></div>
+          )}
         </Panel>
       )}
       <Panel title={`Agent conversation (${conversation.length})`}>

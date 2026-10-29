@@ -308,7 +308,7 @@ function planFromEvents(events: WorkflowEvent[]): PlanInfo | null {
   const e = events.find((x) => x.kind === "plan_source");
   if (!e) return null;
   const d = e.detail as Partial<PlanInfo>;
-  return d.source ? { source: d.source, rationale: d.rationale ?? null, rejected: d.rejected ?? [] } : null;
+  return d.source ? { source: d.source, rationale: d.rationale ?? null, rejected: d.rejected ?? [], attempts: d.attempts ?? [] } : null;
 }
 
 function summarizeEvent(e: WorkflowEvent, tasks: RunDetail["tasks"]): string {
@@ -452,6 +452,9 @@ function CloudTab({ projectId }: { projectId: string }) {
           <label className="ws-field"><span>Developer key ({status.token_stored ? "stored" : "not stored"} · {status.credential_backend})</span>
             <input type="password" autoComplete="off" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Stored only in the OS credential store"/>
           </label>
+          {status.credential_store && !status.credential_store.available && (
+            <p className="ws-form-help" role="alert"><StatusBadge status="blocked"/> OS credential store unavailable — keys cannot be stored or read, and are never kept in plaintext. {status.credential_store.guidance}</p>
+          )}
           <div className="ws-button-row">
             <button type="button" className="ws-button ws-button-secondary" disabled={!token} onClick={() => void workflowApi.setCloudToken(token).then(() => { setToken(""); setToast({ tone: "success", message: "Key stored in the OS credential store" }); return load(); }).catch(onError)}>Store key</button>
             <button type="button" className="ws-button ws-button-secondary" disabled={!status.token_stored} onClick={() => void workflowApi.clearCloudToken().then(load).catch(onError)}>Remove key</button>

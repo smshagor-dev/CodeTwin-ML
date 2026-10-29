@@ -71,7 +71,17 @@ export interface WorkflowTask {
 export type PlanSource =
   | { kind: "model"; provider: string; model: string; route: string; request_id: string; fallback_reason: string | null }
   | { kind: "deterministic"; reason: string };
-export interface PlanInfo { source: PlanSource; rationale: string | null; rejected: string[] }
+/** One planner model call. Carries no model text or hidden reasoning. */
+export interface PlanAttempt {
+  attempt: number;
+  mode: "tool" | "text";
+  max_tokens: number;
+  finish_reason: string | null;
+  completion_tokens: number | null;
+  reasoning_chars: number;
+  outcome: string;
+}
+export interface PlanInfo { source: PlanSource; rationale: string | null; rejected: string[]; attempts: PlanAttempt[] }
 
 export interface ApprovalRequest {
   id: string;
@@ -198,6 +208,7 @@ export interface CloudProviderStatus {
   settings: ProviderSettings;
   token_stored: boolean;
   credential_backend: string;
+  credential_store: { backend: string; persistent: boolean; available: boolean; guidance: string | null };
 }
 
 export interface Diagnostics {

@@ -21,7 +21,7 @@ use codetwin_core::workflow_platform::{
 };
 use codetwin_core::Database;
 use model_gateway::client::{ChatClient, ClientConfig, Diagnostics, ProviderProfile};
-use model_gateway::credentials::{CredentialStore, KeyringStore, Secret};
+use model_gateway::credentials::{CredentialStore, CredentialStoreStatus, KeyringStore, Secret};
 use model_gateway::{
     approve_preview, prepare_egress, ChatMessage, ChatRequest, EgressPreview, StreamDelta,
 };
@@ -103,7 +103,7 @@ fn cloud_client(app: &tauri::AppHandle) -> Result<Option<(Arc<ChatClient>, Strin
         return Ok(None);
     };
     let profile = ProviderProfile::openmindai(&s.base_url).map_err(|e| e.to_string())?;
-    let client = ChatClient::new(profile, Some(secret), ClientConfig::default())
+    let client = ChatClient::new(profile, Some(secret), ClientConfig::openmindai())
         .map_err(|e| e.to_string())?;
     let model = s
         .role_models
@@ -464,17 +464,27 @@ pub struct CloudProviderStatus {
     settings: ProviderSettings,
     token_stored: bool,
     credential_backend: &'static str,
+    /// Missing or locked OS store: shown with recovery guidance instead of
+    /// failing the whole settings view. Keys are never kept elsewhere.
+    credential_store: CredentialStoreStatus,
 }
 
 #[tauri::command]
 pub fn cloud_provider_status(app: tauri::AppHandle) -> Result<CloudProviderStatus, String> {
+    let mut store = KeyringStore.status();
+    let token_stored = match KeyringStore.get(TOKEN_ACCOUNT) {
+        Ok(token) => token.is_some(),
+        Err(e) => {
+            store.available = false;
+            store.guidance = Some(e.to_string());
+            false
+        }
+    };
     Ok(CloudProviderStatus {
         settings: settings(&app)?,
-        token_stored: KeyringStore
-            .get(TOKEN_ACCOUNT)
-            .map_err(|e| e.to_string())?
-            .is_some(),
+        token_stored,
         credential_backend: KeyringStore.backend(),
+        credential_store: store,
     })
 }
 
@@ -526,7 +536,7 @@ pub async fn cloud_provider_diagnostics(app: tauri::AppHandle) -> Result<Diagnos
             .ok_or("no developer key stored")?;
         let profile = ProviderProfile::openmindai(&s.base_url).map_err(|e| e.to_string())?;
         Ok(
-            ChatClient::new(profile, Some(secret), ClientConfig::default())
+            ChatClient::new(profile, Some(secret), ClientConfig::openmindai())
                 .map_err(|e| e.to_string())?
                 .diagnose(),
         )
