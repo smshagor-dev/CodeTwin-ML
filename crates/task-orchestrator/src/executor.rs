@@ -73,11 +73,19 @@ impl GlobalLimits {
         }
     }
     fn try_acquire(&self) -> bool {
-        self.active
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < self.max_workers).then_some(n + 1)
-            })
-            .is_ok()
+        // Explicit CAS loop: `fetch_update` is deprecated on newer toolchains
+        // and its replacement `try_update` is unavailable on older ones.
+        let mut n = self.active.load(Ordering::SeqCst);
+        while n < self.max_workers {
+            match self
+                .active
+                .compare_exchange(n, n + 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return true,
+                Err(current) => n = current,
+            }
+        }
+        false
     }
     fn release(&self) {
         self.active.fetch_sub(1, Ordering::SeqCst);

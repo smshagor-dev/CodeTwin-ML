@@ -213,8 +213,10 @@ fn from_blob(b: &[u8], dims: usize) -> Option<Vec<f32>> {
         return None;
     }
     let v: Vec<f32> = b
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect();
     v.iter().all(|x| x.is_finite()).then_some(v)
 }
