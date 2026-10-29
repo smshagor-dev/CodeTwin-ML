@@ -24,6 +24,10 @@ pub enum ProviderError {
     Protocol(String),
     #[error("incomplete response: {0}")]
     Incomplete(String),
+    /// `finish_reason: "length"` before any visible answer: the output
+    /// budget was spent (often on hidden reasoning). A larger budget may help.
+    #[error("the model exhausted max_tokens before producing a visible answer")]
+    OutputBudgetExhausted,
     #[error("circuit open after repeated failures; retry later")]
     CircuitOpen,
     #[error("too many concurrent requests")]
@@ -69,6 +73,7 @@ impl ProviderError {
             Self::Network(_) => "network",
             Self::Protocol(_) => "protocol",
             Self::Incomplete(_) => "incomplete",
+            Self::OutputBudgetExhausted => "output_budget_exhausted",
             Self::CircuitOpen => "circuit_open",
             Self::Saturated => "saturated",
             Self::ConsentRequired(_) => "consent_required",

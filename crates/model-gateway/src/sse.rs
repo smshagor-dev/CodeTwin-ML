@@ -86,16 +86,24 @@ fn finish(
     streamed: bool,
     declared: &[ToolSpec],
 ) -> Result<ChatResponse, ProviderError> {
-    let tool_calls = validate_tool_calls(raw_calls, declared)?;
+    let tool_calls = match validate_tool_calls(raw_calls, declared) {
+        Ok(calls) => calls,
+        // Arguments cut off mid-JSON by the output limit are truncation,
+        // not a malformed call.
+        Err(_) if finish_reason.as_deref() == Some("length") => {
+            return Err(ProviderError::OutputBudgetExhausted)
+        }
+        Err(e) => return Err(e),
+    };
     let content = content.filter(|c| !c.is_empty());
     if content.is_none() && tool_calls.is_empty() {
-        return Err(ProviderError::Incomplete(match finish_reason.as_deref() {
-            Some("length") => {
-                "the model exhausted max_tokens before producing a visible answer".into()
+        return Err(match finish_reason.as_deref() {
+            Some("length") => ProviderError::OutputBudgetExhausted,
+            Some(other) => {
+                ProviderError::Incomplete(format!("no visible answer (finish_reason `{other}`)"))
             }
-            Some(other) => format!("no visible answer (finish_reason `{other}`)"),
-            None => "no visible answer".into(),
-        }));
+            None => ProviderError::Incomplete("no visible answer".into()),
+        });
     }
     Ok(ChatResponse {
         provider_id,
@@ -375,11 +383,31 @@ mod tests {
     }
 
     #[test]
+    fn tool_arguments_cut_off_by_the_output_limit_are_budget_exhaustion() {
+        let tools = [ToolSpec {
+            name: "submit_plan".into(),
+            description: String::new(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let body = br#"{"choices":[{"message":{"tool_calls":[{"id":"c","type":"function","function":{"name":"submit_plan","arguments":"{\"tasks\": [{\"key\""}}]},"finish_reason":"length"}]}"#;
+        assert!(matches!(
+            parse_completion(body, "r", "m", &tools),
+            Err(ProviderError::OutputBudgetExhausted)
+        ));
+        let malformed = br#"{"choices":[{"message":{"tool_calls":[{"id":"c","type":"function","function":{"name":"submit_plan","arguments":"{oops"}}]},"finish_reason":"tool_calls"}]}"#;
+        assert!(matches!(
+            parse_completion(malformed, "r", "m", &tools),
+            Err(ProviderError::Protocol(_))
+        ));
+    }
+
+    #[test]
     fn truncated_reasoning_only_answer_is_incomplete() {
         let body = br#"{"choices":[{"message":{"content":null,"reasoning_content":"thinking"},"finish_reason":"length"}]}"#;
-        assert!(
-            matches!(parse_completion(body, "r", "m", &[]), Err(ProviderError::Incomplete(m)) if m.contains("max_tokens"))
-        );
+        assert!(matches!(
+            parse_completion(body, "r", "m", &[]),
+            Err(ProviderError::OutputBudgetExhausted)
+        ));
     }
 
     #[test]

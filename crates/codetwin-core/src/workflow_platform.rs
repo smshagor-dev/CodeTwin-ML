@@ -21,7 +21,7 @@ use crate::cloud_settings::CloudSettings;
 use crate::collaboration::{Action, Collaboration};
 use crate::knowledge_memory::KnowledgeMemory;
 use crate::model_access::{CloudRoute, ModelAccess};
-use crate::model_planner::{propose_plan, PlanSource};
+use crate::model_planner::{propose_plan, PlanAttempt, PlanSource};
 use crate::specialist_workers::{registry, InvestigationOptions};
 use crate::Database;
 use model_gateway::router::RoleModels;
@@ -67,6 +67,8 @@ pub struct PlanInfo {
     pub source: PlanSource,
     pub rationale: Option<String>,
     pub rejected: Vec<String>,
+    /// Model calls made while planning (budgets, finish reasons, outcomes).
+    pub attempts: Vec<PlanAttempt>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -299,6 +301,7 @@ impl WorkflowPlatform {
             source: proposal.source.clone(),
             rationale: proposal.rationale.clone(),
             rejected: proposal.rejected.clone(),
+            attempts: proposal.attempts.clone(),
         };
         let (run, approvals) = orchestrator
             .with_store(|s| {
@@ -323,7 +326,8 @@ impl WorkflowPlatform {
                     None,
                     "plan_source",
                     serde_json::json!({"source": info.source, "rationale": info.rationale,
-                        "rejected": info.rejected.iter().take(8).collect::<Vec<_>>(), "tasks": tasks.len()}),
+                        "rejected": info.rejected.iter().take(8).collect::<Vec<_>>(), "tasks": tasks.len(),
+                        "attempts": info.attempts}),
                 )?;
                 let approvals =
                     s.submit_plan(&run.id, &tasks, &contracts, &policy, APPROVAL_TTL_MS);

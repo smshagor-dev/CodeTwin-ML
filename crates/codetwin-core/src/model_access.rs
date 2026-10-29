@@ -14,7 +14,7 @@ use model_gateway::router::{choose_route, fallback_after, RoleModels, Route, Rou
 use model_gateway::types::Usage;
 use model_gateway::{
     approve_preview, prepare_egress, ChatClient, ChatMessage, ChatRequest, CloudConsent,
-    ProviderError,
+    ProposedToolCall, ProviderError, ToolSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +60,38 @@ pub struct ModelReply {
     pub usage: Option<Usage>,
     /// Set when the cloud call failed and the local model answered instead.
     pub fallback_reason: Option<String>,
+    /// Provider stop reason (`stop`, `length`, `tool_calls`, …).
+    pub finish_reason: Option<String>,
+    /// Tool calls naming a declared tool with object arguments (unexecuted).
+    pub tool_calls: Vec<ProposedToolCall>,
+    /// Hidden reasoning characters received and discarded (count only).
+    pub reasoning_chars_discarded: usize,
+}
+
+/// One model call: messages, optional declared tools, and output budget.
+#[derive(Debug, Clone)]
+pub struct ChatCall {
+    pub messages: Vec<ChatMessage>,
+    pub tools: Vec<ToolSpec>,
+    pub max_tokens: u32,
+    pub temperature: f32,
+    /// Stream the completion so cancellation is observed during long
+    /// reasoning; streams are never retried once bytes arrived.
+    pub stream: bool,
+}
+
+/// A failed call: the classified error of the last route tried, plus a
+/// human-readable account of every route.
+#[derive(Debug, Clone)]
+pub struct CallFailure {
+    pub error: ProviderError,
+    pub detail: String,
+}
+
+impl std::fmt::Display for CallFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
 }
 
 impl ModelAccess {
@@ -100,28 +132,65 @@ impl ModelAccess {
         temperature: f32,
         cancel: &AtomicBool,
     ) -> Result<ModelReply, String> {
+        self.complete(
+            db,
+            scope,
+            &ChatCall {
+                messages,
+                tools: vec![],
+                max_tokens,
+                temperature,
+                stream: false,
+            },
+            cancel,
+        )
+        .map_err(|f| f.detail)
+    }
+
+    /// One completion with declared tools and an explicit output budget.
+    pub fn complete(
+        &self,
+        db: &Database,
+        scope: CallScope<'_>,
+        call: &ChatCall,
+        cancel: &AtomicBool,
+    ) -> Result<ModelReply, CallFailure> {
         let routing = self.routing();
-        let route = choose_route(&routing).map_err(|e| e.to_string())?;
+        let route = choose_route(&routing).map_err(|e| CallFailure {
+            detail: e.to_string(),
+            error: e,
+        })?;
         let request = |route| ChatRequest {
             model: self.model_for(scope.role, route),
-            messages: messages.clone(),
-            tools: vec![],
-            max_tokens: Some(max_tokens),
-            temperature: Some(temperature),
+            messages: call.messages.clone(),
+            tools: call.tools.clone(),
+            max_tokens: Some(call.max_tokens),
+            temperature: Some(call.temperature),
         };
-        match self.call(db, scope, route, request(route), cancel) {
+        match self.call(db, scope, route, request(route), call.stream, cancel) {
             Ok(reply) => Ok(reply),
             Err(error) => match fallback_after(route, &error, &routing) {
                 Some(Route::Local) => {
                     let mut reply = self
-                        .call(db, scope, Route::Local, request(Route::Local), cancel)
-                        .map_err(|e| {
-                            format!("cloud failed ({error}); local fallback failed ({e})")
+                        .call(
+                            db,
+                            scope,
+                            Route::Local,
+                            request(Route::Local),
+                            call.stream,
+                            cancel,
+                        )
+                        .map_err(|e| CallFailure {
+                            detail: format!("cloud failed ({error}); local fallback failed ({e})"),
+                            error: e,
                         })?;
                     reply.fallback_reason = Some(error.to_string());
                     Ok(reply)
                 }
-                _ => Err(error.to_string()),
+                _ => Err(CallFailure {
+                    detail: error.to_string(),
+                    error,
+                }),
             },
         }
     }
@@ -132,6 +201,7 @@ impl ModelAccess {
         scope: CallScope<'_>,
         route: Route,
         request: ChatRequest,
+        stream: bool,
         cancel: &AtomicBool,
     ) -> Result<ModelReply, ProviderError> {
         let (client, request, egress, redactions) = match route {
@@ -159,7 +229,13 @@ impl ModelAccess {
                 (local, request, None, 0)
             }
         };
-        let (result, audit) = client.chat(&request, egress.as_ref(), cancel);
+        let (result, audit) = if stream {
+            // Visible deltas are not surfaced here; the caller validates the
+            // whole answer. Streaming exists for cancellation and timeouts.
+            client.chat_stream(&request, egress.as_ref(), cancel, &mut |_| {})
+        } else {
+            client.chat(&request, egress.as_ref(), cancel)
+        };
         let credits = u32::from(route == Route::Cloud && result.is_ok());
         let _ = CloudSettings::new(db).record_request(
             &audit,
@@ -186,6 +262,9 @@ impl ModelAccess {
             credits,
             usage: response.usage,
             fallback_reason: None,
+            finish_reason: response.finish_reason,
+            tool_calls: response.tool_calls,
+            reasoning_chars_discarded: response.reasoning_chars_discarded,
         })
     }
 }

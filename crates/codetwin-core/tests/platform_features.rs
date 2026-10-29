@@ -75,6 +75,21 @@ type Seen = Arc<Mutex<Vec<String>>>;
 
 /// Loopback chat-completions mock. `reply(body) -> (status, assistant text)`.
 fn mock_model(reply: impl Fn(&str) -> (u16, String) + Send + 'static) -> (String, Seen) {
+    mock_completion(move |body| {
+        let (status, text) = reply(body);
+        (
+            status,
+            json!({"role": "assistant", "content": text}),
+            "stop",
+        )
+    })
+}
+
+/// Mock returning a full assistant `message` and `finish_reason`. Answers in
+/// SSE when the request asks for `"stream": true`, as real endpoints do.
+fn mock_completion(
+    reply: impl Fn(&str) -> (u16, Value, &'static str) + Send + 'static,
+) -> (String, Seen) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let seen: Seen = Arc::default();
@@ -97,18 +112,47 @@ fn mock_model(reply: impl Fn(&str) -> (u16, String) + Send + 'static) -> (String
             reader.read_exact(&mut body).unwrap();
             let body = String::from_utf8_lossy(&body).into_owned();
             record.lock().unwrap().push(body.clone());
-            let (status, text) = reply(&body);
-            let payload = if status == 200 {
-                json!({"id": "chatcmpl-mock", "object": "chat.completion", "model": "mock-model",
-                    "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
-                    "usage": {"prompt_tokens": 40, "completion_tokens": 12, "total_tokens": 52}})
-                .to_string()
+            let (status, message, finish) = reply(&body);
+            let streamed = body.contains("\"stream\":true");
+            let usage = json!({"prompt_tokens": 40, "completion_tokens": 12, "total_tokens": 52});
+            let (content_type, payload) = if status != 200 {
+                (
+                    "application/json",
+                    json!({"error": {"message": "unavailable"}}).to_string(),
+                )
+            } else if streamed {
+                let mut delta = message.clone();
+                if let Some(calls) = delta.get_mut("tool_calls").and_then(Value::as_array_mut) {
+                    for (i, call) in calls.iter_mut().enumerate() {
+                        call["index"] = json!(i);
+                    }
+                }
+                let chunk = |choice: Value| {
+                    format!(
+                        "data: {}\n\n",
+                        json!({"id": "chatcmpl-mock", "model": "mock-model", "choices": [choice]})
+                    )
+                };
+                (
+                    "text/event-stream",
+                    format!(
+                        "{}{}data: [DONE]\n\n",
+                        chunk(json!({"index": 0, "delta": delta})),
+                        chunk(json!({"index": 0, "delta": {}, "finish_reason": finish}))
+                    ),
+                )
             } else {
-                json!({"error": {"message": "unavailable"}}).to_string()
+                (
+                    "application/json",
+                    json!({"id": "chatcmpl-mock", "object": "chat.completion", "model": "mock-model",
+                        "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+                        "usage": usage})
+                    .to_string(),
+                )
             };
             let _ = write!(
                 stream,
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                "HTTP/1.1 {status} X\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
                 payload.len()
             );
         }
@@ -264,6 +308,215 @@ fn hostile_planner_output_falls_back_to_the_template() {
         matches!(info.source, PlanSource::Deterministic { ref reason } if reason.contains("rejected")),
         "{:?}",
         info.source
+    );
+}
+
+fn submit_plan_call(arguments: Value) -> Value {
+    json!({"role": "assistant", "content": null, "tool_calls": [{"id": "call-1", "type": "function",
+        "function": {"name": "submit_plan", "arguments": arguments.to_string()}}]})
+}
+
+fn ai_planning() -> InvestigationOptions {
+    InvestigationOptions {
+        ai_planning: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn truncated_plan_is_retried_with_a_larger_budget_then_validated() {
+    let f = fixture();
+    // Reasoning-model behaviour seen live: the first budget is spent before
+    // the JSON is complete (`finish_reason: "length"`).
+    let (base, seen) = mock_completion(|body| {
+        if body.contains("\"max_tokens\":4096") {
+            (
+                200,
+                json!({"role": "assistant", "content": "{\"rationale\": \"split\", \"tasks\": [{\"key\": \"auth"}),
+                "length",
+            )
+        } else {
+            (
+                200,
+                submit_plan_call(json!({"rationale": "auth then deps", "tasks": [
+                    {"key": "auth_paths", "role": "source_intelligence", "terms": ["runUserCode"]},
+                    {"key": "deps", "role": "dependency_analyst", "depends_on": ["auth_paths"]}
+                ]})),
+                "tool_calls",
+            )
+        }
+    });
+    let p = platform(&f).with_models(Some(local_provider(&base)), RoleModels::default());
+    let (run, approvals, info) = p
+        .create_planned_investigation(
+            &f.project_id,
+            "Review runUserCode",
+            "operator",
+            &ai_planning(),
+            None,
+        )
+        .unwrap();
+    assert!(
+        matches!(info.source, PlanSource::Model { .. }),
+        "{:?}",
+        info.source
+    );
+    let budgets: Vec<u32> = info.attempts.iter().map(|a| a.max_tokens).collect();
+    assert_eq!(budgets, vec![4096, 8192]);
+    assert!(info.attempts[0].outcome.contains("truncated"));
+    assert_eq!(info.attempts[0].finish_reason.as_deref(), Some("length"));
+    assert!(info.attempts[1].outcome.starts_with("accepted"));
+    let bodies = seen.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 2, "bounded: exactly one retry");
+    let first: Value = serde_json::from_str(&bodies[0]).unwrap();
+    assert_eq!(first["tools"][0]["function"]["name"], "submit_plan");
+    assert_eq!(
+        first["tools"][0]["function"]["parameters"]["properties"]["tasks"]["items"]["properties"]
+            ["role"]["enum"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4,
+        "only plannable roles are offered"
+    );
+
+    let detail = p.detail(&run.id).unwrap();
+    let keys: Vec<&str> = detail.tasks.iter().map(|t| t.key.as_str()).collect();
+    assert!(
+        keys.contains(&"auth_paths") && keys.contains(&"deps"),
+        "{keys:?}"
+    );
+    assert_eq!(run.state, RunState::AwaitingApproval);
+    assert!(
+        !approvals.is_empty(),
+        "a model plan still needs operator approval"
+    );
+    let events = p.events_since(&run.id, 0, 100).unwrap();
+    let plan_event = events.iter().find(|e| e.kind == "plan_source").unwrap();
+    assert_eq!(plan_event.detail["attempts"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn truncation_at_the_configured_ceiling_falls_back_without_more_calls() {
+    let f = fixture();
+    let (base, seen) = mock_completion(|_| {
+        (
+            200,
+            json!({"role": "assistant", "content": "{\"tasks\": ["}),
+            "length",
+        )
+    });
+    let role_models = RoleModels {
+        max_output_tokens_by_role: [("planner".to_owned(), 4096)].into(),
+        ..RoleModels::default()
+    };
+    let p = platform(&f).with_models(Some(local_provider(&base)), role_models);
+    let (_, _, info) = p
+        .create_planned_investigation(
+            &f.project_id,
+            "Review auth",
+            "operator",
+            &ai_planning(),
+            None,
+        )
+        .unwrap();
+    assert!(
+        matches!(info.source, PlanSource::Deterministic { ref reason } if reason.contains("4096-token planner ceiling")),
+        "{:?}",
+        info.source
+    );
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn provider_rejecting_tools_gets_one_plain_json_request() {
+    let f = fixture();
+    let (base, seen) = mock_completion(|body| {
+        if body.contains("\"tools\"") {
+            (422, Value::Null, "stop")
+        } else {
+            (
+                200,
+                json!({"role": "assistant", "content": "{\"tasks\": [{\"key\": \"qa\", \"role\": \"qa_planner\"}]}"}),
+                "stop",
+            )
+        }
+    });
+    let p = platform(&f).with_models(Some(local_provider(&base)), RoleModels::default());
+    let (_, _, info) = p
+        .create_planned_investigation(
+            &f.project_id,
+            "Review tests",
+            "operator",
+            &ai_planning(),
+            None,
+        )
+        .unwrap();
+    assert!(
+        matches!(info.source, PlanSource::Model { .. }),
+        "{:?}",
+        info.source
+    );
+    let modes: Vec<&str> = info.attempts.iter().map(|a| a.mode.as_str()).collect();
+    assert_eq!(modes, vec!["tool", "text"]);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn model_plan_cannot_approve_itself_or_widen_capabilities() {
+    let f = fixture();
+    let (base, _) = mock_completion(|_| {
+        (
+            200,
+            submit_plan_call(json!({
+                "approved": true,
+                "approvals": [{"status": "approved", "decided_by": "operator"}],
+                "budgets": {"max_credits": 100000},
+                "tasks": [
+                    {"key": "scan", "role": "source_intelligence", "terms": ["eval"],
+                     "capabilities": ["network_egress", "process_spawn"], "requires_approval": false,
+                     "urls": ["http://169.254.169.254/"], "input": {"cmd": "rm -rf /"}},
+                    {"key": "shell", "role": "subprocess_runner"}
+                ]
+            })),
+            "tool_calls",
+        )
+    });
+    let p = platform(&f).with_models(Some(local_provider(&base)), RoleModels::default());
+    let (run, approvals, info) = p
+        .create_planned_investigation(
+            &f.project_id,
+            "Review eval",
+            "operator",
+            &ai_planning(),
+            None,
+        )
+        .unwrap();
+    assert!(
+        matches!(info.source, PlanSource::Model { .. }),
+        "{:?}",
+        info.source
+    );
+    assert_eq!(run.state, RunState::AwaitingApproval);
+    assert!(approvals
+        .iter()
+        .all(|a| a.status == "pending" && a.decided_by.is_none()));
+    let detail = p.detail(&run.id).unwrap();
+    assert!(!detail.tasks.iter().any(|t| t.key == "shell"));
+    let scan = detail.tasks.iter().find(|t| t.key == "scan").unwrap();
+    assert_eq!(
+        scan.input,
+        json!({"terms": ["eval"]}),
+        "inputs reduced to the role schema"
+    );
+    let caps = serde_json::to_string(&detail.tasks).unwrap();
+    assert!(!caps.contains("process_spawn") && !caps.contains("169.254"));
+    assert!(
+        p.execute(&run.id, Some(&CancelToken::new())).is_err() || {
+            let r = p.detail(&run.id).unwrap().run;
+            r.state != RunState::Completed
+        },
+        "nothing runs before the operator decides"
     );
 }
 

@@ -23,9 +23,20 @@ pub struct RoleModels {
     pub cloud_by_role: BTreeMap<String, String>,
     #[serde(default)]
     pub local_by_role: BTreeMap<String, String>,
+    /// Operator ceiling on visible-plus-reasoning output tokens per role
+    /// (e.g. `planner → 16384`). Unset roles use the caller's default.
+    #[serde(default)]
+    pub max_output_tokens_by_role: BTreeMap<String, u32>,
 }
 
 impl RoleModels {
+    pub fn output_budget(&self, role: &str) -> Option<u32> {
+        self.max_output_tokens_by_role
+            .get(role)
+            .copied()
+            .filter(|n| *n > 0)
+    }
+
     pub fn model_for(&self, role: &str, route: Route) -> Option<&str> {
         match route {
             Route::Cloud => self
@@ -168,7 +179,16 @@ mod tests {
             default_local: Some("local".into()),
             cloud_by_role: [("planner".to_owned(), "openmindai-super".to_owned())].into(),
             local_by_role: [("reviewer".to_owned(), "qwen-local".to_owned())].into(),
+            max_output_tokens_by_role: [("planner".to_owned(), 8192), ("x".to_owned(), 0)].into(),
         };
+        assert_eq!(m.output_budget("planner"), Some(8192));
+        assert_eq!(m.output_budget("x"), None, "zero means unset");
+        assert_eq!(m.output_budget("reviewer"), None);
+        let legacy: RoleModels = serde_json::from_str(
+            r#"{"default_cloud":null,"default_local":null,"cloud_by_role":{}}"#,
+        )
+        .unwrap();
+        assert!(legacy.max_output_tokens_by_role.is_empty());
         assert_eq!(m.model_for("reviewer", Route::Local), Some("qwen-local"));
         assert_eq!(
             m.model_for("planner", Route::Cloud),
