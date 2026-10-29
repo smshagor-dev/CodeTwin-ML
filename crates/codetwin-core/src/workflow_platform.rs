@@ -293,9 +293,7 @@ impl WorkflowPlatform {
         };
         let mut budgets = budgets.unwrap_or_default();
         let review_credits = if options.cloud_review { 3 } else { 0 };
-        budgets.max_credits = budgets
-            .max_credits
-            .max(proposal.credits + review_credits);
+        budgets.max_credits = budgets.max_credits.max(proposal.credits + review_credits);
         let tasks = proposal.tasks.clone();
         let info = PlanInfo {
             source: proposal.source.clone(),
@@ -363,8 +361,9 @@ impl WorkflowPlatform {
         } else {
             collab.authorize(&project_id, operator, Action::Approve)?;
         }
-        let decided = self
-            .with_store(|s| s.decide_approval(approval_id, approve, operator, scope_digest, note))?;
+        let decided = self.with_store(|s| {
+            s.decide_approval(approval_id, approve, operator, scope_digest, note)
+        })?;
         collab.audit(
             operator,
             if approve { "approve" } else { "reject" },

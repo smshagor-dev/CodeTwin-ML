@@ -90,7 +90,8 @@ fn wrap(text: &str, font: Font, size: f64, width: f64) -> Vec<String> {
             word = word.chars().skip(max).collect();
             lines.push(head);
         }
-        let needed = current.chars().count() + usize::from(!current.is_empty()) + word.chars().count();
+        let needed =
+            current.chars().count() + usize::from(!current.is_empty()) + word.chars().count();
         if needed > max && !current.is_empty() {
             lines.push(std::mem::take(&mut current));
         }
@@ -189,7 +190,14 @@ fn layout(markdown: &str) -> Vec<Line> {
                 2.0,
             );
         } else {
-            push(&mut out, &strip_inline(trimmed), Font::Regular, 10.0, 0.0, 4.0);
+            push(
+                &mut out,
+                &strip_inline(trimmed),
+                Font::Regular,
+                10.0,
+                0.0,
+                4.0,
+            );
         }
     }
     out
@@ -297,7 +305,9 @@ pub fn render_pdf(title: &str, markdown: &str) -> Vec<u8> {
         pdf.extend_from_slice(b"\nendobj\n");
     }
     let xref = pdf.len();
-    pdf.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    pdf.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
     for off in offsets {
         pdf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
     }
@@ -338,7 +348,9 @@ mod tests {
     fn produces_a_structurally_valid_multipage_pdf() {
         let mut md = String::from("# Run report (verified)\n\n## Findings\n\n| a | b |\n|---|---|\n| x | y |\n\n```\nfn main() {}\n```\n");
         for i in 0..200 {
-            md.push_str(&format!("- item {i} with (parens) and \\ backslash → arrow and 日本\n"));
+            md.push_str(&format!(
+                "- item {i} with (parens) and \\ backslash → arrow and 日本\n"
+            ));
         }
         let pdf = render_pdf("Report", &md);
         assert!(pdf.starts_with(b"%PDF-1.4"));
@@ -346,7 +358,12 @@ mod tests {
         let offsets = xref_offsets(&pdf);
         for (i, off) in offsets.iter().enumerate() {
             let expect = format!("{} 0 obj", i + 1);
-            assert_eq!(&pdf[*off..*off + expect.len()], expect.as_bytes(), "object {}", i + 1);
+            assert_eq!(
+                &pdf[*off..*off + expect.len()],
+                expect.as_bytes(),
+                "object {}",
+                i + 1
+            );
         }
         let text = String::from_utf8_lossy(&pdf);
         let pages: usize = text
@@ -366,7 +383,10 @@ mod tests {
 
     #[test]
     fn markdown_escapes_and_emphasis_are_not_printed() {
-        assert_eq!(strip_inline("evidence qa\\_artifact a\\|b"), "evidence qa_artifact a|b");
+        assert_eq!(
+            strip_inline("evidence qa\\_artifact a\\|b"),
+            "evidence qa_artifact a|b"
+        );
         assert_eq!(strip_inline("_None._"), "None.");
         assert_eq!(strip_inline("qa_planner ran"), "qa_planner ran");
         assert_eq!(strip_inline("**bold** `code`"), "bold code");

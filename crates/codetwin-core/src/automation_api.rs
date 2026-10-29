@@ -95,7 +95,11 @@ impl<'a> TokenStore<'a> {
         actor: &str,
     ) -> Result<(ApiToken, String), String> {
         let collab = Collaboration::new(self.db);
-        collab.authorize(project_id, actor, crate::collaboration::Action::ManageTokens)?;
+        collab.authorize(
+            project_id,
+            actor,
+            crate::collaboration::Action::ManageTokens,
+        )?;
         let label: String = label.trim().chars().take(120).collect();
         if label.is_empty() {
             return Err("token label is required".into());
@@ -110,7 +114,11 @@ impl<'a> TokenStore<'a> {
         let plaintext = format!("ctapi_{secret}");
         let id = new_id("tok");
         let principal_id = format!("api:{}", &id[4..]);
-        collab.ensure_principal(&principal_id, &format!("API: {label}"), PrincipalKind::Automation)?;
+        collab.ensure_principal(
+            &principal_id,
+            &format!("API: {label}"),
+            PrincipalKind::Automation,
+        )?;
         // Automation principals never hold approver/admin roles.
         let role = if scopes.iter().any(|s| s == "runs:write") {
             Role::Analyst
@@ -225,7 +233,10 @@ impl<'a> TokenStore<'a> {
             .db
             .connection()
             .query_row(
-                &format!("SELECT {} FROM api_tokens WHERE token_sha256=?1", Self::COLUMNS),
+                &format!(
+                    "SELECT {} FROM api_tokens WHERE token_sha256=?1",
+                    Self::COLUMNS
+                ),
                 [sha256_hex(presented.as_bytes())],
                 Self::row,
             )
@@ -337,7 +348,14 @@ impl ApiHandler {
         let token = match TokenStore::new(&db).authenticate(presented) {
             Ok(t) => t,
             Err(e) => {
-                collab.audit("api:unauthenticated", "api_request", None, Some(&req.path), "denied", json!({"reason": e}));
+                collab.audit(
+                    "api:unauthenticated",
+                    "api_request",
+                    None,
+                    Some(&req.path),
+                    "denied",
+                    json!({"reason": e}),
+                );
                 return error(401, &e);
             }
         };
@@ -350,7 +368,13 @@ impl ApiHandler {
             "api_request",
             Some(&token.project_id),
             Some(&format!("{} {}", req.method, req.path)),
-            if response.status < 400 { "allowed" } else if response.status < 500 { "denied" } else { "error" },
+            if response.status < 400 {
+                "allowed"
+            } else if response.status < 500 {
+                "denied"
+            } else {
+                "error"
+            },
             json!({"status": response.status, "token": token.id}),
         );
         response
@@ -369,20 +393,39 @@ impl ApiHandler {
             }
         };
         let collab = Collaboration::new(db);
-        let view = || collab.authorize(&token.project_id, &token.principal_id, crate::collaboration::Action::View);
+        let view = || {
+            collab.authorize(
+                &token.project_id,
+                &token.principal_id,
+                crate::collaboration::Action::View,
+            )
+        };
         match (req.method.as_str(), segments.as_slice()) {
             ("GET", ["v1", "runs"]) => {
-                if let Some(r) = need("runs:read") { return r; }
-                if let Err(e) = view() { return error(403, &e); }
-                let limit = req.query.get("limit").and_then(|l| l.parse().ok()).unwrap_or(50usize).clamp(1, 100);
+                if let Some(r) = need("runs:read") {
+                    return r;
+                }
+                if let Err(e) = view() {
+                    return error(403, &e);
+                }
+                let limit = req
+                    .query
+                    .get("limit")
+                    .and_then(|l| l.parse().ok())
+                    .unwrap_or(50usize)
+                    .clamp(1, 100);
                 match self.platform.list_runs(Some(&token.project_id), limit) {
                     Ok(runs) => respond(200, json!({"runs": runs})),
                     Err(e) => error(500, &e),
                 }
             }
             ("POST", ["v1", "runs"]) => {
-                if let Some(r) = need("runs:write") { return r; }
-                if req.body.len() > MAX_BODY_BYTES { return error(413, "body too large"); }
+                if let Some(r) = need("runs:write") {
+                    return r;
+                }
+                if req.body.len() > MAX_BODY_BYTES {
+                    return error(413, "body too large");
+                }
                 let body: CreateRunBody = match serde_json::from_slice(&req.body) {
                     Ok(b) => b,
                     Err(e) => return error(400, &format!("invalid JSON body: {e}")),
@@ -403,33 +446,52 @@ impl ApiHandler {
                     &options,
                     None,
                 ) {
-                    Ok((run, approvals, plan)) => respond(201, json!({
+                    Ok((run, approvals, plan)) => respond(
+                        201,
+                        json!({
                         "run": run, "approvals": approvals, "plan": plan,
-                        "note": "execution requires a human approval in the CodeTwin desktop"})),
+                        "note": "execution requires a human approval in the CodeTwin desktop"}),
+                    ),
                     Err(e) if e.starts_with("access denied") => error(403, &e),
                     Err(e) => error(422, &e),
                 }
             }
             ("GET", ["v1", "runs", id]) => {
-                if let Some(r) = need("runs:read") { return r; }
-                if let Err(r) = run_in_scope(id) { return r; }
+                if let Some(r) = need("runs:read") {
+                    return r;
+                }
+                if let Err(r) = run_in_scope(id) {
+                    return r;
+                }
                 match self.platform.detail(id) {
                     Ok(d) => respond(200, json!(d)),
                     Err(e) => error(500, &e),
                 }
             }
             ("GET", ["v1", "runs", id, "events"]) => {
-                if let Some(r) = need("runs:read") { return r; }
-                if let Err(r) = run_in_scope(id) { return r; }
-                let cursor = req.query.get("cursor").and_then(|c| c.parse().ok()).unwrap_or(0i64);
+                if let Some(r) = need("runs:read") {
+                    return r;
+                }
+                if let Err(r) = run_in_scope(id) {
+                    return r;
+                }
+                let cursor = req
+                    .query
+                    .get("cursor")
+                    .and_then(|c| c.parse().ok())
+                    .unwrap_or(0i64);
                 match self.platform.events_since(id, cursor, 500) {
                     Ok(events) => respond(200, json!({"events": events})),
                     Err(e) => error(500, &e),
                 }
             }
             ("GET", ["v1", "runs", id, "report"]) => {
-                if let Some(r) = need("reports:read") { return r; }
-                if let Err(r) = run_in_scope(id) { return r; }
+                if let Some(r) = need("reports:read") {
+                    return r;
+                }
+                if let Err(r) = run_in_scope(id) {
+                    return r;
+                }
                 let format = req.query.get("format").map_or("markdown", String::as_str);
                 match self.platform.report(id, format) {
                     Ok(body) => respond(200, json!({"format": format, "body": body})),
@@ -437,9 +499,17 @@ impl ApiHandler {
                 }
             }
             ("POST", ["v1", "runs", id, "cancel"]) => {
-                if let Some(r) = need("runs:write") { return r; }
-                if let Err(r) = run_in_scope(id) { return r; }
-                if let Err(e) = collab.authorize(&token.project_id, &token.principal_id, crate::collaboration::Action::ControlRun) {
+                if let Some(r) = need("runs:write") {
+                    return r;
+                }
+                if let Err(r) = run_in_scope(id) {
+                    return r;
+                }
+                if let Err(e) = collab.authorize(
+                    &token.project_id,
+                    &token.principal_id,
+                    crate::collaboration::Action::ControlRun,
+                ) {
                     return error(403, &e);
                 }
                 match self.platform.cancel(id) {
@@ -448,21 +518,36 @@ impl ApiHandler {
                 }
             }
             ("GET", ["v1", "analytics"]) => {
-                if let Some(r) = need("analytics:read") { return r; }
-                let days: i64 = req.query.get("days").and_then(|d| d.parse().ok()).unwrap_or(7).clamp(1, 365);
-                match llm_analytics(db, Some(&token.project_id), now_ms() - days * 24 * 3_600_000) {
+                if let Some(r) = need("analytics:read") {
+                    return r;
+                }
+                let days: i64 = req
+                    .query
+                    .get("days")
+                    .and_then(|d| d.parse().ok())
+                    .unwrap_or(7)
+                    .clamp(1, 365);
+                match llm_analytics(
+                    db,
+                    Some(&token.project_id),
+                    now_ms() - days * 24 * 3_600_000,
+                ) {
                     Ok(a) => respond(200, json!(a)),
                     Err(e) => error(500, &e),
                 }
             }
             ("GET", ["v1", "metrics"]) => {
-                if let Some(r) = need("analytics:read") { return r; }
+                if let Some(r) = need("analytics:read") {
+                    return r;
+                }
                 match metrics_snapshot(db, Some(&token.project_id)) {
                     Ok(m) => respond(200, json!(m)),
                     Err(e) => error(500, &e),
                 }
             }
-            (_, ["v1", "approvals", ..]) => error(403, "approvals are only decided by a human in the desktop"),
+            (_, ["v1", "approvals", ..]) => {
+                error(403, "approvals are only decided by a human in the desktop")
+            }
             _ => error(404, "no such endpoint"),
         }
     }
@@ -518,11 +603,15 @@ fn parse_request(stream: &mut TcpStream) -> Result<ApiRequest, (u16, &'static st
         body.extend_from_slice(&chunk[..n]);
     }
     body.truncate(length);
-    let url = url::Url::parse(&format!("http://loopback{target}")).map_err(|_| (400, "bad target"))?;
+    let url =
+        url::Url::parse(&format!("http://loopback{target}")).map_err(|_| (400, "bad target"))?;
     Ok(ApiRequest {
         method,
         path: url.path().to_owned(),
-        query: url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect(),
+        query: url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect(),
         headers,
         body,
     })
@@ -562,8 +651,13 @@ pub struct ApiServer {
 
 impl ApiServer {
     /// Bind 127.0.0.1:`port` (0 picks a free port) and serve until stopped.
-    pub fn start(platform: Arc<WorkflowPlatform>, db_path: PathBuf, port: u16) -> Result<Self, String> {
-        let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("cannot bind loopback port {port}: {e}"))?;
+    pub fn start(
+        platform: Arc<WorkflowPlatform>,
+        db_path: PathBuf,
+        port: u16,
+    ) -> Result<Self, String> {
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .map_err(|e| format!("cannot bind loopback port {port}: {e}"))?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let addr = listener.local_addr().map_err(|e| e.to_string())?;
         let handler = Arc::new(ApiHandler::new(platform, db_path, addr.port()));
@@ -581,7 +675,10 @@ impl ApiServer {
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
                         if active.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
-                            write_response(&mut stream, &error(503, "too many concurrent requests"));
+                            write_response(
+                                &mut stream,
+                                &error(503, "too many concurrent requests"),
+                            );
                             continue;
                         }
                         active.fetch_add(1, Ordering::SeqCst);

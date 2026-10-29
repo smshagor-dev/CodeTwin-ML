@@ -4,11 +4,11 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use crate::context_compaction::{compact, Section};
 use serde_json::{json, Value};
 use task_orchestrator::policy::Capability;
 use task_orchestrator::state::{ErrorCategory, EvidenceClass};
 use task_orchestrator::store::TaskSpec;
-use crate::context_compaction::{compact, Section};
 use task_orchestrator::worker::{
     DelegationRequest, EvidenceRef, SuccessCriterion, TaskContext, ToolCallError, Worker,
     WorkerContract, WorkerError, WorkerOutput, WorkerRegistry,
@@ -282,7 +282,9 @@ fn research_analyst(ctx: &TaskContext<'_>) -> Result<WorkerOutput, WorkerError> 
                     .filter(|u| !urls.contains(u))
                     .take(3)
                     .collect();
-                searches.push(json!({"query": query, "provider": result["provider"], "selected": hits}));
+                searches.push(
+                    json!({"query": query, "provider": result["provider"], "selected": hits}),
+                );
                 urls.extend(hits);
             }
             Err(e) if e.category == ErrorCategory::Policy => return Err(e),
@@ -295,7 +297,8 @@ fn research_analyst(ctx: &TaskContext<'_>) -> Result<WorkerOutput, WorkerError> 
     let mut quotes = Vec::new();
     let (mut supported, mut unsupported) = (0u64, 0u64);
     for url in urls.iter().take(8) {
-        let args = json!({"url": url, "claims": claims, "run_id": ctx.run_id, "task_id": ctx.task_id});
+        let args =
+            json!({"url": url, "claims": claims, "run_id": ctx.run_id, "task_id": ctx.task_id});
         match call(ctx, "research.fetch", args) {
             Ok(doc) => {
                 let sha = str_of(&doc, "sha256");
@@ -378,7 +381,9 @@ fn cloud_reviewer(ctx: &TaskContext<'_>) -> Result<WorkerOutput, WorkerError> {
             label: format!("{key} / {role}"),
             text: format!(
                 "{}\n{}",
-                out.get("summary").and_then(Value::as_str).unwrap_or_default(),
+                out.get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
                 out.get("data").map(Value::to_string).unwrap_or_default()
             ),
             priority: match role.as_str() {
@@ -407,7 +412,11 @@ fn cloud_reviewer(ctx: &TaskContext<'_>) -> Result<WorkerOutput, WorkerError> {
                 rag_ids.push(id.clone());
                 Some(format!(
                     "[M:{id}] ({}, {}) {}: {}",
-                    if i["verified"] == json!(true) { "verified" } else { "unverified" },
+                    if i["verified"] == json!(true) {
+                        "verified"
+                    } else {
+                        "unverified"
+                    },
                     i["layer"].as_str().unwrap_or("memory"),
                     i["title"].as_str().unwrap_or_default(),
                     i["body"].as_str().unwrap_or_default()
@@ -778,7 +787,9 @@ fn role_criteria(role: &str) -> Vec<SuccessCriterion> {
         ],
         "source_intelligence" | "research_analyst" => vec![refs(1)],
         "dependency_analyst" => vec![tool(2)],
-        "security_reviewer" | "qa_planner" | "evidence_verifier" | "cloud_reviewer" => vec![tool(1)],
+        "security_reviewer" | "qa_planner" | "evidence_verifier" | "cloud_reviewer" => {
+            vec![tool(1)]
+        }
         _ => vec![],
     }
 }
@@ -809,7 +820,11 @@ pub fn role_task(
 /// Append the fixed tail every investigation ends with: optional research,
 /// deterministic evidence verification, optional model review, report and
 /// quality review. `plan` must already contain the `repo` task.
-pub fn finish_plan(mut plan: Vec<TaskSpec>, goal: &str, options: &InvestigationOptions) -> Vec<TaskSpec> {
+pub fn finish_plan(
+    mut plan: Vec<TaskSpec>,
+    goal: &str,
+    options: &InvestigationOptions,
+) -> Vec<TaskSpec> {
     let mut evidence: Vec<String> = plan
         .iter()
         .filter(|t| t.key != "repo")
@@ -894,9 +909,24 @@ pub fn plan_investigation(goal: &str, options: &InvestigationOptions) -> Vec<Tas
             "Locate code related to the goal",
             json!({"terms": goal_terms(goal)}),
         ),
-        ("deps", "dependency_analyst", "Review dependencies and SBOM", json!({})),
-        ("security", "security_reviewer", "Review persisted security findings", json!({})),
-        ("qa", "qa_planner", "Inventory tests for targeted verification", json!({})),
+        (
+            "deps",
+            "dependency_analyst",
+            "Review dependencies and SBOM",
+            json!({}),
+        ),
+        (
+            "security",
+            "security_reviewer",
+            "Review persisted security findings",
+            json!({}),
+        ),
+        (
+            "qa",
+            "qa_planner",
+            "Inventory tests for targeted verification",
+            json!({}),
+        ),
     ] {
         plan.extend(role_task(key, role, title, &["repo"], input));
     }

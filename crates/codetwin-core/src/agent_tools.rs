@@ -46,7 +46,9 @@ fn quote_for(text: &str, term: &str) -> Option<String> {
         return Some(text[at..].chars().take(200).collect());
     }
     let at = lower.find(&term.to_lowercase())?;
-    let start = lower[..at].rfind(['.', '!', '?', '\n']).map_or(0, |i| i + 1);
+    let start = lower[..at]
+        .rfind(['.', '!', '?', '\n'])
+        .map_or(0, |i| i + 1);
     let end = lower[at..]
         .find(['.', '!', '?', '\n'])
         .map_or(text.len(), |i| at + i + 1);
@@ -517,8 +519,10 @@ impl CoreToolRuntime {
                             }
                             found
                         };
-                        let freshness =
-                            research_retrieval::sources::freshness(doc.last_modified.as_deref(), now);
+                        let freshness = research_retrieval::sources::freshness(
+                            doc.last_modified.as_deref(),
+                            now,
+                        );
                         Ok(
                             json!({"source_id": id, "final_url": doc.final_url, "title": doc.title, "sha256": doc.sha256,
                             "excerpt": doc.text.chars().take(2_000).collect::<String>(), "untrusted": true,
@@ -545,7 +549,10 @@ impl CoreToolRuntime {
                     .search
                     .as_ref()
                     .ok_or("no search provider is configured")?;
-                let query = args.get("query").and_then(Value::as_str).unwrap_or_default();
+                let query = args
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 let mut config = search.config.clone();
                 config.max_results = Self::limit(args, config.max_results, 10);
                 let hits = research_retrieval::search::search(
@@ -555,7 +562,9 @@ impl CoreToolRuntime {
                     policy,
                 )
                 .map_err(|e| format!("search failed: {e}"))?;
-                Ok(json!({"provider": config.kind.as_str(), "query": query, "untrusted": true, "hits": hits}))
+                Ok(
+                    json!({"provider": config.kind.as_str(), "query": query, "untrusted": true, "hits": hits}),
+                )
             }
             "model.summarize" => {
                 let models = self

@@ -67,7 +67,10 @@ pub fn parse(body: &str, token: &str) -> Robots {
                     allow: key == "allow",
                     pattern: value.to_owned(),
                 };
-                if agents.iter().any(|a| token.starts_with(a.as_str()) && a != "*") {
+                if agents
+                    .iter()
+                    .any(|a| token.starts_with(a.as_str()) && a != "*")
+                {
                     matched_specific = true;
                     specific.push(rule.clone());
                 }
@@ -230,7 +233,10 @@ Disallow: /no-codetwin/
 
     #[test]
     fn empty_and_tie_rules() {
-        assert_eq!(parse("User-agent: *\nDisallow:\n", PRODUCT_TOKEN), Robots::AllowAll);
+        assert_eq!(
+            parse("User-agent: *\nDisallow:\n", PRODUCT_TOKEN),
+            Robots::AllowAll
+        );
         let r = parse("User-agent: *\nDisallow: /a\nAllow: /a\n", PRODUCT_TOKEN);
         assert!(r.allows("/a/b"), "ties favour allow");
         let all = parse("User-agent: *\nDisallow: /\n", PRODUCT_TOKEN);

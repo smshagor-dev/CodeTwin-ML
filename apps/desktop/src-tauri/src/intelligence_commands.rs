@@ -47,13 +47,16 @@ pub fn security_correlation_snapshot(
     policy: Option<SecurityPolicy>,
     app: tauri::AppHandle,
 ) -> Result<SnapshotReceipt, String> {
-    let (id, sha256, report) = SecurityIntelligence::new(&db(&app)?)
-        .snapshot(&project_id, &policy.unwrap_or_default())?;
+    let (id, sha256, report) =
+        SecurityIntelligence::new(&db(&app)?).snapshot(&project_id, &policy.unwrap_or_default())?;
     Ok(SnapshotReceipt { id, sha256, report })
 }
 
 #[tauri::command]
-pub fn verify_security_snapshot(snapshot_id: String, app: tauri::AppHandle) -> Result<bool, String> {
+pub fn verify_security_snapshot(
+    snapshot_id: String,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
     SecurityIntelligence::new(&db(&app)?).verify_snapshot(&snapshot_id)
 }
 

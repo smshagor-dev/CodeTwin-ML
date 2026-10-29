@@ -89,7 +89,8 @@ impl<'a> SearchSettings<'a> {
                 ],
             )
             .map_err(|e| e.to_string())?;
-        self.get()?.ok_or_else(|| "search settings not saved".into())
+        self.get()?
+            .ok_or_else(|| "search settings not saved".into())
     }
 }
 
@@ -103,9 +104,13 @@ mod tests {
         let db = Database::open(dir.path().join("s.sqlite3")).unwrap();
         let s = SearchSettings::new(&db);
         assert!(s.get().unwrap().is_none());
-        assert!(s.save("brave", "http://api.search.brave.com", true, 5).is_err());
+        assert!(s
+            .save("brave", "http://api.search.brave.com", true, 5)
+            .is_err());
         assert!(s.save("google", "https://x.example", true, 5).is_err());
-        let r = s.save("brave", "https://api.search.brave.com/", true, 50).unwrap();
+        let r = s
+            .save("brave", "https://api.search.brave.com/", true, 50)
+            .unwrap();
         assert_eq!(r.config.max_results, 10);
         assert_eq!(r.config.base_url, "https://api.search.brave.com");
         assert!(r.enabled);

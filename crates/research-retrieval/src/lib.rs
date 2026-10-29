@@ -334,15 +334,13 @@ pub(crate) fn fetch_raw(
                 request = request.header(*name, *value);
             }
         }
-        let response = request
-            .send()
-            .map_err(|e| {
-                RetrievalError::Network(if e.is_timeout() {
-                    "timeout".into()
-                } else {
-                    "request failed".into()
-                })
-            })?;
+        let response = request.send().map_err(|e| {
+            RetrievalError::Network(if e.is_timeout() {
+                "timeout".into()
+            } else {
+                "request failed".into()
+            })
+        })?;
         let status = response.status().as_u16();
         if (300..400).contains(&status) {
             if redirects.len() >= policy.max_redirects {
@@ -656,7 +654,10 @@ mod tests {
             Err(RetrievalError::RobotsDisallowed)
         );
         // robots.txt is cached per origin: the next request goes straight to the page.
-        assert_eq!(fetch(&format!("{base}/open"), &policy).unwrap().text, "public body");
+        assert_eq!(
+            fetch(&format!("{base}/open"), &policy).unwrap().text,
+            "public body"
+        );
 
         // A 5xx robots.txt fails closed; a 404 allows everything.
         let base = serve(vec![http("503 Service Unavailable", "text/plain", "", "")]);

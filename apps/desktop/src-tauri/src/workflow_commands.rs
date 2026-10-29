@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use codetwin_core::agent_tools::SearchAccess;
 use codetwin_core::assessment_stream::{AssessmentStream, AssessmentSummary, StreamPage};
 use codetwin_core::cloud_settings::{
     CloudSettings, ConsentRecord, ProviderRequestRecord, ProviderSettings,
@@ -13,9 +14,8 @@ use codetwin_core::cloud_settings::{
 use codetwin_core::knowledge_memory::{
     EvidenceGraph, KnowledgeMemory, MemoryItem, MemoryLayer, RetrievalBudget, RetrievalResult,
 };
-use codetwin_core::specialist_workers::InvestigationOptions;
-use codetwin_core::agent_tools::SearchAccess;
 use codetwin_core::search_settings::SearchSettings;
+use codetwin_core::specialist_workers::InvestigationOptions;
 use codetwin_core::workflow_platform::{
     CloudProvider, LocalProvider, PlanInfo, RunDetail, WorkerRole, WorkflowPlatform,
 };
@@ -122,7 +122,8 @@ fn local_provider(app: &tauri::AppHandle) -> Result<Option<LocalProvider>, Strin
         return Ok(None);
     }
     let profile = ProviderProfile::local(LOCAL_PROVIDER, &s.base_url).map_err(|e| e.to_string())?;
-    let client = ChatClient::new(profile, None, ClientConfig::default()).map_err(|e| e.to_string())?;
+    let client =
+        ChatClient::new(profile, None, ClientConfig::default()).map_err(|e| e.to_string())?;
     Ok(Some(LocalProvider {
         client: Arc::new(client),
         model: s
@@ -158,14 +159,11 @@ pub(crate) fn platform(app: &tauri::AppHandle) -> Result<WorkflowPlatform, Strin
         role_models.default_local = local.role_models.default_local;
         role_models.local_by_role = local.role_models.local_by_role;
     }
-    Ok(WorkflowPlatform::new(
-        db_path(app)?,
-        instance_id().into(),
-        limits(),
-        cloud,
+    Ok(
+        WorkflowPlatform::new(db_path(app)?, instance_id().into(), limits(), cloud)
+            .with_models(local_provider(app)?, role_models)
+            .with_search(search_access(app)?),
     )
-    .with_models(local_provider(app)?, role_models)
-    .with_search(search_access(app)?))
 }
 
 /// Startup reconciliation of interrupted workflow runs.

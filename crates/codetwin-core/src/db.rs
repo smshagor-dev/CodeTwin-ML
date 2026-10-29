@@ -54,8 +54,7 @@ const MIGRATION_0047: &str = include_str!("../migrations/0047_workflow_orchestra
 const MIGRATION_0048: &str = include_str!("../migrations/0048_model_gateway.sql");
 const MIGRATION_0049: &str = include_str!("../migrations/0049_knowledge_memory.sql");
 const MIGRATION_0050: &str = include_str!("../migrations/0050_research_sources.sql");
-const MIGRATION_0051: &str =
-    include_str!("../migrations/0051_collaboration_automation.sql");
+const MIGRATION_0051: &str = include_str!("../migrations/0051_collaboration_automation.sql");
 const MIGRATION_0052: &str = include_str!("../migrations/0052_security_intelligence.sql");
 const MIGRATION_0053: &str = include_str!("../migrations/0053_temporal_memory.sql");
 

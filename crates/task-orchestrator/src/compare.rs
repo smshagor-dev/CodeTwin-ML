@@ -131,8 +131,7 @@ pub fn diagnose_stall(run: &RunRecord, tasks: &[TaskRecord]) -> Option<StallRepo
         return None;
     }
     let live: Vec<&TaskRecord> = tasks.iter().filter(|t| !t.is_superseded()).collect();
-    let by_key: BTreeMap<&str, &TaskRecord> =
-        live.iter().map(|t| (t.key.as_str(), *t)).collect();
+    let by_key: BTreeMap<&str, &TaskRecord> = live.iter().map(|t| (t.key.as_str(), *t)).collect();
     let progressing = live.iter().any(|t| {
         matches!(
             t.state,
@@ -278,11 +277,7 @@ mod tests {
             &left,
             &[map_l, review_l, task("old", TaskState::Completed, &[])],
             &right,
-            &[
-                map_r,
-                review_r,
-                task("new", TaskState::Completed, &[]),
-            ],
+            &[map_r, review_r, task("new", TaskState::Completed, &[])],
         );
         assert!(c.same_goal);
         assert_eq!(c.right_outcome.as_deref(), Some("verified"));

@@ -223,8 +223,16 @@ fn base64(bytes: &[u8]) -> String {
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -393,7 +401,10 @@ pub fn accept_project_invitation(
 }
 
 #[tauri::command]
-pub fn revoke_project_invitation(invitation_id: String, app: tauri::AppHandle) -> Result<bool, String> {
+pub fn revoke_project_invitation(
+    invitation_id: String,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
     Collaboration::new(&db(&app)?).revoke_invitation(&invitation_id, &operator())?;
     Ok(true)
 }
@@ -505,7 +516,11 @@ pub fn start_automation_api(port: Option<u16>, app: tauri::AppHandle) -> Result<
 
 #[tauri::command]
 pub fn stop_automation_api(app: tauri::AppHandle) -> Result<ApiStatus, String> {
-    if let Some(server) = api_server().lock().map_err(|_| "API state poisoned")?.take() {
+    if let Some(server) = api_server()
+        .lock()
+        .map_err(|_| "API state poisoned")?
+        .take()
+    {
         server.stop();
     }
     Collaboration::new(&db(&app)?).audit(
@@ -574,7 +589,14 @@ mod tests {
 
     #[test]
     fn role_maps_are_validated() {
-        let ok = clean_role_map([("planner".into(), " m ".into()), ("qa_planner".into(), "".into())].into()).unwrap();
+        let ok = clean_role_map(
+            [
+                ("planner".into(), " m ".into()),
+                ("qa_planner".into(), "".into()),
+            ]
+            .into(),
+        )
+        .unwrap();
         assert_eq!(ok.len(), 1);
         assert_eq!(ok["planner"], "m");
         assert!(clean_role_map([("root".into(), "m".into())].into()).is_err());

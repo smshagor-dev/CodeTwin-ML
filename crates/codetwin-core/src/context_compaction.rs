@@ -187,7 +187,12 @@ pub fn summarize_text(text: &str, max_chars: usize) -> String {
 pub fn compact(sections: &[Section], budget_chars: usize) -> Compacted {
     let original_chars: usize = sections.iter().map(|s| s.text.chars().count()).sum();
     let mut order: Vec<usize> = (0..sections.len()).collect();
-    order.sort_by(|&a, &b| sections[b].priority.cmp(&sections[a].priority).then(a.cmp(&b)));
+    order.sort_by(|&a, &b| {
+        sections[b]
+            .priority
+            .cmp(&sections[a].priority)
+            .then(a.cmp(&b))
+    });
 
     let header = |s: &Section| format!("## {}\n", s.label);
     let mut remaining = budget_chars;
@@ -268,8 +273,13 @@ mod tests {
 
     #[test]
     fn large_material_is_summarized_within_budget_and_keeps_salient_lines() {
-        let mut lines: Vec<String> = (0..400).map(|i| format!("ordinary line number {i}")).collect();
-        lines.insert(250, "CRITICAL finding: SQL injection in login handler".into());
+        let mut lines: Vec<String> = (0..400)
+            .map(|i| format!("ordinary line number {i}"))
+            .collect();
+        lines.insert(
+            250,
+            "CRITICAL finding: SQL injection in login handler".into(),
+        );
         let big = section("security", 9, lines.join("\n"));
         let other = section("deps", 5, "x".repeat(5_000));
         let c = compact(&[other, big], 3_000);

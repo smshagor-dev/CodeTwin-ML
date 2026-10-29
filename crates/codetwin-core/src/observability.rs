@@ -193,7 +193,10 @@ pub fn llm_analytics(
         let row = row.map_err(|e| e.to_string())?;
         total.add(&row);
         by_model.entry(row.model.clone()).or_default().add(&row);
-        by_provider.entry(row.provider.clone()).or_default().add(&row);
+        by_provider
+            .entry(row.provider.clone())
+            .or_default()
+            .add(&row);
         by_role
             .entry(row.role.clone().unwrap_or_else(|| "interactive".into()))
             .or_default()
@@ -212,9 +215,10 @@ pub fn llm_analytics(
         by_role: groups(by_role),
         by_day,
         outcomes,
-        cost_basis: "provider credits (1 per successful OpenMindAI call); local models cost 0 credits; \
+        cost_basis:
+            "provider credits (1 per successful OpenMindAI call); local models cost 0 credits; \
                      tokens are reported only when the provider returned usage"
-            .into(),
+                .into(),
     })
 }
 
@@ -254,13 +258,20 @@ pub struct MetricsSnapshot {
     pub alerts: Vec<Alert>,
 }
 
-fn count_by(db: &Database, sql: &str, p: &[&dyn rusqlite::ToSql]) -> Result<BTreeMap<String, u64>, String> {
+fn count_by(
+    db: &Database,
+    sql: &str,
+    p: &[&dyn rusqlite::ToSql],
+) -> Result<BTreeMap<String, u64>, String> {
     let mut stmt = db.connection().prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(p, |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
         .map_err(|e| e.to_string())?;
-    rows.map(|r| r.map(|(k, v)| (k, v.max(0) as u64)).map_err(|e| e.to_string()))
-        .collect()
+    rows.map(|r| {
+        r.map(|(k, v)| (k, v.max(0) as u64))
+            .map_err(|e| e.to_string())
+    })
+    .collect()
 }
 
 fn scalar(db: &Database, sql: &str, p: &[&dyn rusqlite::ToSql]) -> Result<u64, String> {
@@ -271,7 +282,10 @@ fn scalar(db: &Database, sql: &str, p: &[&dyn rusqlite::ToSql]) -> Result<u64, S
 }
 
 /// Point-in-time operational metrics with derived alerts.
-pub fn metrics_snapshot(db: &Database, project_id: Option<&str>) -> Result<MetricsSnapshot, String> {
+pub fn metrics_snapshot(
+    db: &Database,
+    project_id: Option<&str>,
+) -> Result<MetricsSnapshot, String> {
     let now = now_ms();
     let day = now - 24 * 3_600_000;
     let runs_by_state = count_by(
@@ -348,7 +362,11 @@ pub fn metrics_snapshot(db: &Database, project_id: Option<&str>) -> Result<Metri
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![now - 7 * 24 * 3_600_000, project_id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
             })
             .map_err(|e| e.to_string())?;
         let mut by_role: BTreeMap<String, (u64, u64, Vec<i64>)> = BTreeMap::new();
@@ -475,7 +493,9 @@ pub fn metrics_snapshot(db: &Database, project_id: Option<&str>) -> Result<Metri
 pub fn export_diagnostics(db: &Database, path: &Path) -> Result<Value, String> {
     let schema: i64 = db
         .connection()
-        .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
+            r.get(0)
+        })
         .map_err(|e| e.to_string())?;
     let integrity: String = db
         .connection()
@@ -526,7 +546,14 @@ mod tests {
         (dir, db)
     }
 
-    fn call(db: &Database, id: &str, model: &str, outcome: &str, latency: i64, tokens: Option<i64>) {
+    fn call(
+        db: &Database,
+        id: &str,
+        model: &str,
+        outcome: &str,
+        latency: i64,
+        tokens: Option<i64>,
+    ) {
         db.connection()
             .execute(
                 "INSERT INTO provider_requests(request_id,project_id,provider,model,operation,outcome,attempts,
@@ -561,7 +588,10 @@ mod tests {
     #[test]
     fn metrics_and_alerts_and_redacted_bundle() {
         let (dir, db) = db();
-        for (i, outcome) in ["ok", "timeout", "unavailable", "ok", "timeout"].iter().enumerate() {
+        for (i, outcome) in ["ok", "timeout", "unavailable", "ok", "timeout"]
+            .iter()
+            .enumerate()
+        {
             call(&db, &format!("r{i}"), "lite", outcome, 50, None);
         }
         let m = metrics_snapshot(&db, Some("p1")).unwrap();

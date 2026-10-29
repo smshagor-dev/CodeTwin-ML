@@ -130,7 +130,12 @@ fn no_retry() -> ClientConfig {
 fn local_provider(base: &str) -> LocalProvider {
     LocalProvider {
         client: Arc::new(
-            ChatClient::new(ProviderProfile::local("local", base).unwrap(), None, no_retry()).unwrap(),
+            ChatClient::new(
+                ProviderProfile::local("local", base).unwrap(),
+                None,
+                no_retry(),
+            )
+            .unwrap(),
         ),
         model: "local-coder".into(),
     }
@@ -145,7 +150,11 @@ fn platform(f: &Fixture) -> WorkflowPlatform {
     )
 }
 
-fn approve_all(p: &WorkflowPlatform, approvals: &[task_orchestrator::store::ApprovalRequest], who: &str) {
+fn approve_all(
+    p: &WorkflowPlatform,
+    approvals: &[task_orchestrator::store::ApprovalRequest],
+    who: &str,
+) {
     for a in approvals {
         p.decide(&a.id, true, who, &a.scope_digest, None).unwrap();
     }
@@ -191,7 +200,15 @@ fn ai_planning_decomposes_validates_and_executes_with_a_local_model() {
 
     let detail = p.detail(&run.id).unwrap();
     let keys: Vec<&str> = detail.tasks.iter().map(|t| t.key.as_str()).collect();
-    for k in ["repo", "eval_paths", "credentials", "findings", "verify", "report", "quality"] {
+    for k in [
+        "repo",
+        "eval_paths",
+        "credentials",
+        "findings",
+        "verify",
+        "report",
+        "quality",
+    ] {
         assert!(keys.contains(&k), "{k} missing from {keys:?}");
     }
     assert!(!keys.contains(&"exfil"));
@@ -216,7 +233,9 @@ fn ai_planning_decomposes_validates_and_executes_with_a_local_model() {
     assert_eq!(run.outcome, Some(Outcome::Verified));
     let detail = p.detail(&run.id).unwrap();
     let eval = detail.tasks.iter().find(|t| t.key == "eval_paths").unwrap();
-    assert!(serde_json::to_string(&eval.output).unwrap().contains("runUserCode"));
+    assert!(serde_json::to_string(&eval.output)
+        .unwrap()
+        .contains("runUserCode"));
 
     let analytics = llm_analytics(&db, Some(&f.project_id), 0).unwrap();
     assert_eq!(analytics.totals.calls, 1);
@@ -275,7 +294,13 @@ fn model_review_uses_rag_and_compaction_and_falls_back_to_local_with_consent() {
             .match_indices("[M:")
             .filter_map(|(i, _)| body[i..].split(']').next().map(|s| format!("{s}]")))
             .collect();
-        (200, format!("Risk summary: eval on user input. Evidence: {}", cited.join(" ")))
+        (
+            200,
+            format!(
+                "Risk summary: eval on user input. Evidence: {}",
+                cited.join(" ")
+            ),
+        )
     });
     let cloud = CloudProvider {
         client: Arc::new(
@@ -318,20 +343,37 @@ fn model_review_uses_rag_and_compaction_and_falls_back_to_local_with_consent() {
     let run = p.execute(&run.id, Some(&CancelToken::new())).unwrap();
     let detail = p.detail(&run.id).unwrap();
     let review = detail.tasks.iter().find(|t| t.key == "cloud").unwrap();
-    assert_eq!(review.state.to_string(), "completed", "{:?}", review.reason_code);
+    assert_eq!(
+        review.state.to_string(),
+        "completed",
+        "{:?}",
+        review.reason_code
+    );
     let data = &review.output.as_ref().unwrap()["data"];
     assert_eq!(data["route"], "local");
     assert!(data["fallback_reason"].as_str().unwrap().contains("503"));
     assert!(data["context"]["original_chars"].as_u64().unwrap() > 0);
-    let retrieved: Vec<&str> = data["retrieved_memory"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    let retrieved: Vec<&str> = data["retrieved_memory"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
     assert!(retrieved.contains(&fact.id.as_str()), "{retrieved:?}");
-    assert!(data["cited_memory"].as_array().unwrap().iter().any(|v| v == &json!(fact.id)));
+    assert!(data["cited_memory"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == &json!(fact.id)));
     assert_ne!(run.outcome, Some(Outcome::Failed));
 
     // The cloud got only redacted summaries via the per-role model.
     let sent = cloud_seen.lock().unwrap().join("\n");
     assert!(sent.contains("openmindai-super"));
-    assert!(!sent.contains(SECRET_VALUE), "secrets never leave the machine");
+    assert!(
+        !sent.contains(SECRET_VALUE),
+        "secrets never leave the machine"
+    );
 
     let rows: Vec<(String, String, Option<String>)> = {
         let mut stmt = db
@@ -343,7 +385,9 @@ fn model_review_uses_rag_and_compaction_and_falls_back_to_local_with_consent() {
             .map(Result::unwrap)
             .collect()
     };
-    assert!(rows.iter().any(|(p, o, t)| p == "openmindai" && o != "ok" && t.as_deref() == Some(review.id.as_str())));
+    assert!(rows.iter().any(|(p, o, t)| p == "openmindai"
+        && o != "ok"
+        && t.as_deref() == Some(review.id.as_str())));
     assert!(rows.iter().any(|(p, o, _)| p == "local" && o == "ok"));
     let analytics = llm_analytics(&db, Some(&f.project_id), 0).unwrap();
     assert!(analytics.by_role.iter().any(|g| g.key == "cloud_reviewer"));
@@ -392,7 +436,10 @@ fn local_fallback_requires_consent() {
     let detail = p.detail(&run.id).unwrap();
     let review = detail.tasks.iter().find(|t| t.key == "cloud").unwrap();
     assert_ne!(review.state.to_string(), "completed");
-    assert!(local_seen.lock().unwrap().is_empty(), "no silent local substitution");
+    assert!(
+        local_seen.lock().unwrap().is_empty(),
+        "no silent local substitution"
+    );
 }
 
 #[test]
@@ -400,7 +447,11 @@ fn rbac_and_separation_of_duties_gate_run_creation_and_approval() {
     let f = fixture();
     let db = Database::open(&f.db_path).unwrap();
     let c = Collaboration::new(&db);
-    for (id, name) in [("operator:alice", "Alice"), ("operator:bob", "Bob"), ("operator:carol", "Carol")] {
+    for (id, name) in [
+        ("operator:alice", "Alice"),
+        ("operator:bob", "Bob"),
+        ("operator:carol", "Carol"),
+    ] {
         c.ensure_principal(id, name, PrincipalKind::Human).unwrap();
     }
     c.set_policy(
@@ -412,10 +463,22 @@ fn rbac_and_separation_of_duties_gate_run_creation_and_approval() {
         "operator:alice",
     )
     .unwrap();
-    c.grant(&f.project_id, "operator:bob", Role::Approver, "operator:alice", None)
-        .unwrap();
-    c.grant(&f.project_id, "operator:carol", Role::Viewer, "operator:alice", None)
-        .unwrap();
+    c.grant(
+        &f.project_id,
+        "operator:bob",
+        Role::Approver,
+        "operator:alice",
+        None,
+    )
+    .unwrap();
+    c.grant(
+        &f.project_id,
+        "operator:carol",
+        Role::Viewer,
+        "operator:alice",
+        None,
+    )
+    .unwrap();
     let p = platform(&f);
     let opts = InvestigationOptions::default();
     let err = p
@@ -430,17 +493,29 @@ fn rbac_and_separation_of_duties_gate_run_creation_and_approval() {
         .decide(&a.id, true, "operator:alice", &a.scope_digest, None)
         .unwrap_err();
     assert!(err.contains("separation of duties"), "{err}");
-    assert!(p.decide(&a.id, true, "operator:carol", &a.scope_digest, None).is_err());
+    assert!(p
+        .decide(&a.id, true, "operator:carol", &a.scope_digest, None)
+        .is_err());
     p.decide(&a.id, true, "operator:bob", &a.scope_digest, None)
         .unwrap();
     let run = p.execute(&run.id, None).unwrap();
     assert_eq!(run.state, RunState::Completed);
     let log = c.audit_log(Some(&f.project_id), 100).unwrap();
-    assert!(log.iter().any(|r| r.action == "approve" && r.outcome == "allowed" && r.actor == "operator:bob"));
-    assert!(log.iter().any(|r| r.outcome == "denied" && r.actor == "operator:alice"));
+    assert!(log
+        .iter()
+        .any(|r| r.action == "approve" && r.outcome == "allowed" && r.actor == "operator:bob"));
+    assert!(log
+        .iter()
+        .any(|r| r.outcome == "denied" && r.actor == "operator:alice"));
 }
 
-fn http(addr: std::net::SocketAddr, method: &str, path: &str, headers: &[(&str, String)], body: &str) -> (u16, Value) {
+fn http(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[(&str, String)],
+    body: &str,
+) -> (u16, Value) {
     let mut stream = TcpStream::connect(addr).unwrap();
     let mut req = format!("{method} {path} HTTP/1.1\r\n");
     let mut has_host = false;
@@ -451,7 +526,10 @@ fn http(addr: std::net::SocketAddr, method: &str, path: &str, headers: &[(&str, 
     if !has_host {
         req.push_str(&format!("Host: 127.0.0.1:{}\r\n", addr.port()));
     }
-    req.push_str(&format!("Content-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()));
+    req.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    ));
     stream.write_all(req.as_bytes()).unwrap();
     let mut out = String::new();
     stream.read_to_string(&mut out).unwrap();
@@ -471,15 +549,31 @@ fn automation_api_is_scoped_authenticated_and_cannot_approve() {
         )
         .unwrap();
     let tokens = TokenStore::new(&db);
-    let all: Vec<String> = ["runs:read", "runs:write", "reports:read", "analytics:read"].map(String::from).to_vec();
-    let (token, secret) = tokens.create(&f.project_id, "ci", &all, 30, "operator:me").unwrap();
-    let (_, read_only) = tokens
-        .create(&f.project_id, "dashboard", &["runs:read".to_owned()], 30, "operator:me")
+    let all: Vec<String> = ["runs:read", "runs:write", "reports:read", "analytics:read"]
+        .map(String::from)
+        .to_vec();
+    let (token, secret) = tokens
+        .create(&f.project_id, "ci", &all, 30, "operator:me")
         .unwrap();
-    let (_, other_secret) = tokens.create("other", "other", &all, 30, "operator:me").unwrap();
+    let (_, read_only) = tokens
+        .create(
+            &f.project_id,
+            "dashboard",
+            &["runs:read".to_owned()],
+            30,
+            "operator:me",
+        )
+        .unwrap();
+    let (_, other_secret) = tokens
+        .create("other", "other", &all, 30, "operator:me")
+        .unwrap();
     let stored: String = db
         .connection()
-        .query_row("SELECT token_sha256 FROM api_tokens WHERE id=?1", [&token.id], |r| r.get(0))
+        .query_row(
+            "SELECT token_sha256 FROM api_tokens WHERE id=?1",
+            [&token.id],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_ne!(stored, secret, "only a verifier is stored");
 
@@ -491,14 +585,31 @@ fn automation_api_is_scoped_authenticated_and_cannot_approve() {
 
     assert_eq!(http(addr, "GET", "/v1/health", &[], "").0, 200);
     assert_eq!(http(addr, "GET", "/v1/runs", &[], "").0, 401);
-    assert_eq!(http(addr, "GET", "/v1/runs", &[auth("ctapi_wrong")], "").0, 401);
     assert_eq!(
-        http(addr, "GET", "/v1/runs", &[auth(&secret), ("Origin", "https://evil.example".into())], "").0,
+        http(addr, "GET", "/v1/runs", &[auth("ctapi_wrong")], "").0,
+        401
+    );
+    assert_eq!(
+        http(
+            addr,
+            "GET",
+            "/v1/runs",
+            &[auth(&secret), ("Origin", "https://evil.example".into())],
+            ""
+        )
+        .0,
         403,
         "browsers are refused"
     );
     assert_eq!(
-        http(addr, "GET", "/v1/runs", &[auth(&secret), ("Host", "attacker.example".into())], "").0,
+        http(
+            addr,
+            "GET",
+            "/v1/runs",
+            &[auth(&secret), ("Host", "attacker.example".into())],
+            ""
+        )
+        .0,
         421,
         "DNS rebinding is refused"
     );
@@ -514,7 +625,10 @@ fn automation_api_is_scoped_authenticated_and_cannot_approve() {
     assert_eq!(created["run"]["state"], "awaiting_approval");
     let run_id = created["run"]["id"].as_str().unwrap().to_owned();
     let approval = &created["approvals"][0];
-    assert_eq!(http(addr, "POST", "/v1/approvals/x", &[auth(&secret)], "").0, 403);
+    assert_eq!(
+        http(addr, "POST", "/v1/approvals/x", &[auth(&secret)], "").0,
+        403
+    );
     // Even with the digest, an automated principal cannot approve.
     assert!(p
         .decide(
@@ -526,25 +640,86 @@ fn automation_api_is_scoped_authenticated_and_cannot_approve() {
         )
         .is_err());
 
-    let (status, detail) = http(addr, "GET", &format!("/v1/runs/{run_id}"), &[auth(&secret)], "");
+    let (status, detail) = http(
+        addr,
+        "GET",
+        &format!("/v1/runs/{run_id}"),
+        &[auth(&secret)],
+        "",
+    );
     assert_eq!(status, 200);
     assert_eq!(detail["run"]["owner"], token.principal_id);
-    assert_eq!(http(addr, "GET", &format!("/v1/runs/{run_id}/events?cursor=0"), &[auth(&secret)], "").0, 200);
-    assert_eq!(http(addr, "GET", &format!("/v1/runs/{run_id}"), &[auth(&other_secret)], "").0, 404, "other projects cannot see it");
-    assert_eq!(http(addr, "POST", "/v1/runs", &[auth(&read_only)], r#"{"goal":"x"}"#).0, 403, "scope enforced");
-    assert_eq!(http(addr, "GET", "/v1/analytics?days=7", &[auth(&secret)], "").0, 200);
+    assert_eq!(
+        http(
+            addr,
+            "GET",
+            &format!("/v1/runs/{run_id}/events?cursor=0"),
+            &[auth(&secret)],
+            ""
+        )
+        .0,
+        200
+    );
+    assert_eq!(
+        http(
+            addr,
+            "GET",
+            &format!("/v1/runs/{run_id}"),
+            &[auth(&other_secret)],
+            ""
+        )
+        .0,
+        404,
+        "other projects cannot see it"
+    );
+    assert_eq!(
+        http(
+            addr,
+            "POST",
+            "/v1/runs",
+            &[auth(&read_only)],
+            r#"{"goal":"x"}"#
+        )
+        .0,
+        403,
+        "scope enforced"
+    );
+    assert_eq!(
+        http(addr, "GET", "/v1/analytics?days=7", &[auth(&secret)], "").0,
+        200
+    );
     let (status, metrics) = http(addr, "GET", "/v1/metrics", &[auth(&secret)], "");
     assert_eq!(status, 200);
     assert_eq!(metrics["runs_by_state"]["awaiting_approval"], 1);
-    assert_eq!(http(addr, "POST", &format!("/v1/runs/{run_id}/cancel"), &[auth(&secret)], "").0, 200);
+    assert_eq!(
+        http(
+            addr,
+            "POST",
+            &format!("/v1/runs/{run_id}/cancel"),
+            &[auth(&secret)],
+            ""
+        )
+        .0,
+        200
+    );
 
     tokens.revoke(&token.id, "operator:me").unwrap();
-    assert_eq!(http(addr, "GET", "/v1/runs", &[auth(&secret)], "").0, 401, "revoked");
+    assert_eq!(
+        http(addr, "GET", "/v1/runs", &[auth(&secret)], "").0,
+        401,
+        "revoked"
+    );
     server.stop();
 
-    let log = Collaboration::new(&db).audit_log(Some(&f.project_id), 200).unwrap();
-    assert!(log.iter().any(|r| r.action == "api_request" && r.outcome == "allowed"));
-    assert!(log.iter().any(|r| r.action == "api_request" && r.outcome == "denied"));
+    let log = Collaboration::new(&db)
+        .audit_log(Some(&f.project_id), 200)
+        .unwrap();
+    assert!(log
+        .iter()
+        .any(|r| r.action == "api_request" && r.outcome == "allowed"));
+    assert!(log
+        .iter()
+        .any(|r| r.action == "api_request" && r.outcome == "denied"));
 }
 
 #[test]
@@ -552,7 +727,13 @@ fn pdf_reports_metrics_and_retention() {
     let f = fixture();
     let p = platform(&f);
     let (run, approvals) = p
-        .create_investigation(&f.project_id, "Review eval usage", "operator", &InvestigationOptions::default(), None)
+        .create_investigation(
+            &f.project_id,
+            "Review eval usage",
+            "operator",
+            &InvestigationOptions::default(),
+            None,
+        )
         .unwrap();
     approve_all(&p, &approvals, "operator");
     p.execute(&run.id, None).unwrap();
@@ -560,12 +741,18 @@ fn pdf_reports_metrics_and_retention() {
     assert!(pdf.starts_with(b"%PDF-1.4") && pdf.ends_with(b"%%EOF\n"));
     let markdown = p.report(&run.id, "markdown").unwrap();
     let digest = task_orchestrator::store::sha256_hex(markdown.as_bytes());
-    assert!(String::from_utf8_lossy(&pdf).contains(&digest), "PDF is bound to the stored report");
+    assert!(
+        String::from_utf8_lossy(&pdf).contains(&digest),
+        "PDF is bound to the stored report"
+    );
 
     let db = Database::open(&f.db_path).unwrap();
     let m = metrics_snapshot(&db, Some(&f.project_id)).unwrap();
     assert_eq!(m.runs_by_state.get("completed"), Some(&1));
-    assert!(m.role_latency.iter().any(|r| r.role == "evidence_verifier" && r.completed == 1));
+    assert!(m
+        .role_latency
+        .iter()
+        .any(|r| r.role == "evidence_verifier" && r.completed == 1));
 
     let kept = p.prune(1, 0).unwrap();
     assert_eq!(kept.runs_deleted, 0, "recent runs are kept");
@@ -575,7 +762,11 @@ fn pdf_reports_metrics_and_retention() {
             [&run.id],
         )
         .unwrap();
-    assert_eq!(p.prune(1, 1).unwrap().runs_deleted, 0, "newest per project kept");
+    assert_eq!(
+        p.prune(1, 1).unwrap().runs_deleted,
+        0,
+        "newest per project kept"
+    );
     assert_eq!(p.prune(1, 0).unwrap().runs_deleted, 1);
     assert!(p.list_runs(Some(&f.project_id), 10).unwrap().is_empty());
 }

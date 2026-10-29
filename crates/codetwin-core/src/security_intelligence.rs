@@ -298,8 +298,9 @@ pub fn correlate(findings: &[NormalizedFinding]) -> Vec<FindingCluster> {
                 .iter()
                 .any(|m| m.review_verdict.as_deref() == Some("confirmed"));
             let boost = 1.0 + 0.15 * (analyzers.len() as f64 - 1.0);
-            let risk = (lead.severity.weight() * confidence * boost * if confirmed { 1.2 } else { 1.0 })
-                .min(10.0);
+            let risk =
+                (lead.severity.weight() * confidence * boost * if confirmed { 1.2 } else { 1.0 })
+                    .min(10.0);
             let fingerprints: BTreeSet<&str> =
                 members.iter().map(|m| m.fingerprint.as_str()).collect();
             let id_source = fingerprints.into_iter().collect::<Vec<_>>().join("\n");
@@ -332,7 +333,10 @@ pub fn correlate(findings: &[NormalizedFinding]) -> Vec<FindingCluster> {
 pub fn evaluate_policy(clusters: &[FindingCluster], policy: &SecurityPolicy) -> PolicyOutcome {
     let mut counted: BTreeMap<String, u32> = BTreeMap::new();
     let mut secrets = 0u32;
-    for c in clusters.iter().filter(|c| c.confidence >= policy.min_confidence) {
+    for c in clusters
+        .iter()
+        .filter(|c| c.confidence >= policy.min_confidence)
+    {
         let key = serde_json::to_value(c.severity)
             .ok()
             .and_then(|v| v.as_str().map(str::to_owned))
@@ -353,7 +357,9 @@ pub fn evaluate_policy(clusters: &[FindingCluster], policy: &SecurityPolicy) -> 
     if let Some(max_high) = policy.max_high {
         let high = counted.get("high").copied().unwrap_or(0);
         if high > max_high {
-            violations.push(format!("{high} high cluster(s) exceed the limit of {max_high}"));
+            violations.push(format!(
+                "{high} high cluster(s) exceed the limit of {max_high}"
+            ));
         }
     }
     if policy.fail_on_secrets && secrets > 0 {
@@ -381,7 +387,10 @@ impl<'a> SecurityIntelligence<'a> {
 
     /// Load open security findings with normalised severity/confidence and
     /// each finding's current review verdict.
-    pub fn load_findings(&self, project_id: &str) -> Result<(Vec<NormalizedFinding>, bool), String> {
+    pub fn load_findings(
+        &self,
+        project_id: &str,
+    ) -> Result<(Vec<NormalizedFinding>, bool), String> {
         let placeholders = SECURITY_CATEGORIES
             .iter()
             .map(|c| format!("'{c}'"))
@@ -427,14 +436,20 @@ impl<'a> SecurityIntelligence<'a> {
                 })
             })
             .map_err(|e| e.to_string())?;
-        let mut out = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        let mut out = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
         let truncated = out.len() > MAX_FINDINGS;
         out.truncate(MAX_FINDINGS);
         Ok((out, truncated))
     }
 
     /// Correlate, apply suppressions and evaluate `policy`. Read-only.
-    pub fn report(&self, project_id: &str, policy: &SecurityPolicy) -> Result<CorrelationReport, String> {
+    pub fn report(
+        &self,
+        project_id: &str,
+        policy: &SecurityPolicy,
+    ) -> Result<CorrelationReport, String> {
         let now = now_ms();
         let (findings, truncated) = self.load_findings(project_id)?;
         let suppressions: Vec<Suppression> = self
@@ -548,12 +563,17 @@ impl<'a> SecurityIntelligence<'a> {
             return Err("a suppression needs a reason of 10–2000 characters".into());
         }
         if ttl_days == 0 || ttl_days > MAX_SUPPRESSION_DAYS {
-            return Err(format!("suppressions expire within 1–{MAX_SUPPRESSION_DAYS} days"));
+            return Err(format!(
+                "suppressions expire within 1–{MAX_SUPPRESSION_DAYS} days"
+            ));
         }
         let now = now_ms();
         let id = new_id("supp");
         let expires = now + i64::from(ttl_days) * 86_400_000;
-        let tx = self.conn().unchecked_transaction().map_err(|e| e.to_string())?;
+        let tx = self
+            .conn()
+            .unchecked_transaction()
+            .map_err(|e| e.to_string())?;
         tx.execute(
             "INSERT INTO security_suppressions(id,project_id,scope,matcher,reason,created_by,created_ms,expires_ms)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
@@ -574,15 +594,31 @@ impl<'a> SecurityIntelligence<'a> {
         )
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
-        collab.audit(actor, "security_suppress", Some(project_id), Some(&id), "ok", json!({"scope": scope.as_str()}));
-        self.suppression(&id)?.ok_or_else(|| "suppression not found".into())
+        collab.audit(
+            actor,
+            "security_suppress",
+            Some(project_id),
+            Some(&id),
+            "ok",
+            json!({"scope": scope.as_str()}),
+        );
+        self.suppression(&id)?
+            .ok_or_else(|| "suppression not found".into())
     }
 
-    pub fn revoke(&self, project_id: &str, suppression_id: &str, actor: &str) -> Result<(), String> {
+    pub fn revoke(
+        &self,
+        project_id: &str,
+        suppression_id: &str,
+        actor: &str,
+    ) -> Result<(), String> {
         let collab = Collaboration::new(self.db);
         collab.authorize(project_id, actor, Action::Approve)?;
         let now = now_ms();
-        let tx = self.conn().unchecked_transaction().map_err(|e| e.to_string())?;
+        let tx = self
+            .conn()
+            .unchecked_transaction()
+            .map_err(|e| e.to_string())?;
         let changed = tx
             .execute(
                 "UPDATE security_suppressions SET revoked_by=?3, revoked_ms=?4
@@ -600,7 +636,14 @@ impl<'a> SecurityIntelligence<'a> {
         )
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
-        collab.audit(actor, "security_unsuppress", Some(project_id), Some(suppression_id), "ok", json!({}));
+        collab.audit(
+            actor,
+            "security_unsuppress",
+            Some(project_id),
+            Some(suppression_id),
+            "ok",
+            json!({}),
+        );
         Ok(())
     }
 
@@ -619,8 +662,11 @@ impl<'a> SecurityIntelligence<'a> {
                 Self::select()
             ))
             .map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([project_id], Self::read).map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        let rows = stmt
+            .query_map([project_id], Self::read)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     pub fn suppression_events(&self, project_id: &str) -> Result<Vec<SuppressionEvent>, String> {
@@ -642,7 +688,8 @@ impl<'a> SecurityIntelligence<'a> {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     fn select() -> &'static str {
@@ -672,7 +719,15 @@ mod tests {
     use super::*;
     use crate::collaboration::PrincipalKind;
 
-    fn nf(fp: &str, analyzer: &str, cat: &str, sev: &str, conf: f64, line: i64, cwe: Option<&str>) -> NormalizedFinding {
+    fn nf(
+        fp: &str,
+        analyzer: &str,
+        cat: &str,
+        sev: &str,
+        conf: f64,
+        line: i64,
+        cwe: Option<&str>,
+    ) -> NormalizedFinding {
         NormalizedFinding {
             id: format!("f-{fp}"),
             fingerprint: fp.into(),
@@ -715,7 +770,10 @@ mod tests {
         assert!(sqli.corroborated);
         assert_eq!(sqli.analyzers, vec!["appsec", "runtime"]);
         assert_eq!(sqli.severity, Severity::High);
-        assert!((sqli.confidence - 0.8).abs() < 1e-9, "noisy-OR of 0.6 and 0.5");
+        assert!(
+            (sqli.confidence - 0.8).abs() < 1e-9,
+            "noisy-OR of 0.6 and 0.5"
+        );
         assert_eq!(clusters[0].id, sqli.id, "corroborated high ranks first");
         // Cluster ids are stable regardless of input order.
         let mut reversed = findings.clone();
@@ -737,18 +795,50 @@ mod tests {
 
     #[test]
     fn policy_gate_counts_confident_clusters_and_secrets() {
-        let mut secret = nf("s", "secret_scanning", "secrets", "high", 0.8, 1, Some("CWE-798"));
+        let mut secret = nf(
+            "s",
+            "secret_scanning",
+            "secrets",
+            "high",
+            0.8,
+            1,
+            Some("CWE-798"),
+        );
         secret.path = Some("config.env".into());
         let clusters = correlate(&[
-            nf("a", "appsec", "security", "critical", 0.9, 10, Some("CWE-78")),
-            nf("weak", "appsec", "security", "critical", 0.1, 50, Some("CWE-22")),
+            nf(
+                "a",
+                "appsec",
+                "security",
+                "critical",
+                0.9,
+                10,
+                Some("CWE-78"),
+            ),
+            nf(
+                "weak",
+                "appsec",
+                "security",
+                "critical",
+                0.1,
+                50,
+                Some("CWE-22"),
+            ),
             secret,
         ]);
         let outcome = evaluate_policy(&clusters, &SecurityPolicy::default());
         assert!(!outcome.passed);
-        assert_eq!(outcome.counted.get("critical"), Some(&1), "low-confidence cluster ignored");
+        assert_eq!(
+            outcome.counted.get("critical"),
+            Some(&1),
+            "low-confidence cluster ignored"
+        );
         assert_eq!(outcome.violations.len(), 2);
-        let lenient = SecurityPolicy { max_critical: 1, fail_on_secrets: false, ..SecurityPolicy::default() };
+        let lenient = SecurityPolicy {
+            max_critical: 1,
+            fail_on_secrets: false,
+            ..SecurityPolicy::default()
+        };
         assert!(evaluate_policy(&clusters, &lenient).passed);
     }
 
@@ -776,27 +866,79 @@ mod tests {
         seed(&db);
         let intel = SecurityIntelligence::new(&db);
         let before = intel.report("p1", &SecurityPolicy::default()).unwrap();
-        assert_eq!(before.finding_count, 3, "quality and resolved findings are excluded");
+        assert_eq!(
+            before.finding_count, 3,
+            "quality and resolved findings are excluded"
+        );
         assert_eq!(before.clusters.len(), 2);
-        assert!(!before.outcome.passed, "critical eval finding fails the gate");
+        assert!(
+            !before.outcome.passed,
+            "critical eval finding fails the gate"
+        );
         let sqli = before.clusters.iter().find(|c| c.corroborated).unwrap();
         assert_eq!(sqli.members.len(), 2);
-        assert!((sqli.members[1].confidence - 0.5).abs() < 1e-9 || (sqli.members[0].confidence - 0.5).abs() < 1e-9,
-            "missing confidence takes the analyzer default");
+        assert!(
+            (sqli.members[1].confidence - 0.5).abs() < 1e-9
+                || (sqli.members[0].confidence - 0.5).abs() < 1e-9,
+            "missing confidence takes the analyzer default"
+        );
 
         // Automation principals can never suppress.
         let collab = Collaboration::new(&db);
-        collab.ensure_principal("bot:planner", "Planner", PrincipalKind::Automation).unwrap();
+        collab
+            .ensure_principal("bot:planner", "Planner", PrincipalKind::Automation)
+            .unwrap();
         assert!(intel
-            .suppress("p1", "bot:planner", SuppressionScope::Path, "vendor/", "third-party code we do not ship", 30)
+            .suppress(
+                "p1",
+                "bot:planner",
+                SuppressionScope::Path,
+                "vendor/",
+                "third-party code we do not ship",
+                30
+            )
             .is_err());
         // Validation: unbounded suppressions and vague reasons are refused.
-        assert!(intel.suppress("p1", "alice", SuppressionScope::Path, "vendor/", "too short", 30).is_err());
-        assert!(intel.suppress("p1", "alice", SuppressionScope::Path, "vendor/", "third-party code we do not ship", 0).is_err());
-        assert!(intel.suppress("p1", "alice", SuppressionScope::Path, "../", "third-party code we do not ship", 30).is_err());
+        assert!(intel
+            .suppress(
+                "p1",
+                "alice",
+                SuppressionScope::Path,
+                "vendor/",
+                "too short",
+                30
+            )
+            .is_err());
+        assert!(intel
+            .suppress(
+                "p1",
+                "alice",
+                SuppressionScope::Path,
+                "vendor/",
+                "third-party code we do not ship",
+                0
+            )
+            .is_err());
+        assert!(intel
+            .suppress(
+                "p1",
+                "alice",
+                SuppressionScope::Path,
+                "../",
+                "third-party code we do not ship",
+                30
+            )
+            .is_err());
 
         let s = intel
-            .suppress("p1", "alice", SuppressionScope::Path, "vendor/", "third-party code we do not ship", 30)
+            .suppress(
+                "p1",
+                "alice",
+                SuppressionScope::Path,
+                "vendor/",
+                "third-party code we do not ship",
+                30,
+            )
             .unwrap();
         let after = intel.report("p1", &SecurityPolicy::default()).unwrap();
         assert_eq!(after.clusters.len(), 1);
@@ -807,16 +949,35 @@ mod tests {
         // Terms cannot be widened in place, and the audit trail is append-only.
         assert!(db
             .connection()
-            .execute("UPDATE security_suppressions SET expires_ms = expires_ms + 1 WHERE id=?1", [&s.id])
+            .execute(
+                "UPDATE security_suppressions SET expires_ms = expires_ms + 1 WHERE id=?1",
+                [&s.id]
+            )
             .is_err());
-        assert!(db.connection().execute("UPDATE security_suppression_events SET actor='x'", []).is_err());
-        assert!(db.connection().execute("DELETE FROM security_suppression_events", []).is_err());
+        assert!(db
+            .connection()
+            .execute("UPDATE security_suppression_events SET actor='x'", [])
+            .is_err());
+        assert!(db
+            .connection()
+            .execute("DELETE FROM security_suppression_events", [])
+            .is_err());
 
         intel.revoke("p1", &s.id, "alice").unwrap();
         assert!(intel.revoke("p1", &s.id, "alice").is_err());
         let events = intel.suppression_events("p1").unwrap();
-        assert_eq!(events.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(), vec!["revoked", "created"]);
-        assert_eq!(intel.report("p1", &SecurityPolicy::default()).unwrap().clusters.len(), 2);
+        assert_eq!(
+            events.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(),
+            vec!["revoked", "created"]
+        );
+        assert_eq!(
+            intel
+                .report("p1", &SecurityPolicy::default())
+                .unwrap()
+                .clusters
+                .len(),
+            2
+        );
 
         // A current false-positive review hides a finding and says why.
         db.connection()
@@ -833,8 +994,14 @@ mod tests {
         assert_eq!(digest.len(), 64);
         assert!(intel.verify_snapshot(&snap).unwrap());
         db.connection()
-            .execute("UPDATE security_correlation_snapshots SET report_json = report_json || ' '", [])
+            .execute(
+                "UPDATE security_correlation_snapshots SET report_json = report_json || ' '",
+                [],
+            )
             .unwrap();
-        assert!(!intel.verify_snapshot(&snap).unwrap(), "tampering is detected");
+        assert!(
+            !intel.verify_snapshot(&snap).unwrap(),
+            "tampering is detected"
+        );
     }
 }

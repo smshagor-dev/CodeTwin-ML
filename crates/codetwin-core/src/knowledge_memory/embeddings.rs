@@ -71,9 +71,7 @@ impl HttpEmbedder {
             EmbeddingDestination::Loopback if !is_loopback(host) => {
                 return Err("a loopback embedder must point at 127.0.0.1, ::1 or localhost".into());
             }
-            EmbeddingDestination::Consented(_)
-                if url.scheme() != "https" || is_loopback(host) =>
-            {
+            EmbeddingDestination::Consented(_) if url.scheme() != "https" || is_loopback(host) => {
                 return Err("a remote embedder must use HTTPS to a non-loopback host".into());
             }
             _ => {}
@@ -295,22 +293,54 @@ mod tests {
     #[test]
     fn endpoints_and_destinations_are_validated() {
         let lb = EmbeddingDestination::Loopback;
-        assert!(HttpEmbedder::new("http://127.0.0.1:11434/v1/embeddings", "m", None, lb.clone()).is_ok());
-        assert!(HttpEmbedder::new("https://api.example.com/v1/embeddings", "m", None, lb.clone()).is_err());
+        assert!(HttpEmbedder::new(
+            "http://127.0.0.1:11434/v1/embeddings",
+            "m",
+            None,
+            lb.clone()
+        )
+        .is_ok());
+        assert!(HttpEmbedder::new(
+            "https://api.example.com/v1/embeddings",
+            "m",
+            None,
+            lb.clone()
+        )
+        .is_err());
         assert!(HttpEmbedder::new("http://127.0.0.1/v1/chat", "m", None, lb.clone()).is_err());
         assert!(HttpEmbedder::new("http://u:p@127.0.0.1/v1/embeddings", "m", None, lb).is_err());
         let remote = EmbeddingDestination::Consented(consent("p1", true, true));
-        assert!(HttpEmbedder::new("http://api.example.com/v1/embeddings", "m", None, remote.clone()).is_err());
-        assert!(HttpEmbedder::new("https://127.0.0.1/v1/embeddings", "m", None, remote.clone()).is_err());
-        assert!(HttpEmbedder::new("https://api.example.com/v1/embeddings", "m", None, remote).is_ok());
+        assert!(HttpEmbedder::new(
+            "http://api.example.com/v1/embeddings",
+            "m",
+            None,
+            remote.clone()
+        )
+        .is_err());
+        assert!(
+            HttpEmbedder::new("https://127.0.0.1/v1/embeddings", "m", None, remote.clone())
+                .is_err()
+        );
+        assert!(
+            HttpEmbedder::new("https://api.example.com/v1/embeddings", "m", None, remote).is_ok()
+        );
     }
 
     #[test]
     fn remote_embedding_requires_matching_consent_before_any_network() {
         // Unroutable TEST-NET host: reaching the network would error differently.
-        for c in [consent("other", true, true), consent("p1", false, true), consent("p1", true, false)] {
-            let e = HttpEmbedder::new("https://192.0.2.1/v1/embeddings", "m", None, EmbeddingDestination::Consented(c))
-                .unwrap();
+        for c in [
+            consent("other", true, true),
+            consent("p1", false, true),
+            consent("p1", true, false),
+        ] {
+            let e = HttpEmbedder::new(
+                "https://192.0.2.1/v1/embeddings",
+                "m",
+                None,
+                EmbeddingDestination::Consented(c),
+            )
+            .unwrap();
             let err = e.embed("p1", &["text".into()]).unwrap_err();
             assert!(err.contains("consent"), "{err}");
         }
@@ -333,7 +363,11 @@ mod tests {
                 if let Some(idx) = text.find("\r\n\r\n") {
                     let len: usize = text
                         .lines()
-                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap()))
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse().unwrap())
+                        })
                         .unwrap_or(0);
                     if got.len() >= idx + 4 + len {
                         break;
@@ -365,7 +399,10 @@ mod tests {
         let request = rx.recv().unwrap();
         assert!(request.starts_with("POST /v1/embeddings"));
         assert!(request.contains("Bearer local-token"));
-        assert!(request.contains(r#""input":["alpha","beta"]"#) && request.contains(r#""model":"nomic-embed-text""#));
+        assert!(
+            request.contains(r#""input":["alpha","beta"]"#)
+                && request.contains(r#""model":"nomic-embed-text""#)
+        );
         assert_eq!(vectors.len(), 2);
         assert_eq!(vectors[0].len(), 16);
         // Re-ordered by `index` and L2-normalised by the shared parser.

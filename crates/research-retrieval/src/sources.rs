@@ -144,10 +144,10 @@ pub fn simhash(text: &str) -> u64 {
             *w += if (h >> bit) & 1 == 1 { 1 } else { -1 };
         }
     }
-    weights
-        .iter()
-        .enumerate()
-        .fold(0u64, |acc, (bit, w)| if *w > 0 { acc | (1 << bit) } else { acc })
+    weights.iter().enumerate().fold(
+        0u64,
+        |acc, (bit, w)| if *w > 0 { acc | (1 << bit) } else { acc },
+    )
 }
 
 /// Default near-duplicate threshold (bits) for [`simhash`] fingerprints.
@@ -288,11 +288,19 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(
             groups[0],
-            DuplicateGroup { canonical: 0, duplicates: vec![2], exact: false }
+            DuplicateGroup {
+                canonical: 0,
+                duplicates: vec![2],
+                exact: false
+            }
         );
         assert_eq!(
             groups[1],
-            DuplicateGroup { canonical: 1, duplicates: vec![3], exact: true }
+            DuplicateGroup {
+                canonical: 1,
+                duplicates: vec![3],
+                exact: true
+            }
         );
     }
 

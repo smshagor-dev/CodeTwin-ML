@@ -18,7 +18,9 @@ use serde_json::json;
 use task_orchestrator::store::TaskSpec;
 
 use crate::model_access::{CallScope, ModelAccess};
-use crate::specialist_workers::{finish_plan, goal_terms, plan_investigation, role_task, InvestigationOptions};
+use crate::specialist_workers::{
+    finish_plan, goal_terms, plan_investigation, role_task, InvestigationOptions,
+};
 use crate::Database;
 
 /// Roles a model may schedule. Research, verification, model review,
@@ -28,8 +30,14 @@ pub const PLANNABLE_ROLES: &[(&str, &str)] = &[
         "source_intelligence",
         "searches indexed symbols for up to 6 search terms; input {\"terms\": [..]}",
     ),
-    ("dependency_analyst", "dependency inventory, advisories and SBOM; no input"),
-    ("security_reviewer", "persisted AppSec and secret findings; no input"),
+    (
+        "dependency_analyst",
+        "dependency inventory, advisories and SBOM; no input",
+    ),
+    (
+        "security_reviewer",
+        "persisted AppSec and secret findings; no input",
+    ),
     ("qa_planner", "discovered tests and frameworks; no input"),
 ];
 const RESERVED_KEYS: &[&str] = &["repo", "research", "verify", "cloud", "report", "quality"];
@@ -111,8 +119,9 @@ pub fn validate_model_plan(
     goal: &str,
     options: &InvestigationOptions,
 ) -> Result<(Vec<TaskSpec>, Option<String>, Vec<String>), String> {
-    let raw: RawPlan = serde_json::from_str(extract_json(text).ok_or("no JSON object in model output")?)
-        .map_err(|e| format!("model plan is not valid JSON: {e}"))?;
+    let raw: RawPlan =
+        serde_json::from_str(extract_json(text).ok_or("no JSON object in model output")?)
+            .map_err(|e| format!("model plan is not valid JSON: {e}"))?;
     let roles: BTreeMap<&str, &str> = PLANNABLE_ROLES.iter().copied().collect();
     let mut rejected = Vec::new();
     let mut accepted: Vec<RawTask> = Vec::new();
@@ -120,11 +129,17 @@ pub fn validate_model_plan(
     for task in raw.tasks.into_iter().take(MAX_MODEL_TASKS * 2) {
         let key = task.key.trim().to_ascii_lowercase();
         if !valid_key(&key) || RESERVED_KEYS.contains(&key.as_str()) {
-            rejected.push(format!("task `{}`: invalid or reserved key", clean(&task.key, 40)));
+            rejected.push(format!(
+                "task `{}`: invalid or reserved key",
+                clean(&task.key, 40)
+            ));
             continue;
         }
         if !roles.contains_key(task.role.as_str()) {
-            rejected.push(format!("task `{key}`: role `{}` is not plannable", clean(&task.role, 40)));
+            rejected.push(format!(
+                "task `{key}`: role `{}` is not plannable",
+                clean(&task.role, 40)
+            ));
             continue;
         }
         if !keys.insert(key.clone()) {
@@ -132,7 +147,9 @@ pub fn validate_model_plan(
             continue;
         }
         if accepted.len() >= MAX_MODEL_TASKS {
-            rejected.push(format!("task `{key}`: over the {MAX_MODEL_TASKS}-task limit"));
+            rejected.push(format!(
+                "task `{key}`: over the {MAX_MODEL_TASKS}-task limit"
+            ));
             keys.remove(&key);
             continue;
         }
@@ -251,7 +268,10 @@ pub fn propose_plan(
         },
         vec![
             ChatMessage::system(planner_prompt()),
-            ChatMessage::user(format!("Goal:\n{}", goal.chars().take(2_000).collect::<String>())),
+            ChatMessage::user(format!(
+                "Goal:\n{}",
+                goal.chars().take(2_000).collect::<String>()
+            )),
         ],
         1_024,
         0.1,
@@ -309,12 +329,25 @@ mod tests {
         let keys: Vec<&str> = plan.iter().map(|t| t.key.as_str()).collect();
         assert_eq!(
             keys,
-            vec!["repo", "auth_code", "crypto", "findings", "verify", "cloud", "report", "quality"]
+            vec![
+                "repo",
+                "auth_code",
+                "crypto",
+                "findings",
+                "verify",
+                "cloud",
+                "report",
+                "quality"
+            ]
         );
         assert_eq!(rationale.as_deref(), Some("split auth and crypto"));
         assert_eq!(rejected.len(), 3, "{rejected:?}");
         let findings = plan.iter().find(|t| t.key == "findings").unwrap();
-        assert_eq!(findings.depends_on, vec!["repo", "auth_code"], "unknown deps dropped");
+        assert_eq!(
+            findings.depends_on,
+            vec!["repo", "auth_code"],
+            "unknown deps dropped"
+        );
         let verify = plan.iter().find(|t| t.key == "verify").unwrap();
         assert!(verify.depends_on.contains(&"crypto".to_owned()));
         let crypto = plan.iter().find(|t| t.key == "crypto").unwrap();
@@ -358,11 +391,20 @@ mod tests {
     fn without_a_model_the_deterministic_plan_is_used() {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::open(dir.path().join("p.sqlite3")).unwrap();
-        let p = propose_plan(None, &db, "p", "Review auth", &opts(), &AtomicBool::new(false));
+        let p = propose_plan(
+            None,
+            &db,
+            "p",
+            "Review auth",
+            &opts(),
+            &AtomicBool::new(false),
+        );
         assert!(matches!(p.source, PlanSource::Deterministic { .. }));
         assert_eq!(p.tasks[0].key, "repo");
         let off = InvestigationOptions::default();
         let p = propose_plan(None, &db, "p", "Review auth", &off, &AtomicBool::new(false));
-        assert!(matches!(p.source, PlanSource::Deterministic { ref reason } if reason.contains("not requested")));
+        assert!(
+            matches!(p.source, PlanSource::Deterministic { ref reason } if reason.contains("not requested"))
+        );
     }
 }

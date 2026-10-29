@@ -40,7 +40,9 @@ pub fn random_secret() -> Result<String, String> {
 pub fn new_id(prefix: &str) -> String {
     format!(
         "{prefix}_{}",
-        &random_secret().unwrap_or_else(|_| sha256_hex(format!("{:?}", std::time::Instant::now()).as_bytes()))[..24]
+        &random_secret()
+            .unwrap_or_else(|_| sha256_hex(format!("{:?}", std::time::Instant::now()).as_bytes()))
+            [..24]
     )
 }
 
@@ -79,9 +81,7 @@ impl Role {
             A::View => true,
             A::Comment | A::CreateRun | A::ControlRun => self >= Role::Analyst,
             A::Approve => self >= Role::Approver,
-            A::ManageMembers | A::ManageSettings | A::ManageTokens => {
-                self == Role::Administrator
-            }
+            A::ManageMembers | A::ManageSettings | A::ManageTokens => self == Role::Administrator,
         }
     }
 }
@@ -351,7 +351,10 @@ impl<'a> Collaboration<'a> {
         actor: &str,
     ) -> Result<AccessPolicy, String> {
         self.authorize(project_id, actor, Action::ManageSettings)?;
-        let tx = self.conn().unchecked_transaction().map_err(|e| e.to_string())?;
+        let tx = self
+            .conn()
+            .unchecked_transaction()
+            .map_err(|e| e.to_string())?;
         if policy.enforce_rbac {
             let admins: i64 = tx
                 .query_row(
@@ -420,9 +423,10 @@ impl<'a> Collaboration<'a> {
         if let Some(role) = explicit {
             return Role::parse(&role).map(Some);
         }
-        Ok((!self.policy(project_id)?.enforce_rbac
-            && principal.kind == PrincipalKind::Human)
-            .then_some(Role::Administrator))
+        Ok(
+            (!self.policy(project_id)?.enforce_rbac && principal.kind == PrincipalKind::Human)
+                .then_some(Role::Administrator),
+        )
     }
 
     /// Deterministic authorization. Denials are audited.
@@ -472,9 +476,7 @@ impl<'a> Collaboration<'a> {
                 "denied",
                 json!({"reason": "separation_of_duties"}),
             );
-            return Err(
-                "separation of duties: the run owner cannot approve their own run".into(),
-            );
+            return Err("separation of duties: the run owner cannot approve their own run".into());
         }
         Ok(())
     }
@@ -697,7 +699,10 @@ impl<'a> Collaboration<'a> {
         if principal.kind != PrincipalKind::Human || principal.disabled {
             return Err("only active human principals can accept invitations".into());
         }
-        let tx = self.conn().unchecked_transaction().map_err(|e| e.to_string())?;
+        let tx = self
+            .conn()
+            .unchecked_transaction()
+            .map_err(|e| e.to_string())?;
         let row: Option<(String, String, String, i64)> = tx
             .query_row(
                 "SELECT id,project_id,role,expires_ms FROM project_invitations
@@ -817,11 +822,7 @@ impl<'a> Collaboration<'a> {
             target_id: r.get(3)?,
             parent_id: r.get(4)?,
             author: r.get(5)?,
-            body: if deleted {
-                String::new()
-            } else {
-                r.get(6)?
-            },
+            body: if deleted { String::new() } else { r.get(6)? },
             revision: r.get(7)?,
             created_ms: r.get(8)?,
             edited_ms: r.get(9)?,
@@ -859,7 +860,9 @@ impl<'a> Collaboration<'a> {
         }
         if let Some(parent) = parent_id {
             let p = self.comment(parent)?;
-            if p.project_id != project_id || p.target_kind != target_kind || p.target_id != target_id
+            if p.project_id != project_id
+                || p.target_kind != target_kind
+                || p.target_id != target_id
             {
                 return Err("reply must stay in the same thread".into());
             }
@@ -902,7 +905,10 @@ impl<'a> Collaboration<'a> {
         if body.is_empty() || body.chars().count() > 4000 {
             return Err("comment must be 1–4000 characters".into());
         }
-        let tx = self.conn().unchecked_transaction().map_err(|e| e.to_string())?;
+        let tx = self
+            .conn()
+            .unchecked_transaction()
+            .map_err(|e| e.to_string())?;
         tx.execute(
             "INSERT INTO collaboration_comment_revisions(comment_id,revision,body,edited_by,edited_ms)
              SELECT id, revision, body, ?2, ?3 FROM collaboration_comments WHERE id=?1",
@@ -960,7 +966,10 @@ impl<'a> Collaboration<'a> {
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![project_id, target_kind, target_id], Self::comment_row)
+            .query_map(
+                params![project_id, target_kind, target_id],
+                Self::comment_row,
+            )
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
     }
@@ -986,7 +995,10 @@ mod tests {
     fn single_user_mode_keeps_the_local_operator_in_charge() {
         let (_d, db, p) = setup();
         let c = Collaboration::new(&db);
-        assert_eq!(c.role_of(&p, "operator:me").unwrap(), Some(Role::Administrator));
+        assert_eq!(
+            c.role_of(&p, "operator:me").unwrap(),
+            Some(Role::Administrator)
+        );
         c.authorize(&p, "operator:me", Action::Approve).unwrap();
         c.ensure_principal("api:bot", "bot", PrincipalKind::Automation)
             .unwrap();
@@ -1013,8 +1025,15 @@ mod tests {
             "operator:alice",
         )
         .unwrap();
-        assert_eq!(c.role_of(&p, "operator:alice").unwrap(), Some(Role::Administrator));
-        assert_eq!(c.role_of(&p, "operator:bob").unwrap(), None, "no implicit role once enforced");
+        assert_eq!(
+            c.role_of(&p, "operator:alice").unwrap(),
+            Some(Role::Administrator)
+        );
+        assert_eq!(
+            c.role_of(&p, "operator:bob").unwrap(),
+            None,
+            "no implicit role once enforced"
+        );
         assert!(c.authorize(&p, "operator:bob", Action::View).is_err());
         let m = c
             .grant(&p, "operator:bob", Role::Analyst, "operator:alice", None)
@@ -1022,12 +1041,24 @@ mod tests {
         c.authorize(&p, "operator:bob", Action::CreateRun).unwrap();
         assert!(c.authorize(&p, "operator:bob", Action::Approve).is_err());
         assert!(
-            c.grant(&p, "operator:bob", Role::Approver, "operator:alice", Some(m.revision + 5))
-                .is_err(),
+            c.grant(
+                &p,
+                "operator:bob",
+                Role::Approver,
+                "operator:alice",
+                Some(m.revision + 5)
+            )
+            .is_err(),
             "stale revision conflicts"
         );
-        c.grant(&p, "operator:bob", Role::Approver, "operator:alice", Some(m.revision))
-            .unwrap();
+        c.grant(
+            &p,
+            "operator:bob",
+            Role::Approver,
+            "operator:alice",
+            Some(m.revision),
+        )
+        .unwrap();
         c.authorize_approval(&p, "operator:bob", "operator:alice")
             .unwrap();
         assert!(c
@@ -1037,7 +1068,9 @@ mod tests {
             c.revoke(&p, "operator:alice", "operator:alice").is_err(),
             "last admin stays"
         );
-        assert!(c.grant(&p, "operator:alice", Role::Viewer, "operator:bob", None).is_err());
+        assert!(c
+            .grant(&p, "operator:alice", Role::Viewer, "operator:bob", None)
+            .is_err());
         let denials = c.audit_log(Some(&p), 100).unwrap();
         assert!(denials.iter().any(|a| a.outcome == "denied"));
     }
@@ -1059,24 +1092,36 @@ mod tests {
             "operator:alice",
         )
         .unwrap();
-        let (_inv, code) = c.invite(&p, Role::Viewer, "operator:alice", 3_600_000).unwrap();
+        let (_inv, code) = c
+            .invite(&p, Role::Viewer, "operator:alice", 3_600_000)
+            .unwrap();
         let stored: String = db
             .connection()
-            .query_row("SELECT code_sha256 FROM project_invitations", [], |r| r.get(0))
+            .query_row("SELECT code_sha256 FROM project_invitations", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_ne!(stored, code, "code is not stored");
         let m = c.accept_invitation(&code, "operator:carol").unwrap();
         assert_eq!(m.role, Role::Viewer);
         assert!(c.accept_invitation(&code, "operator:carol").is_err());
         assert!(
-            c.add_comment(&p, "run", "r1", None, "operator:carol", "hi").is_err(),
+            c.add_comment(&p, "run", "r1", None, "operator:carol", "hi")
+                .is_err(),
             "viewers cannot comment"
         );
         let first = c
             .add_comment(&p, "run", "r1", None, "operator:alice", "Looks risky")
             .unwrap();
         let reply = c
-            .add_comment(&p, "run", "r1", Some(&first.id), "operator:alice", "Confirmed")
+            .add_comment(
+                &p,
+                "run",
+                "r1",
+                Some(&first.id),
+                "operator:alice",
+                "Confirmed",
+            )
             .unwrap();
         assert!(c
             .add_comment(&p, "run", "r2", Some(&first.id), "operator:alice", "x")
