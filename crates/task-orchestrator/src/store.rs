@@ -1978,6 +1978,25 @@ impl<'c> Store<'c> {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Calls of `tool_id` with exactly these arguments already recorded for
+    /// this task attempt (any status), for loop detection.
+    pub fn identical_tool_calls(
+        &self,
+        task_id: &str,
+        attempt: u32,
+        tool_id: &str,
+        args: &Value,
+    ) -> StoreResult<usize> {
+        let args_sha = sha256_hex(args.to_string().as_bytes());
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM workflow_tool_invocations
+             WHERE task_id=?1 AND attempt_no=?2 AND tool_id=?3 AND args_sha256=?4",
+            params![task_id, attempt, tool_id, args_sha],
+            |r| r.get(0),
+        )?;
+        Ok(n.max(0) as usize)
+    }
+
     pub fn successful_tool_calls(&self, task_id: &str, attempt: u32) -> StoreResult<usize> {
         Ok(self.conn.query_row(
             "SELECT COUNT(*) FROM workflow_tool_invocations WHERE task_id=?1 AND attempt_no=?2 AND status='succeeded'",

@@ -5,6 +5,7 @@ import { advancedRoutes, parseRoute, routeHref, workspaceRoutes } from "./routes
 describe("workspace routing", () => {
   it("exposes every required dashboard route", () => {
     expect(workspaceRoutes).toEqual([
+      "launch",
       "workspace",
       "dashboard",
       "projects",
@@ -30,8 +31,9 @@ describe("workspace routing", () => {
     expect(parseRoute("#/workflows?tab=memory")).toBe("workflows");
     expect(parseRoute("#/code-analysis?project=1")).toBe("code-analysis");
     expect(parseRoute("#/database")).toBe("database");
-    expect(parseRoute("#/unknown")).toBe("dashboard");
-    expect(parseRoute("")).toBe("dashboard");
+    expect(parseRoute("#/launch")).toBe("launch");
+    expect(parseRoute("#/unknown")).toBe("launch");
+    expect(parseRoute("")).toBe("launch");
   });
 
   it("keeps advanced existing workspaces addressable without adding them to the primary sidebar", () => {

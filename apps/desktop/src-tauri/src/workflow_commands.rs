@@ -14,7 +14,11 @@ use codetwin_core::knowledge_memory::{
     EvidenceGraph, KnowledgeMemory, MemoryItem, MemoryLayer, RetrievalBudget, RetrievalResult,
 };
 use codetwin_core::specialist_workers::InvestigationOptions;
-use codetwin_core::workflow_platform::{CloudProvider, RunDetail, WorkerRole, WorkflowPlatform};
+use codetwin_core::agent_tools::SearchAccess;
+use codetwin_core::search_settings::SearchSettings;
+use codetwin_core::workflow_platform::{
+    CloudProvider, LocalProvider, PlanInfo, RunDetail, WorkerRole, WorkflowPlatform,
+};
 use codetwin_core::Database;
 use model_gateway::client::{ChatClient, ClientConfig, Diagnostics, ProviderProfile};
 use model_gateway::credentials::{CredentialStore, KeyringStore, Secret};
@@ -30,6 +34,8 @@ use tauri::{Emitter, Manager};
 
 const PROVIDER: &str = "openmindai";
 const TOKEN_ACCOUNT: &str = "openmindai-developer-key";
+pub(crate) const LOCAL_PROVIDER: &str = "local";
+pub(crate) const SEARCH_KEY_ACCOUNT: &str = "search-provider-key";
 
 fn instance_id() -> &'static str {
     static ID: OnceLock<String> = OnceLock::new();
@@ -48,7 +54,7 @@ fn running() -> &'static Mutex<HashMap<String, CancelToken>> {
     RUNNING.get_or_init(Default::default)
 }
 
-fn operator() -> String {
+pub(crate) fn operator() -> String {
     let user = std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
         .unwrap_or_default();
@@ -64,17 +70,17 @@ fn operator() -> String {
     }
 }
 
-fn db_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+pub(crate) fn db_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("codetwin.sqlite3"))
 }
 
-fn db(app: &tauri::AppHandle) -> Result<Database, String> {
+pub(crate) fn db(app: &tauri::AppHandle) -> Result<Database, String> {
     Database::open(db_path(app)?).map_err(|e| e.to_string())
 }
 
-fn settings(app: &tauri::AppHandle) -> Result<ProviderSettings, String> {
+pub(crate) fn settings(app: &tauri::AppHandle) -> Result<ProviderSettings, String> {
     Ok(CloudSettings::new(&db(app)?)
         .provider(PROVIDER)?
         .unwrap_or(ProviderSettings {
@@ -107,14 +113,59 @@ fn cloud_client(app: &tauri::AppHandle) -> Result<Option<(Arc<ChatClient>, Strin
     Ok(Some((Arc::new(client), model)))
 }
 
-fn platform(app: &tauri::AppHandle) -> Result<WorkflowPlatform, String> {
+/// The loopback local model, when configured and enabled.
+fn local_provider(app: &tauri::AppHandle) -> Result<Option<LocalProvider>, String> {
+    let Some(s) = CloudSettings::new(&db(app)?).provider(LOCAL_PROVIDER)? else {
+        return Ok(None);
+    };
+    if !s.enabled {
+        return Ok(None);
+    }
+    let profile = ProviderProfile::local(LOCAL_PROVIDER, &s.base_url).map_err(|e| e.to_string())?;
+    let client = ChatClient::new(profile, None, ClientConfig::default()).map_err(|e| e.to_string())?;
+    Ok(Some(LocalProvider {
+        client: Arc::new(client),
+        model: s
+            .role_models
+            .default_local
+            .clone()
+            .unwrap_or_else(|| "local".into()),
+    }))
+}
+
+/// Configured web search provider (key from the OS credential store).
+fn search_access(app: &tauri::AppHandle) -> Result<Option<SearchAccess>, String> {
+    let Some(config) = SearchSettings::new(&db(app)?).get()? else {
+        return Ok(None);
+    };
+    if !config.enabled {
+        return Ok(None);
+    }
+    let key = KeyringStore
+        .get(SEARCH_KEY_ACCOUNT)
+        .map_err(|e| e.to_string())?
+        .map(|s| Arc::<str>::from(s.expose()));
+    Ok(Some(SearchAccess {
+        config: config.config,
+        api_key: key,
+    }))
+}
+
+pub(crate) fn platform(app: &tauri::AppHandle) -> Result<WorkflowPlatform, String> {
     let cloud = cloud_client(app)?.map(|(client, model)| CloudProvider { client, model });
+    let mut role_models = settings(app)?.role_models;
+    if let Some(local) = CloudSettings::new(&db(app)?).provider(LOCAL_PROVIDER)? {
+        role_models.default_local = local.role_models.default_local;
+        role_models.local_by_role = local.role_models.local_by_role;
+    }
     Ok(WorkflowPlatform::new(
         db_path(app)?,
         instance_id().into(),
         limits(),
         cloud,
-    ))
+    )
+    .with_models(local_provider(app)?, role_models)
+    .with_search(search_access(app)?))
 }
 
 /// Startup reconciliation of interrupted workflow runs.
@@ -133,6 +184,7 @@ pub fn recover_workflows(database_path: &std::path::Path) -> Result<(), String> 
 pub struct PlannedRun {
     run: RunRecord,
     approvals: Vec<ApprovalRequest>,
+    plan: PlanInfo,
 }
 
 #[tauri::command]
@@ -155,6 +207,8 @@ pub fn create_workflow_investigation(
     research_urls: Vec<String>,
     cloud_review: bool,
     max_parallel: Option<u32>,
+    search_queries: Option<Vec<String>>,
+    ai_planning: Option<bool>,
     app: tauri::AppHandle,
 ) -> Result<PlannedRun, String> {
     let budgets = RunBudgets {
@@ -164,15 +218,21 @@ pub fn create_workflow_investigation(
     let options = InvestigationOptions {
         research_urls,
         cloud_review,
+        search_queries: search_queries.unwrap_or_default(),
+        ai_planning: ai_planning.unwrap_or(false),
     };
-    let (run, approvals) = platform(&app)?.create_investigation(
+    let (run, approvals, plan) = platform(&app)?.create_planned_investigation(
         &project_id,
         &goal,
         &operator(),
         &options,
         Some(budgets),
     )?;
-    Ok(PlannedRun { run, approvals })
+    Ok(PlannedRun {
+        run,
+        approvals,
+        plan,
+    })
 }
 
 #[tauri::command]
@@ -425,6 +485,7 @@ pub fn save_cloud_provider_settings(
     base_url: String,
     enabled: bool,
     default_model: Option<String>,
+    cloud_by_role: Option<std::collections::BTreeMap<String, String>>,
     app: tauri::AppHandle,
 ) -> Result<ProviderSettings, String> {
     let mut s = settings(&app)?;
@@ -433,6 +494,9 @@ pub fn save_cloud_provider_settings(
     s.role_models.default_cloud = default_model
         .filter(|m| !m.trim().is_empty())
         .map(|m| m.trim().chars().take(128).collect());
+    if let Some(by_role) = cloud_by_role {
+        s.role_models.cloud_by_role = crate::platform_commands::clean_role_map(by_role)?;
+    }
     CloudSettings::new(&db(&app)?).save_provider(&s)
 }
 

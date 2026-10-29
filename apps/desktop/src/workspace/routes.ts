@@ -1,4 +1,5 @@
 export const workspaceRoutes = [
+  "launch",
   "workspace",
   "dashboard",
   "projects",
@@ -35,7 +36,7 @@ const validRoutes = new Set<string>([...workspaceRoutes, ...advancedRoutes]);
 
 export function parseRoute(hash: string): AppRoute {
   const route = hash.replace(/^#\/?/, "").split(/[?&]/, 1)[0]?.trim() ?? "";
-  return validRoutes.has(route) ? route as AppRoute : "dashboard";
+  return validRoutes.has(route) ? route as AppRoute : "launch";
 }
 
 export function routeHref(route: AppRoute): string {

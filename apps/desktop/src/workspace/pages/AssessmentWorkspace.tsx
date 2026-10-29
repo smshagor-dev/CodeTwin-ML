@@ -1,7 +1,10 @@
 import { listen } from "@tauri-apps/api/event";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { workspaceApi } from "../api";
+import { Icon, type IconName } from "../Icon";
 import { navigate } from "../routes";
+import type { GuidedSecuritySessionRecord } from "../types";
 import { useWorkspace } from "../WorkspaceContext";
 import {
   assessmentApi, EMPTY_FILTER, formatClock, formatDuration, matches, maxSeq, mergeItems, SEVERITIES, toLogLine,
@@ -9,7 +12,13 @@ import {
   type StreamFilter, type StreamItem, type StreamPage, type Verification,
 } from "../assessmentApi";
 import { TERMINAL_RUN_STATES, workflowApi, type RunDetail, type WorkflowRun } from "../workflowApi";
+import { WEB_ACTIVE_STATES, webSessionStream, webSessionSummary } from "../webStream";
 import "../assessment.css";
+
+/** Terminal header metadata shared by local workflow runs and web guided sessions. */
+type StreamMeta = { id: string; state: string; goal: string; outcome: string | null; live: boolean };
+const SOURCE_KEY = "codetwin.workspace.sourceWeb";
+const EMPTY_WEB_FILTER = { severity: null, category: null, confidence: null, endpoint: null, status: null };
 
 const RENDER_STEP = 600;
 const PANEL_KEY = "codetwin.workspace.contextPanel";
@@ -39,18 +48,27 @@ function download(name: string, text: string, type: string) {
 const ACTIVE = new Set(["running", "validating", "queued", "awaiting_approval", "paused", "planned"]);
 
 export function AssessmentWorkspace() {
-  const { projects, activeProjectId, setActiveProjectId, setToast } = useWorkspace();
+  const { projects, activeProjectId, setActiveProjectId, setToast, scanNow } = useWorkspace();
   const projectId = activeProjectId ?? projects[0]?.id ?? null;
   const project = projects.find((p) => p.id === projectId) ?? null;
   const onError = useCallback((e: unknown) => setToast({ tone: "error", message: String(e) }), [setToast]);
 
+  // Both targets — a local codebase (workflow runs) and a web target (guided
+  // sessions) — render in this one terminal; `source` switches between them.
+  const [source, setSource] = useState<"local" | "web">(() => (readPref(SOURCE_KEY, false) ? "web" : "local"));
+  const setSourceMode = (next: "local" | "web") => { setSource(next); writePref(SOURCE_KEY, next === "web"); };
+
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [runId, setRunId] = useState<string | null>(null);
   const [detail, setDetail] = useState<RunDetail | null>(null);
+  const [webSessions, setWebSessions] = useState<GuidedSecuritySessionRecord[]>([]);
+  const [webSessionId, setWebSessionId] = useState<string | null>(null);
+  const [webSession, setWebSession] = useState<GuidedSecuritySessionRecord | null>(null);
   const [items, setItems] = useState<StreamItem[]>([]);
   const [summary, setSummary] = useState<AssessmentSummary | null>(null);
   const [filter, setFilter] = useState<StreamFilter>(EMPTY_FILTER);
   const [composing, setComposing] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [model, setModel] = useState<string>("Local analyzers");
   const [panelOpen, setPanelOpen] = useState(() => readPref(PANEL_KEY, true));
   const [now, setNow] = useState(() => Date.now());
@@ -62,11 +80,18 @@ export function AssessmentWorkspace() {
       const list = await workflowApi.listRuns(projectId);
       setRuns(list);
       setRunId((current) => (current && list.some((r) => r.id === current) ? current : list[0]?.id ?? null));
-      if (!list.length) setComposing(true);
     } catch (e) { onError(e); }
   }, [projectId, onError]);
 
-  useEffect(() => { void loadRuns(); }, [loadRuns]);
+  const loadWebSessions = useCallback(async () => {
+    try {
+      const list = await workspaceApi.listGuidedSecuritySessions(null, 100);
+      setWebSessions(list);
+      setWebSessionId((current) => (current && list.some((s) => s.id === current) ? current : list[0]?.id ?? null));
+    } catch (e) { onError(e); }
+  }, [onError]);
+
+  useEffect(() => { if (source === "local") void loadRuns(); else void loadWebSessions(); }, [source, loadRuns, loadWebSessions]);
   useEffect(() => {
     workflowApi.cloudStatus()
       .then((s) => setModel(s.settings.enabled && s.token_stored ? `OpenMindAI · ${s.settings.role_models.default_cloud ?? "openmindai-lite"}` : "Local analyzers · cloud off"))
@@ -94,16 +119,40 @@ export function AssessmentWorkspace() {
     } catch (e) { onError(e); }
   }, [catchUp, onError]);
 
+  // Web session has no durable cursor stream; re-read the whole activity+findings
+  // set each tick and adapt it into the shared terminal model.
+  const refreshWeb = useCallback(async (id: string) => {
+    try {
+      const s = await workspaceApi.getGuidedSecuritySession(id);
+      setWebSession(s);
+      if (!s) { setItems([]); setSummary(null); return; }
+      const activities = await workspaceApi.listGuidedSecurityActivity(id, 1000);
+      const findings = s.scan_id ? await workspaceApi.listWebSecurityFindings(s.scan_id, EMPTY_WEB_FILTER, 500) : [];
+      setItems(webSessionStream(s, activities, findings));
+      setSummary(webSessionSummary(findings));
+    } catch (e) { onError(e); }
+  }, [onError]);
+
   useEffect(() => {
+    if (source !== "local") return;
     cursor.current = 0;
     setItems([]);
     setDetail(null);
     setSummary(null);
     if (runId) void refresh(runId);
-  }, [runId, refresh]);
+  }, [source, runId, refresh]);
 
-  // Push channel from the backend watcher; dedup handles overlap with replay.
   useEffect(() => {
+    if (source !== "web") return;
+    setItems([]);
+    setWebSession(null);
+    setSummary(null);
+    if (webSessionId) void refreshWeb(webSessionId);
+  }, [source, webSessionId, refreshWeb]);
+
+  // Push channel from the backend watcher (local only); dedup handles replay overlap.
+  useEffect(() => {
+    if (source !== "local") return;
     const off = listen<{ run_id: string; page: StreamPage }>("assessment://items", (e) => {
       if (e.payload.run_id !== runId) return;
       setItems((cur) => mergeItems(cur, e.payload.page.items));
@@ -113,15 +162,22 @@ export function AssessmentWorkspace() {
       if (e.payload.run_id === runId) { void refresh(e.payload.run_id); void loadRuns(); }
     });
     return () => { void off.then((f) => f()); void settled.then((f) => f()); };
-  }, [runId, refresh, loadRuns]);
+  }, [source, runId, refresh, loadRuns]);
 
-  const live = !!detail && ACTIVE.has(detail.run.state);
-  // Fallback poll recovers anything the push channel missed (e.g. after sleep).
+  const localLive = source === "local" && !!detail && ACTIVE.has(detail.run.state);
+  const webLive = source === "web" && !!webSession && WEB_ACTIVE_STATES.includes(webSession.status);
+  const live = localLive || webLive;
+  // Fallback poll recovers anything missed (local push gaps, web with no push channel).
   useEffect(() => {
-    if (!runId || !live) return;
-    const t = window.setInterval(() => { void refresh(runId); }, 2000);
+    if (source === "local") {
+      if (!runId || !localLive) return;
+      const t = window.setInterval(() => { void refresh(runId); }, 2000);
+      return () => window.clearInterval(t);
+    }
+    if (!webSessionId || !webLive) return;
+    const t = window.setInterval(() => { void refreshWeb(webSessionId); }, 2000);
     return () => window.clearInterval(t);
-  }, [runId, live, refresh]);
+  }, [source, runId, webSessionId, localLive, webLive, refresh, refreshWeb]);
   useEffect(() => {
     if (!live) return;
     const t = window.setInterval(() => setNow(Date.now()), 1000);
@@ -132,16 +188,37 @@ export function AssessmentWorkspace() {
     try { await fn(); if (runId) await refresh(runId); await loadRuns(); } catch (e) { onError(e); }
   }
 
+  async function runScanNow() {
+    if (!projectId) return;
+    setScanning(true);
+    try { const r = await scanNow(projectId); await loadRuns(); setRunId(r.id); setComposing(false); }
+    catch { /* toast already shown */ } finally { setScanning(false); }
+  }
+
   const run = detail?.run ?? null;
   const elapsed = run?.started_ms ? (run.finished_ms ?? now) - run.started_ms : null;
   const pendingApprovals = detail?.approvals.filter((a) => a.status === "pending") ?? [];
 
-  if (!projectId) {
+  const meta: StreamMeta | null = source === "local"
+    ? (run ? { id: run.id, state: run.state, goal: run.goal, outcome: run.outcome, live: localLive } : null)
+    : (webSession ? { id: webSession.id, state: webSession.status, goal: "Authorized web assessment · " + webSession.target_url, outcome: ["completed", "failed", "cancelled"].includes(webSession.status) ? webSession.status : null, live: webLive } : null);
+  const target = source === "local" ? (project?.display_name ?? "project") : (webSession ? webSession.target_url.replace(/^https?:\/\//, "") : "web target");
+
+  const sourceToggle = (
+    <div className="aw-seg aw-source-seg" role="group" aria-label="Scan source">
+      {(["local", "web"] as const).map((s) => (
+        <button key={s} type="button" aria-pressed={source === s} className={source === s ? "active" : ""} onClick={() => setSourceMode(s)}>{s === "local" ? "Local" : "Web"}</button>
+      ))}
+    </div>
+  );
+
+  if (source === "local" && !projectId) {
     return (
       <div className="aw aw-empty">
         <h1>Workspace</h1>
-        <p>Index a project first. Assessments run against an indexed, authorized project scope.</p>
-        <button type="button" className="aw-btn aw-btn-primary" onClick={() => navigate("projects")}>Open projects</button>
+        {sourceToggle}
+        <p>Index a project first, or switch to <strong>Web</strong> to assess a URL. Assessments run against an authorized scope.</p>
+        <button type="button" className="aw-btn aw-btn-primary" onClick={() => navigate("launch")}>Choose a target</button>
       </div>
     );
   }
@@ -151,52 +228,73 @@ export function AssessmentWorkspace() {
       <header className="aw-header">
         <div className="aw-heading">
           <div className="aw-selectors">
-            <label className="aw-select-field"><span>Target</span>
-              <select aria-label="Project" value={projectId} onChange={(e) => setActiveProjectId(e.target.value)}>
-                {projects.map((p) => <option key={p.id} value={p.id}>{p.display_name}</option>)}
-              </select>
-            </label>
-            <label className="aw-select-field aw-select-wide"><span>Assessment</span>
-              <select aria-label="Assessment" value={runId ?? ""} onChange={(e) => { setRunId(e.target.value || null); setComposing(false); }}>
-                {!runs.length && <option value="">No assessments yet</option>}
-                {runs.map((r) => <option key={r.id} value={r.id}>{r.goal.slice(0, 80)}</option>)}
-              </select>
-            </label>
+            {sourceToggle}
+            {source === "local" ? <>
+              <label className="aw-select-field"><span>Target</span>
+                <select aria-label="Project" value={projectId ?? ""} onChange={(e) => setActiveProjectId(e.target.value)}>
+                  {projects.map((p) => <option key={p.id} value={p.id}>{p.display_name}</option>)}
+                </select>
+              </label>
+              <label className="aw-select-field aw-select-wide"><span>Assessment</span>
+                <select aria-label="Assessment" value={runId ?? ""} onChange={(e) => { setRunId(e.target.value || null); setComposing(false); }}>
+                  {!runs.length && <option value="">No assessments yet</option>}
+                  {runs.map((r) => <option key={r.id} value={r.id}>{r.goal.slice(0, 80)}</option>)}
+                </select>
+              </label>
+            </> : (
+              <label className="aw-select-field aw-select-wide"><span>Web scan</span>
+                <select aria-label="Web scan" value={webSessionId ?? ""} onChange={(e) => setWebSessionId(e.target.value || null)}>
+                  {!webSessions.length && <option value="">No web scans yet</option>}
+                  {webSessions.map((s) => <option key={s.id} value={s.id}>{s.target_url.replace(/^https?:\/\//, "")} · {s.status}</option>)}
+                </select>
+              </label>
+            )}
           </div>
           <div className="aw-meta">
-            {run && <span className={"aw-state aw-state-" + run.state} role="status"><i aria-hidden="true"/>{run.state.replaceAll("_", " ")}</span>}
-            {elapsed != null && <span className="aw-mono aw-timer" aria-label="Elapsed time">{formatDuration(elapsed)}</span>}
-            {run?.outcome && <span className={"aw-outcome aw-outcome-" + run.outcome}>outcome: {run.outcome}</span>}
+            {meta && <span className={"aw-state aw-state-" + meta.state} role="status"><i aria-hidden="true"/>{meta.state.replaceAll("_", " ")}</span>}
+            {source === "local" && elapsed != null && <span className="aw-mono aw-timer" aria-label="Elapsed time">{formatDuration(elapsed)}</span>}
+            {meta?.outcome && <span className={"aw-outcome aw-outcome-" + meta.outcome}>outcome: {meta.outcome}</span>}
             <span className="aw-model" title="Model / provider used by cloud-enabled tasks">{model}</span>
           </div>
         </div>
         <div className="aw-run-controls">
-          {run?.state === "queued" && <button type="button" className="aw-btn aw-btn-primary" onClick={() => void control(() => workflowApi.start(run.id))}>Start</button>}
-          {(run?.state === "running" || run?.state === "queued") && <button type="button" className="aw-btn" onClick={() => void control(() => workflowApi.pause(run.id))}>Pause</button>}
-          {(run?.state === "paused" || run?.state === "blocked") && <button type="button" className="aw-btn" onClick={() => void control(() => workflowApi.resume(run.id))}>Resume</button>}
-          {run && !TERMINAL_RUN_STATES.includes(run.state) && <button type="button" className="aw-btn aw-btn-danger" onClick={() => void control(() => workflowApi.cancel(run.id))}>Stop</button>}
-          <button type="button" className={"aw-btn" + (composing ? "" : " aw-btn-primary")} onClick={() => setComposing((c) => !c)}>{composing ? "Cancel" : "+ New assessment"}</button>
+          {source === "local" && <>
+            <button type="button" className="aw-btn aw-btn-primary" disabled={scanning || !projectId} onClick={() => void runScanNow()}>{scanning ? "Starting…" : "Scan now"}</button>
+            {run?.state === "queued" && <button type="button" className="aw-btn" onClick={() => void control(() => workflowApi.start(run.id))}>Start</button>}
+            {(run?.state === "running" || run?.state === "queued") && <button type="button" className="aw-btn" onClick={() => void control(() => workflowApi.pause(run.id))}>Pause</button>}
+            {(run?.state === "paused" || run?.state === "blocked") && <button type="button" className="aw-btn" onClick={() => void control(() => workflowApi.resume(run.id))}>Resume</button>}
+            {run && !TERMINAL_RUN_STATES.includes(run.state) && <button type="button" className="aw-btn aw-btn-danger" onClick={() => void control(() => workflowApi.cancel(run.id))}>Stop</button>}
+            <button type="button" className={"aw-btn" + (composing ? "" : "")} onClick={() => setComposing((c) => !c)}>{composing ? "Cancel" : "+ New"}</button>
+          </>}
+          {source === "web" && <>
+            <button type="button" className="aw-btn aw-btn-primary" onClick={() => navigate("launch")}>+ New web scan</button>
+            <button type="button" className="aw-btn" disabled={!webSessionId} onClick={() => { if (webSessionId) void refreshWeb(webSessionId); }}>Refresh</button>
+          </>}
           <button type="button" className="aw-btn aw-icon" aria-pressed={panelOpen} aria-label={panelOpen ? "Hide context panel" : "Show context panel"} title={panelOpen ? "Hide context panel" : "Show context panel"} onClick={() => { setPanelOpen(!panelOpen); writePref(PANEL_KEY, !panelOpen); }}>{panelOpen ? "⇥" : "⇤"}</button>
         </div>
       </header>
 
-      {composing && <Composer projectId={projectId} onCreated={(r) => { setComposing(false); void loadRuns().then(() => setRunId(r.id)); }} onError={onError}/>}
+      {source === "local" && composing && <Composer projectId={projectId!} onCreated={(r) => { setComposing(false); void loadRuns().then(() => setRunId(r.id)); }} onError={onError}/>}
 
       {summary && <SummaryBar summary={summary} filter={filter} setFilter={setFilter}/>}
 
       <div className="aw-body">
         <section className="aw-stream-col" aria-label="Live execution stream">
-          {run ? (
-            <LiveStream items={items} filter={filter} setFilter={setFilter} detail={detail} projectId={projectId} target={project?.display_name ?? "project"}
-              onChanged={() => { if (runId) { cursor.current = 0; void refresh(runId); } }} onError={onError}/>
+          {meta ? (
+            <LiveStream items={items} filter={filter} setFilter={setFilter} meta={meta} projectId={source === "local" ? (projectId ?? "") : (webSession?.project_id ?? "")} target={target}
+              onChanged={() => { if (source === "local" && runId) { cursor.current = 0; void refresh(runId); } else if (webSessionId) void refreshWeb(webSessionId); }} onError={onError}/>
           ) : (
-            <div className="aw-placeholder">No assessment selected. Start one with <strong>New assessment</strong>.</div>
+            <div className="aw-placeholder">{source === "local" ? <>No assessment selected. Press <strong>Scan now</strong> to start the full read-only scan.</> : <>No web scan selected. Press <strong>+ New web scan</strong> to start one.</>}</div>
           )}
         </section>
-        {panelOpen && detail && (
+        {source === "local" && panelOpen && detail && (
           <ContextPanel detail={detail} summary={summary} items={items} target={project?.display_name ?? ""}
             approvals={pendingApprovals} onDecide={(id, digest, ok) => void control(() => workflowApi.decide(id, ok, digest, null))}
             onAgent={(agent) => setFilter({ ...filter, agent: filter.agent === agent ? null : agent })} activeAgent={filter.agent}/>
+        )}
+        {source === "web" && panelOpen && webSession && (
+          <WebContextPanel session={webSession} summary={summary} items={items}
+            elapsed={webSession.started_at ? (webSession.finished_at ? Date.parse(webSession.finished_at) : now) - Date.parse(webSession.started_at) : null}/>
         )}
       </div>
     </div>
@@ -224,47 +322,38 @@ function Composer({ projectId, onCreated, onError }: { projectId: string; onCrea
   );
 }
 
-const SUMMARY_CARDS: Array<{ key: keyof AssessmentSummary; label: string; severity?: Severity; verification?: Verification | "passed" }> = [
-  { key: "total", label: "Findings" },
-  { key: "critical", label: "Critical", severity: "critical" },
-  { key: "high", label: "High", severity: "high" },
-  { key: "medium", label: "Medium", severity: "medium" },
-  { key: "low", label: "Low", severity: "low" },
-  { key: "info", label: "Info", severity: "info" },
-  { key: "potential", label: "Potential", verification: "potential" },
-  { key: "confirmed", label: "Confirmed", verification: "confirmed" },
-  { key: "passed", label: "Passed checks", verification: "passed" },
+const STAT_CARDS: Array<{ key: keyof AssessmentSummary; label: string; tone: string; icon: IconName; severity?: Severity }> = [
+  { key: "total", label: "All Findings", tone: "total", icon: "scan" },
+  { key: "critical", label: "Critical", tone: "critical", icon: "security", severity: "critical" },
+  { key: "high", label: "High", tone: "high", icon: "activity", severity: "high" },
+  { key: "medium", label: "Medium", tone: "medium", icon: "activity", severity: "medium" },
+  { key: "low", label: "Low", tone: "low", icon: "activity", severity: "low" },
+  { key: "info", label: "Informational", tone: "info", icon: "folder", severity: "info" },
+  { key: "passed", label: "Passed", tone: "passed", icon: "check" },
 ];
 
+// One row of stat cards (All Findings / severity breakdown / Passed) shared by the
+// local and web terminals; clicking a card filters the stream by that severity.
 function SummaryBar({ summary, filter, setFilter }: { summary: AssessmentSummary; filter: StreamFilter; setFilter: (f: StreamFilter) => void }) {
   return (
-    <div className="aw-summary" role="group" aria-label="Finding summary filters">
-      {[SUMMARY_CARDS.slice(0, 6), SUMMARY_CARDS.slice(6)].map((group, gi) => (
-        <div key={gi} className="aw-summary-group">
-          <span className="aw-group-label">{gi === 0 ? "Severity" : "Verification"}</span>
-          <div className="aw-summary-chips">
-            {group.map((c) => {
-              const active = (c.severity && filter.severity === c.severity) || (c.verification && filter.verification === c.verification)
-                || (c.key === "total" && filter.kinds === "findings" && !filter.severity && !filter.verification);
-              return (
-                <button key={c.key} type="button" aria-pressed={!!active} className={"aw-chip" + (c.severity ? " aw-sev-" + c.severity : c.verification ? " aw-ver-" + c.verification : " aw-total") + (active ? " active" : "")}
-                  onClick={() => {
-                    if (active) return setFilter({ ...filter, severity: null, verification: null, kinds: "all" });
-                    if (c.severity) setFilter({ ...filter, severity: c.severity, verification: null, kinds: "all" });
-                    else if (c.verification) setFilter({ ...filter, verification: c.verification, severity: null, kinds: "all" });
-                    else setFilter({ ...filter, kinds: "findings", severity: null, verification: null });
-                  }}>
-                  <strong className="aw-mono">{summary[c.key]}</strong><span>{c.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-      <div className="aw-summary-group aw-checks" title="Workflow checks completed">
-        <span className="aw-group-label">Checks</span>
-        <strong className="aw-mono">{summary.checks_completed}/{summary.checks_total}</strong>
-      </div>
+    <div className="aw-stats" role="group" aria-label="Finding summary">
+      {STAT_CARDS.map((c) => {
+        const active = (c.severity && filter.severity === c.severity)
+          || (c.key === "total" && filter.kinds === "findings" && !filter.severity && !filter.verification);
+        return (
+          <button key={c.key} type="button" aria-pressed={!!active} className={"aw-stat aw-stat-" + c.tone + (active ? " active" : "")}
+            onClick={() => {
+              if (c.key === "passed") return;
+              if (active) return setFilter({ ...filter, severity: null, verification: null, kinds: "all" });
+              if (c.severity) setFilter({ ...filter, severity: c.severity, verification: null, kinds: "all" });
+              else setFilter({ ...filter, kinds: "findings", severity: null, verification: null });
+            }}>
+            <span className="aw-stat-ico" aria-hidden="true"><Icon name={c.icon} size={16}/></span>
+            <span className="aw-stat-label">{c.label}</span>
+            <strong className="aw-mono aw-stat-num">{summary[c.key]}</strong>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -274,8 +363,8 @@ const REPLAY_SPEEDS = [0.5, 1, 2, 4, 8];
 // appears about every quarter second so it reads like live `ping` output.
 const REPLAY_BASE_MS = 260;
 
-function LiveStream({ items, filter, setFilter, detail, projectId, target, onChanged, onError }: {
-  items: StreamItem[]; filter: StreamFilter; setFilter: (f: StreamFilter) => void; detail: RunDetail | null;
+function LiveStream({ items, filter, setFilter, meta, projectId, target, onChanged, onError }: {
+  items: StreamItem[]; filter: StreamFilter; setFilter: (f: StreamFilter) => void; meta: StreamMeta | null;
   projectId: string; target: string; onChanged: () => void; onError: (e: unknown) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
@@ -285,7 +374,7 @@ function LiveStream({ items, filter, setFilter, detail, projectId, target, onCha
   // Replay re-plays the real recorded items one by one; it never invents output.
   const [replay, setReplay] = useState<number | null>(null);
   const [speed, setSpeed] = useState(1);
-  const live = !!detail && ["running", "queued", "validating"].includes(detail.run.state);
+  const live = meta?.live ?? false;
   useEffect(() => {
     if (replay === null || replay >= items.length) return;
     const t = window.setTimeout(() => setReplay((r) => (r === null ? r : r + 1)), Math.max(30, REPLAY_BASE_MS / speed));
@@ -346,20 +435,20 @@ function LiveStream({ items, filter, setFilter, detail, projectId, target, onCha
           <summary className="aw-btn aw-btn-ghost">Export</summary>
           <div className="aw-menu-list">
             <button type="button" onClick={() => void navigator.clipboard.writeText(filtered.map(toLogLine).join("\n"))}>Copy visible lines</button>
-            <button type="button" onClick={() => download(`assessment-${detail?.run.id ?? "log"}.log`, source.map(toLogLine).join("\n"), "text/plain")}>Download .log</button>
-            <button type="button" onClick={() => download(`assessment-${detail?.run.id ?? "log"}.json`, JSON.stringify(source, null, 2), "application/json")}>Download JSON</button>
+            <button type="button" onClick={() => download(`assessment-${meta?.id ?? "log"}.log`, source.map(toLogLine).join("\n"), "text/plain")}>Download .log</button>
+            <button type="button" onClick={() => download(`assessment-${meta?.id ?? "log"}.json`, JSON.stringify(source, null, 2), "application/json")}>Download JSON</button>
           </div>
         </details>
       </div>
       <div className="aw-term">
       <div className="aw-term-bar">
         <span className="aw-dots" aria-hidden="true"><i/><i/><i/></span>
-        <span className="aw-term-title">codetwin@{target}: ~/assessments/{detail?.run.id.slice(4, 12) ?? ""}</span>
+        <span className="aw-term-title">codetwin@{target}: ~/assessments/{meta?.id.slice(4, 12) ?? ""}</span>
         <span className="aw-spacer"/>
         {replay !== null
           ? <span className="aw-term-badge aw-term-replay">REPLAY {Math.min(replay, items.length)}/{items.length}</span>
           : live ? <span className="aw-term-badge aw-term-live"><i aria-hidden="true"/>LIVE</span>
-          : <span className="aw-term-badge">{detail?.run.state === "awaiting_approval" ? "WAITING" : "DONE"}</span>}
+          : <span className="aw-term-badge">{meta?.state === "awaiting_approval" ? "WAITING" : "DONE"}</span>}
         <span className="aw-term-count">{items.length} events</span>
         {replay === null ? (
           <button type="button" className="aw-term-btn" disabled={!items.length || live} title={live ? "Replay is available after the run settles" : "Replay the recorded events line by line"}
@@ -382,7 +471,7 @@ function LiveStream({ items, filter, setFilter, detail, projectId, target, onCha
         {filtered.length > shown.length && (
           <button type="button" className="aw-earlier" onClick={() => setLimit((l) => l + RENDER_STEP)}>Show {Math.min(RENDER_STEP, filtered.length - shown.length)} earlier of {filtered.length - shown.length} hidden</button>
         )}
-        <div className="aw-prompt"><span className="aw-ps1">$</span> codetwin assess --target "{target}" --goal "{detail?.run.goal.slice(0, 120) ?? ""}"</div>
+        <div className="aw-prompt"><span className="aw-ps1">$</span> codetwin assess --target "{target}" --goal "{meta?.goal.slice(0, 120) ?? ""}"</div>
         {shown.length === 0 && <div className="aw-placeholder">{items.length ? "No events match the current filters." : "Waiting for events. Approve the plan and start the assessment."}</div>}
         {shown.map((item) => item.type === "event"
           ? <EventRow key={item.key} event={item} fresh={isFresh(item.seq)}/>
@@ -390,8 +479,8 @@ function LiveStream({ items, filter, setFilter, detail, projectId, target, onCha
         {(live || (replay !== null && replay < items.length)) && (
           <div className="aw-cursor-line"><span className="aw-ps1">&gt;</span> {replay !== null ? "replaying recorded events" : "agents working"}<span className="aw-blink" aria-hidden="true">_</span></div>
         )}
-        {!live && detail?.run.outcome && (replay === null || replay >= items.length) && (
-          <div className="aw-exit">[process exited] state={detail.run.state} outcome={detail.run.outcome} events={items.length}</div>
+        {!live && meta?.outcome && (replay === null || replay >= items.length) && (
+          <div className="aw-exit">[process exited] state={meta.state} outcome={meta.outcome} events={items.length}</div>
         )}
       </div>
       </div>
@@ -488,7 +577,7 @@ const FindingCardView = memo(function FindingCardView({ card, projectId, onChang
               <button type="button" className="aw-btn" disabled={busy} onClick={() => void review("needs_review")}>Needs validation</button>
               <button type="button" className="aw-btn" disabled={busy} onClick={() => void review("false_positive")}>False positive</button>
             </>}
-            {card.source === "appsec" && <button type="button" className="aw-btn" disabled={busy} onClick={() => void retest()}>Retest (re-run AppSec)</button>}
+            {card.reviewable && card.source === "appsec" && <button type="button" className="aw-btn" disabled={busy} onClick={() => void retest()}>Retest (re-run AppSec)</button>}
             <button type="button" className="aw-btn" onClick={() => navigate("security")}>Create fix task</button>
             <button type="button" className="aw-btn" onClick={() => void navigator.clipboard.writeText(markdown)}>Copy finding</button>
             <button type="button" className="aw-btn" onClick={() => download(`finding-${card.finding_id}.json`, JSON.stringify(card, null, 2), "application/json")}>Export evidence</button>
@@ -500,6 +589,56 @@ const FindingCardView = memo(function FindingCardView({ card, projectId, onChang
     </article>
   );
 });
+
+const WEB_STATUS_PCT: Record<string, number> = { preparing: 10, awaiting_approval: 25, approved: 40, running: 70, completed: 100, failed: 100, cancelled: 100 };
+const WEB_PHASES = ["init", "preflight", "mapping", "testing", "reporting"];
+
+// Right-hand context for a web session — the same panel the local run shows, filled
+// from the guided session + its streamed activity (Target / Progress / Recent Findings).
+function WebContextPanel({ session, summary, items, elapsed }: {
+  session: GuidedSecuritySessionRecord; summary: AssessmentSummary | null; items: StreamItem[]; elapsed: number | null;
+}) {
+  const findings = items.filter((i): i is FindingCard => i.type === "finding");
+  const recent = [...findings].sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity)).slice(0, 6);
+  const seen = new Set(items.filter((i): i is StreamEvent => i.type === "event").map((e) => e.agent).filter(Boolean) as string[]);
+  const pct = WEB_STATUS_PCT[session.status] ?? 0;
+  const host = session.target_url.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  return (
+    <aside className="aw-context" aria-label="Assessment context">
+      <section>
+        <h3>Target</h3>
+        <dl className="aw-target">
+          <div><dt>URL</dt><dd className="aw-mono">{session.target_url}</dd></div>
+          <div><dt>Scope</dt><dd>{host}</dd></div>
+          <div><dt>Type</dt><dd>Web Application</dd></div>
+          <div><dt>Environment</dt><dd>{session.environment.replaceAll("_", " ")}</dd></div>
+          {session.started_at && <div><dt>Start Time</dt><dd>{new Date(session.started_at).toLocaleString()}</dd></div>}
+          {elapsed != null && <div><dt>Duration</dt><dd className="aw-mono">{formatDuration(elapsed)}</dd></div>}
+          <div><dt>Status</dt><dd><span className={"aw-state aw-state-" + session.status}><i aria-hidden="true"/>{session.status.replaceAll("_", " ")}</span></dd></div>
+        </dl>
+      </section>
+      <section>
+        <h3>Assessment Progress</h3>
+        <div className="aw-progress" role="progressbar" aria-label="Assessment progress" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}><span style={{ width: pct + "%" }}/></div>
+        <p className="aw-hint">{pct}% · {session.mapping_requests} mapping request{session.mapping_requests === 1 ? "" : "s"}{summary ? ` · ${summary.total} finding${summary.total === 1 ? "" : "s"}` : ""}</p>
+        <ul className="aw-phases">
+          {WEB_PHASES.map((p) => (
+            <li key={p} className={seen.has(p) ? "done" : ""}>
+              <span className={"aw-dot aw-dot-" + (seen.has(p) ? "completed" : "pending")} aria-hidden="true"/>
+              <span className="aw-phase-name">{p}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+      <section>
+        <h3>Recent Findings</h3>
+        {recent.length ? <ul className="aw-recent">{recent.map((f) => (
+          <li key={f.key}><span className={"aw-badge aw-badge-sev-" + f.severity}>{f.severity}</span> <span>{f.title}</span></li>
+        ))}</ul> : <p className="aw-hint">No findings in the loaded stream yet.</p>}
+      </section>
+    </aside>
+  );
+}
 
 function ContextPanel({ detail, summary, items, target, approvals, onDecide, onAgent, activeAgent }: {
   detail: RunDetail; summary: AssessmentSummary | null; items: StreamItem[]; target: string;
@@ -517,7 +656,7 @@ function ContextPanel({ detail, summary, items, target, approvals, onDecide, onA
   return (
     <aside className="aw-context" aria-label="Assessment context">
       <section>
-        <h3>Target & scope</h3>
+        <h3>Target</h3>
         <p><strong>{target}</strong></p>
         <p className="aw-hint">Approved capabilities: {run.approved_capabilities.length ? run.approved_capabilities.join(", ") : "none yet"}</p>
         <p className="aw-hint">{run.cloud_consented ? "Cloud disclosure consented (redacted summaries only)" : "Offline only"}</p>
@@ -538,13 +677,13 @@ function ContextPanel({ detail, summary, items, target, approvals, onDecide, onA
         </section>
       )}
       <section>
-        <h3>Progress</h3>
+        <h3>Assessment Progress</h3>
         <div className="aw-progress" role="progressbar" aria-label="Tasks settled" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${pct}%` }}/></div>
         <p className="aw-hint">{done}/{current.length} tasks settled · run {run.state.replaceAll("_", " ")}{run.outcome ? ` · outcome ${run.outcome}` : ""}</p>
         {summary && <p className="aw-hint">{summary.passed} check(s) passed · {errors} attempt error(s) · {run.credits_used}/{run.budgets.max_credits} credits</p>}
       </section>
       <section>
-        <h3>Agents</h3>
+        <h3>Active Agents</h3>
         <ul className="aw-agents">
           {current.map((t) => (
             <li key={t.id}>
@@ -560,7 +699,7 @@ function ContextPanel({ detail, summary, items, target, approvals, onDecide, onA
         </ul>
       </section>
       <section>
-        <h3>Top findings</h3>
+        <h3>Recent Findings</h3>
         {recent.length ? <ul className="aw-recent">{recent.map((f) => (
           <li key={f.key}><span className={"aw-badge aw-badge-sev-" + f.severity}>{f.severity}</span> <span>{f.title}</span></li>
         ))}</ul> : <p className="aw-hint">No findings in the loaded stream.</p>}

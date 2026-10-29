@@ -94,6 +94,7 @@ enum Behavior {
     Mutate,
     Delegate,
     Hang,
+    Loop,
 }
 
 struct TestWorker {
@@ -188,6 +189,19 @@ impl Worker for TestWorker {
                 ];
                 Ok(out)
             }
+            Behavior::Loop => {
+                // A stuck worker repeating the same call until the gate stops it.
+                for _ in 0..10 {
+                    match ctx.tools.call("read_thing", &json!({"q": "same"})) {
+                        Ok(_) => {}
+                        Err(ToolCallError::Denied(why)) => {
+                            return Err(WorkerError::new(ErrorCategory::Policy, why))
+                        }
+                        Err(e) => return Err(WorkerError::permanent(e.to_string())),
+                    }
+                }
+                Ok(WorkerOutput::observation("never reached", json!({}), refs))
+            }
             Behavior::Hang => {
                 while ctx.checkpoint().is_ok() {
                     std::thread::sleep(Duration::from_millis(5));
@@ -280,6 +294,12 @@ impl Harness {
                 &read[..],
                 EvidenceClass::Observation,
                 Behavior::Hang,
+            ),
+            (
+                "looper",
+                &read[..],
+                EvidenceClass::Observation,
+                Behavior::Loop,
             ),
             (
                 "cloud",
@@ -955,4 +975,31 @@ fn concurrent_claims_never_double_execute() {
         }
     });
     assert_eq!(wins.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn repeated_identical_tool_calls_are_stopped_as_a_loop() {
+    let h = Harness::new();
+    let o = h.orchestrator("i1", PolicyContext::offline());
+    let budgets = RunBudgets {
+        max_attempts_per_task: 1,
+        ..RunBudgets::default()
+    };
+    let run_id = plan_and_approve(&o, budgets, &[spec("x", "looper", R, &[])]);
+    let run = o.run_until_settled(&run_id, None).unwrap();
+    // Policy stops are surfaced for operator review, never as success.
+    assert_eq!(run.outcome, Some(Outcome::Blocked));
+    let tools = o.with_store(|s| s.tool_invocations(&run_id)).unwrap();
+    assert_eq!(
+        tools.iter().filter(|t| t.status == "succeeded").count(),
+        task_orchestrator::executor::MAX_IDENTICAL_TOOL_CALLS
+    );
+    assert!(tools
+        .iter()
+        .any(|t| t.status == "denied" && t.decision_reason == "tool_call_loop_detected"));
+    assert_eq!(
+        h.tools.calls.lock().unwrap().len(),
+        task_orchestrator::executor::MAX_IDENTICAL_TOOL_CALLS,
+        "the looping call never reached the tool again"
+    );
 }

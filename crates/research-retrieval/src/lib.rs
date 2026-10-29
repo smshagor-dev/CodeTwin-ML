@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
 
+pub mod search;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize)]
 pub enum RetrievalError {
     #[error("URL rejected: {0}")]
@@ -272,6 +274,26 @@ const ALLOWED_TYPES: &[&str] = &[
 
 /// Fetch one operator-approved URL under `policy`.
 pub fn fetch(raw_url: &str, policy: &FetchPolicy) -> Result<RetrievedDocument, RetrievalError> {
+    fetch_with_headers(raw_url, &[], policy)
+}
+
+/// Like [`fetch`], with extra request headers (e.g. a search API key). The
+/// headers are sent only to the first, validated URL and dropped on any
+/// redirect, so a credential never follows a redirect to another host.
+pub fn fetch_with_headers(
+    raw_url: &str,
+    headers: &[(&str, &str)],
+    policy: &FetchPolicy,
+) -> Result<RetrievedDocument, RetrievalError> {
+    fetch_raw(raw_url, headers, policy).map(|(doc, _)| doc)
+}
+
+/// Fetch returning the extracted document and the raw (bounded) body.
+pub(crate) fn fetch_raw(
+    raw_url: &str,
+    headers: &[(&str, &str)],
+    policy: &FetchPolicy,
+) -> Result<(RetrievedDocument, Vec<u8>), RetrievalError> {
     let mut current = raw_url.to_owned();
     let mut redirects = Vec::new();
     loop {
@@ -285,12 +307,16 @@ pub fn fetch(raw_url: &str, policy: &FetchPolicy) -> Result<RetrievedDocument, R
             .user_agent(concat!("CodeTwin-ML-research/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| RetrievalError::Network(e.to_string()))?;
-        let response = client
-            .get(url.clone())
-            .header(
-                "Accept",
-                "text/html,text/plain,text/markdown,application/json;q=0.9,*/*;q=0.1",
-            )
+        let mut request = client.get(url.clone()).header(
+            "Accept",
+            "text/html,text/plain,text/markdown,application/json;q=0.9,*/*;q=0.1",
+        );
+        if redirects.is_empty() {
+            for (name, value) in headers {
+                request = request.header(*name, *value);
+            }
+        }
+        let response = request
             .send()
             .map_err(|e| {
                 RetrievalError::Network(if e.is_timeout() {
@@ -353,7 +379,7 @@ pub fn fetch(raw_url: &str, policy: &FetchPolicy) -> Result<RetrievedDocument, R
             .collect();
         let text_body = String::from_utf8_lossy(&body);
         let (title, text) = extract_text(&text_body, &mime);
-        return Ok(RetrievedDocument {
+        let doc = RetrievedDocument {
             requested_url: raw_url.to_owned(),
             final_url: url.to_string(),
             host,
@@ -367,7 +393,8 @@ pub fn fetch(raw_url: &str, policy: &FetchPolicy) -> Result<RetrievedDocument, R
             last_modified,
             redirects,
             untrusted: true,
-        });
+        };
+        return Ok((doc, body));
     }
 }
 

@@ -18,12 +18,14 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { AgentsPage, DeploymentsPage, DocumentationPage, SupportPage } from "./pages/InfoPages";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 import { AssessmentWorkspace } from "./pages/AssessmentWorkspace";
+import { LaunchPage } from "./pages/LaunchPage";
 import "./shell.css";
 
 type NavItem = { route: WorkspaceRoute; label: string; icon: IconName; tab?: string; disabled?: string };
 
 /** Primary navigation: the terminal-first workspace and its supporting areas. */
 const primaryNav: NavItem[] = [
+  { route: "launch", label: "Start", icon: "activity" },
   { route: "workspace", label: "Workspace", icon: "activity" },
   { route: "workflows", label: "Reports", icon: "docs", tab: "runs" },
   { route: "projects", label: "Targets", icon: "projects" },
@@ -95,6 +97,7 @@ function NavLinks({ items, route }: { items: NavItem[]; route: WorkspaceRoute })
 
 export function workspaceRoutePage(route: WorkspaceRoute) {
   switch (route) {
+    case "launch": return <LaunchPage/>;
     case "workspace": return <AssessmentWorkspace/>;
     case "dashboard": return <DashboardPage/>;
     case "projects": return <ProjectsPage/>;

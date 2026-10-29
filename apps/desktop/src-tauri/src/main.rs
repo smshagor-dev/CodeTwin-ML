@@ -7,6 +7,7 @@ mod native_agent_commands;
 mod native_agent_reasoning_commands;
 mod native_orchestration_commands;
 mod network_assessment_commands;
+mod platform_commands;
 mod qa_commands;
 mod repair_commands;
 mod runtime_commands;
@@ -1387,6 +1388,37 @@ fn main() {
             cloud_request_log,
             preview_cloud_question,
             send_cloud_question,
+            platform_commands::local_model_status,
+            platform_commands::save_local_model_settings,
+            platform_commands::search_provider_status,
+            platform_commands::save_search_provider_settings,
+            platform_commands::set_search_provider_key,
+            platform_commands::clear_search_provider_key,
+            platform_commands::llm_usage_analytics,
+            platform_commands::workflow_metrics,
+            platform_commands::export_platform_diagnostics,
+            platform_commands::research_citations,
+            platform_commands::workflow_report_pdf,
+            platform_commands::prune_workflow_history,
+            platform_commands::project_access,
+            platform_commands::set_project_access_policy,
+            platform_commands::register_principal,
+            platform_commands::grant_project_role,
+            platform_commands::revoke_project_role,
+            platform_commands::create_project_invitation,
+            platform_commands::accept_project_invitation,
+            platform_commands::revoke_project_invitation,
+            platform_commands::list_comments,
+            platform_commands::add_comment,
+            platform_commands::edit_comment,
+            platform_commands::delete_comment,
+            platform_commands::audit_log,
+            platform_commands::automation_api_status,
+            platform_commands::start_automation_api,
+            platform_commands::stop_automation_api,
+            platform_commands::create_api_token,
+            platform_commands::list_api_tokens,
+            platform_commands::revoke_api_token,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");

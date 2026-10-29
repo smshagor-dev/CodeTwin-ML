@@ -7,16 +7,20 @@ import {
   dagLevels, evidenceLabel, TERMINAL_RUN_STATES, workflowApi,
   type ApprovalRequest, type CapabilityStatus, type CloudProviderStatus, type ConsentRecord, type Diagnostics,
   type EgressPreview, type EvidenceGraph, type MemoryItem, type MemoryLayer, type ProviderRequestRecord,
-  type RetrievalResult, type RunDetail, type WorkerRole, type WorkflowEvent, type WorkflowRun,
+  type PlanInfo, type RetrievalResult, type RunDetail, type WorkerRole, type WorkflowEvent, type WorkflowRun,
 } from "../workflowApi";
+import { InsightsTab, ModelsTab, RunExtras, TeamTab } from "./PlatformPanels";
 import "../workflows.css";
 
-type Tab = "runs" | "approvals" | "memory" | "cloud" | "capabilities";
+type Tab = "runs" | "approvals" | "insights" | "memory" | "cloud" | "models" | "team" | "capabilities";
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "runs", label: "Runs" },
   { id: "approvals", label: "Approval inbox" },
+  { id: "insights", label: "Insights" },
   { id: "memory", label: "Memory" },
   { id: "cloud", label: "Cloud & consent" },
+  { id: "models", label: "Models & search" },
+  { id: "team", label: "Team & API" },
   { id: "capabilities", label: "Capabilities" },
 ];
 
@@ -60,7 +64,7 @@ export function WorkflowsPage() {
           </button>
         ))}
       </div>
-      {!projectId && tab !== "approvals" ? (
+      {!projectId && tab !== "approvals" && tab !== "models" ? (
         <EmptyState icon="projects" title="Select an indexed project" description="Workflows are scoped to one indexed project."/>
       ) : (
         <div role="tabpanel">
@@ -69,6 +73,9 @@ export function WorkflowsPage() {
           {tab === "memory" && projectId && <MemoryTab projectId={projectId}/>}
           {tab === "cloud" && projectId && <CloudTab projectId={projectId}/>}
           {tab === "capabilities" && projectId && <CapabilitiesTab projectId={projectId}/>}
+          {tab === "insights" && projectId && <InsightsTab projectId={projectId}/>}
+          {tab === "models" && <ModelsTab/>}
+          {tab === "team" && projectId && <TeamTab projectId={projectId}/>}
         </div>
       )}
     </section>
@@ -79,6 +86,7 @@ function RunsTab({ projectId }: { projectId: string }) {
   const onError = useErrorToast();
   const [runs, setRuns] = useState<WorkflowRun[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [plans, setPlans] = useState<Record<string, PlanInfo>>({});
   const refresh = useCallback(() => workflowApi.listRuns(projectId).then(setRuns).catch(onError), [projectId, onError]);
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
@@ -89,7 +97,7 @@ function RunsTab({ projectId }: { projectId: string }) {
   return (
     <div className="wf-grid">
       <div className="wf-col">
-        <GoalComposer projectId={projectId} onCreated={(run) => { setSelected(run.id); void refresh(); }}/>
+        <GoalComposer projectId={projectId} onCreated={(run, plan) => { setPlans((p) => ({ ...p, [run.id]: plan })); setSelected(run.id); void refresh(); }}/>
         <Panel title="Run history">
           {!runs ? <LoadingState/> : runs.length === 0 ? <p className="ws-form-help">No workflow runs yet.</p> : (
             <ul className="wf-run-list">
@@ -106,17 +114,19 @@ function RunsTab({ projectId }: { projectId: string }) {
         </Panel>
       </div>
       <div className="wf-col wf-col-wide">
-        {selected ? <RunView projectId={projectId} runId={selected} onChanged={refresh}/> :
+        {selected ? <RunView projectId={projectId} runId={selected} plan={plans[selected] ?? null} onChanged={refresh}/> :
           <EmptyState icon="agents" title="No run selected" description="Compose a goal or pick a run to see its plan, live timeline and evidence."/>}
       </div>
     </div>
   );
 }
 
-function GoalComposer({ projectId, onCreated }: { projectId: string; onCreated: (run: WorkflowRun) => void }) {
+function GoalComposer({ projectId, onCreated }: { projectId: string; onCreated: (run: WorkflowRun, plan: PlanInfo) => void }) {
   const onError = useErrorToast();
   const [goal, setGoal] = useState("");
   const [urls, setUrls] = useState("");
+  const [queries, setQueries] = useState("");
+  const [aiPlanning, setAiPlanning] = useState(false);
   const [cloud, setCloud] = useState(false);
   const [parallel, setParallel] = useState(3);
   const [busy, setBusy] = useState(false);
@@ -124,9 +134,10 @@ function GoalComposer({ projectId, onCreated }: { projectId: string; onCreated: 
     setBusy(true);
     try {
       const researchUrls = urls.split(/\s+/).map((u) => u.trim()).filter(Boolean);
-      const { run } = await workflowApi.createInvestigation(projectId, goal, researchUrls, cloud, parallel);
+      const searchQueries = queries.split(/\r?\n/).map((q) => q.trim()).filter(Boolean).slice(0, 3);
+      const { run, plan } = await workflowApi.createInvestigation(projectId, goal, researchUrls, cloud, parallel, searchQueries, aiPlanning);
       setGoal("");
-      onCreated(run);
+      onCreated(run, plan);
     } catch (error) {
       onError(error);
     } finally {
@@ -142,7 +153,11 @@ function GoalComposer({ projectId, onCreated }: { projectId: string; onCreated: 
         <label className="ws-field"><span>Research sources (optional, one HTTPS URL per line, max 5)</span>
           <textarea rows={2} value={urls} onChange={(e) => setUrls(e.target.value)} placeholder="https://docs.example.org/security"/>
         </label>
-        <label className="ws-check-field"><input type="checkbox" checked={cloud} onChange={(e) => setCloud(e.target.checked)}/> Add OpenMindAI Cloud review of redacted summaries (needs project consent)</label>
+        <label className="ws-field"><span>Web search queries (optional, one per line, max 3; needs a search provider and research consent)</span>
+          <textarea rows={2} value={queries} onChange={(e) => setQueries(e.target.value)} placeholder="OWASP session token validation"/>
+        </label>
+        <label className="ws-check-field"><input type="checkbox" checked={aiPlanning} onChange={(e) => setAiPlanning(e.target.checked)}/> AI task decomposition (model proposes the specialist plan; policy validates it; falls back to the template)</label>
+        <label className="ws-check-field"><input type="checkbox" checked={cloud} onChange={(e) => setCloud(e.target.checked)}/> Add model review of compacted summaries with project memory (needs project consent)</label>
         <label className="ws-field"><span>Parallel read-only workers</span>
           <select value={parallel} onChange={(e) => setParallel(Number(e.target.value))}>{[1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}</select>
         </label>
@@ -153,7 +168,7 @@ function GoalComposer({ projectId, onCreated }: { projectId: string; onCreated: 
   );
 }
 
-function RunView({ projectId, runId, onChanged }: { projectId: string; runId: string; onChanged: () => void }) {
+function RunView({ projectId, runId, plan, onChanged }: { projectId: string; runId: string; plan: PlanInfo | null; onChanged: () => void }) {
   const onError = useErrorToast();
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<WorkflowEvent[]>([]);
@@ -166,8 +181,12 @@ function RunView({ projectId, runId, onChanged }: { projectId: string; runId: st
       setDetail(await workflowApi.detail(runId));
       const fresh = await workflowApi.events(runId, cursor.current);
       if (fresh.length) {
-        cursor.current = fresh[fresh.length - 1].seq;
-        setEvents((prev) => [...prev, ...fresh].slice(-400));
+        cursor.current = Math.max(cursor.current, fresh[fresh.length - 1].seq);
+        // Overlapping loads can fetch the same page; merge by seq so appends are idempotent.
+        setEvents((prev) => {
+          const last = prev.length ? prev[prev.length - 1].seq : 0;
+          return [...prev, ...fresh.filter((e) => e.seq > last)].slice(-400);
+        });
       }
     } catch (error) {
       onError(error);
@@ -269,6 +288,7 @@ function RunView({ projectId, runId, onChanged }: { projectId: string; runId: st
           return <li key={e.id}><StatusBadge status={e.provenance}/> {from?.kind}:{from?.label} → <em>{e.relation}</em> → {to?.kind}:{to?.label} <small>confidence {e.confidence.toFixed(2)} · {e.source_ref}</small></li>;
         })}</ul>
       </Panel>}
+      <RunExtras projectId={projectId} detail={detail} plan={plan ?? planFromEvents(events)} settled={TERMINAL_RUN_STATES.includes(run.state)}/>
       {report && <Panel title="Report (Markdown)" action={<button type="button" className="ws-button ws-button-secondary" onClick={() => void navigator.clipboard.writeText(report)}>Copy</button>}>
         <pre className="wf-report">{report}</pre>
       </Panel>}
@@ -276,11 +296,23 @@ function RunView({ projectId, runId, onChanged }: { projectId: string; runId: st
   );
 }
 
+/** Plan provenance recorded as the run's `plan_source` event. */
+function planFromEvents(events: WorkflowEvent[]): PlanInfo | null {
+  const e = events.find((x) => x.kind === "plan_source");
+  if (!e) return null;
+  const d = e.detail as Partial<PlanInfo>;
+  return d.source ? { source: d.source, rationale: d.rationale ?? null, rejected: d.rejected ?? [] } : null;
+}
+
 function summarizeEvent(e: WorkflowEvent, tasks: RunDetail["tasks"]): string {
   const title = e.task_id ? tasks.find((t) => t.id === e.task_id)?.title ?? "" : "";
   const d = e.detail as Record<string, string | boolean | undefined>;
   if (e.kind === "task_state" || e.kind === "run_state") return `${title} ${d.from} → ${d.to}${d.reason ? ` (${d.reason})` : ""}`;
   if (e.kind.startsWith("tool_")) return `${title} ${d.tool ?? ""} ${d.reason ?? (d.ok === false ? "failed" : "")}`;
+  if (e.kind === "plan_source") {
+    const source = (e.detail as { source?: { kind?: string; model?: string } }).source;
+    return source?.kind === "model" ? `AI plan by ${source.model}` : "template plan";
+  }
   return title;
 }
 

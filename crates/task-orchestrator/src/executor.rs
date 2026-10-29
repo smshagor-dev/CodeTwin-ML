@@ -96,6 +96,10 @@ pub struct Orchestrator {
     limits: Arc<GlobalLimits>,
 }
 
+/// Identical (tool, arguments) calls allowed per task attempt before the
+/// gate treats the worker as looping.
+pub const MAX_IDENTICAL_TOOL_CALLS: usize = 3;
+
 struct Gate<'a> {
     orchestrator: &'a Orchestrator,
     project_id: &'a str,
@@ -144,6 +148,21 @@ impl ToolGate for Gate<'_> {
                 Some(descriptor.capability),
                 descriptor.side_effect,
                 deny::INVALID_ARGUMENTS,
+            ));
+        }
+        // Loop detection: an identical call repeated within one attempt means
+        // the worker is not making progress.
+        let repeats = {
+            let conn = o.conn.lock().expect("store mutex");
+            Store::new(&conn)
+                .identical_tool_calls(&self.task.id, self.attempt, tool_id, args)
+                .map_err(|e| ToolCallError::Failed(e.to_string()))?
+        };
+        if repeats >= MAX_IDENTICAL_TOOL_CALLS {
+            return Err(deny_with(
+                Some(descriptor.capability),
+                descriptor.side_effect,
+                deny::LOOP_DETECTED,
             ));
         }
         let begin = {

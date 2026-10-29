@@ -106,6 +106,7 @@ pub mod deny {
     pub const UNKNOWN_TOOL: &str = "tool_not_registered";
     pub const TOOL_UNAVAILABLE: &str = "tool_unavailable_on_platform";
     pub const INVALID_ARGUMENTS: &str = "tool_arguments_schema_violation";
+    pub const LOOP_DETECTED: &str = "tool_call_loop_detected";
 }
 
 pub struct PolicyEngine;

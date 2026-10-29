@@ -62,7 +62,7 @@ export function DesktopRoot() {
   const [route, setRoute] = useState<AppRoute>(() => parseRoute(window.location.hash));
 
   useEffect(() => {
-    if (!window.location.hash) window.location.hash = "#/dashboard";
+    if (!window.location.hash) window.location.hash = "#/launch";
     const update = () => setRoute(parseRoute(window.location.hash));
     window.addEventListener("hashchange", update);
     return () => window.removeEventListener("hashchange", update);

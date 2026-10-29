@@ -1,0 +1,164 @@
+/* First-page target gate: choose a Local codebase or a Web target.
+   Rendered inside the workspace content area (with sidebar). Uses the shared
+   --ws-* design tokens so it matches every other page in light and dark. */
+
+.lp {
+  position: relative;
+  min-height: calc(100dvh - 150px);
+  border: 1px solid var(--ws-border);
+  border-radius: 14px;
+  overflow: hidden;
+  color: var(--ws-text);
+  background:
+    radial-gradient(1100px 620px at 80% -10%, color-mix(in srgb, var(--ws-primary) 10%, transparent), transparent 60%),
+    var(--ws-bg);
+}
+
+/* Subtle scanline for the "live terminal" feel; respects reduced motion. */
+.lp-scanline {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(180deg, transparent 0 3px, color-mix(in srgb, var(--ws-text) 2%, transparent) 3px 4px);
+  mask-image: linear-gradient(180deg, transparent, #000 18%, #000 82%, transparent);
+}
+
+.lp-inner {
+  position: relative;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: clamp(26px, 4vw, 48px) clamp(16px, 4vw, 40px) 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+}
+
+/* ---- header ---- */
+.lp-head { display: flex; flex-direction: column; gap: 8px; }
+.lp-brand { display: inline-flex; align-items: center; gap: 9px; color: var(--ws-primary); font-size: 16px; }
+.lp-brand strong { color: var(--ws-text); font-weight: 650; }
+.lp-tagline {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12.5px; color: var(--ws-muted); margin: 2px 0 4px;
+}
+.lp-prompt { color: var(--ws-primary); margin-right: 8px; }
+.lp-caret { color: var(--ws-primary); animation: lp-blink 1.1s steps(1) infinite; margin-left: 2px; }
+@keyframes lp-blink { 50% { opacity: 0; } }
+.lp-head h1 { margin: 0; font-size: 25px; font-weight: 680; letter-spacing: -0.3px; }
+.lp-sub { margin: 0; max-width: 74ch; color: var(--ws-muted); font-size: 14px; line-height: 1.55; }
+
+/* ---- the two mode cards ---- */
+.lp-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.lp-card {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--ws-border);
+  border-radius: 12px;
+  background: var(--ws-surface);
+  overflow: hidden;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+.lp-card:hover { transform: translateY(-1px); border-color: var(--ws-border-strong); }
+.lp-card-active { border-color: var(--ws-primary); box-shadow: 0 0 0 1px var(--ws-primary); }
+
+/* `.lp` prefixes below raise specificity above the global `.ws-app button` reset. */
+.lp .lp-card-face {
+  all: unset; box-sizing: border-box; cursor: pointer;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 22px 22px 16px;
+  border-bottom: 1px solid var(--ws-border);
+}
+.lp .lp-card-face:focus-visible { outline: 2px solid var(--ws-primary); outline-offset: -4px; }
+.lp-card-icon {
+  width: 48px; height: 48px; border-radius: 12px;
+  display: grid; place-items: center; margin-bottom: 4px;
+  color: var(--ws-primary);
+  background: color-mix(in srgb, var(--ws-primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ws-primary) 32%, transparent);
+}
+.lp-card-kind {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 10.5px; letter-spacing: 1.6px; text-transform: uppercase; color: var(--ws-faint);
+}
+.lp-card-face h2 { margin: 0; font-size: 19px; font-weight: 640; }
+.lp-card-face p { margin: 0; color: var(--ws-muted); font-size: 13px; line-height: 1.5; }
+
+.lp-card-actions { display: flex; flex-direction: column; gap: 11px; padding: 16px 18px 18px; }
+
+.lp .lp-btn {
+  all: unset; box-sizing: border-box; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 10px 15px; border-radius: 9px; font-size: 13.5px; font-weight: 580;
+  border: 1px solid var(--ws-border-strong); color: var(--ws-text); background: var(--ws-surface-soft);
+  transition: background 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
+}
+.lp .lp-btn:hover { background: color-mix(in srgb, var(--ws-text) 7%, var(--ws-surface-soft)); border-color: var(--ws-border-strong); }
+.lp .lp-btn:focus-visible { outline: 2px solid var(--ws-primary); outline-offset: 2px; }
+.lp .lp-btn[disabled] { opacity: 0.55; cursor: progress; }
+.lp .lp-btn-primary {
+  color: var(--ws-on-primary, #061418); font-weight: 640;
+  background: var(--ws-primary); border-color: transparent;
+}
+.lp .lp-btn-primary:hover { background: var(--ws-primary-hover); }
+
+/* ---- saved targets ---- */
+.lp-recent { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 288px; overflow-y: auto; }
+.lp-recent-count { margin: 2px 0 0; font-size: 11.5px; color: var(--ws-faint); }
+.lp-recent-empty { margin: 2px 0 0; font-size: 12.5px; color: var(--ws-faint); line-height: 1.45; }
+.lp-recent > li > button {
+  all: unset; box-sizing: border-box; cursor: pointer; width: 100%;
+  display: flex; align-items: center; gap: 11px;
+  padding: 9px 11px; border-radius: 8px; color: var(--ws-text);
+  border: 1px solid transparent; transition: background 0.14s ease, border-color 0.14s ease;
+}
+.lp-recent > li > button:hover { background: var(--ws-surface-soft); border-color: var(--ws-border); }
+.lp-recent > li > button:focus-visible { outline: 2px solid var(--ws-primary); outline-offset: -2px; }
+.lp-recent > li > button[disabled] { opacity: 0.6; cursor: progress; }
+.lp-scan-cta { font-size: 11.5px; font-weight: 640; color: var(--ws-primary); white-space: nowrap; flex: none; }
+.lp-recent > li > button:hover .lp-scan-cta { color: var(--ws-primary-hover); }
+.lp-recent svg { color: var(--ws-muted); flex: none; }
+.lp-recent-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.lp-recent-main strong { font-size: 13px; font-weight: 560; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lp-recent-main small { font-size: 11.5px; color: var(--ws-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.lp-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--ws-faint); }
+.lp-dot-online { background: var(--ws-success); box-shadow: 0 0 7px color-mix(in srgb, var(--ws-success) 60%, transparent); }
+.lp-dot-degraded { background: var(--ws-warning); }
+.lp-dot-offline { background: var(--ws-danger); }
+
+/* ---- shared tools strip ---- */
+.lp-tools {
+  border: 1px solid var(--ws-border); border-radius: 12px;
+  background: var(--ws-surface); padding: 15px 18px;
+}
+.lp-tools-label {
+  margin: 0 0 12px; font-family: ui-monospace, Consolas, monospace;
+  font-size: 10.5px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--ws-faint);
+}
+.lp-tools ul {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(176px, 1fr)); gap: 12px;
+}
+.lp-tools li { display: flex; align-items: flex-start; gap: 10px; }
+.lp-tools li svg { color: var(--ws-primary); flex: none; margin-top: 2px; }
+.lp-tools li span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lp-tools li strong { font-size: 12.5px; font-weight: 580; }
+.lp-tools li small { font-size: 11.5px; color: var(--ws-faint); line-height: 1.4; }
+
+/* ---- footer ---- */
+.lp-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.lp .lp-link {
+  all: unset; cursor: pointer; color: var(--ws-muted); font-size: 13px;
+  padding: 6px 2px; transition: color 0.14s ease;
+}
+.lp .lp-link:hover { color: var(--ws-text); }
+.lp .lp-link:focus-visible { outline: 2px solid var(--ws-primary); outline-offset: 2px; border-radius: 4px; }
+.lp-note { display: inline-flex; align-items: center; gap: 7px; color: var(--ws-faint); font-size: 12px; }
+.lp-note svg { color: var(--ws-primary); }
+
+@media (max-width: 720px) {
+  .lp-cards { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lp-caret { animation: none; }
+  .lp-card:hover { transform: none; }
+}

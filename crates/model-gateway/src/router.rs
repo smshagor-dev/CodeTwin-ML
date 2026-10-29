@@ -21,6 +21,8 @@ pub struct RoleModels {
     pub default_cloud: Option<String>,
     pub default_local: Option<String>,
     pub cloud_by_role: BTreeMap<String, String>,
+    #[serde(default)]
+    pub local_by_role: BTreeMap<String, String>,
 }
 
 impl RoleModels {
@@ -31,7 +33,11 @@ impl RoleModels {
                 .get(role)
                 .or(self.default_cloud.as_ref())
                 .map(String::as_str),
-            Route::Local => self.default_local.as_deref(),
+            Route::Local => self
+                .local_by_role
+                .get(role)
+                .or(self.default_local.as_ref())
+                .map(String::as_str),
         }
     }
 }
@@ -161,7 +167,9 @@ mod tests {
             default_cloud: Some("openmindai-lite".into()),
             default_local: Some("local".into()),
             cloud_by_role: [("planner".to_owned(), "openmindai-super".to_owned())].into(),
+            local_by_role: [("reviewer".to_owned(), "qwen-local".to_owned())].into(),
         };
+        assert_eq!(m.model_for("reviewer", Route::Local), Some("qwen-local"));
         assert_eq!(
             m.model_for("planner", Route::Cloud),
             Some("openmindai-super")

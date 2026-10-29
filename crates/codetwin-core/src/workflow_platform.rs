@@ -16,11 +16,15 @@ use task_orchestrator::store::{
 };
 use task_orchestrator::{CancelToken, GlobalLimits, Orchestrator, OrchestratorConfig, Store};
 
-use crate::agent_tools::{CapabilityStatus, CloudAccess, CoreToolRuntime};
+use crate::agent_tools::{CapabilityStatus, CoreToolRuntime, SearchAccess};
 use crate::cloud_settings::CloudSettings;
+use crate::collaboration::{Action, Collaboration};
 use crate::knowledge_memory::KnowledgeMemory;
-use crate::specialist_workers::{plan_investigation, registry, InvestigationOptions};
+use crate::model_access::{CloudRoute, ModelAccess};
+use crate::model_planner::{propose_plan, PlanSource};
+use crate::specialist_workers::{registry, InvestigationOptions};
 use crate::Database;
+use model_gateway::router::RoleModels;
 
 pub const APPROVAL_TTL_MS: i64 = 24 * 3_600_000;
 
@@ -49,11 +53,37 @@ pub struct CloudProvider {
     pub model: String,
 }
 
+/// Loopback local model endpoint (no egress, no consent needed for planning;
+/// used as a worker fallback only when project consent allows it).
+#[derive(Clone)]
+pub struct LocalProvider {
+    pub client: Arc<ChatClient>,
+    pub model: String,
+}
+
+/// What `create_investigation` decided about the plan.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanInfo {
+    pub source: PlanSource,
+    pub rationale: Option<String>,
+    pub rejected: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RetentionReport {
+    pub runs_deleted: usize,
+    pub provider_requests_deleted: usize,
+    pub audit_records_deleted: usize,
+}
+
 pub struct WorkflowPlatform {
     db_path: PathBuf,
     instance_id: String,
     limits: Arc<GlobalLimits>,
     cloud: Option<CloudProvider>,
+    local: Option<LocalProvider>,
+    role_models: RoleModels,
+    search: Option<SearchAccess>,
 }
 
 fn open_connection(path: &Path) -> Result<Connection, String> {
@@ -79,7 +109,54 @@ impl WorkflowPlatform {
             instance_id,
             limits,
             cloud,
+            local: None,
+            role_models: RoleModels::default(),
+            search: None,
         }
+    }
+
+    /// Per-role model selection and an optional local model.
+    pub fn with_models(mut self, local: Option<LocalProvider>, role_models: RoleModels) -> Self {
+        self.local = local;
+        self.role_models = role_models;
+        self
+    }
+
+    /// Configured external search provider for consented research.
+    pub fn with_search(mut self, search: Option<SearchAccess>) -> Self {
+        self.search = search;
+        self
+    }
+
+    fn role_models(&self) -> RoleModels {
+        let mut models = self.role_models.clone();
+        if models.default_cloud.is_none() {
+            models.default_cloud = self.cloud.as_ref().map(|c| c.model.clone());
+        }
+        if models.default_local.is_none() {
+            models.default_local = self.local.as_ref().map(|l| l.model.clone());
+        }
+        models
+    }
+
+    /// Model access for planning: consented cloud (with local fallback), or
+    /// the local model alone when the project is offline-only.
+    fn planning_models(&self, project_id: &str) -> Result<Option<ModelAccess>, String> {
+        let db = self.database()?;
+        let consent = CloudSettings::new(&db).consent(project_id)?;
+        let cloud = match (&self.cloud, consent) {
+            (Some(provider), Some(c)) if c.consent.allow_cloud => Some(CloudRoute {
+                client: provider.client.clone(),
+                consent: c.consent,
+            }),
+            _ => None,
+        };
+        let access = ModelAccess {
+            cloud,
+            local: self.local.as_ref().map(|l| l.client.clone()),
+            role_models: self.role_models(),
+        };
+        Ok(access.is_configured().then_some(access))
     }
 
     fn database(&self) -> Result<Database, String> {
@@ -107,12 +184,17 @@ impl WorkflowPlatform {
             cloud_consent: cloud_ok,
             research_enabled: research_ok,
         };
-        let cloud = if cloud_ok {
+        let models = if cloud_ok {
             let provider = self.cloud.as_ref().expect("checked");
-            Some(CloudAccess {
-                client: provider.client.clone(),
-                consent: consent.expect("checked").consent,
-                model: provider.model.clone(),
+            Some(ModelAccess {
+                cloud: Some(CloudRoute {
+                    client: provider.client.clone(),
+                    consent: consent.expect("checked").consent,
+                }),
+                // Used only after an infrastructure failure and only when the
+                // consent allows local fallback (enforced by the router).
+                local: self.local.as_ref().map(|l| l.client.clone()),
+                role_models: self.role_models(),
             })
         } else {
             None
@@ -120,7 +202,8 @@ impl WorkflowPlatform {
         let research = research_ok.then(research_retrieval::FetchPolicy::default);
         Ok((
             policy,
-            CoreToolRuntime::new(self.db_path.clone(), research, cloud),
+            CoreToolRuntime::new(self.db_path.clone(), research, models)
+                .with_search(self.search.clone()),
         ))
     }
 
@@ -171,15 +254,55 @@ impl WorkflowPlatform {
         options: &InvestigationOptions,
         budgets: Option<RunBudgets>,
     ) -> Result<(RunRecord, Vec<ApprovalRequest>), String> {
+        self.create_planned_investigation(project_id, goal, owner, options, budgets)
+            .map(|(run, approvals, _)| (run, approvals))
+    }
+
+    /// Like [`Self::create_investigation`], also reporting where the plan
+    /// came from (model decomposition or the deterministic template).
+    pub fn create_planned_investigation(
+        &self,
+        project_id: &str,
+        goal: &str,
+        owner: &str,
+        options: &InvestigationOptions,
+        budgets: Option<RunBudgets>,
+    ) -> Result<(RunRecord, Vec<ApprovalRequest>, PlanInfo), String> {
+        {
+            let db = self.database()?;
+            Collaboration::new(&db).authorize(project_id, owner, Action::CreateRun)?;
+        }
         let (policy, _) = self.runtime_for(project_id)?;
         let orchestrator = self.orchestrator(project_id)?;
         let contracts = orchestrator.contracts();
+        let proposal = {
+            let db = self.database()?;
+            let models = if options.ai_planning {
+                self.planning_models(project_id)?
+            } else {
+                None
+            };
+            propose_plan(
+                models.as_ref(),
+                &db,
+                project_id,
+                goal,
+                options,
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+        };
         let mut budgets = budgets.unwrap_or_default();
-        if options.cloud_review && budgets.max_credits == 0 {
-            budgets.max_credits = 3;
-        }
-        let tasks = plan_investigation(goal, options);
-        orchestrator
+        let review_credits = if options.cloud_review { 3 } else { 0 };
+        budgets.max_credits = budgets
+            .max_credits
+            .max(proposal.credits + review_credits);
+        let tasks = proposal.tasks.clone();
+        let info = PlanInfo {
+            source: proposal.source.clone(),
+            rationale: proposal.rationale.clone(),
+            rejected: proposal.rejected.clone(),
+        };
+        let (run, approvals) = orchestrator
             .with_store(|s| {
                 let run = s.create_run(&RunSpec {
                     project_id: project_id.into(),
@@ -188,6 +311,22 @@ impl WorkflowPlatform {
                     budgets,
                     cloud_consented: policy.cloud_consent,
                 })?;
+                if proposal.credits > 0 {
+                    s.add_credits(&run.id, proposal.credits)?;
+                }
+                if let PlanSource::Model { request_id, .. } = &proposal.source {
+                    s.connection().execute(
+                        "UPDATE provider_requests SET run_id=?1 WHERE request_id=?2",
+                        rusqlite::params![run.id, request_id],
+                    )?;
+                }
+                s.event(
+                    &run.id,
+                    None,
+                    "plan_source",
+                    serde_json::json!({"source": info.source, "rationale": info.rationale,
+                        "rejected": info.rejected.iter().take(8).collect::<Vec<_>>(), "tasks": tasks.len()}),
+                )?;
                 let approvals =
                     s.submit_plan(&run.id, &tasks, &contracts, &policy, APPROVAL_TTL_MS);
                 match approvals {
@@ -198,7 +337,8 @@ impl WorkflowPlatform {
                     }
                 }
             })
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        Ok((run, approvals, info))
     }
 
     pub fn decide(
@@ -209,7 +349,31 @@ impl WorkflowPlatform {
         scope_digest: &str,
         note: Option<&str>,
     ) -> Result<ApprovalRequest, String> {
-        self.with_store(|s| s.decide_approval(approval_id, approve, operator, scope_digest, note))
+        // Role check and separation of duties, before the store's own checks
+        // (scope digest, revision, expiry, automated principals).
+        let (project_id, owner) = self.with_store(|s| {
+            let approval = s.get_approval(approval_id)?;
+            let run = s.get_run(&approval.run_id)?;
+            Ok((run.project_id, run.owner))
+        })?;
+        let db = self.database()?;
+        let collab = Collaboration::new(&db);
+        if approve {
+            collab.authorize_approval(&project_id, operator, &owner)?;
+        } else {
+            collab.authorize(&project_id, operator, Action::Approve)?;
+        }
+        let decided = self
+            .with_store(|s| s.decide_approval(approval_id, approve, operator, scope_digest, note))?;
+        collab.audit(
+            operator,
+            if approve { "approve" } else { "reject" },
+            Some(&project_id),
+            Some(approval_id),
+            "allowed",
+            serde_json::json!({"scope_digest": scope_digest}),
+        );
+        Ok(decided)
     }
 
     /// Execute an approved run to settlement, then index it into memory.
@@ -285,6 +449,55 @@ impl WorkflowPlatform {
         operator: &str,
     ) -> Result<TaskRecord, String> {
         self.with_store(|s| s.override_blocked_task(task_id, resolution, operator, APPROVAL_TTL_MS))
+    }
+
+    /// PDF rendering of the run's Markdown report (the PDF embeds the
+    /// Markdown's SHA-256 so it can be matched to the stored report).
+    pub fn report_pdf(&self, run_id: &str) -> Result<Vec<u8>, String> {
+        let markdown = self.report(run_id, "markdown")?;
+        let run = self.with_store(|s| s.get_run(run_id))?;
+        let title: String = format!("CodeTwin workflow report - {}", run.goal)
+            .chars()
+            .take(120)
+            .collect();
+        Ok(crate::pdf_report::render_pdf(&title, &markdown))
+    }
+
+    /// Delete settled runs (and their tasks, events, tool records and
+    /// reports via cascade) older than `older_than_days`, always keeping the
+    /// newest `keep_latest` runs per project. Active runs are never touched.
+    /// Provider and audit records older than the same horizon are pruned.
+    pub fn prune(&self, older_than_days: u32, keep_latest: u32) -> Result<RetentionReport, String> {
+        let days = i64::from(older_than_days.max(1));
+        let cutoff = task_orchestrator::store::now_ms() - days * 24 * 3_600_000;
+        let conn = open_connection(&self.db_path)?;
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        let runs_deleted = tx
+            .execute(
+                "DELETE FROM workflow_runs WHERE state IN ('completed','failed','cancelled')
+                   AND COALESCE(finished_ms, updated_ms) < ?1
+                   AND id NOT IN (
+                     SELECT id FROM (
+                       SELECT id, ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY created_ms DESC) AS rn
+                       FROM workflow_runs) WHERE rn <= ?2)",
+                rusqlite::params![cutoff, i64::from(keep_latest)],
+            )
+            .map_err(|e| e.to_string())?;
+        let provider_requests_deleted = tx
+            .execute(
+                "DELETE FROM provider_requests WHERE created_ms < ?1",
+                [cutoff],
+            )
+            .map_err(|e| e.to_string())?;
+        let audit_records_deleted = tx
+            .execute("DELETE FROM audit_records WHERE created_ms < ?1", [cutoff])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(RetentionReport {
+            runs_deleted,
+            provider_requests_deleted,
+            audit_records_deleted,
+        })
     }
 
     pub fn report(&self, run_id: &str, format: &str) -> Result<String, String> {

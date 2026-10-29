@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use task_orchestrator::policy::Capability;
 use task_orchestrator::state::{ErrorCategory, EvidenceClass};
 use task_orchestrator::store::TaskSpec;
+use crate::context_compaction::{compact, Section};
 use task_orchestrator::worker::{
     DelegationRequest, EvidenceRef, SuccessCriterion, TaskContext, ToolCallError, Worker,
     WorkerContract, WorkerError, WorkerOutput, WorkerRegistry,
@@ -251,29 +252,71 @@ fn qa_planner(ctx: &TaskContext<'_>) -> Result<WorkerOutput, WorkerError> {
 }
 
 fn research_analyst(ctx: &TaskContext<'_>) -> Result<WorkerOutput, WorkerError> {
-    let urls: Vec<String> = ctx
-        .input
-        .get("urls")
-        .and_then(Value::as_array)
-        .map(|u| {
-            u.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut sources = Vec::new();
+    let strings = |key: &str, max: usize| -> Vec<String> {
+        ctx.input
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|u| {
+                u.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .take(max)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let claims = strings("claims", 6);
+    let mut urls = strings("urls", 5);
+    let mut searches = Vec::new();
     let mut errors = Vec::new();
+    // Operator-provided queries only; search hits are untrusted and each is
+    // fetched under the same SSRF policy as listed URLs.
+    for query in strings("queries", 3) {
+        match call(ctx, "research.search", json!({"query": query, "limit": 5})) {
+            Ok(result) => {
+                let hits: Vec<String> = result["hits"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|h| str_of(h, "url"))
+                    .filter(|u| !urls.contains(u))
+                    .take(3)
+                    .collect();
+                searches.push(json!({"query": query, "provider": result["provider"], "selected": hits}));
+                urls.extend(hits);
+            }
+            Err(e) if e.category == ErrorCategory::Policy => return Err(e),
+            Err(e) => errors.push(json!({"query": query, "error": e.detail})),
+        }
+    }
+    let mut sources = Vec::new();
     let mut refs = Vec::new();
     let mut seen = BTreeSet::new();
-    for url in urls.iter().take(5) {
-        match call(ctx, "research.fetch", json!({"url": url})) {
+    let mut quotes = Vec::new();
+    let (mut supported, mut unsupported) = (0u64, 0u64);
+    for url in urls.iter().take(8) {
+        let args = json!({"url": url, "claims": claims, "run_id": ctx.run_id, "task_id": ctx.task_id});
+        match call(ctx, "research.fetch", args) {
             Ok(doc) => {
                 let sha = str_of(&doc, "sha256");
                 if sha.as_ref().is_some_and(|s| !seen.insert(s.clone())) {
                     continue; // duplicate content
                 }
-                if let Some(id) = str_of(&doc, "source_id") {
+                let source_id = str_of(&doc, "source_id");
+                for c in doc["citations"].as_array().into_iter().flatten() {
+                    if c["support"] == "supported" {
+                        supported += 1;
+                        if let (Some(src), Some(q)) = (&source_id, str_of(c, "quote")) {
+                            quotes.push(research_retrieval::Claim {
+                                source_id: src.clone(),
+                                text: q,
+                            });
+                        }
+                    } else {
+                        unsupported += 1;
+                    }
+                }
+                if let Some(id) = source_id {
                     refs.push(EvidenceRef {
                         kind: "research_source".into(),
                         id,
@@ -292,49 +335,124 @@ fn research_analyst(ctx: &TaskContext<'_>) -> Result<WorkerOutput, WorkerError> 
             errors.len()
         )));
     }
+    let contradictions: Vec<Value> = research_retrieval::contradiction_candidates(&quotes)
+        .into_iter()
+        .map(|(a, b)| json!({"a": quotes[a], "b": quotes[b], "status": "needs_human_review"}))
+        .collect();
     let flagged: u64 = sources
         .iter()
         .filter_map(|s| s["instruction_like_phrases"].as_u64())
         .sum();
     let summary = format!(
-        "{} source(s) retrieved and hashed, {} retrieval error(s); {} instruction-like phrase(s) treated as untrusted text",
-        sources.len(), errors.len(), flagged
+        "{} source(s) retrieved and hashed ({} via search), {} retrieval error(s); citations: {supported} supported, \
+         {unsupported} unsupported; {} contradiction candidate(s); {flagged} instruction-like phrase(s) treated as untrusted text",
+        sources.len(),
+        searches.len(),
+        errors.len(),
+        contradictions.len()
     );
     Ok(WorkerOutput::observation(
         summary,
-        json!({"sources": sources, "errors": errors}),
+        json!({"sources": sources, "searches": searches, "errors": errors,
+            "citations": {"supported": supported, "unsupported": unsupported}, "contradictions": contradictions}),
         refs,
     ))
 }
 
 fn cloud_reviewer(ctx: &TaskContext<'_>) -> Result<WorkerOutput, WorkerError> {
-    // Only role/summary text from upstream tasks is sent; never source code.
-    let material: String = ctx
+    // Only summaries and structured outputs of upstream tasks are sent, never
+    // source code. Large material is compacted with omissions reported.
+    let goal: String = ctx
+        .input
+        .get("goal")
+        .and_then(Value::as_str)
+        .unwrap_or(ctx.goal)
+        .chars()
+        .take(1_000)
+        .collect();
+    let mut sections: Vec<Section> = ctx
         .upstream
         .iter()
-        .map(|(key, role, out)| {
-            format!(
-                "[{key} / {role}] {}",
-                out.get("data")
-                    .map(|d| d.to_string())
-                    .unwrap_or_default()
-                    .chars()
-                    .take(1_500)
-                    .collect::<String>()
-            )
+        .map(|(key, role, out)| Section {
+            id: key.clone(),
+            label: format!("{key} / {role}"),
+            text: format!(
+                "{}\n{}",
+                out.get("summary").and_then(Value::as_str).unwrap_or_default(),
+                out.get("data").map(Value::to_string).unwrap_or_default()
+            ),
+            priority: match role.as_str() {
+                "evidence_verifier" => 9,
+                "security_reviewer" => 8,
+                "source_intelligence" => 7,
+                "dependency_analyst" => 6,
+                "research_analyst" => 5,
+                _ => 4,
+            },
         })
-        .collect::<Vec<_>>()
-        .join("\n")
-        .chars()
-        .take(11_000)
         .collect();
-    let review = call(ctx, "model.summarize", json!({"material": material}))?;
+    // Retrieval-augmented context: bounded prior project memory, cited by id.
+    let mut rag_ids = Vec::new();
+    if let Ok(memory) = call(
+        ctx,
+        "memory.retrieve",
+        json!({"query": goal.chars().take(300).collect::<String>(), "limit": 6}),
+    ) {
+        let lines: Vec<String> = memory["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|i| {
+                let id = str_of(i, "id")?;
+                rag_ids.push(id.clone());
+                Some(format!(
+                    "[M:{id}] ({}, {}) {}: {}",
+                    if i["verified"] == json!(true) { "verified" } else { "unverified" },
+                    i["layer"].as_str().unwrap_or("memory"),
+                    i["title"].as_str().unwrap_or_default(),
+                    i["body"].as_str().unwrap_or_default()
+                ))
+            })
+            .collect();
+        if !lines.is_empty() {
+            sections.push(Section {
+                id: "memory".into(),
+                label: "Prior project memory (cite as [M:id])".into(),
+                text: lines.join("\n"),
+                priority: 5,
+            });
+        }
+    }
+    let compacted = compact(&sections, 10_500);
+    let material: String = format!("Goal: {goal}\n\n{}", compacted.text)
+        .chars()
+        .take(11_900)
+        .collect();
+    let review = call(
+        ctx,
+        "model.summarize",
+        json!({"material": material, "role": "cloud_reviewer", "run_id": ctx.run_id, "task_id": ctx.task_id}),
+    )?;
     let credits = review["credits"].as_u64().unwrap_or(0) as u32;
+    let content = review["content"].as_str().unwrap_or_default();
+    let cited: Vec<&String> = rag_ids
+        .iter()
+        .filter(|id| content.contains(&format!("[M:{id}]")))
+        .collect();
     Ok(WorkerOutput {
-        summary: "Cloud model review (unverified hypotheses and recommendations)".into(),
+        summary: format!(
+            "Model review via {} (unverified hypotheses and recommendations; {} memory item(s) cited)",
+            review["route"].as_str().unwrap_or("cloud"),
+            cited.len()
+        ),
         evidence_class: EvidenceClass::Hypothesis,
-        data: json!({"review": review["content"], "model": review["model"], "request_id": review["request_id"],
-            "payload_sha256": review["payload_sha256"], "redactions": review["redactions"]}),
+        data: json!({"review": review["content"], "model": review["model"], "route": review["route"],
+            "request_id": review["request_id"], "payload_sha256": review["payload_sha256"],
+            "redactions": review["redactions"], "fallback_reason": review["fallback_reason"],
+            "context": {"original_chars": compacted.original_chars, "final_chars": compacted.final_chars,
+                "estimated_tokens": compacted.estimated_tokens, "summarized": compacted.summarized,
+                "omitted": compacted.omitted},
+            "retrieved_memory": rag_ids, "cited_memory": cited}),
         evidence_refs: vec![],
         credits_used: credits,
         delegations: vec![],
@@ -471,7 +589,9 @@ fn quality_reviewer(ctx: &TaskContext<'_>) -> Result<WorkerOutput, WorkerError> 
 pub fn registry() -> WorkerRegistry {
     use Capability as C;
     let terms = json!({"terms": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 80}}});
-    let urls = json!({"urls": {"type": "array", "maxItems": 5, "items": {"type": "string", "maxLength": 2048}}});
+    let urls = json!({"urls": {"type": "array", "maxItems": 5, "items": {"type": "string", "maxLength": 2048}},
+        "queries": {"type": "array", "maxItems": 3, "items": {"type": "string", "maxLength": 400}},
+        "claims": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 200}}});
     let specs: Vec<(WorkerContract, Run)> = vec![
         (
             contract(
@@ -532,7 +652,7 @@ pub fn registry() -> WorkerRegistry {
             contract(
                 "research_analyst",
                 "Documentation/Research",
-                "Consented retrieval of operator-listed public sources",
+                "Consented search and retrieval of public sources with citations",
                 &[C::WebResearch],
                 urls,
                 EvidenceClass::Observation,
@@ -543,9 +663,9 @@ pub fn registry() -> WorkerRegistry {
             contract(
                 "cloud_reviewer",
                 "Cloud Reviewer",
-                "Consented OpenMindAI review of redacted summaries",
-                &[C::CloudInference],
-                json!({}),
+                "Consented model review of compacted summaries with retrieved memory",
+                &[C::CloudInference, C::ReadMemory],
+                json!({"goal": {"type": "string", "maxLength": 4000}}),
                 EvidenceClass::Hypothesis,
             ),
             cloud_reviewer,
@@ -597,6 +717,13 @@ pub struct InvestigationOptions {
     pub research_urls: Vec<String>,
     #[serde(default)]
     pub cloud_review: bool,
+    /// Operator-written web search queries (never model-generated).
+    #[serde(default)]
+    pub search_queries: Vec<String>,
+    /// Ask the configured model to decompose the goal (validated; falls back
+    /// to the deterministic plan).
+    #[serde(default)]
+    pub ai_planning: bool,
 }
 
 const STOPWORDS: &[&str] = &[
@@ -638,136 +765,142 @@ pub fn goal_terms(goal: &str) -> Vec<String> {
         .collect()
 }
 
-/// Deterministic plan for the read-only engineering investigation workflow.
-pub fn plan_investigation(goal: &str, options: &InvestigationOptions) -> Vec<TaskSpec> {
-    use Capability as C;
-    let task = |key: &str,
-                role: &str,
-                title: &str,
-                caps: &[C],
-                deps: &[&str],
-                input: Value,
-                criteria: Vec<SuccessCriterion>| TaskSpec {
+/// Success criteria for a role's task (shared by deterministic and model plans).
+fn role_criteria(role: &str) -> Vec<SuccessCriterion> {
+    let tool = |n| SuccessCriterion::ToolCallsAtLeast { min: n };
+    let refs = |n| SuccessCriterion::EvidenceRefsAtLeast { min: n };
+    match role {
+        "repository_analyst" => vec![
+            tool(2),
+            SuccessCriterion::OutputFieldPresent {
+                field: "project".into(),
+            },
+        ],
+        "source_intelligence" | "research_analyst" => vec![refs(1)],
+        "dependency_analyst" => vec![tool(2)],
+        "security_reviewer" | "qa_planner" | "evidence_verifier" | "cloud_reviewer" => vec![tool(1)],
+        _ => vec![],
+    }
+}
+
+/// A task for `role` with that role's full contract capabilities.
+pub fn role_task(
+    key: &str,
+    role: &str,
+    title: &str,
+    deps: &[&str],
+    input: Value,
+) -> Option<TaskSpec> {
+    let contract = registry().get(role)?.contract().clone();
+    Some(TaskSpec {
         key: key.into(),
         role: role.into(),
         title: title.into(),
         input,
-        success_criteria: criteria,
-        capabilities: caps.iter().copied().collect(),
+        success_criteria: role_criteria(role),
+        capabilities: contract.capabilities,
         resource_key: None,
         priority: 0,
         timeout_ms: None,
         depends_on: deps.iter().map(|d| (*d).to_owned()).collect(),
-    };
-    let tool = |n| SuccessCriterion::ToolCallsAtLeast { min: n };
-    let refs = |n| SuccessCriterion::EvidenceRefsAtLeast { min: n };
-    let mut plan = vec![
-        task(
-            "repo",
-            "repository_analyst",
-            "Map repository and Git state",
-            &[C::ReadProject, C::ReadGit],
-            &[],
-            json!({}),
-            vec![
-                tool(2),
-                SuccessCriterion::OutputFieldPresent {
-                    field: "project".into(),
-                },
-            ],
-        ),
-        task(
-            "source",
-            "source_intelligence",
-            "Locate code related to the goal",
-            &[C::SearchCode],
-            &["repo"],
-            json!({"terms": goal_terms(goal)}),
-            vec![refs(1)],
-        ),
-        task(
-            "deps",
-            "dependency_analyst",
-            "Review dependencies and SBOM",
-            &[C::ReadDependencies],
-            &["repo"],
-            json!({}),
-            vec![tool(2)],
-        ),
-        task(
-            "security",
-            "security_reviewer",
-            "Review persisted security findings",
-            &[C::ReadFindings],
-            &["repo"],
-            json!({}),
-            vec![tool(1)],
-        ),
-        task(
-            "qa",
-            "qa_planner",
-            "Inventory tests for targeted verification",
-            &[C::ReadTests],
-            &["repo"],
-            json!({}),
-            vec![tool(1)],
-        ),
-    ];
-    let mut evidence = vec!["source", "deps", "security", "qa"];
-    if !options.research_urls.is_empty() {
-        let urls: Vec<String> = options.research_urls.iter().take(5).cloned().collect();
-        plan.push(task(
+    })
+}
+
+/// Append the fixed tail every investigation ends with: optional research,
+/// deterministic evidence verification, optional model review, report and
+/// quality review. `plan` must already contain the `repo` task.
+pub fn finish_plan(mut plan: Vec<TaskSpec>, goal: &str, options: &InvestigationOptions) -> Vec<TaskSpec> {
+    let mut evidence: Vec<String> = plan
+        .iter()
+        .filter(|t| t.key != "repo")
+        .map(|t| t.key.clone())
+        .collect();
+    let urls: Vec<String> = options.research_urls.iter().take(5).cloned().collect();
+    let queries: Vec<String> = options
+        .search_queries
+        .iter()
+        .map(|q| q.trim().to_owned())
+        .filter(|q| !q.is_empty())
+        .take(3)
+        .collect();
+    if !urls.is_empty() || !queries.is_empty() {
+        plan.extend(role_task(
             "research",
             "research_analyst",
-            "Retrieve operator-listed sources",
-            &[C::WebResearch],
+            if queries.is_empty() {
+                "Retrieve operator-listed sources"
+            } else {
+                "Search and retrieve cited sources"
+            },
             &["repo"],
-            json!({"urls": urls}),
-            vec![refs(1)],
+            json!({"urls": urls, "queries": queries, "claims": goal_terms(goal)}),
         ));
-        evidence.push("research");
+        evidence.push("research".into());
     }
-    plan.push(task(
+    if evidence.is_empty() {
+        evidence.push("repo".into());
+    }
+    let evidence_refs: Vec<&str> = evidence.iter().map(String::as_str).collect();
+    plan.extend(role_task(
         "verify",
         "evidence_verifier",
         "Re-verify cited evidence",
-        &[C::ReadEvidence],
-        &evidence,
+        &evidence_refs,
         json!({}),
-        vec![tool(1)],
     ));
     let mut report_deps = vec!["verify"];
     if options.cloud_review {
-        plan.push(task(
+        plan.extend(role_task(
             "cloud",
             "cloud_reviewer",
-            "Cloud review of redacted summaries",
-            &[C::CloudInference],
+            "Model review of compacted summaries",
             &["verify"],
-            json!({}),
-            vec![tool(1)],
+            json!({"goal": goal.chars().take(4000).collect::<String>()}),
         ));
         report_deps.push("cloud");
     }
-    plan.push(task(
+    plan.extend(role_task(
         "report",
         "report_composer",
         "Compose cited report",
-        &[C::ReadMemory, C::RecordMemory],
         &report_deps,
         json!({}),
-        vec![],
     ));
-    plan.push(task(
+    plan.extend(role_task(
         "quality",
         "quality_reviewer",
         "Quality review of conclusions",
-        &[C::ReadEvidence],
         &["report", "verify"],
         json!({}),
-        vec![],
     ));
     plan
+}
+
+/// Deterministic plan for the read-only engineering investigation workflow.
+pub fn plan_investigation(goal: &str, options: &InvestigationOptions) -> Vec<TaskSpec> {
+    let mut plan: Vec<TaskSpec> = role_task(
+        "repo",
+        "repository_analyst",
+        "Map repository and Git state",
+        &[],
+        json!({}),
+    )
+    .into_iter()
+    .collect();
+    for (key, role, title, input) in [
+        (
+            "source",
+            "source_intelligence",
+            "Locate code related to the goal",
+            json!({"terms": goal_terms(goal)}),
+        ),
+        ("deps", "dependency_analyst", "Review dependencies and SBOM", json!({})),
+        ("security", "security_reviewer", "Review persisted security findings", json!({})),
+        ("qa", "qa_planner", "Inventory tests for targeted verification", json!({})),
+    ] {
+        plan.extend(role_task(key, role, title, &["repo"], input));
+    }
+    finish_plan(plan, goal, options)
 }
 
 #[cfg(test)]
@@ -787,6 +920,8 @@ mod tests {
             &InvestigationOptions {
                 research_urls: vec!["https://example.org/".into()],
                 cloud_review: true,
+                search_queries: vec!["token validation best practice".into()],
+                ai_planning: false,
             },
         );
         let keys: Vec<String> = plan.iter().map(|t| t.key.clone()).collect();

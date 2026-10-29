@@ -175,6 +175,7 @@ fn research_and_cloud_require_consent_and_fail_closed() {
     let research = InvestigationOptions {
         research_urls: vec!["https://example.org/".into()],
         cloud_review: false,
+        ..Default::default()
     };
     let err = p
         .create_investigation(&f.project_id, "goal", "operator", &research, None)
@@ -183,6 +184,7 @@ fn research_and_cloud_require_consent_and_fail_closed() {
     let cloud = InvestigationOptions {
         research_urls: vec![],
         cloud_review: true,
+        ..Default::default()
     };
     let err = p
         .create_investigation(&f.project_id, "goal", "operator", &cloud, None)

@@ -54,9 +54,11 @@ const MIGRATION_0047: &str = include_str!("../migrations/0047_workflow_orchestra
 const MIGRATION_0048: &str = include_str!("../migrations/0048_model_gateway.sql");
 const MIGRATION_0049: &str = include_str!("../migrations/0049_knowledge_memory.sql");
 const MIGRATION_0050: &str = include_str!("../migrations/0050_research_sources.sql");
+const MIGRATION_0051: &str =
+    include_str!("../migrations/0051_collaboration_automation.sql");
 
 /// Highest schema version this build applies.
-pub const LATEST_SCHEMA_VERSION: i64 = 50;
+pub const LATEST_SCHEMA_VERSION: i64 = 51;
 /// Pre-migration backups retained next to the database file.
 const MIGRATION_BACKUPS_KEPT: usize = 3;
 
@@ -263,6 +265,7 @@ impl Database {
         self.apply_migration(48, MIGRATION_0048)?;
         self.apply_migration(49, MIGRATION_0049)?;
         self.apply_migration(50, MIGRATION_0050)?;
+        self.apply_migration(51, MIGRATION_0051)?;
         Ok(())
     }
 
@@ -312,15 +315,18 @@ mod tests {
                 // Simulate an older schema so the next open must upgrade.
                 db.connection()
                     .execute_batch(
-                        "DROP TABLE research_citations; DROP TABLE research_sources;
-                         DELETE FROM schema_migrations WHERE version = 50;",
+                        "DROP TABLE collaboration_comment_revisions; DROP TABLE collaboration_comments;
+                         DROP TABLE project_invitations; DROP TABLE project_memberships;
+                         DROP TABLE project_access_policies; DROP TABLE api_tokens; DROP TABLE principals;
+                         DROP TABLE audit_records; DROP TABLE search_provider_settings;
+                         DELETE FROM schema_migrations WHERE version = 51;",
                     )
                     .expect("downgrade");
             }
             let db = Database::open(&path).expect("upgrade");
             assert_eq!(db.schema_version().unwrap(), Some(LATEST_SCHEMA_VERSION));
         }
-        let kept = backups(dir.path(), "codetwin.sqlite3.pre-v49-v50-");
+        let kept = backups(dir.path(), "codetwin.sqlite3.pre-v50-v51-");
         assert_eq!(kept.len(), 3, "older backups are pruned");
         let restored = Database::open(&kept[0]).expect("backup opens and migrates");
         assert_eq!(

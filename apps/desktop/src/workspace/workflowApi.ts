@@ -68,6 +68,11 @@ export interface WorkflowTask {
   finished_ms: number | null;
 }
 
+export type PlanSource =
+  | { kind: "model"; provider: string; model: string; route: string; request_id: string; fallback_reason: string | null }
+  | { kind: "deterministic"; reason: string };
+export interface PlanInfo { source: PlanSource; rationale: string | null; rejected: string[] }
+
 export interface ApprovalRequest {
   id: string;
   run_id: string;
@@ -180,7 +185,12 @@ export interface ProviderSettings {
   kind: string;
   base_url: string;
   enabled: boolean;
-  role_models: { default_cloud: string | null; default_local: string | null; cloud_by_role: Record<string, string> };
+  role_models: {
+    default_cloud: string | null;
+    default_local: string | null;
+    cloud_by_role: Record<string, string>;
+    local_by_role?: Record<string, string>;
+  };
   updated_ms: number;
 }
 
@@ -248,8 +258,10 @@ export const TERMINAL_RUN_STATES: RunState[] = ["completed", "failed", "cancelle
 export const workflowApi = {
   roles: () => invoke<WorkerRole[]>("workflow_roles"),
   capabilities: (projectId: string) => invoke<CapabilityStatus[]>("workflow_capability_matrix", { projectId }),
-  createInvestigation: (projectId: string, goal: string, researchUrls: string[], cloudReview: boolean, maxParallel: number) =>
-    invoke<{ run: WorkflowRun; approvals: ApprovalRequest[] }>("create_workflow_investigation", { projectId, goal, researchUrls, cloudReview, maxParallel }),
+  createInvestigation: (projectId: string, goal: string, researchUrls: string[], cloudReview: boolean, maxParallel: number,
+    searchQueries: string[] = [], aiPlanning = false) =>
+    invoke<{ run: WorkflowRun; approvals: ApprovalRequest[]; plan: PlanInfo }>("create_workflow_investigation",
+      { projectId, goal, researchUrls, cloudReview, maxParallel, searchQueries, aiPlanning }),
   listRuns: (projectId: string | null) => invoke<WorkflowRun[]>("list_workflow_runs", { projectId }),
   detail: (runId: string) => invoke<RunDetail>("workflow_run_detail", { runId }),
   events: (runId: string, cursor: number) => invoke<WorkflowEvent[]>("workflow_events", { runId, cursor }),

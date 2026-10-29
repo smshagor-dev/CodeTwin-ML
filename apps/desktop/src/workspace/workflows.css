@@ -36,3 +36,19 @@
 .wf-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 12px; }
 .wf-table th, .wf-table td { text-align: left; padding: 6px; border-bottom: 1px solid var(--ws-border); vertical-align: top; }
 .ws-workflows code { overflow-wrap: anywhere; }
+.wf-table-wrap { overflow-x: auto; }
+.wf-table input, .wf-table select { width: 100%; min-width: 120px; }
+.wf-inline-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 12px; }
+.wf-inline-form input:not([type="checkbox"]) { min-width: 140px; flex: 1 1 140px; }
+.wf-inline-form input[type="number"] { flex: 0 1 96px; min-width: 80px; }
+.wf-secret { display: block; padding: 10px; border: 1px dashed var(--ws-border); border-radius: 6px; overflow-wrap: anywhere; user-select: all; margin-bottom: 8px; }
+.wf-bars { list-style: none; display: flex; align-items: flex-end; gap: 4px; height: 120px; margin: 8px 0 12px; padding: 0; overflow-x: auto; }
+.wf-bars li { flex: 1 0 18px; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 2px; }
+.wf-bars small { font-size: 10px; color: var(--ws-muted); }
+.wf-bar { width: 100%; max-width: 28px; background: var(--ws-primary); border-radius: 3px 3px 0 0; display: flex; flex-direction: column; justify-content: flex-start; overflow: hidden; }
+.wf-bar-failed { width: 100%; background: var(--ws-danger); }
+.wf-conversation, .wf-comments { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.wf-conversation li, .wf-comments > li { border-left: 3px solid var(--ws-primary); padding: 4px 10px; background: var(--ws-surface-soft); border-radius: 0 6px 6px 0; overflow-wrap: anywhere; }
+.wf-conversation p, .wf-comments p { margin: 4px 0; }
+.wf-replies { margin-left: 16px; margin-top: 6px; }
+.wf-tools blockquote { margin: 4px 0 4px 12px; padding-left: 8px; border-left: 2px solid var(--ws-border); color: var(--ws-muted); }
