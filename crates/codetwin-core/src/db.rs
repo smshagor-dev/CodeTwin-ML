@@ -56,9 +56,11 @@ const MIGRATION_0049: &str = include_str!("../migrations/0049_knowledge_memory.s
 const MIGRATION_0050: &str = include_str!("../migrations/0050_research_sources.sql");
 const MIGRATION_0051: &str =
     include_str!("../migrations/0051_collaboration_automation.sql");
+const MIGRATION_0052: &str = include_str!("../migrations/0052_security_intelligence.sql");
+const MIGRATION_0053: &str = include_str!("../migrations/0053_temporal_memory.sql");
 
 /// Highest schema version this build applies.
-pub const LATEST_SCHEMA_VERSION: i64 = 51;
+pub const LATEST_SCHEMA_VERSION: i64 = 53;
 /// Pre-migration backups retained next to the database file.
 const MIGRATION_BACKUPS_KEPT: usize = 3;
 
@@ -266,6 +268,8 @@ impl Database {
         self.apply_migration(49, MIGRATION_0049)?;
         self.apply_migration(50, MIGRATION_0050)?;
         self.apply_migration(51, MIGRATION_0051)?;
+        self.apply_migration(52, MIGRATION_0052)?;
+        self.apply_migration(53, MIGRATION_0053)?;
         Ok(())
     }
 
@@ -315,18 +319,21 @@ mod tests {
                 // Simulate an older schema so the next open must upgrade.
                 db.connection()
                     .execute_batch(
-                        "DROP TABLE collaboration_comment_revisions; DROP TABLE collaboration_comments;
-                         DROP TABLE project_invitations; DROP TABLE project_memberships;
-                         DROP TABLE project_access_policies; DROP TABLE api_tokens; DROP TABLE principals;
-                         DROP TABLE audit_records; DROP TABLE search_provider_settings;
-                         DELETE FROM schema_migrations WHERE version = 51;",
+                        "DROP TABLE knowledge_conflicts; DROP TABLE memory_item_versions;
+                         DROP TABLE memory_neural_vectors;
+                         DROP INDEX idx_kg_edges_current;
+                         ALTER TABLE kg_edges DROP COLUMN superseded_by;
+                         ALTER TABLE kg_edges DROP COLUMN invalidated_ms;
+                         ALTER TABLE kg_edges DROP COLUMN valid_from_ms;
+                         ALTER TABLE memory_items DROP COLUMN version;
+                         DELETE FROM schema_migrations WHERE version = 53;",
                     )
                     .expect("downgrade");
             }
             let db = Database::open(&path).expect("upgrade");
             assert_eq!(db.schema_version().unwrap(), Some(LATEST_SCHEMA_VERSION));
         }
-        let kept = backups(dir.path(), "codetwin.sqlite3.pre-v50-v51-");
+        let kept = backups(dir.path(), "codetwin.sqlite3.pre-v52-v53-");
         assert_eq!(kept.len(), 3, "older backups are pruned");
         let restored = Database::open(&kept[0]).expect("backup opens and migrates");
         assert_eq!(

@@ -7,6 +7,7 @@
 //! * [`store`] — SQLite persistence (migration 0047 in `codetwin-core`).
 //! * [`executor`] — bounded concurrent execution, leases and recovery.
 //! * [`report`] — truthful outcome classification and run reports.
+pub mod compare;
 pub mod dag;
 pub mod executor;
 pub mod policy;

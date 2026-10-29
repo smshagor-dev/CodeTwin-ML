@@ -67,6 +67,7 @@ pub mod sbom;
 pub mod secret_history;
 pub mod secret_scanning;
 pub mod security_analysis;
+pub mod security_intelligence;
 pub mod security_review;
 pub use security_review::{SecurityFindingReview, SecurityReviewError, SecurityReviewService};
 pub mod security_campaign;

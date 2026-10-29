@@ -146,7 +146,7 @@ fn normalized(values: &[Value]) -> Result<Vec<f32>, String> {
     Ok(floats)
 }
 
-fn parse_embedding_response(value: &Value, expected: usize) -> Result<Vec<Vec<f32>>, String> {
+pub(crate) fn parse_embedding_response(value: &Value, expected: usize) -> Result<Vec<Vec<f32>>, String> {
     let items = value
         .get("data")
         .and_then(Value::as_array)

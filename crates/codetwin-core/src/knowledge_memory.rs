@@ -8,6 +8,10 @@
 //!   `model` name by an explicitly consented embedding provider.
 //! * Graph edges always carry a source reference, a confidence and whether
 //!   they are `verified` (backed by persisted evidence) or `inferred`.
+//! * Edges have a validity interval (migration 53); superseded facts are
+//!   invalidated, not deleted, so the graph can be read "as of" a time.
+//! * [`EmbeddingProvider`] vectors are stored per model next to the lexical
+//!   ones; retrieval reports which model actually ranked the results.
 use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{params, OptionalExtension};
@@ -15,6 +19,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::Database;
+
+mod embeddings;
+mod temporal;
+pub use embeddings::{EmbeddingDestination, EmbeddingProvider, HttpEmbedder};
+pub use temporal::{FactOutcome, KnowledgeConflict, MemoryVersion, ReconcileOutcome};
 
 pub const LOCAL_VECTOR_MODEL: &str = "hashed-lexical-v1";
 const DIMS: usize = 128;
@@ -87,6 +96,12 @@ pub struct MemoryItem {
     pub created_ms: i64,
     pub updated_ms: i64,
     pub expires_ms: Option<i64>,
+    #[serde(default = "first_version")]
+    pub version: i64,
+}
+
+const fn first_version() -> i64 {
+    1
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -139,6 +154,9 @@ pub struct GraphEdge {
     pub source_ref: String,
     pub confidence: f64,
     pub provenance: String,
+    pub valid_from_ms: Option<i64>,
+    /// Set once a newer fact superseded this edge.
+    pub invalidated_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,8 +208,8 @@ fn to_blob(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
-fn from_blob(b: &[u8]) -> Option<Vec<f32>> {
-    if b.len() != DIMS * 4 {
+fn from_blob(b: &[u8], dims: usize) -> Option<Vec<f32>> {
+    if dims == 0 || b.len() != dims * 4 {
         return None;
     }
     let v: Vec<f32> = b
@@ -213,7 +231,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 
 const ITEM_COLUMNS: &str =
     "id,project_id,layer,title,body,source_kind,source_ref,source_sha256,content_sha256,
-    run_id,task_id,confidence,verified,approved_by,created_ms,updated_ms,expires_ms";
+    run_id,task_id,confidence,verified,approved_by,created_ms,updated_ms,expires_ms,version";
 
 fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryItem> {
     let layer: String = row.get(2)?;
@@ -241,6 +259,7 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryItem> {
         created_ms: row.get(14)?,
         updated_ms: row.get(15)?,
         expires_ms: row.get(16)?,
+        version: row.get(17)?,
     })
 }
 
@@ -485,6 +504,20 @@ impl<'a> KnowledgeMemory<'a> {
         query: &str,
         budget: RetrievalBudget,
     ) -> Result<RetrievalResult, String> {
+        self.retrieve_with(project_id, query, budget, None)
+    }
+
+    /// Like [`Self::retrieve`], ranking the vector half with `embedder`'s
+    /// stored vectors when the project has been embedded with that model.
+    /// Falls back to the lexical vectors otherwise; `vector_model` in the
+    /// result always names the model that was actually used.
+    pub fn retrieve_with(
+        &self,
+        project_id: &str,
+        query: &str,
+        budget: RetrievalBudget,
+        embedder: Option<&dyn EmbeddingProvider>,
+    ) -> Result<RetrievalResult, String> {
         let terms: Vec<String> = tokens(query).into_iter().take(16).collect();
         let now = now_ms();
         let conn = self.db.connection();
@@ -512,24 +545,37 @@ impl<'a> KnowledgeMemory<'a> {
                 keyword.insert(id, 1.0 - 1.0 / (1.0 + (-rank).max(0.0)));
             }
         }
-        let query_vector = hashed_vector(query);
+        let embeddings::QueryVector {
+            model: vector_model,
+            vector: query_vector,
+            neural,
+        } = self.query_vector(project_id, query, embedder)?;
         let mut vector: BTreeMap<String, f64> = BTreeMap::new();
         {
             let mut stmt = conn
-                .prepare(
-                    "SELECT item_id, vector FROM memory_vectors WHERE project_id=?1 AND model=?2
-                     ORDER BY created_ms DESC LIMIT 2000",
-                )
+                .prepare(if neural {
+                    // Vectors of since-revised content are stale and skipped.
+                    "SELECT v.item_id, v.vector, v.dims FROM memory_neural_vectors v
+                     JOIN memory_items m ON m.id = v.item_id AND m.content_sha256 = v.content_sha256
+                     WHERE v.project_id=?1 AND v.model=?2 ORDER BY v.created_ms DESC LIMIT 2000"
+                } else {
+                    "SELECT item_id, vector, dims FROM memory_vectors WHERE project_id=?1 AND model=?2
+                     ORDER BY created_ms DESC LIMIT 2000"
+                })
                 .map_err(|e| e.to_string())?;
             let rows = stmt
-                .query_map(params![project_id, LOCAL_VECTOR_MODEL], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+                .query_map(params![project_id, vector_model], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Vec<u8>>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
                 })
                 .map_err(|e| e.to_string())?;
             for row in rows {
-                let (id, blob) = row.map_err(|e| e.to_string())?;
+                let (id, blob, dims) = row.map_err(|e| e.to_string())?;
                 // Invalid/corrupt vectors are skipped, never trusted.
-                if let Some(v) = from_blob(&blob) {
+                if let Some(v) = from_blob(&blob, usize::try_from(dims).unwrap_or(0)) {
                     let s = cosine(&query_vector, &v);
                     if s > 0.05 {
                         vector.insert(id, s);
@@ -577,7 +623,7 @@ impl<'a> KnowledgeMemory<'a> {
             omitted_chars,
             candidates,
             items,
-            vector_model: LOCAL_VECTOR_MODEL.into(),
+            vector_model,
         })
     }
 
@@ -637,10 +683,12 @@ impl<'a> KnowledgeMemory<'a> {
         }
         let id = format!("kge_{}", &sha(&format!("{from}:{to}:{relation}"))[..24]);
         conn.execute(
-            "INSERT INTO kg_edges(id,project_id,from_node,to_node,relation,source_ref,confidence,provenance,created_ms)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+            "INSERT INTO kg_edges(id,project_id,from_node,to_node,relation,source_ref,confidence,provenance,created_ms,valid_from_ms)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)
              ON CONFLICT(from_node,to_node,relation) DO UPDATE SET confidence=MAX(confidence, excluded.confidence),
-               provenance=CASE WHEN excluded.provenance='verified' THEN 'verified' ELSE provenance END",
+               provenance=CASE WHEN excluded.provenance='verified' THEN 'verified' ELSE provenance END,
+               valid_from_ms=CASE WHEN invalidated_ms IS NULL THEN valid_from_ms ELSE excluded.valid_from_ms END,
+               invalidated_ms=NULL, superseded_by=NULL",
             params![id, project_id, from, to, relation, bounded(source_ref, 512), confidence,
                 if verified { "verified" } else { "inferred" }, now_ms()],
         )
@@ -648,12 +696,24 @@ impl<'a> KnowledgeMemory<'a> {
         Ok(id)
     }
 
-    /// Bounded neighbourhood (breadth-first, depth ≤ 3, ≤ 200 nodes).
+    /// Bounded neighbourhood of currently valid edges (breadth-first,
+    /// depth ≤ 3, ≤ 200 nodes).
     pub fn neighborhood(
         &self,
         project_id: &str,
         start: &str,
         depth: usize,
+    ) -> Result<EvidenceGraph, String> {
+        self.neighborhood_at(project_id, start, depth, None)
+    }
+
+    /// Neighbourhood as it was believed at `at_ms` (`None` = now).
+    pub fn neighborhood_at(
+        &self,
+        project_id: &str,
+        start: &str,
+        depth: usize,
+        at_ms: Option<i64>,
     ) -> Result<EvidenceGraph, String> {
         let conn = self.db.connection();
         let mut seen: BTreeSet<String> = [start.to_owned()].into();
@@ -665,12 +725,17 @@ impl<'a> KnowledgeMemory<'a> {
             for node in &frontier {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT id,from_node,to_node,relation,source_ref,confidence,provenance FROM kg_edges
-                         WHERE project_id=?1 AND (from_node=?2 OR to_node=?2) LIMIT 100",
+                        "SELECT id,from_node,to_node,relation,source_ref,confidence,provenance,valid_from_ms,invalidated_ms
+                         FROM kg_edges
+                         WHERE project_id=?1 AND (from_node=?2 OR to_node=?2)
+                           AND CASE WHEN ?3 IS NULL THEN invalidated_ms IS NULL
+                                    ELSE COALESCE(valid_from_ms, created_ms) <= ?3
+                                         AND (invalidated_ms IS NULL OR invalidated_ms > ?3) END
+                         LIMIT 100",
                     )
                     .map_err(|e| e.to_string())?;
                 let rows = stmt
-                    .query_map(params![project_id, node], |r| {
+                    .query_map(params![project_id, node, at_ms], |r| {
                         Ok(GraphEdge {
                             id: r.get(0)?,
                             from_node: r.get(1)?,
@@ -679,6 +744,8 @@ impl<'a> KnowledgeMemory<'a> {
                             source_ref: r.get(4)?,
                             confidence: r.get(5)?,
                             provenance: r.get(6)?,
+                            valid_from_ms: r.get(7)?,
+                            invalidated_ms: r.get(8)?,
                         })
                     })
                     .map_err(|e| e.to_string())?;
