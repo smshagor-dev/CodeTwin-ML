@@ -1,4 +1,7 @@
-//! Retries with jitter, a circuit breaker and a concurrency limiter.
+//! Retries with jitter, a circuit breaker, a concurrency limiter and a
+//! request-rate limiter.
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -148,9 +151,122 @@ impl ConcurrencyLimiter {
     }
 }
 
+#[derive(Debug, Default)]
+struct RateState {
+    starts: VecDeque<Instant>,
+    not_before: Option<Instant>,
+}
+
+/// Sliding-window request-rate limiter (e.g. OpenMindAI's 40 requests per
+/// minute). A provider `Retry-After` pushes every caller back via
+/// [`RateLimiter::defer`]. Waiting is bounded and cancellable.
+#[derive(Debug)]
+pub struct RateLimiter {
+    max: usize,
+    window: Duration,
+    state: Mutex<RateState>,
+}
+
+const RATE_POLL: Duration = Duration::from_millis(100);
+
+impl RateLimiter {
+    pub fn new(max_per_window: u32, window: Duration) -> Self {
+        Self {
+            max: max_per_window.max(1) as usize,
+            window,
+            state: Mutex::new(RateState::default()),
+        }
+    }
+
+    pub fn per_minute(max: u32) -> Self {
+        Self::new(max, Duration::from_secs(60))
+    }
+
+    /// How long the next request would have to wait, without reserving.
+    fn wait_needed(&self, s: &mut RateState, now: Instant) -> Duration {
+        while s
+            .starts
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= self.window)
+        {
+            s.starts.pop_front();
+        }
+        let deferred = s
+            .not_before
+            .map_or(Duration::ZERO, |t| t.saturating_duration_since(now));
+        let windowed = if s.starts.len() >= self.max {
+            (s.starts[0] + self.window).saturating_duration_since(now)
+        } else {
+            Duration::ZERO
+        };
+        deferred.max(windowed)
+    }
+
+    /// Reserve a request slot, waiting at most `wait`.
+    pub fn acquire(&self, wait: Duration, cancel: &AtomicBool) -> Result<(), ProviderError> {
+        let deadline = Instant::now() + wait;
+        loop {
+            if cancel.load(Ordering::SeqCst) {
+                return Err(ProviderError::Cancelled);
+            }
+            let now = Instant::now();
+            let needed = {
+                let mut s = self.state.lock().expect("rate mutex");
+                let needed = self.wait_needed(&mut s, now);
+                if needed.is_zero() {
+                    s.starts.push_back(now);
+                    return Ok(());
+                }
+                needed
+            };
+            if now + needed > deadline {
+                return Err(ProviderError::RateLimited(format!(
+                    "local request-rate limit; next slot in {}s",
+                    needed.as_secs().max(1)
+                )));
+            }
+            std::thread::sleep(needed.min(RATE_POLL));
+        }
+    }
+
+    /// Provider asked us to back off (`Retry-After`); applies to all callers.
+    pub fn defer(&self, delay: Duration) {
+        let until = Instant::now() + delay;
+        let mut s = self.state.lock().expect("rate mutex");
+        s.not_before = Some(s.not_before.map_or(until, |t| t.max(until)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_limiter_bounds_requests_per_window_and_honours_defer() {
+        let cancel = AtomicBool::new(false);
+        let r = RateLimiter::new(2, Duration::from_millis(300));
+        r.acquire(Duration::ZERO, &cancel).unwrap();
+        r.acquire(Duration::ZERO, &cancel).unwrap();
+        assert!(matches!(
+            r.acquire(Duration::from_millis(10), &cancel),
+            Err(ProviderError::RateLimited(_))
+        ));
+        let started = Instant::now();
+        r.acquire(Duration::from_secs(2), &cancel).unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(200),
+            "waited for the window"
+        );
+
+        let r = RateLimiter::new(10, Duration::from_secs(60));
+        r.defer(Duration::from_millis(250));
+        assert!(r.acquire(Duration::from_millis(20), &cancel).is_err());
+        cancel.store(true, Ordering::SeqCst);
+        assert_eq!(
+            r.acquire(Duration::from_secs(5), &cancel),
+            Err(ProviderError::Cancelled)
+        );
+    }
 
     #[test]
     fn backoff_is_bounded_and_deterministic() {

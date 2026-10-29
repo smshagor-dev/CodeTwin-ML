@@ -7,8 +7,10 @@
 //! `POST /chat/completions` with `model`, `messages`, optional `tools`,
 //! `stream`, `max_tokens`, `temperature`; native function tool calls (≤64);
 //! SSE streams terminated by `data: [DONE]`; errors 401/403/404/422/429/502/503.
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -18,7 +20,7 @@ use url::Url;
 use crate::consent::{payload_digest, ApprovedEgress};
 use crate::credentials::Secret;
 use crate::error::{from_status, ProviderError};
-use crate::resilience::{CircuitBreaker, ConcurrencyLimiter, RetryPolicy};
+use crate::resilience::{CircuitBreaker, ConcurrencyLimiter, RateLimiter, RetryPolicy};
 use crate::sse::{parse_completion, SseAccumulator};
 use crate::types::{ChatRequest, ChatResponse, ModelInfo, StreamDelta};
 
@@ -116,7 +118,17 @@ pub struct ClientConfig {
     pub max_concurrency: usize,
     pub queue_wait: Duration,
     pub max_response_bytes: usize,
+    /// Client-side request-rate ceiling; `None` for unmetered local endpoints.
+    pub requests_per_minute: Option<u32>,
+    /// Total time for one streamed completion. Streams check cancellation on
+    /// every event, so this may exceed `request_timeout` for slow reasoning.
+    pub stream_timeout: Duration,
+    /// Longest provider `Retry-After` honoured before giving up.
+    pub max_retry_after: Duration,
 }
+
+/// OpenMindAI Cloud's documented per-key request rate.
+pub const OPENMINDAI_REQUESTS_PER_MINUTE: u32 = 40;
 
 impl Default for ClientConfig {
     fn default() -> Self {
@@ -129,8 +141,36 @@ impl Default for ClientConfig {
             max_concurrency: 2,
             queue_wait: Duration::from_secs(30),
             max_response_bytes: 2 * 1024 * 1024,
+            requests_per_minute: None,
+            stream_timeout: Duration::from_secs(300),
+            max_retry_after: Duration::from_secs(60),
         }
     }
+}
+
+impl ClientConfig {
+    /// Defaults for OpenMindAI Cloud, including its request-rate limit.
+    pub fn openmindai() -> Self {
+        Self {
+            requests_per_minute: Some(OPENMINDAI_REQUESTS_PER_MINUTE),
+            // Reasoning models took up to ~95 s for a short structured
+            // answer in live measurements; leave headroom.
+            request_timeout: Duration::from_secs(180),
+            ..Self::default()
+        }
+    }
+}
+
+/// Seconds from a `Retry-After` header (delta-seconds form only).
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
 }
 
 /// Audit metadata for one provider call. Contains no prompt or response text.
@@ -168,6 +208,35 @@ pub struct ChatClient {
     config: ClientConfig,
     breaker: CircuitBreaker,
     limiter: ConcurrencyLimiter,
+    rate: Option<Arc<RateLimiter>>,
+}
+
+/// One limiter per endpoint for the whole process: the provider meters the
+/// key, not our client objects, and the desktop builds clients per command.
+fn shared_rate_limiter(base_url: &str, per_minute: u32) -> Arc<RateLimiter> {
+    static LIMITERS: OnceLock<Mutex<BTreeMap<(String, u32), Arc<RateLimiter>>>> = OnceLock::new();
+    LIMITERS
+        .get_or_init(Mutex::default)
+        .lock()
+        .expect("rate registry mutex")
+        .entry((base_url.to_owned(), per_minute))
+        .or_insert_with(|| Arc::new(RateLimiter::per_minute(per_minute)))
+        .clone()
+}
+
+/// Sleep in short slices so a cancelled caller is not held for a backoff.
+fn sleep_cancellable(total: Duration, cancel: &AtomicBool) -> Result<(), ProviderError> {
+    let deadline = Instant::now() + total;
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(ProviderError::Cancelled);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(left.min(Duration::from_millis(100)));
+    }
 }
 
 fn request_id() -> String {
@@ -215,6 +284,9 @@ impl ChatClient {
         Ok(Self {
             breaker: CircuitBreaker::new(config.breaker_threshold, config.breaker_cooldown),
             limiter: ConcurrencyLimiter::new(config.max_concurrency),
+            rate: config
+                .requests_per_minute
+                .map(|n| shared_rate_limiter(&profile.base_url, n)),
             profile,
             secret,
             http,
@@ -279,10 +351,15 @@ impl ChatClient {
                 return Err(ProviderError::Cancelled);
             }
             self.breaker.check()?;
+            self.acquire_rate(cancel)?;
+            let mut server_delay = None;
             let result = make(rid)
                 .send()
                 .map_err(|e| transport_error(&e))
-                .and_then(|r| self.read_bounded(r))
+                .and_then(|r| {
+                    server_delay = retry_after(r.headers());
+                    self.read_bounded(r)
+                })
                 .and_then(|(status, body)| {
                     if (200..300).contains(&status) {
                         Ok((body, status))
@@ -295,10 +372,39 @@ impl ChatClient {
             match result {
                 Ok((body, status)) => return Ok((body, attempt, status)),
                 Err(e) if e.retryable() && attempt <= self.config.retry.max_retries => {
-                    std::thread::sleep(self.config.retry.delay(rid, attempt));
+                    let backoff = self.config.retry.delay(rid, attempt);
+                    let delay = match server_delay {
+                        // The provider said how long; never retry sooner, and
+                        // give up rather than wait past the configured bound.
+                        Some(d) if d > self.config.max_retry_after => return Err(e),
+                        Some(d) => {
+                            self.defer_rate(d);
+                            d.max(backoff)
+                        }
+                        None => backoff,
+                    };
+                    sleep_cancellable(delay, cancel)?;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    if let (ProviderError::RateLimited(_), Some(d)) = (&e, server_delay) {
+                        self.defer_rate(d.min(self.config.max_retry_after));
+                    }
+                    return Err(e);
+                }
             }
+        }
+    }
+
+    fn acquire_rate(&self, cancel: &AtomicBool) -> Result<(), ProviderError> {
+        match &self.rate {
+            Some(rate) => rate.acquire(self.config.queue_wait, cancel),
+            None => Ok(()),
+        }
+    }
+
+    fn defer_rate(&self, delay: Duration) {
+        if let Some(rate) = &self.rate {
+            rate.defer(delay);
         }
     }
 
@@ -518,8 +624,10 @@ impl ChatClient {
             self.check_egress(request, egress)?;
             let _permit = self.limiter.acquire(self.config.queue_wait)?;
             self.breaker.check()?;
+            self.acquire_rate(cancel)?;
             let response = self
                 .builder(reqwest::Method::POST, "chat/completions", &rid)
+                .timeout(self.config.stream_timeout)
                 .header("Accept", "text/event-stream")
                 .header("Content-Type", "application/json")
                 .body(body.to_string())
@@ -534,6 +642,9 @@ impl ChatClient {
             };
             status = Some(response.status().as_u16());
             if !response.status().is_success() {
+                if let Some(d) = retry_after(response.headers()) {
+                    self.defer_rate(d.min(self.config.max_retry_after));
+                }
                 let (code, bytes) = self.read_bounded(response)?;
                 let e = from_status(code, &bytes);
                 self.breaker.record(Err(&e));

@@ -21,6 +21,7 @@ struct Reply {
     content_type: &'static str,
     body: String,
     chunked_close: bool,
+    headers: &'static str,
 }
 
 fn reply(status: u16, body: &str) -> Reply {
@@ -29,6 +30,7 @@ fn reply(status: u16, body: &str) -> Reply {
         content_type: "application/json",
         body: body.into(),
         chunked_close: false,
+        headers: "",
     }
 }
 
@@ -86,7 +88,7 @@ fn serve(replies: Vec<Reply>) -> (String, Seen) {
                 let extra = if r.status == 302 {
                     "Location: http://169.254.169.254/latest\r\n"
                 } else {
-                    ""
+                    r.headers
                 };
                 format!("HTTP/1.1 {} {reason}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n", r.status, r.content_type, r.body.len())
             };
@@ -255,6 +257,63 @@ fn retries_429_and_503_but_not_auth_or_validation_errors() {
 }
 
 #[test]
+fn retry_after_is_honoured_and_rate_limit_spaces_requests() {
+    let (request, egress) = approved(ChatRequest {
+        model: "openmindai-lite".into(),
+        messages: vec![ChatMessage::user("x")],
+        tools: tools(),
+        max_tokens: None,
+        temperature: None,
+    });
+    // Server asks for 1 s: the retry waits at least that long.
+    let (base, seen) = serve(vec![
+        Reply {
+            headers: "Retry-After: 1\r\n",
+            ..reply(429, r#"{"message":"Too Many Attempts."}"#)
+        },
+        reply(200, TOOL_CALL),
+    ]);
+    let started = std::time::Instant::now();
+    let (result, audit) = client(&base).chat(&request, Some(&egress), &AtomicBool::new(false));
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(audit.attempts, 2);
+    assert!(started.elapsed() >= Duration::from_millis(950));
+    assert_eq!(seen.0.lock().unwrap().len(), 2);
+
+    // A Retry-After beyond the configured bound fails instead of stalling.
+    let (base, seen) = serve(vec![Reply {
+        headers: "Retry-After: 3600\r\n",
+        ..reply(429, r#"{"message":"Too Many Attempts."}"#)
+    }]);
+    let (result, _) = client(&base).chat(&request, Some(&egress), &AtomicBool::new(false));
+    assert!(matches!(result, Err(ProviderError::RateLimited(_))));
+    assert_eq!(seen.0.lock().unwrap().len(), 1);
+
+    // Client-side ceiling: the third call in the window is refused locally
+    // when it cannot be scheduled within the queue wait, without a request.
+    let (base, seen) = serve(vec![reply(200, TOOL_CALL), reply(200, TOOL_CALL)]);
+    let limited = ChatClient::new(
+        ProviderProfile::openmindai(&base).unwrap(),
+        Some(Secret::new("7|om_SyntheticTestValue0000").unwrap()),
+        ClientConfig {
+            requests_per_minute: Some(2),
+            queue_wait: Duration::from_millis(50),
+            ..config()
+        },
+    )
+    .unwrap();
+    for _ in 0..2 {
+        assert!(limited
+            .chat(&request, Some(&egress), &AtomicBool::new(false))
+            .0
+            .is_ok());
+    }
+    let (result, _) = limited.chat(&request, Some(&egress), &AtomicBool::new(false));
+    assert!(matches!(result, Err(ProviderError::RateLimited(m)) if m.contains("local")));
+    assert_eq!(seen.0.lock().unwrap().len(), 2);
+}
+
+#[test]
 fn laravel_debug_traces_are_never_surfaced() {
     let trace = r#"{"message":"This chat model is not enabled.","exception":"Symfony\\Component\\HttpKernel\\Exception\\NotFoundHttpException","file":"/home/operator/cloud/vendor/laravel/framework/src/Illuminate/Foundation/Application.php","line":1437,"trace":[{"file":"/home/operator/cloud/app/Http/Controllers/Gateway.php"}]}"#;
     let (base, _) = serve(vec![reply(404, trace)]);
@@ -301,12 +360,14 @@ fn streams_reconstruct_content_and_tool_calls_and_detect_truncation() {
             content_type: "text/event-stream",
             body: sse,
             chunked_close: true,
+            headers: "",
         },
         Reply {
             status: 200,
             content_type: "text/event-stream",
             body: truncated,
             chunked_close: true,
+            headers: "",
         },
     ]);
     let c = client(&base);
