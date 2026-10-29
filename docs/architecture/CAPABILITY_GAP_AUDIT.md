@@ -14,6 +14,8 @@ Last updated: 2026-10-29, branch `durable-orchestration-platform` (base `0db82ef
 
 A README claim is never counted as evidence.
 
+For capabilities compared against the 25 reference projects (research hygiene, security correlation and suppression, temporal memory, neural embeddings, run comparison), see [REFERENCE_CAPABILITY_MATRIX.md](REFERENCE_CAPABILITY_MATRIX.md).
+
 ## What already existed (audited, preserved, not rewritten)
 
 The repository already had a mature, approval-gated **native review supervisor**. It was audited, not replaced:
@@ -62,7 +64,7 @@ The repository already had a mature, approval-gated **native review supervisor**
 | B5 | Streaming, tool-call validation, truthful usage | **verified** | `sse.rs` (`reasoning_content` discarded, `[DONE]` required) | stream tests (mock and live) | Streams carry no `usage` (observed live), so only credits are counted for streams |
 | B6 | Per-role models, cloud to local fallback only when allowed | **verified** | `router.rs` (`RoleModels.local_by_role`), `model_access.rs` (role-aware, audited calls with consented fallback), desktop *Models & search* tab | `model_review_uses_rag_and_compaction_and_falls_back_to_local_with_consent`, `local_fallback_requires_consent` | The local endpoint must be loopback and OpenAI-compatible |
 | C1 | Layered memory (working/episodic/fact/approved/evidence) in SQLite | **verified** | `knowledge_memory.rs`, migration 49 | 4 unit tests and the e2e ingest assertion | — |
-| C2 | Hybrid keyword (FTS5) + vector retrieval with budgets and omission reporting | **verified** | `KnowledgeMemory::retrieve` | `hybrid_retrieval_is_project_isolated_and_budgeted`, `corrupt_vectors_are_ignored` | Default vectors are **lexical hashed vectors, not neural**; cloud embeddings are not wired into this store |
+| C2 | Hybrid keyword (FTS5) + vector retrieval with budgets and omission reporting | **verified** | `KnowledgeMemory::retrieve` | `hybrid_retrieval_is_project_isolated_and_budgeted`, `corrupt_vectors_are_ignored` | Default vectors are **lexical hashed vectors, not neural**. Neural vectors from a loopback or consented embedding model can now be stored per model (`knowledge_memory/embeddings.rs`, migration 53); no live neural model has been verified yet |
 | C3 | Evidence knowledge graph with source refs, confidence, verified vs inferred | **verified** | `upsert_node`, `link`, `neighborhood`, `ingest_workflow_run` | `graph_edges_carry_provenance…`; e2e asserts verified `references` edges | — |
 | C4 | Cross-project isolation, dedup, expiry, deletion, reindex, operator approval | **verified** | `knowledge_memory.rs` | `dedup_expiry_deletion_and_approval` | — |
 | C5 | Context compaction and RAG for model prompts | **verified** | `context_compaction.rs` (prioritized sections, JSON flattening, extractive summaries, reported omissions); the cloud reviewer retrieves project memory and asks for `[M:id]` citations | 4 unit tests; e2e asserts `context` stats, `retrieved_memory`, `cited_memory` | Extractive, not abstractive; token counts are estimates (about 4 characters per token) |
