@@ -145,7 +145,7 @@ The manually triggered workflow `.github/workflows/openmindai-smoke.yml` runs th
 ## Known limitations
 
 - Worker time limits are cooperative.
-- Linux credentials use the kernel keyring and do not survive a reboot.
+- Linux credentials use the freedesktop Secret Service (GNOME Keyring, KWallet) and survive restarts and reboots. When no Secret Service is running or it is locked, credential operations fail closed with recovery guidance; keys are never stored in plaintext.
 - PDF ingestion, multi-user collaboration, a local automation API, signed workflow reports and model-generated orchestrator plans are not implemented.
 
 See the audit for the full list.

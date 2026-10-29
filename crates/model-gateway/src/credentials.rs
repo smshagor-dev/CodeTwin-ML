@@ -68,14 +68,58 @@ pub trait CredentialStore: Send + Sync {
 }
 
 /// OS credential store: Windows Credential Manager, macOS Keychain, or the
-/// Linux kernel keyring (keyutils). The Linux backend does not persist
-/// across reboots; operators re-enter the token after restarting the host.
+/// freedesktop Secret Service on Linux (GNOME Keyring, KWallet), which
+/// persists across restarts and reboots. There is no plaintext or
+/// application-encrypted fallback: when the store is missing or locked every
+/// operation fails closed and the operator is told how to recover.
 pub struct KeyringStore;
+
+/// Whether the OS credential store can be used right now.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CredentialStoreStatus {
+    pub backend: &'static str,
+    /// Survives application restarts and machine reboots.
+    pub persistent: bool,
+    pub available: bool,
+    /// What failed and how to recover; never contains a secret.
+    pub guidance: Option<String>,
+}
+
+const PROBE_ACCOUNT: &str = "codetwin-ml.availability-probe";
+
+fn store_error(action: &str, e: keyring::Error) -> ProviderError {
+    let guidance = match &e {
+        keyring::Error::NoStorageAccess(_) | keyring::Error::PlatformFailure(_)
+            if cfg!(target_os = "linux") =>
+        {
+            " The Secret Service (GNOME Keyring, KWallet or another freedesktop              secret store) is not running or is locked. Unlock it (log in to the              desktop session, or run `gnome-keyring-daemon --unlock`), then re-enter              the key. CodeTwin does not store keys in plaintext."
+        }
+        keyring::Error::NoStorageAccess(_) => {
+            " The OS credential store is locked or access was denied; unlock it and              re-enter the key."
+        }
+        _ => "",
+    };
+    // keyring errors describe the store, never the secret value.
+    ProviderError::Credential(format!("credential {action} failed: {e}.{guidance}"))
+}
 
 impl KeyringStore {
     fn entry(account: &str) -> Result<keyring::Entry, ProviderError> {
-        keyring::Entry::new(KEYRING_SERVICE, account)
-            .map_err(|e| ProviderError::Credential(format!("credential store unavailable: {e}")))
+        keyring::Entry::new(KEYRING_SERVICE, account).map_err(|e| store_error("store open", e))
+    }
+
+    /// Probe the store with a read of an entry that never holds a secret.
+    pub fn status(&self) -> CredentialStoreStatus {
+        let result = Self::entry(PROBE_ACCOUNT).and_then(|e| match e.get_password() {
+            Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(store_error("read", e)),
+        });
+        CredentialStoreStatus {
+            backend: self.backend(),
+            persistent: true,
+            available: result.is_ok(),
+            guidance: result.err().map(|e| e.to_string()),
+        }
     }
 }
 
@@ -84,23 +128,19 @@ impl CredentialStore for KeyringStore {
         match Self::entry(account)?.get_password() {
             Ok(value) => Secret::new(value).map(Some),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(ProviderError::Credential(format!(
-                "credential read failed: {e}"
-            ))),
+            Err(e) => Err(store_error("read", e)),
         }
     }
     fn set(&self, account: &str, secret: &Secret) -> Result<(), ProviderError> {
         Self::entry(account)?
             .set_password(secret.expose())
-            .map_err(|e| ProviderError::Credential(format!("credential write failed: {e}")))
+            .map_err(|e| store_error("write", e))
     }
     fn delete(&self, account: &str) -> Result<bool, ProviderError> {
         match Self::entry(account)?.delete_credential() {
             Ok(()) => Ok(true),
             Err(keyring::Error::NoEntry) => Ok(false),
-            Err(e) => Err(ProviderError::Credential(format!(
-                "credential delete failed: {e}"
-            ))),
+            Err(e) => Err(store_error("delete", e)),
         }
     }
     fn backend(&self) -> &'static str {
@@ -109,7 +149,7 @@ impl CredentialStore for KeyringStore {
         } else if cfg!(target_os = "macos") {
             "macos_keychain"
         } else {
-            "linux_kernel_keyring_session"
+            "linux_secret_service"
         }
     }
 }

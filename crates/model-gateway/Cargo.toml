@@ -21,4 +21,6 @@ keyring = { version = "3.6", default-features = false, features = ["windows-nati
 keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3.6", default-features = false, features = ["linux-native"] }
+# Secret Service over pure-Rust D-Bus (zbus): persists across reboots and
+# needs no system libdbus headers. The kernel keyutils store did not persist.
+keyring = { version = "3.6", default-features = false, features = ["async-secret-service", "async-io", "crypto-rust"] }
