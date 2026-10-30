@@ -15,6 +15,7 @@ use task_orchestrator::{CancelToken, ToolRuntime};
 
 use crate::knowledge_memory::{KnowledgeMemory, MemoryInput, MemoryLayer, RetrievalBudget};
 use crate::model_access::{CallScope, ModelAccess};
+use crate::research_citations::{Provenance, ResearchStore};
 use crate::{
     CodeSecurityService, Database, DependencyAuditService, ProjectQueryService, QaDiscoveryService,
     SbomService, SecretScanningService, SymbolSearchMode, SymbolSearchQuery, WorkspaceService,
@@ -440,20 +441,26 @@ impl CoreToolRuntime {
                     .ok()
                     .and_then(|u| u.host_str().map(str::to_owned))
                     .unwrap_or_default();
-                match research_retrieval::fetch(url, policy) {
-                    Ok(doc) => {
-                        db.connection()
-                            .execute(
-                                "INSERT INTO research_sources(id,project_id,requested_url,final_url,host,http_status,content_type,
-                                    bytes,content_sha256,title,excerpt,last_modified,fetched_ms)
-                                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-                                params![id, project_id, doc.requested_url, doc.final_url, doc.host, doc.status, doc.content_type,
-                                    doc.bytes as i64, doc.sha256, doc.title, doc.text, doc.last_modified, now],
-                            )
-                            .map_err(|e| e.to_string())?;
-                        // Citation records: does the source support each goal claim?
+                match research_retrieval::fetch_with_body(url, policy) {
+                    Ok((doc, body)) => {
                         let run_id = args.get("run_id").and_then(Value::as_str);
                         let task_id = args.get("task_id").and_then(Value::as_str);
+                        // Same persistence as operator-added sources (snapshot,
+                        // metadata, canonical URL, duplicate detection), so every
+                        // agent claim is verified against exactly what was retrieved.
+                        let research = ResearchStore::new(&db);
+                        let provenance = Provenance {
+                            added_by: task_id
+                                .map_or_else(|| "agent".to_owned(), |t| format!("task:{t}")),
+                            ..Provenance::default()
+                        };
+                        let source = research.record_fetched(
+                            project_id,
+                            run_id,
+                            &doc,
+                            &body,
+                            &provenance,
+                        )?;
                         let mut citations = Vec::new();
                         for claim in args
                             .get("claims")
@@ -461,73 +468,36 @@ impl CoreToolRuntime {
                             .into_iter()
                             .flatten()
                             .filter_map(Value::as_str)
+                            .map(|c| c.trim().chars().take(1000).collect::<String>())
+                            .filter(|c| !c.is_empty())
                             .take(6)
                         {
-                            let quote = quote_for(&doc.text, claim);
-                            let support = if quote
-                                .as_deref()
-                                .is_some_and(|q| research_retrieval::quote_supported(&doc.text, q))
-                            {
-                                "supported"
-                            } else {
-                                "unsupported"
+                            let quote = quote_for(&doc.text, &claim);
+                            let view = research.cite(
+                                project_id,
+                                run_id,
+                                task_id,
+                                &source.id,
+                                &claim,
+                                quote.as_deref(),
+                            )?;
+                            let support = match view.status.as_str() {
+                                "verified" => "supported",
+                                "contradicted" => "contradicted",
+                                _ => "unsupported",
                             };
-                            let cid = task_orchestrator::store::new_id("cite");
-                            db.connection()
-                                .execute(
-                                    "INSERT INTO research_citations(id,project_id,run_id,task_id,source_id,claim,quote,support,created_ms)
-                                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-                                    params![cid, project_id, run_id, task_id, id, claim.chars().take(1000).collect::<String>(), quote, support, now],
-                                )
-                                .map_err(|e| e.to_string())?;
-                            citations.push(json!({"citation_id": cid, "claim": claim, "quote": quote, "support": support}));
+                            citations.push(json!({"citation_id": view.id, "claim": view.claim, "quote": view.quote,
+                                "status": view.status, "support": support}));
                         }
-                        // Duplicate detection against this project's recent sources:
-                        // the same bytes, or near-identical text at another URL.
-                        let duplicate_of: Option<String> = {
-                            let mut stmt = db
-                                .connection()
-                                .prepare(
-                                    "SELECT id, content_sha256, excerpt FROM research_sources
-                                     WHERE project_id=?1 AND id<>?2 AND excerpt IS NOT NULL
-                                     ORDER BY fetched_ms DESC LIMIT 200",
-                                )
-                                .map_err(|e| e.to_string())?;
-                            let fingerprint = research_retrieval::sources::simhash(&doc.text);
-                            let rows = stmt
-                                .query_map(params![project_id, id], |r| {
-                                    Ok((
-                                        r.get::<_, String>(0)?,
-                                        r.get::<_, Option<String>>(1)?,
-                                        r.get::<_, String>(2)?,
-                                    ))
-                                })
-                                .map_err(|e| e.to_string())?;
-                            let mut found = None;
-                            for row in rows {
-                                let (other, sha, excerpt) = row.map_err(|e| e.to_string())?;
-                                if sha.as_deref() == Some(doc.sha256.as_str())
-                                    || (fingerprint != 0
-                                        && research_retrieval::sources::near_duplicate(
-                                            fingerprint,
-                                            research_retrieval::sources::simhash(&excerpt),
-                                        ))
-                                {
-                                    found = Some(other);
-                                    break;
-                                }
-                            }
-                            found
-                        };
                         let freshness = research_retrieval::sources::freshness(
                             doc.last_modified.as_deref(),
                             now,
                         );
                         Ok(
-                            json!({"source_id": id, "final_url": doc.final_url, "title": doc.title, "sha256": doc.sha256,
+                            json!({"source_id": source.id, "final_url": doc.final_url, "title": doc.title, "sha256": doc.sha256,
                             "excerpt": doc.text.chars().take(2_000).collect::<String>(), "untrusted": true,
                             "instruction_like_phrases": doc.instruction_like_phrases, "last_modified": doc.last_modified,
-                            "freshness": freshness, "duplicate_of": duplicate_of,
+                            "freshness": freshness, "duplicate_of": source.duplicate_of,
                             "citations": citations}),
                         )
                     }

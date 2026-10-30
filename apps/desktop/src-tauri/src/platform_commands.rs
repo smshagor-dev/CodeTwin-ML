@@ -182,33 +182,6 @@ pub fn export_platform_diagnostics(app: tauri::AppHandle) -> Result<String, Stri
     Ok(path.display().to_string())
 }
 
-#[tauri::command]
-pub fn research_citations(
-    run_id: String,
-    app: tauri::AppHandle,
-) -> Result<Vec<serde_json::Value>, String> {
-    let db = db(&app)?;
-    let mut stmt = db
-        .connection()
-        .prepare(
-            "SELECT c.id, c.claim, c.quote, c.support, s.final_url, s.title, s.content_sha256, s.fetched_ms
-             FROM research_citations c JOIN research_sources s ON s.id = c.source_id
-             WHERE c.run_id = ?1 ORDER BY c.created_ms LIMIT 500",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([run_id], |r| {
-            Ok(serde_json::json!({
-                "id": r.get::<_, String>(0)?, "claim": r.get::<_, String>(1)?,
-                "quote": r.get::<_, Option<String>>(2)?, "support": r.get::<_, String>(3)?,
-                "url": r.get::<_, Option<String>>(4)?, "title": r.get::<_, Option<String>>(5)?,
-                "sha256": r.get::<_, Option<String>>(6)?, "fetched_ms": r.get::<_, i64>(7)?,
-            }))
-        })
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
-}
-
 // ------------------------------------------------------------ PDF reports
 
 fn base64(bytes: &[u8]) -> String {

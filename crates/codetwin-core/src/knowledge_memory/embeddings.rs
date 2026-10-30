@@ -11,7 +11,7 @@ use std::time::Duration;
 use model_gateway::redact::redact;
 use model_gateway::CloudConsent;
 use reqwest::{blocking::Client, redirect::Policy, Url};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
 use super::{hashed_vector, now_ms, to_blob, KnowledgeMemory, LOCAL_VECTOR_MODEL};
@@ -27,6 +27,18 @@ pub trait EmbeddingProvider {
     fn model_id(&self) -> String;
     /// Embed `texts` on behalf of `project_id` (used for consent checks).
     fn embed(&self, project_id: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, String>;
+    /// Where inference runs: `local` (in process), `loopback` or `remote`.
+    fn kind(&self) -> &'static str {
+        "loopback"
+    }
+    /// Pinned model revision, when the provider knows it.
+    fn revision(&self) -> Option<String> {
+        None
+    }
+    /// SHA-256 of the model weights, when the provider verified them.
+    fn weights_sha256(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +107,13 @@ impl EmbeddingProvider for HttpEmbedder {
             self.model,
             self.endpoint.host_str().unwrap_or("unknown")
         )
+    }
+
+    fn kind(&self) -> &'static str {
+        match self.destination {
+            EmbeddingDestination::Loopback => "loopback",
+            EmbeddingDestination::Consented(_) => "remote",
+        }
     }
 
     fn embed(&self, project_id: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
@@ -168,7 +187,12 @@ pub(super) struct QueryVector {
     pub model: String,
     pub vector: Vec<f32>,
     pub neural: bool,
+    /// Set when a neural ranking was requested but lexical was used.
+    pub fallback_reason: Option<String>,
 }
+
+/// Progress of an embedding pass: items embedded so far and in total.
+pub type ProgressFn<'a> = &'a mut dyn FnMut(usize, usize);
 
 impl KnowledgeMemory<'_> {
     /// Embed up to `limit` live items whose current content has no vector
@@ -178,6 +202,71 @@ impl KnowledgeMemory<'_> {
         project_id: &str,
         embedder: &dyn EmbeddingProvider,
         limit: usize,
+    ) -> Result<usize, String> {
+        self.embed_pending(
+            project_id,
+            embedder,
+            limit,
+            &std::sync::atomic::AtomicBool::new(false),
+            &mut |_, _| {},
+        )
+    }
+
+    /// Record `model`'s dimensionality and version, or confirm a previous
+    /// registration agrees. A label that changes size is refused: its old
+    /// vectors live in a different space and must be reindexed under a new
+    /// label instead.
+    pub fn register_model(
+        &self,
+        model: &str,
+        dims: usize,
+        kind: &str,
+        revision: Option<&str>,
+        weights_sha256: Option<&str>,
+    ) -> Result<(), String> {
+        if model == LOCAL_VECTOR_MODEL {
+            return Err("the lexical model label is reserved".into());
+        }
+        let conn = self.db.connection();
+        conn.execute(
+            "INSERT OR IGNORE INTO embedding_models(model,dims,kind,revision,weights_sha256,registered_ms)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            params![model, dims as i64, kind, revision, weights_sha256, now_ms()],
+        )
+        .map_err(|e| e.to_string())?;
+        let (known_dims, known_rev): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT dims, revision FROM embedding_models WHERE model=?1",
+                [model],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        if known_dims != dims as i64 {
+            return Err(format!(
+                "{model} was registered with {known_dims} dimensions but now returns {dims}; \
+                 reindex under a new model label"
+            ));
+        }
+        if let (Some(known), Some(now)) = (known_rev.as_deref(), revision) {
+            if known != now {
+                return Err(format!(
+                    "{model} was registered at revision {known}, not {now}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Incremental, cancellable embedding of items whose current content
+    /// has no vector for `embedder`'s model. Cancellation is checked between
+    /// batches; finished batches stay committed, so a later pass resumes.
+    pub fn embed_pending(
+        &self,
+        project_id: &str,
+        embedder: &dyn EmbeddingProvider,
+        limit: usize,
+        cancel: &std::sync::atomic::AtomicBool,
+        progress: ProgressFn<'_>,
     ) -> Result<usize, String> {
         let model = embedder.model_id();
         if model == LOCAL_VECTOR_MODEL {
@@ -203,17 +292,37 @@ impl KnowledgeMemory<'_> {
             rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
         };
         let mut done = 0;
-        for chunk in pending.chunks(MAX_BATCH) {
+        let total = pending.len();
+        progress(0, total);
+        let mut registered = false;
+        // Small batches keep cancellation responsive for in-process models.
+        for chunk in pending.chunks(16.min(MAX_BATCH)) {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
             let texts: Vec<String> = chunk.iter().map(|(_, t)| t.clone()).collect();
             let vectors = embedder.embed(project_id, &texts)?;
             if vectors.len() != chunk.len() {
                 return Err("embedding count mismatch".into());
             }
-            if vectors
-                .iter()
-                .any(|v| v.len() < 8 || v.len() > MAX_DIMS || v.iter().any(|x| !x.is_finite()))
-            {
+            let dims = vectors.first().map_or(0, Vec::len);
+            if vectors.iter().any(|v| {
+                v.len() != dims
+                    || v.len() < 8
+                    || v.len() > MAX_DIMS
+                    || v.iter().any(|x| !x.is_finite())
+            }) {
                 return Err("provider returned an invalid vector".into());
+            }
+            if !registered {
+                self.register_model(
+                    &model,
+                    dims,
+                    embedder.kind(),
+                    embedder.revision().as_deref(),
+                    embedder.weights_sha256().as_deref(),
+                )?;
+                registered = true;
             }
             let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
             for ((id, _), v) in chunk.iter().zip(&vectors) {
@@ -226,47 +335,65 @@ impl KnowledgeMemory<'_> {
             }
             tx.commit().map_err(|e| e.to_string())?;
             done += chunk.len();
+            progress(done, total);
         }
         Ok(done)
     }
 
     /// The query vector and the stored vectors it is compared with. The
-    /// embedder is used only when the project already has its vectors.
+    /// embedder is used only when the project already has its vectors. Any
+    /// neural failure (offline provider, model mismatch) falls back to the
+    /// lexical vectors with the reason reported, never silently.
     pub(super) fn query_vector(
         &self,
         project_id: &str,
         query: &str,
         embedder: Option<&dyn EmbeddingProvider>,
     ) -> Result<QueryVector, String> {
+        let mut fallback_reason = None;
         if let Some(embedder) = embedder {
             let model = embedder.model_id();
-            let has_vectors: bool = self
+            let registered: Option<i64> = self
                 .db
                 .connection()
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM memory_neural_vectors WHERE project_id=?1 AND model=?2)",
+                    "SELECT e.dims FROM embedding_models e WHERE e.model=?2 AND EXISTS(
+                       SELECT 1 FROM memory_neural_vectors v WHERE v.project_id=?1 AND v.model=?2)",
                     params![project_id, model],
                     |r| r.get(0),
                 )
+                .optional()
                 .map_err(|e| e.to_string())?;
-            if has_vectors {
-                if let Some(vector) = embedder
-                    .embed(project_id, &[query.to_owned()])?
-                    .into_iter()
-                    .next()
-                {
-                    return Ok(QueryVector {
-                        model,
-                        vector,
-                        neural: true,
-                    });
+            match registered {
+                None => {
+                    fallback_reason =
+                        Some(format!("project memory has not been indexed with {model}"));
                 }
+                Some(dims) => match embedder.embed(project_id, &[query.to_owned()]) {
+                    Ok(mut vectors) if vectors.len() == 1 && vectors[0].len() as i64 == dims => {
+                        return Ok(QueryVector {
+                            model,
+                            vector: vectors.remove(0),
+                            neural: true,
+                            fallback_reason: None,
+                        });
+                    }
+                    Ok(_) => {
+                        fallback_reason = Some(format!(
+                            "{model} returned vectors incompatible with its stored {dims}-dimension index"
+                        ));
+                    }
+                    Err(e) => {
+                        fallback_reason = Some(format!("neural embedder unavailable: {e}"));
+                    }
+                },
             }
         }
         Ok(QueryVector {
             model: LOCAL_VECTOR_MODEL.to_owned(),
             vector: hashed_vector(query),
             neural: false,
+            fallback_reason,
         })
     }
 }

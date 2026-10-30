@@ -100,7 +100,7 @@ jobs:
       - name: Install Python quality tools
         run: python -m pip install --disable-pip-version-check "ruff==0.16.9" "mypy==2.3.1" "cryptography==46.0.4"
       - name: Ruff
-        run: python -m ruff check services/ml/codetwin_ml services/ml/tests services/security/codetwin_security services/security/tests scripts/publish_signer_trust_anchor.py scripts/verify_signer_policy_rotation.py scripts/audit_signer_trust_anchor.py scripts/tests/test_publish_signer_trust_anchor.py scripts/tests/test_verify_signer_policy_rotation.py scripts/tests/test_audit_signer_trust_anchor.py scripts/check_tracked_private_keys.py scripts/tests/test_check_tracked_private_keys.py
+        run: python -m ruff check services/ml/codetwin_ml services/ml/tests services/security/codetwin_security services/security/tests scripts/publish_signer_trust_anchor.py scripts/verify_signer_policy_rotation.py scripts/audit_signer_trust_anchor.py scripts/tests/test_publish_signer_trust_anchor.py scripts/tests/test_verify_signer_policy_rotation.py scripts/tests/test_audit_signer_trust_anchor.py scripts/check_tracked_private_keys.py scripts/tests/test_check_tracked_private_keys.py scripts/workflow_report_signature.py scripts/tests/test_workflow_report_signature.py
       - name: Strict mypy
         env:
           MYPYPATH: services/ml:services/security

@@ -51,16 +51,6 @@ export interface MetricsSnapshot {
   alerts: PlatformAlert[];
 }
 export interface RetentionReport { runs_deleted: number; provider_requests_deleted: number; audit_records_deleted: number }
-export interface Citation {
-  id: string;
-  claim: string;
-  quote: string | null;
-  support: "supported" | "unsupported" | "contradicted";
-  url: string | null;
-  title: string | null;
-  sha256: string | null;
-  fetched_ms: number;
-}
 export interface PdfExport { path: string; base64: string; bytes: number }
 
 export type SearchProviderKind = "brave" | "searxng";
@@ -153,7 +143,6 @@ export const platformApi = {
   metrics: (projectId: string | null) => invoke<MetricsSnapshot>("workflow_metrics", { projectId }),
   exportDiagnostics: () => invoke<string>("export_platform_diagnostics"),
   prune: (olderThanDays: number, keepLatest: number) => invoke<RetentionReport>("prune_workflow_history", { olderThanDays, keepLatest }),
-  citations: (runId: string) => invoke<Citation[]>("research_citations", { runId }),
   reportPdf: (runId: string) => invoke<PdfExport>("workflow_report_pdf", { runId }),
 
   access: (projectId: string) => invoke<AccessOverview>("project_access", { projectId }),

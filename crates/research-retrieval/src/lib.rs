@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
 
+pub mod citations;
 pub mod robots;
 pub mod search;
 pub mod sources;
@@ -301,6 +302,15 @@ pub fn fetch_with_headers(
     policy: &FetchPolicy,
 ) -> Result<RetrievedDocument, RetrievalError> {
     fetch_raw(raw_url, headers, policy).map(|(doc, _)| doc)
+}
+
+/// Like [`fetch`], also returning the raw (bounded) body, e.g. for
+/// metadata extraction. Same validation, pinning and redirect rules.
+pub fn fetch_with_body(
+    raw_url: &str,
+    policy: &FetchPolicy,
+) -> Result<(RetrievedDocument, Vec<u8>), RetrievalError> {
+    fetch_raw(raw_url, &[], policy)
 }
 
 /// Fetch returning the extracted document and the raw (bounded) body.

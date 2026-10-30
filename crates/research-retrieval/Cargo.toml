@@ -6,6 +6,8 @@ license.workspace = true
 description = "SSRF-resistant, bounded retrieval of operator-approved research sources"
 
 [dependencies]
+# Text extraction for operator-supplied PDF sources.
+lopdf = { version = "0.44.0", default-features = false }
 regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true

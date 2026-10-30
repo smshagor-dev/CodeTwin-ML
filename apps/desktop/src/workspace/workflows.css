@@ -53,3 +53,17 @@
 .wf-replies { margin-left: 16px; margin-top: 6px; }
 .wf-tools blockquote { margin: 4px 0 4px 12px; padding-left: 8px; border-left: 2px solid var(--ws-border); color: var(--ws-muted); }
 .wf-pre { margin: 0; padding: 8px; border: 1px solid var(--ws-border); border-radius: 6px; max-height: 220px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Citation and signed-report states. Only verified/trusted read as positive. */
+.ws-status-verified, .ws-status-trusted { color: var(--ws-success); background: color-mix(in srgb, var(--ws-success) 12%, transparent); }
+.ws-status-quote_not_found, .ws-status-unrelated_quote, .ws-status-source_unavailable, .ws-status-unsigned,
+.ws-status-untrusted_signer, .ws-status-untrusted { color: var(--ws-warning); background: color-mix(in srgb, var(--ws-warning) 12%, transparent); }
+.ws-status-contradicted, .ws-status-source_changed, .ws-status-invalid_signature, .ws-status-tampered,
+.ws-status-chain_broken, .ws-status-invalid, .ws-status-revoked { color: var(--ws-danger); background: color-mix(in srgb, var(--ws-danger) 12%, transparent); }
+.wf-citations { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.wf-citations li { border: 1px solid var(--ws-border); border-radius: 6px; padding: 8px 10px; display: grid; gap: 4px; min-width: 0; }
+.wf-citations blockquote { margin: 0; padding-left: 8px; border-left: 2px solid var(--ws-border); color: var(--ws-muted); overflow-wrap: anywhere; }
+.wf-citations small, .wf-signed small { color: var(--ws-muted); overflow-wrap: anywhere; }
+.wf-signed { display: grid; gap: 8px; }
+.wf-signed textarea { width: 100%; min-height: 72px; font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; box-sizing: border-box; }
+.wf-hash { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }

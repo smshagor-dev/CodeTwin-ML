@@ -57,9 +57,29 @@ const MIGRATION_0050: &str = include_str!("../migrations/0050_research_sources.s
 const MIGRATION_0051: &str = include_str!("../migrations/0051_collaboration_automation.sql");
 const MIGRATION_0052: &str = include_str!("../migrations/0052_security_intelligence.sql");
 const MIGRATION_0053: &str = include_str!("../migrations/0053_temporal_memory.sql");
+const MIGRATION_0054: &str = include_str!("../migrations/0054_semantic_memory.sql");
+const MIGRATION_0055: &str = include_str!("../migrations/0055_citation_verification.sql");
+const MIGRATION_0056: &str = include_str!("../migrations/0056_signed_workflow_reports.sql");
+
+/// Reverse migrations, newest last. `rollback_to` refuses to cross a
+/// version that has none.
+const DOWN_MIGRATIONS: &[(i64, &str)] = &[
+    (
+        54,
+        include_str!("../migrations/0054_semantic_memory.down.sql"),
+    ),
+    (
+        55,
+        include_str!("../migrations/0055_citation_verification.down.sql"),
+    ),
+    (
+        56,
+        include_str!("../migrations/0056_signed_workflow_reports.down.sql"),
+    ),
+];
 
 /// Highest schema version this build applies.
-pub const LATEST_SCHEMA_VERSION: i64 = 53;
+pub const LATEST_SCHEMA_VERSION: i64 = 56;
 /// Pre-migration backups retained next to the database file.
 const MIGRATION_BACKUPS_KEPT: usize = 3;
 
@@ -88,6 +108,8 @@ impl Database {
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        // Zero freed pages so deleted memory does not linger in the file.
+        connection.pragma_update(None, "secure_delete", "ON")?;
         let database = Self { connection };
         if existed {
             database.backup_before_migration(path)?;
@@ -192,6 +214,7 @@ impl Database {
         connection.busy_timeout(std::time::Duration::from_secs(30))?;
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        connection.pragma_update(None, "secure_delete", "ON")?;
         // Fail closed if called with an unrelated or uninitialized SQLite file.
         let _: i64 = connection.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -269,6 +292,31 @@ impl Database {
         self.apply_migration(51, MIGRATION_0051)?;
         self.apply_migration(52, MIGRATION_0052)?;
         self.apply_migration(53, MIGRATION_0053)?;
+        self.apply_migration(54, MIGRATION_0054)?;
+        self.apply_migration(55, MIGRATION_0055)?;
+        self.apply_migration(56, MIGRATION_0056)?;
+        Ok(())
+    }
+
+    /// Undo applied migrations down to `target` in one transaction, newest
+    /// first. Used by migration tests and by operators restoring an older
+    /// build; data in surviving tables is untouched.
+    pub fn rollback_to(&self, target: i64) -> Result<(), DatabaseError> {
+        let current = self.schema_version()?.unwrap_or(0);
+        let tx = self.connection.unchecked_transaction()?;
+        for version in ((target + 1)..=current).rev() {
+            let Some((_, sql)) = DOWN_MIGRATIONS.iter().find(|(v, _)| *v == version) else {
+                return Err(DatabaseError::Backup(format!(
+                    "migration {version} has no rollback; restore a pre-upgrade backup instead"
+                )));
+            };
+            tx.execute_batch(sql)?;
+            tx.execute(
+                "DELETE FROM schema_migrations WHERE version = ?1",
+                [version],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -316,23 +364,12 @@ mod tests {
             {
                 let db = Database::open(&path).expect("open");
                 // Simulate an older schema so the next open must upgrade.
-                db.connection()
-                    .execute_batch(
-                        "DROP TABLE knowledge_conflicts; DROP TABLE memory_item_versions;
-                         DROP TABLE memory_neural_vectors;
-                         DROP INDEX idx_kg_edges_current;
-                         ALTER TABLE kg_edges DROP COLUMN superseded_by;
-                         ALTER TABLE kg_edges DROP COLUMN invalidated_ms;
-                         ALTER TABLE kg_edges DROP COLUMN valid_from_ms;
-                         ALTER TABLE memory_items DROP COLUMN version;
-                         DELETE FROM schema_migrations WHERE version = 53;",
-                    )
-                    .expect("downgrade");
+                db.rollback_to(53).expect("downgrade");
             }
             let db = Database::open(&path).expect("upgrade");
             assert_eq!(db.schema_version().unwrap(), Some(LATEST_SCHEMA_VERSION));
         }
-        let kept = backups(dir.path(), "codetwin.sqlite3.pre-v52-v53-");
+        let kept = backups(dir.path(), "codetwin.sqlite3.pre-v53-v56-");
         assert_eq!(kept.len(), 3, "older backups are pruned");
         let restored = Database::open(&kept[0]).expect("backup opens and migrates");
         assert_eq!(
@@ -345,6 +382,80 @@ mod tests {
         Database::open(&fresh).expect("fresh");
         Database::open(&fresh).expect("reopen");
         assert!(backups(dir.path(), "fresh.sqlite3.pre-v").is_empty());
+    }
+
+    #[test]
+    fn semantic_memory_migration_rolls_back_and_reapplies() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("rollback.sqlite3");
+        let tables = |db: &Database| -> i64 {
+            db.connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name IN
+                     ('embedding_models','memory_settings','memory_index_jobs','memory_deletions',
+                      'memory_neural_vectors_dims','research_claims','citation_verifications',
+                      'research_link_checks','research_reports','research_source_text',
+                      'research_citation_claims','workflow_reports','workflow_report_signatures',
+                      'trusted_report_signers')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        {
+            let db = Database::open(&path).expect("open");
+            assert_eq!(tables(&db), 14);
+            let secure: i64 = db
+                .connection()
+                .query_row("PRAGMA secure_delete", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(secure, 1, "deleted pages are zeroed");
+            db.connection()
+                .execute_batch(
+                    "INSERT INTO projects(id,root_path,display_name) VALUES ('p','/p','p');
+                     INSERT INTO memory_items(id,project_id,layer,title,body,source_kind,source_ref,
+                       content_sha256,confidence,created_ms,updated_ms)
+                     VALUES ('m','p','project_fact','t','b','k','r',printf('%064d',0),0.5,1,1);",
+                )
+                .unwrap();
+            db.rollback_to(53).expect("rollback");
+            assert_eq!(db.schema_version().unwrap(), Some(53));
+            assert_eq!(tables(&db), 0);
+            assert!(
+                db.rollback_to(40).is_err(),
+                "older migrations need a backup restore, not a partial rollback"
+            );
+            assert_eq!(
+                db.schema_version().unwrap(),
+                Some(53),
+                "failed rollback is atomic"
+            );
+        }
+        let db = Database::open(&path).expect("re-upgrade");
+        assert_eq!(db.schema_version().unwrap(), Some(LATEST_SCHEMA_VERSION));
+        assert_eq!(tables(&db), 14);
+        let columns: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('research_sources')
+                 WHERE name IN ('canonical_url','origin','metadata_json','provenance_json')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 4);
+        let kept: i64 = db
+            .connection()
+            .query_row("SELECT COUNT(*) FROM memory_items", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 1, "memory survives a rollback round trip");
+        // The registry rejects a vector whose size disagrees with its model.
+        let bad = db.connection().execute(
+            "INSERT INTO memory_neural_vectors(item_id,project_id,model,dims,vector,content_sha256,created_ms)
+             VALUES ('m','p','hashed-lexical-v2',16,X'00',printf('%064d',0),1)",
+            [],
+        );
+        assert!(bad.is_err());
     }
 
     #[test]

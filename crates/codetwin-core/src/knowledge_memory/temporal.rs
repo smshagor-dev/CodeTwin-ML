@@ -83,7 +83,7 @@ fn normalize_title(t: &str) -> String {
         .to_lowercase()
 }
 
-fn contradicts(a: &str, b: &str) -> bool {
+pub(super) fn contradicts(a: &str, b: &str) -> bool {
     let claims = [
         research_retrieval::Claim {
             source_id: "existing".into(),
@@ -292,6 +292,17 @@ impl KnowledgeMemory<'_> {
                 item: self.remember(input)?,
             });
         };
+        self.reconcile_against(existing, input, actor)
+    }
+
+    /// Fold `input` into `existing`, an item already judged to describe the
+    /// same fact (by title, or by neural similarity).
+    pub(super) fn reconcile_against(
+        &self,
+        existing: MemoryItem,
+        input: &MemoryInput,
+        actor: &str,
+    ) -> Result<ReconcileOutcome, String> {
         if existing.body.trim() == input.body.trim() {
             // Same fact restated: refresh it in place (titles may differ in case).
             self.db

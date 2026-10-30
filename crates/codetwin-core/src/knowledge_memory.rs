@@ -12,7 +12,7 @@
 //!   invalidated, not deleted, so the graph can be read "as of" a time.
 //! * [`EmbeddingProvider`] vectors are stored per model next to the lexical
 //!   ones; retrieval reports which model actually ranked the results.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -21,8 +21,18 @@ use sha2::{Digest, Sha256};
 use crate::Database;
 
 mod embeddings;
+mod local_model;
+mod semantic;
 mod temporal;
+pub use embeddings::ProgressFn;
 pub use embeddings::{EmbeddingDestination, EmbeddingProvider, HttpEmbedder};
+pub use local_model::{
+    download_model, model_status, LocalModelSpec, LocalModelStatus, LocalNeuralEmbedder,
+    PinnedFile, MINILM_L6_V2,
+};
+pub use semantic::{
+    Episode, IndexJob, IndexStatus, MemorySettings, RetentionPolicy, SemanticConflict,
+};
 pub use temporal::{FactOutcome, KnowledgeConflict, MemoryVersion, ReconcileOutcome};
 
 pub const LOCAL_VECTOR_MODEL: &str = "hashed-lexical-v1";
@@ -125,6 +135,9 @@ pub struct ScoredMemory {
     pub keyword_score: f64,
     pub vector_score: f64,
     pub score: f64,
+    /// How `score` was assembled, for the retrieval explanation view.
+    #[serde(default)]
+    pub explanation: RetrievalExplanation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +148,169 @@ pub struct RetrievalResult {
     pub omitted: usize,
     pub omitted_chars: usize,
     pub vector_model: String,
+    /// True only when `vector_model` is a neural model's stored vectors.
+    #[serde(default)]
+    pub neural: bool,
+    /// Why a requested neural ranking fell back to lexical vectors.
+    #[serde(default)]
+    pub fallback_reason: Option<String>,
+    /// Live items with no current vector for `vector_model` (keyword-only).
+    #[serde(default)]
+    pub unembedded: usize,
+    #[serde(default)]
+    pub fusion: Fusion,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fusion {
+    /// Weighted sum of the normalised keyword and vector scores.
+    #[default]
+    Weighted,
+    /// Reciprocal rank fusion (scale-free; robust when scores disagree).
+    ReciprocalRank,
+}
+
+/// Retrieval ranking knobs. The default reproduces the original weighting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RankingConfig {
+    pub fusion: Fusion,
+    pub keyword_weight: f64,
+    pub vector_weight: f64,
+    pub rrf_k: f64,
+    pub approved_bonus: f64,
+    pub verified_bonus: f64,
+    /// Cosine floor for the lexical hashed vectors.
+    pub min_lexical_similarity: f64,
+    /// Cosine floor for neural vectors (unrelated text still scores ~0.1).
+    pub min_neural_similarity: f64,
+    /// 0 disables recency; 1 lets age halve a score every half-life.
+    pub recency_weight: f64,
+    pub recency_half_life_days: f64,
+    /// Added when an item matches the requesting specialist's focus.
+    pub specialist_boost: f64,
+    /// Added for items from the run the request belongs to.
+    pub same_run_boost: f64,
+    /// Maximal-marginal-relevance reranking (`None` = off). Lower values
+    /// trade relevance for diversity.
+    pub mmr_lambda: Option<f64>,
+    /// Restrict retrieval to these layers (empty = all).
+    pub layers: Vec<MemoryLayer>,
+}
+
+impl Default for RankingConfig {
+    fn default() -> Self {
+        Self {
+            fusion: Fusion::Weighted,
+            keyword_weight: 0.55,
+            vector_weight: 0.45,
+            rrf_k: 60.0,
+            approved_bonus: 0.15,
+            verified_bonus: 0.1,
+            min_lexical_similarity: 0.05,
+            min_neural_similarity: 0.2,
+            recency_weight: 0.0,
+            recency_half_life_days: 30.0,
+            // Sized against fused scores in 0..1 (keyword and vector both
+            // normalised), i.e. the same share of the range as before.
+            specialist_boost: 0.2,
+            same_run_boost: 0.1,
+            mmr_lambda: None,
+            layers: Vec::new(),
+        }
+    }
+}
+
+impl RankingConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        let unit = [
+            self.keyword_weight,
+            self.vector_weight,
+            self.approved_bonus,
+            self.verified_bonus,
+            self.min_lexical_similarity,
+            self.min_neural_similarity,
+            self.recency_weight,
+            self.specialist_boost,
+            self.same_run_boost,
+        ];
+        if unit
+            .iter()
+            .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        {
+            return Err("ranking weights and thresholds must be within 0..1".into());
+        }
+        if self.keyword_weight + self.vector_weight <= 0.0 {
+            return Err("at least one of the keyword and vector weights must be positive".into());
+        }
+        if !(1.0..=1000.0).contains(&self.rrf_k)
+            || !(0.1..=3650.0).contains(&self.recency_half_life_days)
+        {
+            return Err("rrf_k must be 1..1000 and the half-life 0.1..3650 days".into());
+        }
+        if self
+            .mmr_lambda
+            .is_some_and(|l| !l.is_finite() || !(0.0..=1.0).contains(&l))
+        {
+            return Err("mmr_lambda must be within 0..1".into());
+        }
+        Ok(())
+    }
+}
+
+/// Who is asking. Specialist workflows get memories matching their focus
+/// ranked up; `exclude_run_id` asks for what *other* sessions learned.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RetrievalContext {
+    pub specialist: Option<String>,
+    pub run_id: Option<String>,
+    pub exclude_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RetrievalExplanation {
+    /// 1-based rank in the keyword (BM25) list, if matched there.
+    pub keyword_rank: Option<usize>,
+    /// 1-based rank in the vector list, if matched there.
+    pub vector_rank: Option<usize>,
+    pub fused: f64,
+    pub trust_bonus: f64,
+    pub context_boost: f64,
+    /// Multiplier from recency (1.0 when recency is off).
+    pub recency_factor: f64,
+    /// Subtracted by MMR for similarity to higher-ranked results.
+    pub diversity_penalty: f64,
+    pub matched_terms: Vec<String>,
+}
+
+/// Focus terms per specialist role; matched against title, body and source.
+fn specialist_terms(role: &str) -> &'static [&'static str] {
+    let role = role.to_ascii_lowercase();
+    if role.contains("secur") {
+        &[
+            "security",
+            "vulnerab",
+            "finding",
+            "cve",
+            "secret",
+            "injection",
+            "auth",
+        ]
+    } else if role.contains("qa") || role.contains("test") {
+        &["test", "qa", "coverage", "assert", "regression", "flaky"]
+    } else if role.contains("review") {
+        &["review", "patch", "diff", "refactor", "fix"]
+    } else if role.contains("research") {
+        &["source", "citation", "research", "reference", "evidence"]
+    } else if role.contains("plan") {
+        &["plan", "decision", "goal", "task", "approach"]
+    } else if role.contains("perf") || role.contains("runtime") {
+        &["latency", "performance", "memory", "runtime", "timeout"]
+    } else {
+        &[]
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -188,6 +364,34 @@ fn tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Function words that carry no topic. Kept out of the full-text query
+/// only: OR-matching them lets any memory containing "how" or "we" outrank
+/// the paraphrase a question is really about. Stored vectors still use
+/// [`tokens`] unchanged.
+const STOP_WORDS: &[&str] = &[
+    "a", "about", "after", "all", "an", "and", "any", "are", "as", "at", "be", "been", "before",
+    "but", "by", "can", "did", "do", "does", "for", "from", "get", "gets", "had", "has", "have",
+    "how", "if", "in", "into", "is", "it", "its", "of", "on", "or", "our", "should", "so", "than",
+    "that", "the", "their", "them", "then", "there", "these", "they", "this", "those", "to", "up",
+    "us", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom", "why",
+    "will", "with", "would", "you", "your",
+];
+
+/// Query terms for the keyword index: tokens minus stop words, unless the
+/// query consists of nothing else (then it is searched as written).
+fn keyword_terms(query: &str) -> Vec<String> {
+    let all: Vec<String> = tokens(query);
+    let content: Vec<String> = all
+        .iter()
+        .filter(|t| !STOP_WORDS.contains(&t.as_str()))
+        .cloned()
+        .collect();
+    if content.is_empty() { all } else { content }
+        .into_iter()
+        .take(16)
+        .collect()
+}
+
 /// Deterministic, normalized hashed-token vector (signed feature hashing).
 pub fn hashed_vector(text: &str) -> Vec<f32> {
     let mut v = vec![0f32; DIMS];
@@ -229,6 +433,41 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
         .zip(b)
         .map(|(x, y)| f64::from(*x) * f64::from(*y))
         .sum()
+}
+
+/// Greedy maximal-marginal-relevance: each pick maximises
+/// `lambda * score - (1 - lambda) * max cosine to the already picked`.
+/// Items without a vector are treated as dissimilar to everything.
+fn mmr_rerank(
+    mut pool: Vec<ScoredMemory>,
+    vectors: &HashMap<String, Vec<f32>>,
+    lambda: f64,
+) -> Vec<ScoredMemory> {
+    const WINDOW: usize = 50;
+    let rest = pool.split_off(pool.len().min(WINDOW));
+    let mut picked: Vec<ScoredMemory> = Vec::with_capacity(pool.len() + rest.len());
+    while !pool.is_empty() {
+        let mut best = (0, f64::NEG_INFINITY, 0.0);
+        for (i, cand) in pool.iter().enumerate() {
+            let redundancy = vectors.get(&cand.item.id).map_or(0.0, |v| {
+                picked
+                    .iter()
+                    .filter_map(|p| vectors.get(&p.item.id))
+                    .map(|p| cosine(v, p))
+                    .fold(0.0, f64::max)
+            });
+            let penalty = (1.0 - lambda) * redundancy;
+            let value = lambda * cand.score - penalty;
+            if value > best.1 {
+                best = (i, value, penalty);
+            }
+        }
+        let mut chosen = pool.remove(best.0);
+        chosen.explanation.diversity_penalty = best.2;
+        picked.push(chosen);
+    }
+    picked.extend(rest);
+    picked
 }
 
 const ITEM_COLUMNS: &str =
@@ -449,35 +688,49 @@ impl<'a> KnowledgeMemory<'a> {
         self.get(&id)?.ok_or_else(|| "approval failed".into())
     }
 
+    /// Securely delete one item (see [`Self::secure_delete`]).
     pub fn delete(&self, project_id: &str, item_id: &str) -> Result<bool, String> {
-        self.db
-            .connection()
-            .execute(
-                "DELETE FROM memory_items WHERE id=?1 AND project_id=?2",
-                params![item_id, project_id],
-            )
-            .map(|n| n == 1)
-            .map_err(|e| e.to_string())
+        self.secure_delete(project_id, item_id, "operator")
     }
 
     pub fn clear(&self, project_id: &str, layer: Option<MemoryLayer>) -> Result<usize, String> {
-        self.db
-            .connection()
-            .execute(
-                "DELETE FROM memory_items WHERE project_id=?1 AND (?2 IS NULL OR layer=?2)",
-                params![project_id, layer.map(MemoryLayer::as_str)],
-            )
-            .map_err(|e| e.to_string())
+        let layer = layer.map(MemoryLayer::as_str);
+        self.secure_delete_where(
+            project_id,
+            "?2 IS NULL OR layer=?2",
+            &[&layer],
+            "project_clear",
+            "operator",
+        )
     }
 
     pub fn expire(&self) -> Result<usize, String> {
-        self.db
-            .connection()
-            .execute(
-                "DELETE FROM memory_items WHERE expires_ms IS NOT NULL AND expires_ms <= ?1",
-                [now_ms()],
-            )
-            .map_err(|e| e.to_string())
+        let projects: Vec<String> = {
+            let mut stmt = self
+                .db
+                .connection()
+                .prepare(
+                    "SELECT DISTINCT project_id FROM memory_items
+                     WHERE expires_ms IS NOT NULL AND expires_ms <= ?1",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([now_ms()], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+        };
+        let now = now_ms();
+        let mut removed = 0;
+        for project in projects {
+            removed += self.secure_delete_where(
+                &project,
+                "expires_ms IS NOT NULL AND expires_ms <= ?2",
+                &[&now],
+                "expired",
+                "system",
+            )?;
+        }
+        Ok(removed)
     }
 
     /// Rebuild the keyword index and the local vectors for one project.
@@ -520,7 +773,29 @@ impl<'a> KnowledgeMemory<'a> {
         budget: RetrievalBudget,
         embedder: Option<&dyn EmbeddingProvider>,
     ) -> Result<RetrievalResult, String> {
-        let terms: Vec<String> = tokens(query).into_iter().take(16).collect();
+        self.retrieve_ranked(
+            project_id,
+            query,
+            budget,
+            embedder,
+            &RankingConfig::default(),
+            &RetrievalContext::default(),
+        )
+    }
+
+    /// Hybrid retrieval with explicit ranking, fusion, reranking and
+    /// requester context. Every result carries its score breakdown.
+    pub fn retrieve_ranked(
+        &self,
+        project_id: &str,
+        query: &str,
+        budget: RetrievalBudget,
+        embedder: Option<&dyn EmbeddingProvider>,
+        ranking: &RankingConfig,
+        context: &RetrievalContext,
+    ) -> Result<RetrievalResult, String> {
+        ranking.validate()?;
+        let terms: Vec<String> = keyword_terms(query);
         let now = now_ms();
         let conn = self.db.connection();
         let mut keyword: BTreeMap<String, f64> = BTreeMap::new();
@@ -543,16 +818,31 @@ impl<'a> KnowledgeMemory<'a> {
                 .map_err(|e| e.to_string())?;
             for row in rows {
                 let (id, rank) = row.map_err(|e| e.to_string())?;
-                // bm25 is negative-is-better; map to 0..1.
-                keyword.insert(id, 1.0 - 1.0 / (1.0 + (-rank).max(0.0)));
+                // bm25 is negative-is-better.
+                keyword.insert(id, (-rank).max(0.0));
+            }
+            // Normalise by the best match so the strongest lexical hit scores 1.
+            // Absolute bm25 values are not comparable across corpora: in a
+            // small project memory a term's IDF collapses towards zero, which
+            // previously silenced the keyword channel entirely.
+            let best = keyword.values().copied().fold(0.0, f64::max);
+            for score in keyword.values_mut() {
+                *score = if best > 0.0 { *score / best } else { 1.0 };
             }
         }
         let embeddings::QueryVector {
             model: vector_model,
             vector: query_vector,
             neural,
+            fallback_reason,
         } = self.query_vector(project_id, query, embedder)?;
+        let floor = if neural {
+            ranking.min_neural_similarity
+        } else {
+            ranking.min_lexical_similarity
+        };
         let mut vector: BTreeMap<String, f64> = BTreeMap::new();
+        let mut stored: HashMap<String, Vec<f32>> = HashMap::new();
         {
             let mut stmt = conn
                 .prepare(if neural {
@@ -578,35 +868,120 @@ impl<'a> KnowledgeMemory<'a> {
                 let (id, blob, dims) = row.map_err(|e| e.to_string())?;
                 // Invalid/corrupt vectors are skipped, never trusted.
                 if let Some(v) = from_blob(&blob, usize::try_from(dims).unwrap_or(0)) {
+                    if v.len() != query_vector.len() {
+                        continue;
+                    }
                     let s = cosine(&query_vector, &v);
-                    if s > 0.05 {
-                        vector.insert(id, s);
+                    if s > floor {
+                        vector.insert(id.clone(), s);
+                    }
+                    if ranking.mmr_lambda.is_some() {
+                        stored.insert(id, v);
                     }
                 }
             }
         }
+        let unembedded = if neural {
+            self.unembedded_count(project_id, &vector_model)?
+        } else {
+            0
+        };
+        let rank_of = |scores: &BTreeMap<String, f64>| -> HashMap<String, usize> {
+            let mut ordered: Vec<(&String, &f64)> = scores.iter().collect();
+            ordered.sort_by(|a, b| b.1.total_cmp(a.1).then(a.0.cmp(b.0)));
+            ordered
+                .into_iter()
+                .enumerate()
+                .map(|(i, (id, _))| (id.clone(), i + 1))
+                .collect()
+        };
+        let (keyword_ranks, vector_ranks) = (rank_of(&keyword), rank_of(&vector));
+        let focus = context
+            .specialist
+            .as_deref()
+            .map(specialist_terms)
+            .unwrap_or(&[]);
         let ids: BTreeSet<String> = keyword.keys().chain(vector.keys()).cloned().collect();
         let mut scored = Vec::new();
         for id in ids {
             let Some(item) = self.get(&id)? else { continue };
-            if item.project_id != project_id || item.expires_ms.is_some_and(|e| e <= now) {
+            if item.project_id != project_id
+                || item.expires_ms.is_some_and(|e| e <= now)
+                || (!ranking.layers.is_empty() && !ranking.layers.contains(&item.layer))
+                || (context.exclude_run_id.is_some() && item.run_id == context.exclude_run_id)
+            {
                 continue;
             }
-            let k = keyword.get(&id).copied().unwrap_or(0.0);
+            let text = format!("{} {} {}", item.title, item.body, item.source_kind).to_lowercase();
+            let matched_terms: Vec<String> = terms
+                .iter()
+                .filter(|t| text.contains(t.as_str()))
+                .take(16)
+                .cloned()
+                .collect();
+            // A memory sharing one incidental word with a multi-word query
+            // is weaker keyword evidence than one covering the whole query.
+            let coverage = if terms.is_empty() {
+                0.0
+            } else {
+                (matched_terms.len() as f64 / terms.len() as f64).max(0.25)
+            };
+            let k = keyword.get(&id).copied().unwrap_or(0.0) * coverage;
             let v = vector.get(&id).copied().unwrap_or(0.0);
-            let trust = match item.layer {
-                MemoryLayer::ApprovedKnowledge => 0.15,
-                _ if item.verified => 0.1,
+            let (keyword_rank, vector_rank) = (
+                keyword_ranks.get(&id).copied(),
+                vector_ranks.get(&id).copied(),
+            );
+            let fused = match ranking.fusion {
+                Fusion::Weighted => ranking.keyword_weight * k + ranking.vector_weight * v,
+                Fusion::ReciprocalRank => {
+                    // Normalised so rank 1 in both lists scores the weight sum.
+                    let rrf = |w: f64, r: Option<usize>| {
+                        r.map_or(0.0, |r| {
+                            w * (ranking.rrf_k + 1.0) / (ranking.rrf_k + r as f64)
+                        })
+                    };
+                    rrf(ranking.keyword_weight, keyword_rank)
+                        + rrf(ranking.vector_weight, vector_rank)
+                }
+            };
+            let trust_bonus = match item.layer {
+                MemoryLayer::ApprovedKnowledge => ranking.approved_bonus,
+                _ if item.verified => ranking.verified_bonus,
                 _ => 0.0,
             };
+            // Graded: one incidental focus term (e.g. "auth" in a login note)
+            // earns half the boost, two or more distinct terms the full boost.
+            let focus_hits = focus.iter().filter(|t| text.contains(*t)).count();
+            let mut context_boost = ranking.specialist_boost * (focus_hits as f64 / 2.0).min(1.0);
+            if context.run_id.is_some() && item.run_id == context.run_id {
+                context_boost += ranking.same_run_boost;
+            }
+            let age_days = (now - item.updated_ms).max(0) as f64 / 86_400_000.0;
+            let recency_factor = 1.0
+                - ranking.recency_weight
+                    * (1.0 - 0.5f64.powf(age_days / ranking.recency_half_life_days));
             scored.push(ScoredMemory {
-                score: 0.55 * k + 0.45 * v + trust,
+                score: (fused + trust_bonus + context_boost) * recency_factor,
                 keyword_score: k,
                 vector_score: v,
+                explanation: RetrievalExplanation {
+                    keyword_rank,
+                    vector_rank,
+                    fused,
+                    trust_bonus,
+                    context_boost,
+                    recency_factor,
+                    diversity_penalty: 0.0,
+                    matched_terms,
+                },
                 item,
             });
         }
         scored.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.item.id.cmp(&b.item.id)));
+        if let Some(lambda) = ranking.mmr_lambda {
+            scored = mmr_rerank(scored, &stored, lambda);
+        }
         let candidates = scored.len();
         let mut used = 0;
         let mut items = Vec::new();
@@ -626,7 +1001,28 @@ impl<'a> KnowledgeMemory<'a> {
             candidates,
             items,
             vector_model,
+            neural,
+            fallback_reason,
+            unembedded,
+            fusion: ranking.fusion,
         })
+    }
+
+    /// Live items in `project_id` without a vector of `model` for their
+    /// current content (new or revised since the last indexing).
+    pub(crate) fn unembedded_count(&self, project_id: &str, model: &str) -> Result<usize, String> {
+        self.db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM memory_items m
+                 WHERE m.project_id=?1 AND (m.expires_ms IS NULL OR m.expires_ms > ?2)
+                   AND NOT EXISTS (SELECT 1 FROM memory_neural_vectors v
+                       WHERE v.item_id=m.id AND v.model=?3 AND v.content_sha256=m.content_sha256)",
+                params![project_id, now_ms(), model],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n as usize)
+            .map_err(|e| e.to_string())
     }
 
     // ------------------------------------------------------------ graph

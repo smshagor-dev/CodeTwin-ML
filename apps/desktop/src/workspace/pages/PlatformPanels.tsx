@@ -4,10 +4,11 @@ import { LoadingState, Panel, StatusBadge } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
 import {
   agentConversation, API_SCOPES, downloadPdf, formatMs, formatPercent, platformApi, ROLES,
-  type AccessOverview, type ApiStatus, type ApiToken, type AuditRecord, type Citation, type Comment,
+  type AccessOverview, type ApiStatus, type ApiToken, type AuditRecord, type Comment,
   type GroupUsage, type LlmAnalytics, type MetricsSnapshot, type Role, type SearchProviderKind,
 } from "../platformApi";
 import { workflowApi, type PlanInfo, type ProviderSettings, type RunDetail } from "../workflowApi";
+import { RunCitationsPanel, SignedReportPanel } from "./RunEvidencePanels";
 
 const time = (ms: number | null | undefined) => (ms ? new Date(ms).toLocaleString() : "—");
 
@@ -396,9 +397,7 @@ function CommentThread({ projectId, runId }: { projectId: string; runId: string 
 /** Plan provenance, agent conversation, citations, PDF and review thread for one run. */
 export function RunExtras({ projectId, detail, plan, settled }: { projectId: string; detail: RunDetail; plan: PlanInfo | null; settled: boolean }) {
   const onError = useErrorToast();
-  const [citations, setCitations] = useState<Citation[] | null>(null);
   const runId = detail.run.id;
-  useEffect(() => { setCitations(null); }, [runId]);
   const conversation = agentConversation(detail.tasks);
   const roleOf = new Map(detail.tasks.map((t) => [t.id, t.role]));
   return (
@@ -439,20 +438,14 @@ export function RunExtras({ projectId, detail, plan, settled }: { projectId: str
         )}
       </Panel>
       {settled && (
-        <Panel title="Exports and sources" action={<div className="ws-button-row">
+        <Panel title="Exports" action={<div className="ws-button-row">
           <button type="button" className="ws-button ws-button-secondary" onClick={() => void platformApi.reportPdf(runId).then((r) => downloadPdf(r.base64, `codetwin-${runId}.pdf`)).catch(onError)}>Download PDF report</button>
-          <button type="button" className="ws-button ws-button-secondary" onClick={() => void platformApi.citations(runId).then(setCitations).catch(onError)}>Show citations</button>
         </div>}>
-          {citations === null ? <p className="ws-form-help">The PDF embeds the SHA-256 of the stored Markdown report so it can be matched to it.</p> :
-            citations.length === 0 ? <p className="ws-form-help">This run retrieved no research sources.</p> : (
-              <ul className="wf-tools">{citations.map((c) => (
-                <li key={c.id}><StatusBadge status={c.support === "supported" ? "completed" : "blocked"}/> <strong>{c.claim}</strong> — {c.support}
-                  {c.quote && <blockquote>{c.quote}</blockquote>}
-                  <small>{c.title ?? c.url} · sha256 {c.sha256?.slice(0, 12)} · {time(c.fetched_ms)}</small></li>
-              ))}</ul>
-            )}
+          <p className="ws-form-help">The PDF embeds the SHA-256 of the stored Markdown report so it can be matched to it. For a tamper-evident artifact, create a signed report below.</p>
         </Panel>
       )}
+      <RunCitationsPanel projectId={projectId} runId={runId}/>
+      <SignedReportPanel projectId={projectId} runId={runId} settled={settled}/>
       <CommentThread projectId={projectId} runId={runId}/>
     </>
   );

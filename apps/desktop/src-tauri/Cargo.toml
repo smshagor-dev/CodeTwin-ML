@@ -13,6 +13,7 @@ dataset-benchmark = { path = "../../../crates/dataset-benchmark" }
 model-gateway = { path = "../../../crates/model-gateway" }
 project-discovery = { path = "../../../crates/project-discovery" }
 qa-execution = { path = "../../../crates/qa-execution" }
+research-retrieval = { path = "../../../crates/research-retrieval" }
 task-orchestrator = { path = "../../../crates/task-orchestrator" }
 web-security-testing = { path = "../../../crates/web-security-testing" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }

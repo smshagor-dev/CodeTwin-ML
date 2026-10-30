@@ -11,9 +11,11 @@ mod network_assessment_commands;
 mod platform_commands;
 mod qa_commands;
 mod repair_commands;
+mod research_report_commands;
 mod runtime_commands;
 mod security_campaign_commands;
 mod security_fix_commands;
+mod semantic_memory_commands;
 mod supply_chain_commands;
 mod web_policy_commands;
 mod web_security_commands;
@@ -1078,6 +1080,11 @@ fn main() {
             GuidedSecurityStore::new(&database)
                 .recover_interrupted_sessions()
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
+            // Index jobs cut off by a shutdown are marked interrupted; the
+            // indexing itself is incremental, so a re-run resumes.
+            codetwin_core::knowledge_memory::KnowledgeMemory::new(&database)
+                .recover_interrupted_jobs()
+                .map_err(std::io::Error::other)?;
             // Reconcile interrupted workflow runs: stale leases are released,
             // uncertain side effects blocked and running runs paused.
             workflow_commands::recover_workflows(&database_path).map_err(std::io::Error::other)?;
@@ -1398,7 +1405,6 @@ fn main() {
             platform_commands::llm_usage_analytics,
             platform_commands::workflow_metrics,
             platform_commands::export_platform_diagnostics,
-            platform_commands::research_citations,
             platform_commands::workflow_report_pdf,
             platform_commands::prune_workflow_history,
             platform_commands::project_access,
@@ -1433,6 +1439,39 @@ fn main() {
             intelligence_commands::embed_project_memory,
             intelligence_commands::compare_workflow_runs,
             intelligence_commands::diagnose_workflow_stall,
+            semantic_memory_commands::local_embedding_model_status,
+            semantic_memory_commands::download_local_embedding_model,
+            semantic_memory_commands::start_memory_indexing,
+            semantic_memory_commands::cancel_memory_indexing,
+            semantic_memory_commands::memory_index_status,
+            semantic_memory_commands::memory_index_jobs,
+            semantic_memory_commands::semantic_memory_search,
+            semantic_memory_commands::memory_settings,
+            semantic_memory_commands::save_memory_settings,
+            semantic_memory_commands::apply_memory_retention,
+            semantic_memory_commands::secure_delete_memory,
+            semantic_memory_commands::memory_deletions,
+            semantic_memory_commands::memory_episodes,
+            semantic_memory_commands::semantic_memory_conflicts,
+            research_report_commands::research_fetch_source,
+            research_report_commands::research_ingest_document,
+            research_report_commands::research_cite,
+            research_report_commands::research_verify_citation,
+            research_report_commands::research_citation_list,
+            research_report_commands::research_check_link,
+            research_report_commands::research_contradictions,
+            research_report_commands::research_export_citations,
+            research_report_commands::research_generate_report,
+            research_report_commands::create_signed_workflow_report,
+            research_report_commands::signed_workflow_reports,
+            research_report_commands::workflow_report_signing_request,
+            research_report_commands::attach_workflow_report_signature,
+            research_report_commands::verify_signed_workflow_report,
+            research_report_commands::export_signed_workflow_report,
+            research_report_commands::verify_workflow_report_bundle,
+            research_report_commands::report_signers,
+            research_report_commands::trust_report_signer,
+            research_report_commands::revoke_report_signer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");
