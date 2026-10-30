@@ -2,7 +2,7 @@
   "schema_version": 1,
   "brand": "OpenMindAI Dataset",
   "release_tag": "openmindai-datasets-v1.0.0",
-  "estimated_total_download_bytes": 177020067,
+  "estimated_total_download_bytes": 818951109,
   "datasets": [
     {
       "id": "code_x_glue_defect_detection",
@@ -169,12 +169,147 @@
       "benchmark": {
         "task": "vulnerability_detection"
       }
+    },
+    {
+      "id": "diversevul",
+      "name": "OpenMindAI Dataset - DiverseVul (C/C++ Vulnerabilities)",
+      "release_asset": "openmindai-dataset-diversevul-v1.0.0.zip",
+      "repository": "bstee615/diversevul",
+      "revision": "3ed5dae8fdf3f6026f1e260f789656c4bb6d98e6",
+      "license": "upstream-unspecified",
+      "license_url": "https://huggingface.co/datasets/bstee615/diversevul",
+      "license_note": "DiverseVul (Chen et al., 2023): vulnerable/non-vulnerable C/C++ functions mined from open-source projects. No SPDX license is declared on the dataset card; upstream project code retains its original licenses. Research use.",
+      "license_acceptance_required": true,
+      "purpose": [
+        "security_analysis",
+        "vulnerability_detection",
+        "cwe_classification",
+        "security_screening"
+      ],
+      "download_bytes": 308830518,
+      "files": [
+        {
+          "path": "data/test-00000-of-00001-467ddf31930d18ee.parquet",
+          "size_bytes": 30729744,
+          "sha256": "c4cffa76a6ac0253237ccf19d4c9bbe82485d4bf7c4d3c19d11f878e6ffd8aaf"
+        },
+        {
+          "path": "data/train-00000-of-00002-06b0cca04c9bb0f2.parquet",
+          "size_bytes": 123821150,
+          "sha256": "34d400833edcaf2709ed764dd047e2b93a057df5919c0a6363ade4debbe4c155"
+        },
+        {
+          "path": "data/train-00001-of-00002-0fb7d9c1c879fb27.parquet",
+          "size_bytes": 123515656,
+          "sha256": "3f70e986bb1a0baf0633c12f5dc9be310814323c81a085bca1ce14f1c5b8fd98"
+        },
+        {
+          "path": "data/validation-00000-of-00001-4e4cf40ca95c048a.parquet",
+          "size_bytes": 30763968,
+          "sha256": "4d4573037429fa578b458d073822e36d3cefb9ec929aa7069a0f8e9a96aa8c3e"
+        }
+      ],
+      "benchmark": {
+        "task": "vulnerability_detection",
+        "default_language": "C",
+        "columns": {
+          "code": "func",
+          "label": "target",
+          "cwe": "cwe"
+        }
+      }
+    },
+    {
+      "id": "big_vul",
+      "name": "OpenMindAI Dataset - Big-Vul (Real-World CVEs)",
+      "release_asset": "openmindai-dataset-big-vul-v1.0.0.zip",
+      "repository": "bstee615/bigvul",
+      "revision": "4d8647a9b52fdd2ae42343c60fd6c7c48bbff25e",
+      "license": "upstream-unspecified",
+      "license_url": "https://huggingface.co/datasets/bstee615/bigvul",
+      "license_note": "Big-Vul (Fan et al., MSR 2020): real-world C/C++ CVE functions with CWE labels and before/after fixes. No SPDX license is declared on the dataset card; upstream project code retains its original licenses. Research use.",
+      "license_acceptance_required": true,
+      "purpose": [
+        "security_analysis",
+        "vulnerability_detection",
+        "cwe_classification"
+      ],
+      "download_bytes": 252969708,
+      "files": [
+        {
+          "path": "data/test-00000-of-00001-d20b0e7149fa6eeb.parquet",
+          "size_bytes": 37948563,
+          "sha256": "c55b9ea5553d779713cfddc133cc040359f860c75b89f4ef95513fbfe4752b39"
+        },
+        {
+          "path": "data/train-00000-of-00001-c6410a8bb202ca06.parquet",
+          "size_bytes": 177115162,
+          "sha256": "6eb9a222a30e327e2f9b2a3b6dee24ccbc5a6139ac1ccdddc36c4d93d99cb531"
+        },
+        {
+          "path": "data/validation-00000-of-00001-d21ad392180d1f79.parquet",
+          "size_bytes": 37905983,
+          "sha256": "68003cac92fd5d3bae78c3d495fee3e081ba3115d497cab41b43733f8ffb8d53"
+        }
+      ],
+      "benchmark": {
+        "task": "vulnerability_detection",
+        "default_language": "C",
+        "columns": {
+          "code": "func_before",
+          "label": "vul",
+          "cwe": "CWE ID"
+        }
+      }
+    },
+    {
+      "id": "devign",
+      "name": "OpenMindAI Dataset - Devign (C Function Defects)",
+      "release_asset": "openmindai-dataset-devign-v1.0.0.zip",
+      "repository": "DetectVul/devign",
+      "revision": "db50acfa25d02fe99e9d50064b613fae3e934b11",
+      "license": "upstream-unspecified",
+      "license_url": "https://huggingface.co/datasets/DetectVul/devign",
+      "license_note": "Devign (Zhou et al., NeurIPS 2019): labeled vulnerable/non-vulnerable C functions from QEMU and FFmpeg. No SPDX license is declared on the dataset card; upstream project code retains its original licenses. Research use.",
+      "license_acceptance_required": true,
+      "purpose": [
+        "security_analysis",
+        "vulnerability_detection",
+        "defect_detection"
+      ],
+      "download_bytes": 80130816,
+      "files": [
+        {
+          "path": "data/test-00000-of-00001-e0e162fa10729371.parquet",
+          "size_bytes": 8029971,
+          "sha256": "9876907e09abb3ed119e1c3990cea7c0a2d288bbccb2d2c0030e805d5328e5cd"
+        },
+        {
+          "path": "data/train-00000-of-00001-396a063c42dfdb0a.parquet",
+          "size_bytes": 64166523,
+          "sha256": "43912a273065766782e41f3e1be38e23984589483a0bc8900f9153c67a9ef107"
+        },
+        {
+          "path": "data/validation-00000-of-00001-5d4ba937305086b9.parquet",
+          "size_bytes": 7934322,
+          "sha256": "59e89ba4827419e0c2ba2a7d916a97107f833f84cb2660d6b8ce77514e86477f"
+        }
+      ],
+      "benchmark": {
+        "task": "vulnerability_detection",
+        "default_language": "C",
+        "columns": {
+          "code": "func",
+          "label": "target"
+        }
+      }
     }
   ],
   "routes": {
     "defect_detection": [
       "code_x_glue_defect_detection",
-      "code_security_vulnerability"
+      "code_security_vulnerability",
+      "devign"
     ],
     "quality_assurance": [
       "code_x_glue_defect_detection",
@@ -182,18 +317,27 @@
     ],
     "security_analysis": [
       "code_security_vulnerability",
-      "code_x_glue_defect_detection"
+      "code_x_glue_defect_detection",
+      "diversevul",
+      "big_vul",
+      "devign"
     ],
     "security_screening": [
       "code_x_glue_defect_detection",
-      "code_security_vulnerability"
+      "code_security_vulnerability",
+      "diversevul"
     ],
     "cwe_classification": [
-      "code_security_vulnerability"
+      "code_security_vulnerability",
+      "diversevul",
+      "big_vul"
     ],
     "vulnerability_detection": [
       "code_security_vulnerability",
-      "code_x_glue_defect_detection"
+      "code_x_glue_defect_detection",
+      "diversevul",
+      "big_vul",
+      "devign"
     ],
     "repair_generation": [
       "code_x_glue_code_refinement",

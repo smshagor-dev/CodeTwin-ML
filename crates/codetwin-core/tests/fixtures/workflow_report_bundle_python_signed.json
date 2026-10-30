@@ -1,0 +1,12 @@
+{
+    "format":  "codetwin.signed-workflow-report-bundle.v1",
+    "report_sha256":  "aa3495ef05bda0f988f9a40caf02bddd01ae97c5bbf40245c79c37c13cedad89",
+    "report_json":  "{\"body\":{\"findings\":[{\"evidence\":[{\"id\":\"inv_fixture\",\"kind\":\"tool_invocation\",\"sha256\":\"0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\"}],\"location\":\"src/search.ts:42\",\"severity\":\"medium\",\"title\":\"Reflected XSS in search\",\"verification\":\"confirmed\"}],\"note\":\"naïve — unicode ✓\"},\"created_ms\":1793339697473,\"format\":\"codetwin.signed-workflow-report.v1\",\"previous_sha256\":null,\"project_id\":\"p\",\"run_id\":\"run_fixture\",\"sequence\":1}",
+    "signatures":  [
+                       {
+                           "public_key_hex":  "8353cb7747b98d6184761fd5ed619bb7dd39a05e64b7d7359101e7eec1a4971c",
+                           "signature_hex":  "47e3498745de1859cd52c4539d1bba638de048ef5a6f6b6b5b50206cd6dbea4a9ea7bb81501edb45b76475af9e57be5020970014b96f9e8ece5925e1ca516807",
+                           "signer_label":  "python-cryptography fixture"
+                       }
+                   ]
+}

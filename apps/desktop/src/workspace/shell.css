@@ -1,0 +1,106 @@
+/* Shell redesign: neutral dark-gray palette (doubled :is() raises specificity
+   above clean-workspace.css, which loads later), collapsible sidebar, account and
+   "More" navigation groups. Loaded after workspace.css/clean-workspace.css. */
+html[data-theme="dark"] :is(.ws-app, .ws-advanced-shell):is(.ws-app, .ws-advanced-shell) {
+  --ws-bg: #121316;
+  --ws-surface: #18191d;
+  --ws-surface-soft: #1f2025;
+  --ws-border: #2b2d33;
+  --ws-border-strong: #3a3d44;
+  --ws-text: #e7e8eb;
+  --ws-muted: #9b9fa8;
+  --ws-faint: #6c7079;
+  --ws-primary: #22b8cf;
+  --ws-primary-hover: #3cc6db;
+  --ws-success: #22c55e;
+  --ws-danger: #ef4444;
+  --ws-warning: #eab308;
+  --ws-on-primary: #061418;
+  --ws-shadow: none;
+}
+@media (prefers-color-scheme: dark) {
+  html[data-theme="system"] :is(.ws-app, .ws-advanced-shell):is(.ws-app, .ws-advanced-shell) {
+    --ws-bg: #121316;
+    --ws-surface: #18191d;
+    --ws-surface-soft: #1f2025;
+    --ws-border: #2b2d33;
+    --ws-border-strong: #3a3d44;
+    --ws-text: #e7e8eb;
+    --ws-muted: #9b9fa8;
+    --ws-faint: #6c7079;
+    --ws-primary: #22b8cf;
+    --ws-primary-hover: #3cc6db;
+    --ws-success: #22c55e;
+    --ws-danger: #ef4444;
+    --ws-warning: #eab308;
+    --ws-on-primary: #061418;
+    --ws-shadow: none;
+  }
+}
+html[data-theme="dark"] .ws-sidebar { background: #0f1012; }
+@media (prefers-color-scheme: dark) { html[data-theme="system"] .ws-sidebar { background: #0f1012; } }
+
+.ws-app { transition: grid-template-columns .15s ease; }
+.ws-sidebar { position: relative; }
+.ws-collapse {
+  position: absolute; top: 18px; right: -11px; z-index: 3; width: 22px; height: 22px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--ws-surface); color: var(--ws-muted);
+  border: 1px solid var(--ws-border); cursor: pointer; padding: 0;
+}
+.ws-collapse svg { transform: rotate(90deg); }
+.ws-collapse:focus-visible, .ws-sidebar a:focus-visible, .ws-sidebar summary:focus-visible { outline: 2px solid var(--ws-primary); outline-offset: 2px; }
+.ws-nav-disabled { display: flex; align-items: center; gap: 10px; padding: 8px 12px; opacity: .45; cursor: not-allowed; }
+.ws-sidebar-more > summary { display: flex; align-items: center; gap: 10px; padding: 8px 12px; cursor: pointer; color: var(--ws-muted); list-style: none; }
+.ws-sidebar-more > summary::-webkit-details-marker { display: none; }
+.ws-sidebar-more > summary > svg:last-child { margin-left: auto; }
+.ws-sidebar-more[open] > summary > svg:last-child { transform: rotate(180deg); }
+
+/* Collapsed: icon rail with tooltips from each link's title. */
+.ws-app.ws-collapsed { grid-template-columns: 64px minmax(0, 1fr); }
+.ws-collapsed .ws-collapse svg { transform: rotate(-90deg); }
+.ws-collapsed .ws-sidebar nav a > span,
+.ws-collapsed .ws-sidebar summary > span,
+.ws-collapsed .ws-sidebar summary > svg:last-child,
+.ws-collapsed .ws-nav-disabled > span,
+.ws-collapsed .ws-nav-label,
+.ws-collapsed .ws-brand span,
+.ws-collapsed .ws-sidebar-profile > span:not(.ws-avatar),
+.ws-collapsed .ws-sidebar-profile > svg,
+.ws-collapsed .ws-sidebar-tools > a,
+.ws-collapsed .ws-sidebar-more > .ws-nav-item { display: none; }
+.ws-collapsed .ws-sidebar-more[open] > .ws-nav-item { display: block; }
+.ws-collapsed .ws-sidebar nav a, .ws-collapsed .ws-sidebar summary, .ws-collapsed .ws-nav-disabled { justify-content: center; padding-left: 0; padding-right: 0; }
+
+/* The workspace route gets the full content width. */
+.ws-content:has(> .aw) { padding-top: 12px; }
+
+@media (max-width: 900px) {
+  .ws-collapse { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-app { transition: none; }
+}
+.ws-sidebar-more > summary.active { color: var(--ws-primary); }
+.ws-sidebar-more > summary > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- Resizable sidebar, section gaps, full-width content ---- */
+/* Doubled :is() raises specificity above workspace.css's 244px grid. */
+.ws-app:not(.ws-collapsed) { grid-template-columns: var(--ws-sidebar-w, 244px) minmax(0, 1fr); }
+.ws-sidebar { position: relative; }
+.ws-sidebar-resize {
+  position: absolute; top: 0; right: -3px; width: 7px; height: 100%; z-index: 40; cursor: col-resize;
+  touch-action: none;
+}
+.ws-sidebar-resize::after {
+  content: ""; position: absolute; top: 0; right: 3px; width: 1px; height: 100%; background: transparent; transition: background .12s;
+}
+.ws-sidebar-resize:hover::after, .ws-sidebar-resize:active::after { background: var(--ws-primary); }
+
+/* A little breathing room between nav groups. */
+.ws-sidebar nav { display: flex; flex-direction: column; gap: 3px; }
+.ws-sidebar .ws-nav-label { margin-top: 16px; margin-bottom: 4px; }
+.ws-sidebar .ws-nav-label:first-child { margin-top: 2px; }
+.ws-sidebar-more, .ws-sidebar-tools { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, .07); }
+
+/* Content fills the main column at any width; keep comfortable gutters. */
+.ws-main .ws-content { max-width: none; width: 100%; margin: 0; }

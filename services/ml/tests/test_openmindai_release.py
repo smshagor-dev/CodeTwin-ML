@@ -30,7 +30,7 @@ class OpenMindAIDatasetReleaseTests(unittest.TestCase):
         catalog_ids = {item["id"] for item in catalog["datasets"]}
         release_ids = {item["dataset_id"] for item in release["assets"]}
         self.assertEqual(catalog_ids, release_ids)
-        self.assertEqual(len(release_ids), 4)
+        self.assertEqual(len(release_ids), len(catalog["datasets"]))
 
     def test_all_public_names_and_assets_use_openmindai_dataset_brand(self) -> None:
         catalog = json.loads((ROOT / "datasets" / "catalog.json").read_text(encoding="utf-8"))

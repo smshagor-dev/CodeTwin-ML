@@ -53,7 +53,9 @@ html[data-theme="dark"] :is(.ws-app, .ws-advanced-shell) {
 .ws-global-search kbd { font-size: 10px; }
 .ws-top-actions { gap: 4px; }
 .ws-user-menu summary { font-size: 11px; }
-.ws-content { max-width: 1440px; padding: 30px 32px 40px; }
+/* Fill the whole content column; a left-aligned max-width cap here left an empty
+   right-side gutter when the window was maximized / fullscreen on wide monitors. */
+.ws-content { width: 100%; padding: 30px 32px 40px; }
 .ws-eyebrow { font-size: 10px; letter-spacing: .08em; color: var(--ws-faint); font-weight: 600; margin-bottom: 7px; }
 .ws-page-header { align-items: start; margin-bottom: 24px; }
 .ws-page-header h1, .ws-welcome h1 { font-size: 25px; font-weight: 600; letter-spacing: -.04em; }

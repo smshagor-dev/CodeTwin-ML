@@ -50,11 +50,45 @@ const MIGRATION_0045: &str = include_str!("../migrations/0045_native_flow_follow
 const MIGRATION_0046: &str = include_str!("../migrations/0046_native_flow_queue.sql");
 const MIGRATION_0027: &str = include_str!("../migrations/0027_security_finding_reviews.sql");
 const MIGRATION_0026: &str = include_str!("../migrations/0026_secret_history_scanning.sql");
+const MIGRATION_0047: &str = include_str!("../migrations/0047_workflow_orchestration.sql");
+const MIGRATION_0048: &str = include_str!("../migrations/0048_model_gateway.sql");
+const MIGRATION_0049: &str = include_str!("../migrations/0049_knowledge_memory.sql");
+const MIGRATION_0050: &str = include_str!("../migrations/0050_research_sources.sql");
+const MIGRATION_0051: &str = include_str!("../migrations/0051_collaboration_automation.sql");
+const MIGRATION_0052: &str = include_str!("../migrations/0052_security_intelligence.sql");
+const MIGRATION_0053: &str = include_str!("../migrations/0053_temporal_memory.sql");
+const MIGRATION_0054: &str = include_str!("../migrations/0054_semantic_memory.sql");
+const MIGRATION_0055: &str = include_str!("../migrations/0055_citation_verification.sql");
+const MIGRATION_0056: &str = include_str!("../migrations/0056_signed_workflow_reports.sql");
+
+/// Reverse migrations, newest last. `rollback_to` refuses to cross a
+/// version that has none.
+const DOWN_MIGRATIONS: &[(i64, &str)] = &[
+    (
+        54,
+        include_str!("../migrations/0054_semantic_memory.down.sql"),
+    ),
+    (
+        55,
+        include_str!("../migrations/0055_citation_verification.down.sql"),
+    ),
+    (
+        56,
+        include_str!("../migrations/0056_signed_workflow_reports.down.sql"),
+    ),
+];
+
+/// Highest schema version this build applies.
+pub const LATEST_SCHEMA_VERSION: i64 = 56;
+/// Pre-migration backups retained next to the database file.
+const MIGRATION_BACKUPS_KEPT: usize = 3;
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("database backup failed: {0}")]
+    Backup(String),
 }
 
 /// Indexing reuses a few dozen statements per file; with rusqlite's default of 16
@@ -67,14 +101,102 @@ pub struct Database {
 
 impl Database {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
+        let path = path.as_ref();
+        let existed = path.metadata().is_ok_and(|m| m.len() > 0);
         let connection = Connection::open(path)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        // Zero freed pages so deleted memory does not linger in the file.
+        connection.pragma_update(None, "secure_delete", "ON")?;
         let database = Self { connection };
+        if existed {
+            database.backup_before_migration(path)?;
+        }
         database.migrate()?;
         Ok(database)
+    }
+
+    /// Current applied schema version, or `None` for an empty/non-CodeTwin file.
+    pub fn schema_version(&self) -> Result<Option<i64>, DatabaseError> {
+        let has_table: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_table {
+            return Ok(None);
+        }
+        Ok(self
+            .connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })?)
+    }
+
+    /// Write a consistent copy of the database (`VACUUM INTO`). Used for
+    /// pre-migration backups and exportable diagnostics.
+    pub fn backup_to(&self, destination: &Path) -> Result<(), DatabaseError> {
+        if destination.exists() {
+            return Err(DatabaseError::Backup(
+                "backup destination already exists".into(),
+            ));
+        }
+        let target = destination
+            .to_str()
+            .ok_or_else(|| DatabaseError::Backup("backup path is not valid UTF-8".into()))?;
+        self.connection.execute("VACUUM INTO ?1", [target])?;
+        Ok(())
+    }
+
+    /// Before applying pending migrations to an existing database, keep a
+    /// restorable copy. The upgrade does not proceed if the backup fails.
+    fn backup_before_migration(
+        &self,
+        path: &Path,
+    ) -> Result<Option<std::path::PathBuf>, DatabaseError> {
+        let Some(current) = self.schema_version()? else {
+            return Ok(None);
+        };
+        if current >= LATEST_SCHEMA_VERSION {
+            return Ok(None);
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| DatabaseError::Backup("database path has no file name".into()))?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let backup = path.with_file_name(format!(
+            "{name}.pre-v{current}-v{LATEST_SCHEMA_VERSION}-{stamp}.bak"
+        ));
+        self.backup_to(&backup)?;
+        let prefix = format!("{name}.pre-v");
+        if let Some(dir) = path.parent() {
+            let mut backups: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(dir)
+                .map_err(|e| DatabaseError::Backup(e.to_string()))?
+                .filter_map(Result::ok)
+                .filter_map(|e| {
+                    let file = e.file_name().into_string().ok()?;
+                    (file.starts_with(&prefix) && file.ends_with(".bak")).then(|| (file, e.path()))
+                })
+                .collect();
+            // Names end in a nanosecond timestamp; sort oldest first by it.
+            backups.sort_by_key(|(file, _)| {
+                file.trim_end_matches(".bak")
+                    .rsplit('-')
+                    .next()
+                    .and_then(|t| t.parse::<u128>().ok())
+                    .unwrap_or(0)
+            });
+            while backups.len() > MIGRATION_BACKUPS_KEPT {
+                let (_, oldest) = backups.remove(0);
+                let _ = std::fs::remove_file(oldest);
+            }
+        }
+        Ok(Some(backup))
     }
 
     /// Open an already migrated file-backed SQLite database for a short-lived
@@ -92,6 +214,7 @@ impl Database {
         connection.busy_timeout(std::time::Duration::from_secs(30))?;
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        connection.pragma_update(None, "secure_delete", "ON")?;
         // Fail closed if called with an unrelated or uninitialized SQLite file.
         let _: i64 = connection.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
             row.get(0)
@@ -162,6 +285,38 @@ impl Database {
         self.apply_migration(44, MIGRATION_0044)?;
         self.apply_migration(45, MIGRATION_0045)?;
         self.apply_migration(46, MIGRATION_0046)?;
+        self.apply_migration(47, MIGRATION_0047)?;
+        self.apply_migration(48, MIGRATION_0048)?;
+        self.apply_migration(49, MIGRATION_0049)?;
+        self.apply_migration(50, MIGRATION_0050)?;
+        self.apply_migration(51, MIGRATION_0051)?;
+        self.apply_migration(52, MIGRATION_0052)?;
+        self.apply_migration(53, MIGRATION_0053)?;
+        self.apply_migration(54, MIGRATION_0054)?;
+        self.apply_migration(55, MIGRATION_0055)?;
+        self.apply_migration(56, MIGRATION_0056)?;
+        Ok(())
+    }
+
+    /// Undo applied migrations down to `target` in one transaction, newest
+    /// first. Used by migration tests and by operators restoring an older
+    /// build; data in surviving tables is untouched.
+    pub fn rollback_to(&self, target: i64) -> Result<(), DatabaseError> {
+        let current = self.schema_version()?.unwrap_or(0);
+        let tx = self.connection.unchecked_transaction()?;
+        for version in ((target + 1)..=current).rev() {
+            let Some((_, sql)) = DOWN_MIGRATIONS.iter().find(|(v, _)| *v == version) else {
+                return Err(DatabaseError::Backup(format!(
+                    "migration {version} has no rollback; restore a pre-upgrade backup instead"
+                )));
+            };
+            tx.execute_batch(sql)?;
+            tx.execute(
+                "DELETE FROM schema_migrations WHERE version = ?1",
+                [version],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -190,7 +345,118 @@ impl Database {
 mod tests {
     use tempfile::NamedTempFile;
 
-    use super::Database;
+    use super::{Database, LATEST_SCHEMA_VERSION};
+
+    fn backups(dir: &std::path::Path, prefix: &str) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with(prefix))
+            .map(|e| e.path())
+            .collect()
+    }
+
+    #[test]
+    fn upgrades_take_a_restorable_backup_and_prune_old_ones() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("codetwin.sqlite3");
+        for _ in 0..5 {
+            {
+                let db = Database::open(&path).expect("open");
+                // Simulate an older schema so the next open must upgrade.
+                db.rollback_to(53).expect("downgrade");
+            }
+            let db = Database::open(&path).expect("upgrade");
+            assert_eq!(db.schema_version().unwrap(), Some(LATEST_SCHEMA_VERSION));
+        }
+        let kept = backups(dir.path(), "codetwin.sqlite3.pre-v53-v56-");
+        assert_eq!(kept.len(), 3, "older backups are pruned");
+        let restored = Database::open(&kept[0]).expect("backup opens and migrates");
+        assert_eq!(
+            restored.schema_version().unwrap(),
+            Some(LATEST_SCHEMA_VERSION)
+        );
+        drop(restored);
+        // A database already at the latest version takes no backup.
+        let fresh = dir.path().join("fresh.sqlite3");
+        Database::open(&fresh).expect("fresh");
+        Database::open(&fresh).expect("reopen");
+        assert!(backups(dir.path(), "fresh.sqlite3.pre-v").is_empty());
+    }
+
+    #[test]
+    fn semantic_memory_migration_rolls_back_and_reapplies() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("rollback.sqlite3");
+        let tables = |db: &Database| -> i64 {
+            db.connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name IN
+                     ('embedding_models','memory_settings','memory_index_jobs','memory_deletions',
+                      'memory_neural_vectors_dims','research_claims','citation_verifications',
+                      'research_link_checks','research_reports','research_source_text',
+                      'research_citation_claims','workflow_reports','workflow_report_signatures',
+                      'trusted_report_signers')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        {
+            let db = Database::open(&path).expect("open");
+            assert_eq!(tables(&db), 14);
+            let secure: i64 = db
+                .connection()
+                .query_row("PRAGMA secure_delete", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(secure, 1, "deleted pages are zeroed");
+            db.connection()
+                .execute_batch(
+                    "INSERT INTO projects(id,root_path,display_name) VALUES ('p','/p','p');
+                     INSERT INTO memory_items(id,project_id,layer,title,body,source_kind,source_ref,
+                       content_sha256,confidence,created_ms,updated_ms)
+                     VALUES ('m','p','project_fact','t','b','k','r',printf('%064d',0),0.5,1,1);",
+                )
+                .unwrap();
+            db.rollback_to(53).expect("rollback");
+            assert_eq!(db.schema_version().unwrap(), Some(53));
+            assert_eq!(tables(&db), 0);
+            assert!(
+                db.rollback_to(40).is_err(),
+                "older migrations need a backup restore, not a partial rollback"
+            );
+            assert_eq!(
+                db.schema_version().unwrap(),
+                Some(53),
+                "failed rollback is atomic"
+            );
+        }
+        let db = Database::open(&path).expect("re-upgrade");
+        assert_eq!(db.schema_version().unwrap(), Some(LATEST_SCHEMA_VERSION));
+        assert_eq!(tables(&db), 14);
+        let columns: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('research_sources')
+                 WHERE name IN ('canonical_url','origin','metadata_json','provenance_json')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 4);
+        let kept: i64 = db
+            .connection()
+            .query_row("SELECT COUNT(*) FROM memory_items", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 1, "memory survives a rollback round trip");
+        // The registry rejects a vector whose size disagrees with its model.
+        let bad = db.connection().execute(
+            "INSERT INTO memory_neural_vectors(item_id,project_id,model,dims,vector,content_sha256,created_ms)
+             VALUES ('m','p','hashed-lexical-v2',16,X'00',printf('%064d',0),1)",
+            [],
+        );
+        assert!(bad.is_err());
+    }
 
     #[test]
     fn creates_expected_foundation_and_analysis_tables() {
@@ -220,10 +486,10 @@ mod tests {
                 row.get(0)
             })
             .expect("query migrations");
-        assert_eq!(count, 46);
+        assert_eq!(count, LATEST_SCHEMA_VERSION);
         for version in [
             10i64, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-            31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+            31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
         ] {
             let applied: i64 = db
                 .connection()

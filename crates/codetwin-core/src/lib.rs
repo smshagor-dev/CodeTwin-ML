@@ -4,7 +4,16 @@ pub use git_commit::{
     apply_selected_commit, prepare_selected_commit, GitCommitPreview, GitCommitReceipt,
     GitCommitRequest,
 };
+pub mod agent_tools;
 pub mod assessment_jobs;
+pub mod assessment_stream;
+pub mod automation_api;
+pub mod cloud_settings;
+pub mod collaboration;
+pub mod context_compaction;
+pub mod knowledge_memory;
+pub mod model_access;
+pub mod model_planner;
 pub mod native_action_log;
 pub mod native_agent_delegation;
 pub mod native_agent_handoffs;
@@ -24,7 +33,12 @@ pub mod network_assessment;
 pub mod network_dns;
 pub mod network_inspection;
 pub mod network_inspection_store;
+pub mod observability;
+pub mod pdf_report;
+pub mod search_settings;
+pub mod specialist_workers;
 pub mod tool_catalog;
+pub mod workflow_platform;
 pub use tool_catalog::{CatalogRunSummary, CatalogTool, ToolCatalogService};
 pub mod git_review;
 pub use git_review::{
@@ -48,12 +62,15 @@ pub mod query_service;
 pub mod repair_application;
 pub mod repair_workflow;
 pub mod repair_workspace;
+pub mod research_citations;
 pub mod runtime_analysis;
 pub mod sbom;
 pub mod secret_history;
 pub mod secret_scanning;
 pub mod security_analysis;
+pub mod security_intelligence;
 pub mod security_review;
+pub mod signed_workflow_reports;
 pub use security_review::{SecurityFindingReview, SecurityReviewError, SecurityReviewService};
 pub mod security_campaign;
 pub mod security_fix;

@@ -91,7 +91,8 @@ def run_bounded(
                 pass
 
     def terminate() -> None:
-        if owns_group:
+        # The platform check is redundant with owns_group but lets mypy narrow on Windows.
+        if owns_group and sys.platform != "win32":
             try:
                 os.killpg(child.pid, signal.SIGKILL)
             except ProcessLookupError:

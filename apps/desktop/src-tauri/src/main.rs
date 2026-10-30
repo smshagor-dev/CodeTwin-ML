@@ -2,19 +2,24 @@ mod benchmark_commands;
 mod database_commands;
 mod go_security_commands;
 mod guided_security_commands;
+mod intelligence_commands;
 mod ml_commands;
 mod native_agent_commands;
 mod native_agent_reasoning_commands;
 mod native_orchestration_commands;
 mod network_assessment_commands;
+mod platform_commands;
 mod qa_commands;
 mod repair_commands;
+mod research_report_commands;
 mod runtime_commands;
 mod security_campaign_commands;
 mod security_fix_commands;
+mod semantic_memory_commands;
 mod supply_chain_commands;
 mod web_policy_commands;
 mod web_security_commands;
+mod workflow_commands;
 mod workspace_commands;
 
 use std::{
@@ -149,6 +154,17 @@ use web_security_commands::{
     get_web_security_scan, list_source_routes, list_web_security_endpoints,
     list_web_security_evidence, list_web_security_findings, list_web_security_scans,
     list_web_source_endpoint_links, start_web_security_scan, update_web_security_finding_status,
+};
+use workflow_commands::{
+    assessment_stream_page, assessment_summary, cancel_workflow_run, clear_cloud_provider_token,
+    cloud_provider_diagnostics, cloud_provider_status, cloud_request_log,
+    create_workflow_investigation, decide_workflow_approval, grant_project_cloud_consent,
+    list_workflow_runs, memory_approve, memory_clear, memory_delete, memory_list, memory_run_graph,
+    memory_search, override_workflow_task, pause_workflow_run, pending_workflow_approvals,
+    preview_cloud_question, project_cloud_consent, resume_workflow_run, review_assessment_finding,
+    revoke_project_cloud_consent, save_cloud_provider_settings, send_cloud_question,
+    set_cloud_provider_token, start_workflow_run, workflow_capability_matrix, workflow_events,
+    workflow_report, workflow_roles, workflow_run_detail,
 };
 use workspace_commands::{
     add_website, check_website, get_app_preferences, list_projects, list_websites, recent_activity,
@@ -1064,6 +1080,14 @@ fn main() {
             GuidedSecurityStore::new(&database)
                 .recover_interrupted_sessions()
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
+            // Index jobs cut off by a shutdown are marked interrupted; the
+            // indexing itself is incremental, so a re-run resumes.
+            codetwin_core::knowledge_memory::KnowledgeMemory::new(&database)
+                .recover_interrupted_jobs()
+                .map_err(std::io::Error::other)?;
+            // Reconcile interrupted workflow runs: stale leases are released,
+            // uncertain side effects blocked and running runs paused.
+            workflow_commands::recover_workflows(&database_path).map_err(std::io::Error::other)?;
             app.manage(AppState {
                 database: Mutex::new(database),
                 database_path,
@@ -1338,6 +1362,116 @@ fn main() {
             update_web_security_finding_status,
             generate_web_security_report,
             export_web_security_report,
+            workflow_roles,
+            assessment_stream_page,
+            assessment_summary,
+            review_assessment_finding,
+            workflow_capability_matrix,
+            create_workflow_investigation,
+            list_workflow_runs,
+            workflow_run_detail,
+            workflow_events,
+            pending_workflow_approvals,
+            decide_workflow_approval,
+            start_workflow_run,
+            cancel_workflow_run,
+            pause_workflow_run,
+            resume_workflow_run,
+            override_workflow_task,
+            workflow_report,
+            memory_search,
+            memory_list,
+            memory_approve,
+            memory_delete,
+            memory_clear,
+            memory_run_graph,
+            cloud_provider_status,
+            save_cloud_provider_settings,
+            set_cloud_provider_token,
+            clear_cloud_provider_token,
+            cloud_provider_diagnostics,
+            project_cloud_consent,
+            grant_project_cloud_consent,
+            revoke_project_cloud_consent,
+            cloud_request_log,
+            preview_cloud_question,
+            send_cloud_question,
+            platform_commands::local_model_status,
+            platform_commands::save_local_model_settings,
+            platform_commands::search_provider_status,
+            platform_commands::save_search_provider_settings,
+            platform_commands::set_search_provider_key,
+            platform_commands::clear_search_provider_key,
+            platform_commands::llm_usage_analytics,
+            platform_commands::workflow_metrics,
+            platform_commands::export_platform_diagnostics,
+            platform_commands::workflow_report_pdf,
+            platform_commands::prune_workflow_history,
+            platform_commands::project_access,
+            platform_commands::set_project_access_policy,
+            platform_commands::register_principal,
+            platform_commands::grant_project_role,
+            platform_commands::revoke_project_role,
+            platform_commands::create_project_invitation,
+            platform_commands::accept_project_invitation,
+            platform_commands::revoke_project_invitation,
+            platform_commands::list_comments,
+            platform_commands::add_comment,
+            platform_commands::edit_comment,
+            platform_commands::delete_comment,
+            platform_commands::audit_log,
+            platform_commands::automation_api_status,
+            platform_commands::start_automation_api,
+            platform_commands::stop_automation_api,
+            platform_commands::create_api_token,
+            platform_commands::list_api_tokens,
+            platform_commands::revoke_api_token,
+            intelligence_commands::security_correlation_report,
+            intelligence_commands::security_correlation_snapshot,
+            intelligence_commands::verify_security_snapshot,
+            intelligence_commands::list_security_suppressions,
+            intelligence_commands::create_security_suppression,
+            intelligence_commands::revoke_security_suppression,
+            intelligence_commands::memory_item_history,
+            intelligence_commands::knowledge_conflicts,
+            intelligence_commands::resolve_knowledge_conflict,
+            intelligence_commands::knowledge_graph_as_of,
+            intelligence_commands::embed_project_memory,
+            intelligence_commands::compare_workflow_runs,
+            intelligence_commands::diagnose_workflow_stall,
+            semantic_memory_commands::local_embedding_model_status,
+            semantic_memory_commands::download_local_embedding_model,
+            semantic_memory_commands::start_memory_indexing,
+            semantic_memory_commands::cancel_memory_indexing,
+            semantic_memory_commands::memory_index_status,
+            semantic_memory_commands::memory_index_jobs,
+            semantic_memory_commands::semantic_memory_search,
+            semantic_memory_commands::memory_settings,
+            semantic_memory_commands::save_memory_settings,
+            semantic_memory_commands::apply_memory_retention,
+            semantic_memory_commands::secure_delete_memory,
+            semantic_memory_commands::memory_deletions,
+            semantic_memory_commands::memory_episodes,
+            semantic_memory_commands::semantic_memory_conflicts,
+            research_report_commands::research_fetch_source,
+            research_report_commands::research_ingest_document,
+            research_report_commands::research_cite,
+            research_report_commands::research_verify_citation,
+            research_report_commands::research_citation_list,
+            research_report_commands::research_check_link,
+            research_report_commands::research_contradictions,
+            research_report_commands::research_export_citations,
+            research_report_commands::research_generate_report,
+            research_report_commands::create_signed_workflow_report,
+            research_report_commands::signed_workflow_reports,
+            research_report_commands::workflow_report_signing_request,
+            research_report_commands::attach_workflow_report_signature,
+            research_report_commands::verify_signed_workflow_report,
+            research_report_commands::export_signed_workflow_report,
+            research_report_commands::verify_workflow_report_bundle,
+            research_report_commands::report_signers,
+            research_report_commands::trust_report_signer,
+            research_report_commands::revoke_report_signer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CodeTwin ML");

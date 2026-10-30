@@ -210,7 +210,7 @@ impl MlSidecarContainment {
                 ));
             }
 
-            return Ok(Self { job });
+            Ok(Self { job })
         }
 
         #[cfg(unix)]
@@ -248,7 +248,6 @@ impl MlSidecarContainment {
             } else {
                 let _ = child.kill();
             }
-            return;
         }
 
         #[cfg(not(windows))]
@@ -444,7 +443,7 @@ impl MlSidecarIntegrityLocks {
                 handles.push(handle);
             }
 
-            return Ok(Self { handles });
+            Ok(Self { handles })
         }
 
         #[cfg(not(windows))]

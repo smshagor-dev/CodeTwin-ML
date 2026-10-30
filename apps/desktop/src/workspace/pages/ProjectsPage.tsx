@@ -5,7 +5,7 @@ import { workspaceApi } from "../api";
 import { Icon } from "../Icon";
 import { navigate } from "../routes";
 import type { IndexRunRecord, ProjectOverview, ProjectProfile } from "../types";
-import { ConfirmDialog, Disclosure, EmptyState, PageHeader, Panel, StatusBadge, formatDate, shortPath } from "../ui";
+import { ConfirmDialog, Disclosure, EmptyState, PageHeader, Panel, StatusBadge, displayPath, formatDate, shortPath } from "../ui";
 import { useWorkspace } from "../WorkspaceContext";
 
 const emptyProfile: ProjectProfile = {
@@ -163,7 +163,7 @@ export function ProjectsPage() {
             {!selected ? <p className="ws-inline-empty">Select a project to inspect its persistent index metadata.</p> : (
               <>
                 <dl className="ws-detail-grid">
-                  <dt>Folder</dt><dd className="ws-mono" title={selected.root_path}>{selected.root_path}</dd>
+                  <dt>Folder</dt><dd className="ws-mono" title={displayPath(selected.root_path)}>{displayPath(selected.root_path)}</dd>
                   <dt>Git remote</dt><dd className="ws-mono">{selected.git_remote ?? "Not detected"}</dd>
                   <dt>Index status</dt><dd><StatusBadge status={selected.last_index_status}/></dd>
                   <dt>Last indexed</dt><dd>{formatDate(selected.last_indexed_at)}</dd>

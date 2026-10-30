@@ -157,10 +157,7 @@ fn run_git(
         .args(["--no-pager", "--literal-pathspecs"])
         .args(arguments)
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env(
-            "GIT_CONFIG_GLOBAL",
-            if cfg!(windows) { "NUL" } else { "/dev/null" },
-        )
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_NO_LAZY_FETCH", "1")
         .env("GIT_ALLOW_PROTOCOL", "")
@@ -201,10 +198,10 @@ fn run_git(
             command.env_remove(name);
         }
     }
-    command.env("GIT_CONFIG_NOSYSTEM", "1").env(
-        "GIT_CONFIG_GLOBAL",
-        if cfg!(windows) { "NUL" } else { "/dev/null" },
-    );
+    // Git for Windows maps "/dev/null" to the null device itself; recent releases reject "NUL".
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null");
     for (name, value) in environment {
         command.env(name, value);
     }

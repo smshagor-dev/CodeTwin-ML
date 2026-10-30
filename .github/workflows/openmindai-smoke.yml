@@ -1,0 +1,33 @@
+name: OpenMindAI Cloud Live Smoke
+
+# Manually triggered: spends a few OpenMindAI application credits and sends
+# only fixed, non-sensitive fixture prompts. Never part of PR CI.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model id to test"
+        required: false
+        default: "openmindai-lite"
+
+permissions:
+  contents: read
+
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Run live provider contract test
+        env:
+          CODETWIN_TEST_OPENMINDAI_LIVE: "1"
+          OPENMINDAI_API_KEY: ${{ secrets.OPENMINDAI_API_KEY }}
+          OPENMINDAI_TEST_MODEL: ${{ inputs.model }}
+        run: |
+          if [ -z "$OPENMINDAI_API_KEY" ]; then
+            echo "OPENMINDAI_API_KEY secret is not configured" >&2
+            exit 1
+          fi
+          cargo test -p model-gateway --test openmindai_live -- --nocapture

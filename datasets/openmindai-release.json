@@ -24,6 +24,21 @@
       "dataset_id": "code_security_vulnerability",
       "display_name": "OpenMindAI Dataset - Security Vulnerability",
       "asset_name": "openmindai-dataset-security-vulnerability-v1.0.0.zip"
+    },
+    {
+      "dataset_id": "diversevul",
+      "display_name": "OpenMindAI Dataset - DiverseVul (C/C++ Vulnerabilities)",
+      "asset_name": "openmindai-dataset-diversevul-v1.0.0.zip"
+    },
+    {
+      "dataset_id": "big_vul",
+      "display_name": "OpenMindAI Dataset - Big-Vul (Real-World CVEs)",
+      "asset_name": "openmindai-dataset-big-vul-v1.0.0.zip"
+    },
+    {
+      "dataset_id": "devign",
+      "display_name": "OpenMindAI Dataset - Devign (C Function Defects)",
+      "asset_name": "openmindai-dataset-devign-v1.0.0.zip"
     }
   ]
 }

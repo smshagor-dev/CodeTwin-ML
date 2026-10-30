@@ -14,8 +14,11 @@ import {
   workspaceApi,
   type ImportStage,
 } from "./api";
+import { workflowApi, type WorkflowRun } from "./workflowApi";
+import { buildGuidedRequests, guidedConfigFor } from "./security/guidedSecurityModel";
 import type {
   AppPreferences,
+  GuidedSecuritySessionRecord,
   ProjectOverview,
   SystemStatusEntry,
   WebsiteRecord,
@@ -51,6 +54,8 @@ type WorkspaceContextValue = {
   removeWebsite: (website: WebsiteRecord) => Promise<void>;
   runSecurity: (projectId?: string | null) => Promise<void>;
   runQaDiscovery: (projectId?: string | null) => Promise<void>;
+  scanNow: (projectId?: string | null) => Promise<WorkflowRun>;
+  scanWebNow: (website: WebsiteRecord) => Promise<GuidedSecuritySessionRecord>;
   savePreferences: (preferences: AppPreferences) => Promise<void>;
 };
 
@@ -232,6 +237,85 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [activeProjectId, refreshWorkspace]);
 
+  // One-click local scan: plan the full read-only assessment, auto-approve only
+  // read-only scope, and start it. Anything non-read-only is never auto-approved —
+  // it stays a pending decision the operator sees in the terminal.
+  const scanNow = useCallback(async (projectId?: string | null) => {
+    const id = projectId ?? activeProjectId;
+    if (!id) throw new Error("Add or select a project before scanning.");
+    setOperation({ kind: "security", stage: "Planning full assessment…" });
+    try {
+      let readOnly = new Set<string>();
+      try {
+        const caps = await workflowApi.capabilities(id);
+        readOnly = new Set(caps.filter((c) => c.side_effect === "read_only").map((c) => c.capability));
+      } catch { /* matrix unavailable: leave approvals manual rather than auto-approving blindly */ }
+      const goal = "Full read-only security assessment: source security, secrets, dependency and test-evidence review across the authorized project scope.";
+      const { run, approvals } = await workflowApi.createInvestigation(id, goal, [], false, 3);
+      setOperation({ kind: "security", stage: "Approving read-only scope…" });
+      for (const approval of approvals) {
+        const safe = approval.status === "pending" && approval.kind === "plan"
+          && approval.capabilities.length > 0 && approval.capabilities.every((c) => readOnly.has(c));
+        if (safe) await workflowApi.decide(approval.id, true, approval.scope_digest, "Auto-approved: read-only scan");
+      }
+      // Start now if the scope was fully approved; otherwise the run waits for the
+      // operator's decision in the terminal (the backend enforces the gate regardless).
+      try { await workflowApi.start(run.id); } catch { /* awaiting approval — shown in the terminal */ }
+      setActiveProjectIdState(id);
+      await refreshWorkspace();
+      setToast({ tone: "success", message: "Scan started. Live progress is in the terminal." });
+      return run;
+    } catch (error) {
+      setToast({ tone: "error", message: "Could not start scan: " + String(error) });
+      throw error;
+    } finally {
+      setOperation(null);
+    }
+  }, [activeProjectId, refreshWorkspace]);
+
+  // One-click web scan: build a conservative authorized-production plan, prepare the
+  // guided session, and approve it. Authorization is confirmed by the caller's popup.
+  const scanWebNow = useCallback(async (website: WebsiteRecord) => {
+    setOperation({ kind: "security", stage: "Preparing authorized web assessment…" });
+    try {
+      const config = guidedConfigFor(website.url, "authorized_production", "standard");
+      config.scope.authorization_confirmed = true;
+      const { prepare, execution } = buildGuidedRequests({
+        websiteId: website.id,
+        projectId: website.project_id,
+        environment: "authorized_production",
+        testingDepth: "standard",
+        authMode: "none",
+        config,
+        primaryCookie: "", primaryBearer: "", primaryHeaders: "",
+        secondaryCookie: "", secondaryBearer: "", secondaryHeaders: "",
+      });
+      let session = await workspaceApi.prepareGuidedSecurityTest(prepare);
+      if (session.status === "awaiting_approval") {
+        setOperation({ kind: "security", stage: "Approving authorized scope…" });
+        session = await workspaceApi.approveGuidedSecurityPlan(session.id);
+      }
+      // Execute the approved plan. This creates the scan, links it to the guided session
+      // (approved → running) and runs the checks in the background; activity events and
+      // critical findings then stream into the unified workspace terminal. The backend's
+      // assert_execution_allowed gate still enforces the approved, authorized scope.
+      if (session.status === "approved") {
+        setOperation({ kind: "security", stage: "Running authorized web checks…" });
+        execution.guided_session_id = session.id;
+        await workspaceApi.startWebSecurityScan(execution);
+        session = (await workspaceApi.getGuidedSecuritySession(session.id)) ?? session;
+      }
+      await refreshWorkspace();
+      setToast({ tone: "success", message: "Web assessment running — live progress streams in the workspace terminal." });
+      return session;
+    } catch (error) {
+      setToast({ tone: "error", message: "Could not start web scan: " + String(error) });
+      throw error;
+    } finally {
+      setOperation(null);
+    }
+  }, [refreshWorkspace]);
+
   const savePreferences = useCallback(async (next: AppPreferences) => {
     try {
       const saved = await workspaceApi.savePreferences(next);
@@ -267,12 +351,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     removeWebsite,
     runSecurity,
     runQaDiscovery,
+    scanNow,
+    scanWebNow,
     savePreferences,
   }), [
     projects, websites, summary, activity, systemStatus, preferences, activeProjectId, activeProject,
     loading, operation, toast, websiteComposerOpen, setActiveProjectId, refreshWorkspace,
     pickAndImportProject, reindexProject, removeProject, addWebsite, checkWebsite, removeWebsite,
-    runSecurity, runQaDiscovery, savePreferences,
+    runSecurity, runQaDiscovery, scanNow, scanWebNow, savePreferences,
   ]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
